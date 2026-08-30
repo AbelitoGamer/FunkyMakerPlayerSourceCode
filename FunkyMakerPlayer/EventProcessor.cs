@@ -715,6 +715,9 @@ public class EventProcessor
         var objs = _level.Scene.Objects;
         var cams = _level.Scene.Cameras;
         
+        // Store event's time for delay compensation in Fixed object tweens
+        float eventTime = ev.Time;
+        
         foreach (var action in ev.Actions)
         {
             int objIdx = action.Props.Object.HasValue ? (int)action.Props.Object.Value : -1;
@@ -1053,22 +1056,21 @@ public class EventProcessor
                             var transform = obj.Transform[posIdx];
                             targetPos = new Vector2(transform.Position.X, transform.Position.Y);
                             
-                            // CRITICAL: If object is fixed, coordinates are normalized
-                            // (typically -2 to +3 range, where 0-1 is visible screen)
-                            // Convert to screen coordinates for animator
+                            // CRITICAL: If object is fixed, check if coordinates need conversion
+                            // Use same logic as Game1.cs: check initial obj.X/Y to determine coordinate type
                             if (obj.Fixed)
                             {
-                                // Detect if coordinates are normalized by checking if they're in reasonable range
-                                // Normalized coords typically range from -2 to +3 (allowing off-screen positioning)
-                                bool looksNormalized = Math.Abs(targetPos.X) < 10f && Math.Abs(targetPos.Y) < 10f;
+                                // Use INITIAL coordinates (obj.X/Y) to determine if normalized, not Transform coords
+                                bool isNormalized = obj.X >= 0f && obj.X <= 1f && obj.Y >= 0f && obj.Y <= 1f;
                                 
-                                if (looksNormalized)
+                                if (isNormalized)
                                 {
-                                    // Get screen dimensions from level settings or use defaults
+                                    // Normalized coordinates (0-1): convert to screen pixels
                                     int screenW = 1280; // Default width
                                     int screenH = 720;  // Default height
                                     targetPos = new Vector2(targetPos.X * screenW, targetPos.Y * screenH);
                                 }
+                                // else: pixel coordinates, use as-is
                             }
                         }
                         else
@@ -1168,12 +1170,38 @@ public class EventProcessor
                             
                             string easeName = action.Props.EasingType ?? "linear";
                             
+                            // CRITICAL FIX: For Fixed objects, compensate for event processing delay
+                            // by adjusting duration so the tween finishes at the correct time
+                            float tweenStartTime = _currentSongTime;
+                            float tweenDuration = duration;
+                            
+                            if (obj.Fixed)
+                            {
+                                // Calculate how late this event is being processed
+                                float eventDelay = _currentSongTime - eventTime;
+                                
+                                if (eventDelay > 0f && eventDelay < duration)
+                                {
+                                    // Event is late - reduce duration so tween finishes on time
+                                    // Example: Event at t=25.0, duration=1.6s, processed at t=25.3
+                                    // New duration = 1.6 - 0.3 = 1.3s, finishes at t=26.6 (correct)
+                                    tweenDuration = duration - eventDelay;
+                                    Console.WriteLine($"[FixedDelay] Obj {objIdx} ({objName}): eventTime={eventTime:F3}, currentTime={_currentSongTime:F3}, delay={eventDelay:F3}s, originalDur={duration:F2}s, adjustedDur={tweenDuration:F2}s, finishTime={(_currentSongTime + tweenDuration):F3}");
+                                }
+                                else if (eventDelay >= duration)
+                                {
+                                    // Event is SO late that it's past the target finish time - snap instantly
+                                    Console.WriteLine($"[FixedDelay] Obj {objIdx} ({objName}): Event VERY late (delay={eventDelay:F3}s > duration={duration:F2}s) - snapping to target position");
+                                    tweenDuration = 0f; // Instant snap
+                                }
+                            }
+                            
                             var tween = new ObjectTransformTween
                             {
                                 ObjIndex     = objIdx,
                                 PosIdx       = posIdx,
-                                StartTime    = _currentSongTime,
-                                Duration     = duration,
+                                StartTime    = tweenStartTime,
+                                Duration     = tweenDuration,
                                 StartPos     = startPos,
                                 EndPos       = targetPos,
                                 StartScale   = startScale,

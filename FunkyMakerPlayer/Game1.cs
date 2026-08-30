@@ -4026,7 +4026,11 @@ public partial class Game1 : Game
                 if (wantMode == 1)
                 {
                     // Normalized coordinates (0-1): scale to screen pixels and apply FixedPixelScale
-                    anim.Position = new Vector2(pos.X * sw, pos.Y * sh);
+                    // Only update position if no active tween (EventProcessor controls during tweens)
+                    if (!hasActiveTween)
+                    {
+                        anim.Position = new Vector2(pos.X * sw, pos.Y * sh);
+                    }
                     const float CAM_W = 1920f;
                     const float CAM_H = 1080f;
                     float camScale = _events?.Camera.Scale ?? 1f;
@@ -4037,7 +4041,8 @@ public partial class Game1 : Game
                 else // wantMode == 2
                 {
                     // Fixed world coordinates (mode 2): use same FixedPixelScale formula as mode 1
-                    if (!hasPositionEvents)
+                    // Only update position if no position events AND no active tween
+                    if (!hasPositionEvents && !hasActiveTween)
                     {
                         // No position events: update position from Transform
                         anim.Position = new Vector2(pos.X, pos.Y);
