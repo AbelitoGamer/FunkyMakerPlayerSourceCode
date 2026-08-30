@@ -1091,16 +1091,7 @@ public class EventProcessor
                                 var transform = obj.Transform[posIdx];
                                 var transformScale = new Vector2(transform.Scale.X, transform.Scale.Y);
                                 
-                                // Fixed objects: multiply by camera scale to match world object size
-                                if (obj.Fixed)
-                                {
-                                    float camScale = Camera.Scale;
-                                    _objAnimators[objIdx]!.Scale = transformScale * camScale;
-                                }
-                                else
-                                {
-                                    _objAnimators[objIdx]!.Scale = transformScale;
-                                }
+                                _objAnimators[objIdx]!.Scale = transformScale;
                             }
                             
                             Console.WriteLine($"[ObjectPositionSet] t={_currentSongTime:F2} Obj {objIdx} ({objName}) → pos=({targetPos.X:F3},{targetPos.Y:F3}) posIdx={posIdx} visible={wasVisible} (instant)");
@@ -1170,16 +1161,17 @@ public class EventProcessor
                                 var transform = obj.Transform[posIdx];
                                 var transformScale = new Vector2(transform.Scale.X, transform.Scale.Y);
                                 
-                                // Fixed objects: multiply by camera scale to match world object size
-                                // This compensates for the lack of camera zoom on Fixed objects
+                                // Fixed objects: don't multiply scale by camScale
+                                // FixedPixelScale in Game1.cs handles the camera-independent scaling
+                                // World objects: DO multiply to match camera zoom
                                 if (obj.Fixed)
                                 {
-                                    float camScale = Camera.Scale;
-                                    endScale = transformScale * camScale;
+                                    endScale = transformScale;
                                 }
                                 else
                                 {
-                                    endScale = transformScale;
+                                    float camScale = Camera.Scale;
+                                    endScale = transformScale * camScale;
                                 }
                             }
                             

@@ -3992,37 +3992,57 @@ public partial class Game1 : Game
             {
                 if (wantMode == 1)
                 {
-                    // Normalized coordinates (0-1) - convert to screen pixels
-                    anim.Position = new Vector2(pos.X * sw, pos.Y * sh);
-                    
-                    // Calculate FixedPixelScale using the original formula
-                    const float CAM_W = 1920f;
-                    const float CAM_H = 1080f;
-                    float camScale = _events?.Camera.Scale ?? 1f;
-                    float actual = Math.Min((float)sw / (CAM_W * camScale), (float)sh / (CAM_H * camScale));
-                    float basePs = Math.Min((float)sw / CAM_W, (float)sh / CAM_H);
-                    anim.FixedPixelScale = Math.Min(actual, basePs);
-                    
-                    // For Transform arrays: update scale from GetScale()
+                    // Fixed objects with normalized coordinates (0-1)
                     bool hasTransformArray = obj.Transform != null && obj.Transform.Count > 1;
-                    if (hasTransformArray)
+                    bool hasPositionEvents = hasTransformArray && _events.HasPositionEvents(i);
+                    bool hasActiveTween = _events.HasActiveTween(i);
+                    
+                    if (!hasPositionEvents)
                     {
+                        // No position events - update position and scale from Transform
+                        anim.Position = new Vector2(pos.X * sw, pos.Y * sh);
+                        if (hasTransformArray)
+                        {
+                            anim.Scale = new Vector2(scale.X, scale.Y);
+                        }
+                    }
+                    else if (!hasActiveTween)
+                    {
+                        // Has position events but NO active tween - only update scale
+                        // (EventProcessor updates position via completed tween's NewTransformIndex)
                         anim.Scale = new Vector2(scale.X, scale.Y);
                     }
+                    // else: active tween running - EventProcessor controls both position and scale
+                    
+                    // Calculate FixedPixelScale - for normalized Fixed objects, don't use camScale
+                    // They should maintain constant screen size regardless of camera zoom
+                    const float CAM_W = 1920f;
+                    const float CAM_H = 1080f;
+                    float basePs = Math.Min((float)sw / CAM_W, (float)sh / CAM_H);
+                    anim.FixedPixelScale = basePs;
                 }
                 else
                 {
                     // Fixed world coordinates (mode 2)
-                    anim.Position = new Vector2(pos.X, pos.Y);
-                    anim.FixedPixelScale = 0f;
-                    
-                    // For Transform arrays: update scale from GetScale()
                     bool hasTransformArray = obj.Transform != null && obj.Transform.Count > 1;
                     bool hasPositionEvents = hasTransformArray && _events.HasPositionEvents(i);
-                    if (hasTransformArray && !hasPositionEvents)
+                    bool hasActiveTween = _events.HasActiveTween(i);
+                    
+                    if (!hasPositionEvents)
                     {
+                        // No position events - update position and scale from Transform
+                        anim.Position = new Vector2(pos.X, pos.Y);
                         anim.Scale = new Vector2(scale.X, scale.Y);
                     }
+                    else if (!hasActiveTween)
+                    {
+                        // Has position events but NO active tween
+                        // Update scale from current Transform (EventProcessor updated CurrentTransformIndex)
+                        anim.Scale = new Vector2(scale.X, scale.Y);
+                    }
+                    // else: active tween running - EventProcessor interpolates position and scale
+                    
+                    anim.FixedPixelScale = 0f;
                 }
             }
             else
