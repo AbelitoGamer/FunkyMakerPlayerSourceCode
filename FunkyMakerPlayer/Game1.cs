@@ -4003,14 +4003,24 @@ public partial class Game1 : Game
                 }
             }
             
-            // Set FixedPixelScale for Fixed objects
+            // Set FixedPixelScale for Fixed objects (using Blazor logic)
             if (obj.Fixed)
             {
-                // Use base pixel scale for Fixed objects to keep constant screen size
-                const float CAM_W = 1920f;
-                const float CAM_H = 1080f;
-                float basePs = Math.Min((float)sw / CAM_W, (float)sh / CAM_H);
-                anim.FixedPixelScale = basePs;
+                if (wantMode == 1)
+                {
+                    // Normalized coordinates (0-1): scale to screen pixels
+                    const float CAM_W = 1920f;
+                    const float CAM_H = 1080f;
+                    float camScale = _events?.Camera.Scale ?? 1f;
+                    float actual = Math.Min((float)sw / (CAM_W * camScale), (float)sh / (CAM_H * camScale));
+                    float basePs = Math.Min((float)sw / CAM_W, (float)sh / CAM_H);
+                    anim.FixedPixelScale = Math.Min(actual, basePs);
+                }
+                else
+                {
+                    // Fixed world coordinates (mode 2)
+                    anim.FixedPixelScale = 0f;
+                }
             }
             else
             {
