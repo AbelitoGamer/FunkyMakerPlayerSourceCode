@@ -3979,17 +3979,25 @@ public partial class Game1 : Game
                 wantMode = normalized ? 1 : 2;
             }
 
-            if (wantMode != currentMode || wantBilinear != currentBilinear)
+            // For Fixed objects with position events using pixel coords (wantMode 2),
+            // use null matrix (like wantMode 1) to avoid fixedWorldMatrix transformation
+            int matrixMode = wantMode;
+            if (obj.Fixed && wantMode == 2 && hasPositionEvents)
+            {
+                matrixMode = 1; // Use null matrix for rendering
+            }
+
+            if (matrixMode != currentMode || wantBilinear != currentBilinear)
             {
                 if (currentMode >= 0) _spriteBatch.End();
-                Matrix? matrix = wantMode == 0 ? camMatrix
-                               : wantMode == 2 ? fixedWorldMatrix
+                Matrix? matrix = matrixMode == 0 ? camMatrix
+                               : matrixMode == 2 ? fixedWorldMatrix
                                : (Matrix?)null;
                 var sampler = wantBilinear ? SamplerState.LinearClamp : SamplerState.PointClamp;
                 // Apply shader effect here (only to scene objects, not to HUD/arrows)
                 _spriteBatch.Begin(SpriteSortMode.Immediate, BlendState.AlphaBlend,
                     sampler, null, null, activeEffect, matrix);
-                currentMode     = wantMode;
+                currentMode     = matrixMode;
                 currentBilinear = wantBilinear;
             }
 
