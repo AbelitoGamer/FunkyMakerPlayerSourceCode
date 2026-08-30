@@ -7,8 +7,6 @@
 x64/
 x86/
 bld/
-[Bb]in/
-[Oo]bj/
 
 # Visual Studio cache/options
 .vs/
@@ -32,15 +30,55 @@ bld/
 # MonoGame Content
 **/Content/**/*.xnb
 
-# Levels and mods (optional - remove if you want to include them)
+# Levels and mods
 **/levels/
 **/mods/
 
-# Temporary files
-*.tmp
-*.temp
+# Documentation and misc files
+Docs/
+docs/
+*.md
+!README.md
+*.txt
+!version.txt
+!**/notestyles/README.txt
+
+# Archives and compressed files
 *.rar
 *.zip
+*.7z
+*.tar
+*.gz
+
+# Image files (except icons needed for build)
+*.png
+!Icon.png
+!*Icon*.png
+!FunkyMakerPlayerIcon.png
+AnkushCat.png
+
+# Assets (if not needed for build)
+Assets/
+
+# Build scripts
+*.bat
+*.ps1
+
+# Alternative platform builds
+FunkyMakerPlayer.BlazorWeb/
+FunkyMakerPlayer.KniWeb/
+Haxe/
+
+# Test/Development folders
+no sirve/
+notesplashes/
+
+# Temporary and backup files
+*.tmp
+*.temp
+*.bak
+*.backup
+*~
 
 # User-specific files
 *.suo
@@ -50,3 +88,8 @@ bld/
 # OS files
 Thumbs.db
 .DS_Store
+desktop.ini
+
+# IDE folders
+.vscode/
+.idea/
