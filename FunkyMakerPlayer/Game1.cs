@@ -4026,9 +4026,14 @@ public partial class Game1 : Game
                 }
                 else
                 {
-                    // Fixed world coordinates (mode 2): use fixedWorldMatrix, no FixedPixelScale
-                    anim.Position = new Vector2(pos.X, pos.Y);
-                    anim.FixedPixelScale = 0f;
+                    // Fixed world coordinates (mode 2): use same FixedPixelScale formula as mode 1
+                    // EventProcessor controls position via tweens, so we keep current position
+                    const float CAM_W = 1920f;
+                    const float CAM_H = 1080f;
+                    float camScale = _events?.Camera.Scale ?? 1f;
+                    float actual = Math.Min((float)sw / (CAM_W * camScale), (float)sh / (CAM_H * camScale));
+                    float basePs = Math.Min((float)sw / CAM_W, (float)sh / CAM_H);
+                    anim.FixedPixelScale = Math.Min(actual, basePs);
                 }
             }
             else
