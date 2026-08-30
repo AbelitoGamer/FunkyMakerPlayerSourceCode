@@ -1,0 +1,421 @@
+using System;
+using System.Collections.Generic;
+using System.IO;
+using System.IO.Compression;
+using System.Linq;
+using System.Text.Json;
+using SharpCompress.Archives;
+using SharpCompress.Common;
+
+namespace FunkyMakerPlayer;
+
+/// <summary>
+/// Loads a .FNMM file.
+/// Supports two container formats:
+///   • ZIP  (PK header) — native format used by Funky Maker itself.
+///   • RAR  (Rar! header) — older export format.
+///
+/// Internal layout variants:
+///   • Flat  — files at root: data.json, scene.json, events.json, music.ogg, sprites/…
+///   • Nested — files inside a single sub-folder (UUID-named).
+/// </summary>
+public static class FnmmLoader
+{
+    private static readonly JsonSerializerOptions _json = new()
+    {
+        PropertyNameCaseInsensitive = true,
+        AllowTrailingCommas         = true,
+        ReadCommentHandling         = JsonCommentHandling.Skip,
+    };
+
+    // ── Public entry point ──────────────────────────────────────────────────
+
+    public static FnmmLevel Load(string fnmmPath, Action<float, string>? progressCallback = null)
+    {
+        progressCallback?.Invoke(0.05f, "Reading archive...");
+        
+        // Psych Engine mod folder - skip for now, handle separately in Game1
+        if (Directory.Exists(fnmmPath))
+        {
+            // Check if it's a Psych Engine mod
+            string dataDir = Path.Combine(fnmmPath, "data");
+            if (Directory.Exists(dataDir))
+            {
+                throw new Exception("PSYCH_ENGINE_MOD"); // Special marker for Game1 to handle
+            }
+            throw new Exception($"Not a valid level folder: {fnmmPath}");
+        }
+
+        byte[] header = new byte[4];
+        using (var fs = File.OpenRead(fnmmPath))
+            _ = fs.Read(header, 0, 4);
+
+        progressCallback?.Invoke(0.1f, "Reading archive...");
+
+        bool isZip = header[0] == 0x50 && header[1] == 0x4B; // PK
+        bool isRar = header[0] == 0x52 && header[1] == 0x61; // Ra
+
+        if (isZip)
+        {
+            // Check if old format and convert if needed
+            byte[]? converted = FnmmConverter.ConvertIfNeeded(fnmmPath);
+            if (converted != null)
+            {
+                // Load from converted in-memory bytes
+                using var ms = new MemoryStream(converted);
+                using var zip = new ZipArchive(ms, ZipArchiveMode.Read);
+                return LoadFromZipArchive(zip, Path.GetFileNameWithoutExtension(fnmmPath), progressCallback);
+            }
+            return LoadFromZip(fnmmPath, progressCallback);
+        }
+        if (isRar)
+            return LoadFromRar(fnmmPath, progressCallback);
+
+        throw new Exception($"Unknown .FNMM container format (header: {header[0]:X2} {header[1]:X2})");
+    }
+
+    // ── ZIP loader ──────────────────────────────────────────────────────────
+
+    private static FnmmLevel LoadFromZip(string path, Action<float, string>? progressCallback = null)
+    {
+        using var zip = ZipFile.OpenRead(path);
+        return LoadFromZipArchive(zip, Path.GetFileNameWithoutExtension(path), progressCallback);
+    }
+
+    private static FnmmLevel LoadFromZipArchive(ZipArchive zip, string fallbackName, Action<float, string>? progressCallback = null)
+    {
+        progressCallback?.Invoke(0.15f, "Parsing level data...");
+        
+        // Detect layout: flat (data.json at root) or nested (subfolder/data.json)
+        string prefix = "";
+        if (zip.GetEntry("data.json") == null)
+        {
+            var nested = zip.Entries
+                .FirstOrDefault(e => e.FullName.EndsWith("/data.json", StringComparison.OrdinalIgnoreCase));
+            if (nested == null)
+                throw new Exception("data.json not found in .FNMM archive.");
+            prefix = nested.FullName[..^"data.json".Length];
+        }
+
+        var level = new FnmmLevel();
+        level.LevelName = fallbackName;
+
+        // ── Core JSONs ───────────────────────────────────────────────────────
+        progressCallback?.Invoke(0.25f, "Parsing level data...");
+        level.Data  = ParseJson<FnmmData>(ReadZipText(zip, prefix + "data.json"));
+
+        string? sceneText  = TryReadZipText(zip, prefix + "scene.json");
+        string? eventsText = TryReadZipText(zip, prefix + "events.json");
+        level.Scene  = sceneText  != null ? ParseJson<FnmmScene> (sceneText)  : new FnmmScene();
+        level.Events = eventsText != null ? ParseJson<FnmmEvents>(eventsText) : new FnmmEvents();
+
+        // Detect if cameras use nested position format {position: {x, y}, scale}
+        if (sceneText != null)
+            DetectNestedCameraFormat(level.Scene, sceneText);
+
+        progressCallback?.Invoke(0.35f, "Parsing level data...");
+        
+        string? metaText = TryReadZipText(zip, prefix + "meta.json");
+        if (metaText != null)
+        {
+            level.Meta = ParseJson<FnmmMeta>(metaText);
+            if (!string.IsNullOrEmpty(level.Meta.Name))
+                level.LevelName = level.Meta.Name;
+        }
+
+        // ── Music ────────────────────────────────────────────────────────────
+        progressCallback?.Invoke(0.45f, "Loading audio...");
+        level.MusicData = TryReadZipBytes(zip, prefix + "music.ogg");
+
+        // ── Loose root PNGs ──────────────────────────────────────────────────
+        progressCallback?.Invoke(0.55f, "Loading textures...");
+        foreach (var entry in zip.Entries)
+        {
+            string rel = entry.FullName;
+            if (!string.IsNullOrEmpty(prefix) && rel.StartsWith(prefix))
+                rel = rel[prefix.Length..];
+            if (!rel.Contains('/') && rel.EndsWith(".png", StringComparison.OrdinalIgnoreCase))
+            {
+                string key = Path.GetFileNameWithoutExtension(rel);
+                level.LooseImages[key] = ReadZipBytes(zip, entry.FullName);
+            }
+        }
+
+        // ── Sprites ──────────────────────────────────────────────────────────
+        progressCallback?.Invoke(0.65f, "Loading textures...");
+        string spritesPrefix = prefix + "sprites/";
+        var spriteEntries = zip.Entries
+            .Where(e => e.FullName.StartsWith(spritesPrefix, StringComparison.OrdinalIgnoreCase))
+            .ToList();
+
+        var spriteNames = spriteEntries
+            .Select(e =>
+            {
+                string rel = e.FullName[spritesPrefix.Length..];
+                int slash = rel.IndexOf('/');
+                return slash >= 0 ? rel[..slash] : null;
+            })
+            .Where(n => n != null)
+            .Distinct()
+            .ToList();
+
+        int spriteCount = 0;
+        int totalSprites = spriteNames.Count;
+        foreach (var sprName in spriteNames)
+        {
+            // Report progress while loading sprites (65% to 90%)
+            float spriteProgress = 0.65f + (spriteCount / (float)Math.Max(1, totalSprites)) * 0.25f;
+            progressCallback?.Invoke(spriteProgress, "Loading textures...");
+            spriteCount++;
+            
+            string sprPrefix = spritesPrefix + sprName + "/";
+            string? jsonText = TryReadZipText(zip, sprPrefix + "sprite.json");
+            if (jsonText == null) continue;
+
+            var def = ParseJson<FnmmSprite>(jsonText);
+
+            // Map frames by numeric filename to preserve index alignment
+            // (missing files leave a gap filled with empty bytes → dummy texture)
+            var pngEntries = spriteEntries
+                .Where(e => e.FullName.StartsWith(sprPrefix) &&
+                            e.FullName.EndsWith(".png", StringComparison.OrdinalIgnoreCase))
+                .Select(e => (idx: int.TryParse(Path.GetFileNameWithoutExtension(e.FullName), out int i) ? i : -1, entry: e))
+                .Where(x => x.idx >= 0)
+                .OrderBy(x => x.idx)
+                .ToList();
+
+            int maxIdx = pngEntries.Count > 0 ? pngEntries.Max(x => x.idx) : -1;
+            var frames = new List<byte[]>();
+            for (int fi = 0; fi <= maxIdx; fi++)
+            {
+                var match = pngEntries.FirstOrDefault(x => x.idx == fi);
+                frames.Add(match.entry != null
+                    ? ReadZipBytes(zip, match.entry.FullName)
+                    : Array.Empty<byte>());
+            }
+
+            level.Sprites[sprName!] = (def, frames);
+        }
+
+        // Save initial state of all scene objects so they can be reset on restart
+        progressCallback?.Invoke(0.95f, "Finalizing...");
+        foreach (var obj in level.Scene.Objects)
+            obj.SaveInitialState();
+
+        progressCallback?.Invoke(1.0f, "Complete!");
+        return level;
+    }
+
+    // ── RAR loader ──────────────────────────────────────────────────────────
+
+    private static FnmmLevel LoadFromRar(string path, Action<float, string>? progressCallback = null)
+    {
+        progressCallback?.Invoke(0.15f, "Extracting RAR archive...");
+        string tmp = Path.Combine(Path.GetTempPath(), "fnmm_" + Path.GetRandomFileName());
+        Directory.CreateDirectory(tmp);
+
+        try
+        {
+            ExtractRar(path, tmp);
+            progressCallback?.Invoke(0.3f, "Parsing level data...");
+            string levelDir = FindLevelDir(tmp)
+                ?? throw new Exception("No data.json found after RAR extraction.");
+            return LoadFromDirectory(levelDir, Path.GetFileNameWithoutExtension(path), progressCallback);
+        }
+        finally
+        {
+            try { Directory.Delete(tmp, true); } catch { }
+        }
+    }
+
+    private static FnmmLevel LoadFromDirectory(string dir, string fallbackName, Action<float, string>? progressCallback = null)
+    {
+        var level = new FnmmLevel { LevelName = fallbackName };
+
+        level.Data  = ParseJson<FnmmData>(File.ReadAllText(Path.Combine(dir, "data.json")));
+
+        string scenePath  = Path.Combine(dir, "scene.json");
+        string eventsPath = Path.Combine(dir, "events.json");
+        level.Scene  = File.Exists(scenePath)  ? ParseJson<FnmmScene> (File.ReadAllText(scenePath))  : new FnmmScene();
+        level.Events = File.Exists(eventsPath) ? ParseJson<FnmmEvents>(File.ReadAllText(eventsPath)) : new FnmmEvents();
+
+        // Detect if cameras use nested position format {position: {x, y}, scale}
+        if (File.Exists(scenePath))
+            DetectNestedCameraFormat(level.Scene, File.ReadAllText(scenePath));
+
+        string metaPath = Path.Combine(dir, "meta.json");
+        if (File.Exists(metaPath))
+        {
+            level.Meta = ParseJson<FnmmMeta>(File.ReadAllText(metaPath));
+            if (!string.IsNullOrEmpty(level.Meta.Name))
+                level.LevelName = level.Meta.Name;
+        }
+
+        string musicPath = Path.Combine(dir, "music.ogg");
+        if (File.Exists(musicPath))
+            level.MusicData = File.ReadAllBytes(musicPath);
+
+        // Loose PNGs
+        foreach (var f in Directory.EnumerateFiles(dir, "*.png"))
+            level.LooseImages[Path.GetFileNameWithoutExtension(f)] = File.ReadAllBytes(f);
+
+        // Sprites
+        string spritesDir = Path.Combine(dir, "sprites");
+        if (Directory.Exists(spritesDir))
+        {
+            foreach (var sprDir in Directory.EnumerateDirectories(spritesDir))
+            {
+                string sprName = Path.GetFileName(sprDir);
+                string sprJson = Path.Combine(sprDir, "sprite.json");
+                if (!File.Exists(sprJson)) continue;
+
+                var def = ParseJson<FnmmSprite>(File.ReadAllText(sprJson));
+
+                // Map frames by their numeric filename so missing files leave gaps
+                // (e.g. if 0.png is missing, index 0 = empty, 1.png → index 1, etc.)
+                var pngFiles = Directory.EnumerateFiles(sprDir, "*.png")
+                    .Select(f => (idx: int.TryParse(Path.GetFileNameWithoutExtension(f), out int i) ? i : -1, path: f))
+                    .Where(x => x.idx >= 0)
+                    .OrderBy(x => x.idx)
+                    .ToList();
+
+                int maxIdx = pngFiles.Count > 0 ? pngFiles.Max(x => x.idx) : -1;
+                var frames = new List<byte[]>();
+                for (int fi = 0; fi <= maxIdx; fi++)
+                {
+                    var match = pngFiles.FirstOrDefault(x => x.idx == fi);
+                    frames.Add(match.path != null
+                        ? File.ReadAllBytes(match.path)
+                        : Array.Empty<byte>());  // empty = missing frame → dummy texture
+                }
+
+                level.Sprites[sprName] = (def, frames);
+            }
+        }
+
+        // Save initial state of all scene objects so they can be reset on restart
+        foreach (var obj in level.Scene.Objects)
+            obj.SaveInitialState();
+
+        return level;
+    }
+
+    // ── RAR extraction ──────────────────────────────────────────────────────
+
+    private static void ExtractRar(string rarPath, string outDir)
+    {
+        // Use SharpCompress — no external tools needed
+        using var archive = ArchiveFactory.Open(rarPath);
+        foreach (var entry in archive.Entries)
+        {
+            if (entry.IsDirectory) continue;
+            string destPath = Path.Combine(outDir, entry.Key!.Replace('/', Path.DirectorySeparatorChar));
+            Directory.CreateDirectory(Path.GetDirectoryName(destPath)!);
+            entry.WriteToFile(destPath, new ExtractionOptions { Overwrite = true });
+        }
+    }
+
+    private static string? FindLevelDir(string root)
+    {
+        foreach (var f in Directory.EnumerateFiles(root, "data.json", SearchOption.AllDirectories))
+            return Path.GetDirectoryName(f);
+        return null;
+    }
+
+    // ── ZIP helpers ─────────────────────────────────────────────────────────
+
+    private static string ReadZipText(ZipArchive zip, string entryName)
+    {
+        var entry = zip.GetEntry(entryName)
+            ?? throw new Exception($"Entry not found in archive: {entryName}");
+        using var sr = new StreamReader(entry.Open());
+        return sr.ReadToEnd();
+    }
+
+    private static string? TryReadZipText(ZipArchive zip, string entryName)
+    {
+        var entry = zip.GetEntry(entryName);
+        if (entry == null) return null;
+        using var sr = new StreamReader(entry.Open());
+        return sr.ReadToEnd();
+    }
+
+    private static byte[] ReadZipBytes(ZipArchive zip, string entryName)
+    {
+        var entry = zip.GetEntry(entryName)
+            ?? throw new Exception($"Entry not found: {entryName}");
+        using var ms = new MemoryStream();
+        entry.Open().CopyTo(ms);
+        return ms.ToArray();
+    }
+
+    private static byte[]? TryReadZipBytes(ZipArchive zip, string entryName)
+    {
+        var entry = zip.GetEntry(entryName);
+        if (entry == null) return null;
+        using var ms = new MemoryStream();
+        entry.Open().CopyTo(ms);
+        return ms.ToArray();
+    }
+
+    // ── JSON helper ─────────────────────────────────────────────────────────
+
+    private static T ParseJson<T>(string json)
+        => JsonSerializer.Deserialize<T>(NormalizeJson(json), _json)
+           ?? throw new Exception($"Failed to deserialize {typeof(T).Name}");
+
+    /// <summary>
+    /// Normalize known key variants before deserialization.
+    /// "strumLines" → "strumlines" so the single property picks it up.
+    /// </summary>
+    private static string NormalizeJson(string json)
+        => json
+            .Replace("\"strumLines\"", "\"strumlines\"")
+            .Replace("\"StrumLines\"", "\"strumlines\"")
+            .Replace("\"Strumlines\"", "\"strumlines\"")
+            .Replace("\"STRUMLINES\"", "\"strumlines\"");
+
+    /// <summary>
+    /// Detects if cameras use nested position format {position: {x, y}, scale}
+    /// and marks the UsesNestedPositionFormat flag for each camera.
+    /// Also manually extracts position.x and position.y for nested format cameras.
+    /// This is needed to distinguish between legacy format {x, y, scale} and new format.
+    /// </summary>
+    private static void DetectNestedCameraFormat(FnmmScene scene, string sceneJson)
+    {
+        try
+        {
+            using var doc = JsonDocument.Parse(sceneJson);
+            if (doc.RootElement.TryGetProperty("cameras", out var camerasArray) && 
+                camerasArray.ValueKind == JsonValueKind.Array)
+            {
+                int index = 0;
+                foreach (var camElement in camerasArray.EnumerateArray())
+                {
+                    if (index < scene.Cameras.Count)
+                    {
+                        // Check if this camera has a "position" property
+                        bool hasPosition = camElement.TryGetProperty("position", out var positionObj);
+                        scene.Cameras[index].UsesNestedPositionFormat = hasPosition;
+                        
+                        if (hasPosition && positionObj.ValueKind == JsonValueKind.Object)
+                        {
+                            // Manually extract x and y from nested position
+                            if (positionObj.TryGetProperty("x", out var xElement))
+                                scene.Cameras[index].X = (float)xElement.GetDouble();
+                            if (positionObj.TryGetProperty("y", out var yElement))
+                                scene.Cameras[index].Y = (float)yElement.GetDouble();
+                            
+                            Console.WriteLine($"[FnmmLoader] Camera {index} uses nested position format: ({scene.Cameras[index].X}, {scene.Cameras[index].Y})");
+                        }
+                    }
+                    index++;
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[FnmmLoader] Warning: Could not detect camera format: {ex.Message}");
+        }
+    }
+}

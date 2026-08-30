@@ -1,0 +1,787 @@
+using System;
+using System.Collections.Generic;
+using Microsoft.Xna.Framework;
+using Microsoft.Xna.Framework.Graphics;
+
+namespace FunkyMakerPlayer.Managers;
+
+/// <summary>
+/// Manages settings menu state and handles all settings-related actions.
+/// Encapsulates the logic for toggling settings and adjusting values.
+/// </summary>
+public class SettingsManager
+{
+    // ── State ────────────────────────────────────────────────────────────────
+    public bool IsActive { get; set; } = false;
+    public int Selection { get; set; } = 0;
+    public int CurrentTab { get; set; } = 0;  // 0=Gameplay, 1=Controls, 2=Graphics, 3=Audio, 4=Advanced
+    
+    private static readonly string[] TabNames = { "GAMEPLAY", "CONTROLS", "GRAPHICS", "AUDIO", "ADVANCED" };
+    
+    // Available countdown packs (cached)
+    private List<string> _availableCountdowns = new List<string> { "default" };
+
+    // ── Initialization ───────────────────────────────────────────────────────
+
+    public SettingsManager()
+    {
+        Console.WriteLine("[SettingsManager] Initialized");
+        ScanAvailableCountdowns();
+    }
+
+    public void Reset()
+    {
+        IsActive = false;
+        Selection = 0;
+        CurrentTab = 0;
+        
+        Console.WriteLine("[SettingsManager] Reset");
+    }
+    
+    /// <summary>
+    /// Scans mods/countdowns/ folder for available countdown packs.
+    /// </summary>
+    private void ScanAvailableCountdowns()
+    {
+        _availableCountdowns.Clear();
+        _availableCountdowns.Add("default");  // Always available (built-in Assets)
+        
+        try
+        {
+            string countdownsDir = System.IO.Path.Combine(AppContext.BaseDirectory, "mods", "countdowns");
+            if (System.IO.Directory.Exists(countdownsDir))
+            {
+                var dirs = System.IO.Directory.GetDirectories(countdownsDir);
+                foreach (var dir in dirs)
+                {
+                    string name = System.IO.Path.GetFileName(dir);
+                    if (!string.IsNullOrEmpty(name) && name != "default")
+                    {
+                        // Check if it has the required files
+                        string readyPath = System.IO.Path.Combine(dir, "ready.png");
+                        string setPath = System.IO.Path.Combine(dir, "set.png");
+                        string goPath = System.IO.Path.Combine(dir, "go.png");
+                        
+                        if (System.IO.File.Exists(readyPath) && System.IO.File.Exists(setPath) && System.IO.File.Exists(goPath))
+                        {
+                            _availableCountdowns.Add(name);
+                        }
+                    }
+                }
+            }
+            
+            Console.WriteLine($"[SettingsManager] Found {_availableCountdowns.Count} countdown packs: {string.Join(", ", _availableCountdowns)}");
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[SettingsManager] Error scanning countdowns: {ex.Message}");
+        }
+    }
+
+    /// <summary>
+    /// Returns the number of selectable settings items (excludes headers).
+    /// </summary>
+    public int GetItemCount()
+    {
+        // IMPORTANT: This must match the number of non-header entries in Draw()
+        // Headers don't count as selectable items
+        return 33;  // 0-32: all selectable settings (added 1 for effect selector)
+    }
+
+    // ── Action Handling ──────────────────────────────────────────────────────
+
+    /// <summary>
+    /// Handles the Enter/Space action for the currently selected setting.
+    /// Returns an action result that tells Game1 what to do (e.g., open arrow menu, rebind keys, etc.)
+    /// </summary>
+    public SettingsActionResult HandleSelectAction(Game1 game)
+    {
+        var result = new SettingsActionResult();
+
+        switch (Selection)
+        {
+            case 0: // Autoplay
+                if (!game._isMultiplayerMatch)
+                {
+                    NoteRenderer.Autoplay = !NoteRenderer.Autoplay;
+                }
+                else
+                {
+                    Console.WriteLine("[SettingsManager] Autoplay toggle blocked during multiplayer match");
+                }
+                break;
+
+            case 1: // Downscroll
+                NoteRenderer.Downscroll = !NoteRenderer.Downscroll;
+                break;
+
+            case 2: // Midlescroll
+                NoteRenderer.Midlescroll = !NoteRenderer.Midlescroll;
+                result.NeedsStrumlineReposition = true;
+                break;
+
+            case 3: // Scroll Speed (use left/right)
+                break;
+
+            case 4: // Ghost Tapping
+                NoteRenderer.GhostTapping = !NoteRenderer.GhostTapping;
+                break;
+
+            case 5: // Input Buffer (use left/right)
+                break;
+
+            case 6: // Safe Frames (use left/right)
+                break;
+
+            case 7: // Camera Zoom — Enter resets to level default
+                result.NeedsCameraReset = true;
+                break;
+
+            case 8: // Rebind Keys
+                result.OpenKeyBind = true;
+                IsActive = false;
+                break;
+
+            case 9: // VSync
+                result.ToggleVSync = true;
+                break;
+
+            case 10: // Fullscreen
+                result.ToggleFullscreen = true;
+                break;
+
+            case 11: // Song Timer
+                Game1.ShowTimer = !Game1.ShowTimer;
+                break;
+
+            case 12: // Show Combo
+                Game1.ShowCombo = !Game1.ShowCombo;
+                break;
+
+            case 13: // Timer Color (use left/right)
+                break;
+
+            case 14: // Volume (use left/right)
+                break;
+
+            case 15: // Arrows (note skin selector)
+                result.OpenArrowsMenu = true;
+                IsActive = false;
+                break;
+
+            case 16: // Note Splash (splash style selector)
+                result.OpenSplashMenu = true;
+                IsActive = false;
+                break;
+
+            case 17: // Show Debug Info
+                Game1.ShowDebugInfo = !Game1.ShowDebugInfo;
+                break;
+
+            case 18: // FPS Counter toggle
+                Game1.ShowFpsCounter = !Game1.ShowFpsCounter;
+                break;
+
+            case 19: // Timeskip toggle
+                Game1.TimeskipEnabled = !Game1.TimeskipEnabled;
+                break;
+
+            case 20: // Color Grading Shader
+                Game1.ColorGradeEnabled = !Game1.ColorGradeEnabled;
+                break;
+
+            case 21: // Hue (use left/right)
+                break;
+
+            case 22: // Saturation (use left/right)
+                break;
+
+            case 23: // Brightness (use left/right)
+                break;
+
+            case 24: // Shadow Amount (use left/right)
+                break;
+
+            case 25: // Hide Extra Strumlines
+                Game1.HideExtraStrumlines = !Game1.HideExtraStrumlines;
+                result.NeedsStrumlineAlphaUpdate = true;
+                break;
+
+            case 26: // Hide Opponent Strumline
+                Game1.HideOpponentStrumline = !Game1.HideOpponentStrumline;
+                result.NeedsOpponentAlphaUpdate = true;
+                break;
+
+            case 27: // Icon Mode
+                Game1.IconMode = (Game1.IconMode + 1) % 2;
+                break;
+
+            case 28: // Arrow Effects Enable/Disable
+                ArrowEffectManager.Enabled = !ArrowEffectManager.Enabled;
+                break;
+
+            case 29: // Arrow Effects Intensity (use left/right)
+                break;
+
+            case 30: // Effect Type Selection (use left/right)
+                break;
+
+            case 31: // Back / Exit
+                result.ExitMenu = true;
+                IsActive = false;
+                break;
+        }
+
+        // Save settings after any change (except Back/Rebind/Arrows/NoteSplash)
+        result.NeedsSave = (Selection != 8 && Selection != 15 && Selection != 16 && Selection != 31);
+
+        return result;
+    }
+
+    /// <summary>
+    /// Handles Left/Right adjustments for settings that use them.
+    /// </summary>
+    public SettingsActionResult HandleAdjustment(Game1 game, bool isLeft)
+    {
+        var result = new SettingsActionResult { NeedsSave = true };
+        float delta = isLeft ? -1f : 1f;
+
+        switch (Selection)
+        {
+            case 3: // Scroll Speed
+                NoteRenderer.ScrollMultiplier = MathF.Round(
+                    Math.Clamp(NoteRenderer.ScrollMultiplier + delta * 0.25f, 0.25f, 5.0f), 2);
+                break;
+
+            case 5: // Input Buffer
+                NoteRenderer.InputBuffer = MathF.Round(
+                    Math.Clamp(NoteRenderer.InputBuffer + delta * 0.005f, 0f, 0.050f), 3);
+                break;
+
+            case 6: // Safe Frames
+                NoteRenderer.SafeFramesTime = MathF.Round(
+                    Math.Clamp(NoteRenderer.SafeFramesTime + delta * 0.017f, 0f, 0.500f), 3);
+                break;
+
+            case 7: // Camera Zoom
+                result.AdjustCameraZoom = isLeft ? -1 : 1;
+                result.NeedsSave = false; // Camera doesn't save to settings
+                break;
+
+            case 13: // Timer Color
+                const int MAX_PRESET = 6;
+                Game1.TimerColorPreset = isLeft 
+                    ? (Game1.TimerColorPreset - 1 + MAX_PRESET + 1) % (MAX_PRESET + 1)
+                    : (Game1.TimerColorPreset + 1) % (MAX_PRESET + 1);
+                break;
+
+            case 14: // Volume
+                result.AdjustVolume = delta;
+                break;
+
+            case 21: // Hue
+                Game1.ColorGradeHue = MathF.Round(
+                    Math.Clamp(Game1.ColorGradeHue + delta * 0.01f, -1f, 1f), 2);
+                break;
+
+            case 22: // Saturation
+                Game1.ColorGradeSaturation = MathF.Round(
+                    Math.Clamp(Game1.ColorGradeSaturation + delta * 0.05f, 0f, 2f), 2);
+                break;
+
+            case 23: // Brightness
+                Game1.ColorGradeBrightness = MathF.Round(
+                    Math.Clamp(Game1.ColorGradeBrightness + delta * 0.05f, -1f, 1f), 2);
+                break;
+
+            case 24: // Shadow Amount
+                Game1.ColorGradeShadowAmount = MathF.Round(
+                    Math.Clamp(Game1.ColorGradeShadowAmount + delta * 0.05f, 0f, 1f), 2);
+                break;
+
+            case 29: // Arrow Effects Intensity
+                ArrowEffectManager.EffectIntensity = MathF.Round(
+                    Math.Clamp(ArrowEffectManager.EffectIntensity + delta * 0.1f, 0f, 1f), 2);
+                break;
+
+            case 30: // Effect Type Selection
+                int newEffect = ArrowEffectManager.SelectedEffect + (isLeft ? -1 : 1);
+                ArrowEffectManager.SelectedEffect = (newEffect + 6) % 6;  // 0-5 (Random + 5 effects)
+                break;
+
+            case 19: // Timeskip (only if enabled and started)
+                result.SeekSong = delta * Game1.TimeskipSeconds;
+                result.NeedsSave = false;
+                break;
+
+            default:
+                result.NeedsSave = false;
+                break;
+        }
+
+        return result;
+    }
+
+    // ── Drawing ──────────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// Draws the settings menu UI with all options and scrolling support.
+    /// </summary>
+    public void Draw(Game1 game, SpriteBatch spriteBatch, SpriteFont font, Texture2D pixel, 
+                     int screenWidth, int screenHeight, FontRenderer? fontRenderer = null)
+    {
+        if (font == null) return;
+
+        bool canOverrideZoom = game._events == null || !game._events.HasCameraEvents;
+        float currentZoom = game._cameraManager?.GetEffectiveScale(game._events?.Camera) ?? 1f;
+
+        // ── Build item list ───────────────────────────────────────────────────
+        var entries = new List<(string label, string desc, bool isHeader, bool disabled)>
+        {
+            // ── GAMEPLAY ──────────────────────────────────────────────────────
+            ("--- GAMEPLAY ---", "", true, false),
+            ($"Autoplay: {(NoteRenderer.Autoplay ? "ON" : "OFF")}",
+             "Hits notes automatically.", false, false),
+            ($"Downscroll: {(NoteRenderer.Downscroll ? "ON" : "OFF")}",
+             "Notes scroll bottom to top.", false, false),
+            ($"Midlescroll: {(NoteRenderer.Midlescroll ? "ON" : "OFF")}",
+             "Center player strumline. Opponent splits left/right.", false, false),
+            ($"Scroll Speed: {NoteRenderer.ScrollMultiplier:F2}x",
+             "Visual note speed. LEFT/RIGHT to adjust.", false, false),
+            ($"Ghost Tapping: {(NoteRenderer.GhostTapping ? "ON" : "OFF")}",
+             "OFF = pressing without notes breaks combo (competitive mode).", false, false),
+            ($"Input Buffer: {(int)(NoteRenderer.InputBuffer * 1000)}ms",
+             "Early hit tolerance. LEFT/RIGHT to adjust (0-50ms).", false, false),
+            ($"Safe Frames: {(int)(NoteRenderer.SafeFramesTime * 1000)}ms",
+             "Miss immunity at song start. LEFT/RIGHT to adjust (0-500ms).", false, false),
+            (canOverrideZoom
+                ? $"Camera Zoom: {currentZoom:F2}  (ENTER=reset)"
+                : $"Camera Zoom: {currentZoom:F2}  (locked by level)",
+             canOverrideZoom ? "LEFT/RIGHT to zoom. ENTER resets." : "Controlled by level events.",
+             false, !canOverrideZoom),
+            ("Rebind Keys",
+             "Change note key bindings.", false, false),
+            // ── DISPLAY & AUDIO ───────────────────────────────────────────────
+            ("--- DISPLAY & AUDIO ---", "", true, false),
+            ($"VSync: {(game._graphics.SynchronizeWithVerticalRetrace ? "ON" : "OFF")}",
+             "Sync with monitor refresh rate.", false, false),
+            ($"Fullscreen: {(game._isFullscreen ? "ON" : "OFF")}",
+             "Borderless fullscreen window.", false, false),
+            ($"Song Timer: {(Game1.ShowTimer ? "ON" : "OFF")}",
+             "Progress bar above strumline.", false, false),
+            ($"Show Combo: {(Game1.ShowCombo ? "ON" : "OFF")}",
+             "Combo counter popup during gameplay.", false, false),
+            ($"Timer Color: {Game1.TimerColorPreset switch { 1=>"Cyan", 2=>"Pink", 3=>"Yellow", 4=>"Green", 5=>"Player", 6=>"Opponent", _=>"White" }}",
+             "LEFT/RIGHT to cycle colors.", false, false),
+            ($"Volume: {(int)MathF.Round(Game1.MusicVolume * 100f)}%",
+             "Music playback volume. LEFT/RIGHT to adjust.", false, false),
+            ($"Arrows: {Game1.NoteStyleName}",
+             "Note skin. ENTER to open skin selector.", false, false),
+            ($"Note Splash: {Game1.NoteSplashStyleName}",
+             "Splash effect on Sick! rating. ENTER to open splash selector.", false, false),
+            // ── DEBUG ─────────────────────────────────────────────────────────
+            ("--- DEBUG ---", "", true, false),
+            ($"Show Debug Info: {(Game1.ShowDebugInfo ? "ON" : "OFF")}",
+             "Level info: BPM, camera, events.", false, false),
+            ($"FPS Counter: {(Game1.ShowFpsCounter ? "ON" : "OFF")}",
+             "Show framerate counter.", false, false),
+            ($"Timeskip: {(Game1.TimeskipEnabled ? $"ON  (< -{Game1.TimeskipSeconds:F0}s  > +{Game1.TimeskipSeconds:F0}s)" : "OFF")}",
+             "Skip forward/back in the song.", false, false),
+            // ── VISUAL OPTIONS ────────────────────────────────────────────────
+            ("--- VISUAL OPTIONS ---", "", true, false),
+            ($"Color Grading: {(Game1.ColorGradeEnabled ? "ON" : "OFF")}",
+             "Erect-style shader (may impact performance).", false, false),
+            ($"  Hue: {Game1.ColorGradeHue:F2}",
+             "Hue shift. LEFT/RIGHT to adjust.", false, !Game1.ColorGradeEnabled),
+            ($"  Saturation: {Game1.ColorGradeSaturation:F2}",
+             "Color saturation. LEFT/RIGHT to adjust.", false, !Game1.ColorGradeEnabled),
+            ($"  Brightness: {Game1.ColorGradeBrightness:F2}",
+             "Brightness offset. LEFT/RIGHT to adjust.", false, !Game1.ColorGradeEnabled),
+            ($"  Shadow Amount: {Game1.ColorGradeShadowAmount:F2}",
+             "Shadow tint strength. LEFT/RIGHT to adjust.", false, !Game1.ColorGradeEnabled),
+            ($"Hide Extra Strumlines: {(Game1.HideExtraStrumlines ? "ON" : "OFF")}",
+             "Hide strumlines 3+.", false, false),
+            ($"Hide Opponent Strumline: {(Game1.HideOpponentStrumline ? "ON" : "OFF")}",
+             "Hide opponent notes.", false, false),
+            ($"Icon Mode: {(Game1.IconMode == 0 ? "FNF Base" : "Fixed at Ends")}",
+             "FNF Base: icons move with health. Fixed: icons stay at bar ends.", false, false),
+            // ── ARROW EFFECTS ─────────────────────────────────────────────────
+            ("--- ARROW EFFECTS ---", "", true, false),
+            ($"Arrow Effects: {(ArrowEffectManager.Enabled ? "ON" : "OFF")}",
+             "Random visual effects on arrows (glow, bounce, spin, etc.).", false, false),
+            ($"Effect Intensity: {(int)(ArrowEffectManager.EffectIntensity * 100)}%",
+             "Effect strength. LEFT/RIGHT to adjust (0-100%).", false, !ArrowEffectManager.Enabled),
+            ($"Effect Type: {ArrowEffectManager.GetSelectedEffectName()}",
+             "Which effect to use. LEFT/RIGHT to select (Random or specific effect).", false, !ArrowEffectManager.Enabled),
+            // ── SONG ─────────────────────────────────────────────────────────
+            ("--- SONG ---", "", true, false),
+            // ── BACK ─────────────────────────────────────────────────────────
+            ("---", "", true, false),
+            (game._level != null ? "Back" : "Close",
+             "", false, false),
+        };
+
+        // Map Selection → entry index (skip headers)
+        var selectableIndices = new List<int>();
+        for (int i = 0; i < entries.Count; i++)
+            if (!entries[i].isHeader) selectableIndices.Add(i);
+
+        // ── Scroll logic ──────────────────────────────────────────────────────
+        float itemH    = 36f;
+        float headerH  = 24f;
+        float panelX   = screenWidth * 0.12f;
+        float panelW   = screenWidth * 0.76f;
+        float panelY   = 58f;
+        float panelH   = screenHeight - panelY - 30f;
+        float contentH = 0f;
+        foreach (var e in entries)
+            contentH += e.isHeader ? headerH : itemH;
+
+        // Build Y positions for each entry
+        var entryY = new float[entries.Count];
+        float cy = 0f;
+        for (int i = 0; i < entries.Count; i++)
+        {
+            entryY[i] = cy;
+            cy += entries[i].isHeader ? headerH : itemH;
+        }
+
+        // Selected entry Y in content space
+        float selEntryY = 0f;
+        if (Selection < selectableIndices.Count)
+            selEntryY = entryY[selectableIndices[Selection]];
+
+        // Clamp scroll so selected item is visible
+        float scrollOffset = Math.Clamp(
+            selEntryY - panelH / 2f + itemH / 2f,
+            0f,
+            Math.Max(0f, contentH - panelH));
+
+        // ── Background ────────────────────────────────────────────────────────
+        // Gradient background (darker at top, lighter at bottom)
+        for (int y = 0; y < screenHeight; y += 4)
+        {
+            float factor = (float)y / screenHeight;
+            Color bgColor = Color.Lerp(new Color(8, 8, 15), new Color(12, 12, 22), factor) * 0.95f;
+            DrawRect(spriteBatch, pixel, 0, y, screenWidth, 4, bgColor);
+        }
+
+        // ── Header bar with gradient ──────────────────────────────────────────
+        // Top gradient bar
+        for (int y = 0; y < 54; y++)
+        {
+            float factor = (float)y / 54f;
+            Color barColor = Color.Lerp(new Color(25, 15, 35), new Color(15, 15, 28), factor);
+            DrawRect(spriteBatch, pixel, 0, y, screenWidth, 1, barColor);
+        }
+        
+        // Accent line at bottom of header
+        DrawRect(spriteBatch, pixel, 0, 52, screenWidth, 3, new Color(0xFF, 0x44, 0x88) * 0.8f);
+        DrawRect(spriteBatch, pixel, 0, 55, screenWidth, 1, new Color(0xFF, 0x44, 0x88) * 0.3f);
+        
+        // Left accent bar with glow
+        DrawRect(spriteBatch, pixel, 0, 0, 6, 54, new Color(0xFF, 0x44, 0x88));
+        DrawRect(spriteBatch, pixel, 6, 0, 4, 54, new Color(0xFF, 0x44, 0x88) * 0.3f);  // Glow
+
+        // Title - use FontRenderer for crisp rendering
+        if (fontRenderer != null)
+        {
+            int titleSize = (int)(screenHeight * 0.055f);  // ~5.5% of screen height
+            titleSize = Math.Clamp(titleSize, 32, 64);
+            fontRenderer.DrawString(spriteBatch, "SETTINGS",
+                new Vector2(20, 10),
+                new Color(0xFF, 0x44, 0x88), titleSize);
+        }
+        else
+        {
+            spriteBatch.DrawString(font, "SETTINGS",
+                new Vector2(20, 10),
+                new Color(0xFF, 0x44, 0x88), 0f, Vector2.Zero, 1.3f, SpriteEffects.None, 0f);
+        }
+
+        // Version text
+        string ver = $"v{System.Reflection.Assembly.GetExecutingAssembly().GetName().Version?.ToString(3)}";
+        if (fontRenderer != null)
+        {
+            int verSize = (int)(screenHeight * 0.025f);
+            verSize = Math.Clamp(verSize, 14, 24);
+            Vector2 verMeasure = fontRenderer.MeasureString(ver, verSize);
+            fontRenderer.DrawString(spriteBatch, ver,
+                new Vector2(screenWidth - verMeasure.X - 14, 18),
+                Color.White * 0.25f, verSize);
+        }
+        else
+        {
+            var verSz = font.MeasureString(ver) * 0.6f;
+            spriteBatch.DrawString(font, ver,
+                new Vector2(screenWidth - verSz.X - 14, 18),
+                Color.White * 0.25f, 0f, Vector2.Zero, 0.6f, SpriteEffects.None, 0f);
+        }
+
+        // ── Panel background with border and shadow ───────────────────────────
+        // Shadow
+        DrawRect(spriteBatch, pixel, (int)panelX + 2, (int)panelY + 2, (int)panelW + 8, (int)panelH + 8,
+            Color.Black * 0.4f);
+        
+        // Outer border (lighter)
+        DrawRect(spriteBatch, pixel, (int)panelX - 6, (int)panelY - 6, (int)panelW + 12, (int)panelH + 12,
+            new Color(0xFF, 0x44, 0x88) * 0.2f);
+        
+        // Inner background with subtle gradient
+        for (int y = 0; y < (int)panelH; y += 4)
+        {
+            float factor = (float)y / panelH;
+            Color bgColor = Color.Lerp(new Color(15, 15, 25), new Color(10, 10, 18), factor) * 0.85f;
+            DrawRect(spriteBatch, pixel, (int)panelX - 4, (int)panelY - 4 + y, (int)panelW + 8, 4, bgColor);
+        }
+
+        // ── Clip region: scissor rectangle ────────────────────────────────────
+        var prevScissor = game.GraphicsDevice.ScissorRectangle;
+        var prevRaster  = game.GraphicsDevice.RasterizerState;
+        var scissorRect = new Rectangle((int)panelX, (int)panelY, (int)panelW, (int)panelH);
+        game.GraphicsDevice.ScissorRectangle = scissorRect;
+        spriteBatch.End();
+        spriteBatch.Begin(SpriteSortMode.Deferred, BlendState.AlphaBlend,
+            SamplerState.LinearClamp, null,
+            new RasterizerState { ScissorTestEnable = true });
+
+        // ── Draw entries ──────────────────────────────────────────────────────
+        float drawY = panelY - scrollOffset;
+        int selIdx = 0;
+
+        for (int i = 0; i < entries.Count; i++)
+        {
+            var (label, desc, isHeader, disabled) = entries[i];
+            float ey = drawY + entryY[i];
+
+            // Skip if fully outside panel
+            if (ey + (isHeader ? headerH : itemH) < panelY) { if (!isHeader) selIdx++; continue; }
+            if (ey > panelY + panelH)                        { if (!isHeader) selIdx++; continue; }
+
+            if (isHeader)
+            {
+                // Section header with glow - use FontRenderer
+                if (fontRenderer != null)
+                {
+                    int headerSize = (int)(screenHeight * 0.030f);
+                    headerSize = Math.Clamp(headerSize, 18, 32);
+                    
+                    // Glow effect
+                    fontRenderer.DrawString(spriteBatch, label,
+                        new Vector2(panelX + 10, ey + 5),
+                        new Color(0xFF, 0x44, 0x88) * 0.2f, headerSize + 2);
+                    
+                    // Main text
+                    fontRenderer.DrawString(spriteBatch, label,
+                        new Vector2(panelX + 10, ey + 5),
+                        new Color(0xFF, 0x66, 0xAA), headerSize);
+                }
+                else
+                {
+                    // Glow
+                    spriteBatch.DrawString(font, label,
+                        new Vector2(panelX + 10, ey + 5),
+                        new Color(0xFF, 0x44, 0x88) * 0.2f, 0f, Vector2.Zero, 0.68f, SpriteEffects.None, 0f);
+                    
+                    // Main text
+                    spriteBatch.DrawString(font, label,
+                        new Vector2(panelX + 10, ey + 5),
+                        new Color(0xFF, 0x66, 0xAA), 0f, Vector2.Zero, 0.65f, SpriteEffects.None, 0f);
+                }
+                
+                // Gradient underline
+                int lineY = (int)(ey + headerH - 3);
+                for (int x = 0; x < (int)(panelW - 16); x++)
+                {
+                    float factor = (float)x / (panelW - 16);
+                    Color lineColor = Color.Lerp(new Color(0xFF, 0x44, 0x88) * 0.05f, new Color(0xFF, 0x44, 0x88) * 0.25f, 
+                        MathF.Sin(factor * MathF.PI));
+                    DrawRect(spriteBatch, pixel, (int)(panelX + 10 + x), lineY, 1, 2, lineColor);
+                }
+            }
+            else
+            {
+                bool sel = selIdx == Selection;
+
+                if (sel && !disabled)
+                {
+                    // Selection highlight with glow and gradient
+                    // Outer glow
+                    DrawRect(spriteBatch, pixel, (int)panelX - 2, (int)ey - 1, (int)panelW + 4, (int)(itemH),
+                        new Color(0xFF, 0x44, 0x88) * 0.08f);
+                    
+                    // Main gradient background
+                    for (int y = 0; y < (int)(itemH - 2); y++)
+                    {
+                        float factor = (float)y / (itemH - 2);
+                        Color bgColor = Color.Lerp(new Color(0xFF, 0x44, 0x88) * 0.25f, new Color(0xFF, 0x44, 0x88) * 0.12f, factor);
+                        DrawRect(spriteBatch, pixel, (int)panelX, (int)ey + y, (int)panelW, 1, bgColor);
+                    }
+                    
+                    // Left accent bar with gradient
+                    for (int y = 0; y < (int)(itemH - 2); y++)
+                    {
+                        float factor = (float)y / (itemH - 2);
+                        Color accentColor = Color.Lerp(new Color(0xFF, 0x66, 0xAA), new Color(0xFF, 0x44, 0x88), factor);
+                        DrawRect(spriteBatch, pixel, (int)panelX, (int)ey + y, 4, 1, accentColor);
+                    }
+                    
+                    // Right glow
+                    DrawRect(spriteBatch, pixel, (int)(panelX + panelW - 2), (int)ey, 2, (int)(itemH - 2),
+                        new Color(0xFF, 0x44, 0x88) * 0.3f);
+                }
+
+                Color textColor = disabled ? Color.Gray * 0.5f
+                                : sel      ? new Color(255, 255, 255)
+                                : Color.White * 0.75f;
+
+                // Main label with shadow - use FontRenderer
+                if (fontRenderer != null)
+                {
+                    int labelSize = (int)(screenHeight * 0.036f);
+                    labelSize = Math.Clamp(labelSize, 19, 38);
+                    
+                    // Shadow
+                    if (sel && !disabled)
+                    {
+                        fontRenderer.DrawString(spriteBatch, label,
+                            new Vector2(panelX + 17, ey + 7),
+                            Color.Black * 0.5f, labelSize);
+                    }
+                    
+                    // Main text
+                    fontRenderer.DrawString(spriteBatch, label,
+                        new Vector2(panelX + 16, ey + 6),
+                        textColor, labelSize);
+                    
+                    // Description on selected item with icon
+                    if (sel && !disabled && !string.IsNullOrEmpty(desc))
+                    {
+                        Vector2 labelMeasure = fontRenderer.MeasureString("A", labelSize);
+                        float descY = ey + 6 + labelMeasure.Y + 2f;
+                        int descSize = (int)(screenHeight * 0.025f);
+                        descSize = Math.Clamp(descSize, 15, 26);
+                        
+                        // Description icon (►)
+                        fontRenderer.DrawString(spriteBatch, "►",
+                            new Vector2(panelX + 16, descY),
+                            new Color(0xFF, 0x44, 0x88) * 0.6f, descSize);
+                        
+                        // Description text
+                        fontRenderer.DrawString(spriteBatch, desc,
+                            new Vector2(panelX + 16 + labelMeasure.Y * 0.5f, descY),
+                            new Color(0xFF, 0x88, 0xCC) * 0.7f, descSize);
+                    }
+                }
+                else
+                {
+                    // Shadow
+                    if (sel && !disabled)
+                    {
+                        spriteBatch.DrawString(font, label,
+                            new Vector2(panelX + 17, ey + 7),
+                            Color.Black * 0.5f, 0f, Vector2.Zero, 0.88f, SpriteEffects.None, 0f);
+                    }
+                    
+                    // Main text
+                    spriteBatch.DrawString(font, label,
+                        new Vector2(panelX + 16, ey + 6),
+                        textColor, 0f, Vector2.Zero, 0.88f, SpriteEffects.None, 0f);
+
+                    // Description on selected item
+                    if (sel && !disabled && !string.IsNullOrEmpty(desc))
+                    {
+                        float descY = ey + 6 + font.MeasureString("A").Y * 0.88f + 2f;
+                        
+                        // Icon
+                        spriteBatch.DrawString(font, "►",
+                            new Vector2(panelX + 16, descY),
+                            new Color(0xFF, 0x44, 0x88) * 0.6f, 0f, Vector2.Zero, 0.6f, SpriteEffects.None, 0f);
+                        
+                        // Description
+                        spriteBatch.DrawString(font, desc,
+                            new Vector2(panelX + 16 + font.MeasureString("A").Y * 0.4f, descY),
+                            new Color(0xFF, 0x88, 0xCC) * 0.7f, 0f, Vector2.Zero, 0.6f, SpriteEffects.None, 0f);
+                    }
+                }
+
+                selIdx++;
+            }
+        }
+
+        // ── Scrollbar with gradient ───────────────────────────────────────────
+        if (contentH > panelH)
+        {
+            float sbX     = panelX + panelW + 6;
+            float sbH     = panelH;
+            float thumbH  = Math.Max(24f, panelH * (panelH / contentH));
+            float thumbY  = panelY + (scrollOffset / (contentH - panelH)) * (sbH - thumbH);
+            
+            // Track background
+            DrawRect(spriteBatch, pixel, (int)sbX, (int)panelY, 6, (int)sbH, new Color(20, 20, 30) * 0.6f);
+            
+            // Thumb with gradient
+            for (int y = 0; y < (int)thumbH; y++)
+            {
+                float factor = (float)y / thumbH;
+                Color thumbColor = Color.Lerp(new Color(0xFF, 0x66, 0xAA) * 0.8f, new Color(0xFF, 0x44, 0x88) * 0.6f, factor);
+                DrawRect(spriteBatch, pixel, (int)sbX, (int)thumbY + y, 6, 1, thumbColor);
+            }
+            
+            // Thumb glow
+            DrawRect(spriteBatch, pixel, (int)sbX - 2, (int)thumbY, 2, (int)thumbH, new Color(0xFF, 0x44, 0x88) * 0.2f);
+        }
+
+        // ── Restore scissor ───────────────────────────────────────────────────
+        spriteBatch.End();
+        game.GraphicsDevice.ScissorRectangle = prevScissor;
+        spriteBatch.Begin(SpriteSortMode.Deferred, BlendState.AlphaBlend,
+            SamplerState.LinearClamp, null, prevRaster);
+
+        // ── Footer hint ───────────────────────────────────────────────────────
+        string hint = "UP/DOWN  Navigate    ENTER/SPACE  Select    LEFT/RIGHT  Adjust    ESC  Back";
+        if (fontRenderer != null)
+        {
+            int hintSize = (int)(screenHeight * 0.023f);
+            hintSize = Math.Clamp(hintSize, 12, 22);
+            Vector2 hintMeasure = fontRenderer.MeasureString(hint, hintSize);
+            fontRenderer.DrawString(spriteBatch, hint,
+                new Vector2(screenWidth / 2f - hintMeasure.X / 2f, screenHeight - 22),
+                Color.White * 0.2f, hintSize);
+        }
+        else
+        {
+            var hintSz = font.MeasureString(hint) * 0.55f;
+            spriteBatch.DrawString(font, hint,
+                new Vector2(screenWidth / 2f - hintSz.X / 2f, screenHeight - 22),
+                Color.White * 0.2f, 0f, Vector2.Zero, 0.55f, SpriteEffects.None, 0f);
+        }
+    }
+
+    // Helper for drawing rectangles
+    private void DrawRect(SpriteBatch sb, Texture2D pixel, int x, int y, int w, int h, Color color)
+        => sb.Draw(pixel, new Rectangle(x, y, w, h), color);
+}
+
+// ── Data Structures ──────────────────────────────────────────────────────────
+
+/// <summary>
+/// Result of a settings action that tells Game1 what side effects to apply.
+/// </summary>
+public class SettingsActionResult
+{
+    public bool NeedsSave = false;
+    public bool NeedsStrumlineReposition = false;
+    public bool NeedsCameraReset = false;
+    public bool NeedsStrumlineAlphaUpdate = false;
+    public bool NeedsOpponentAlphaUpdate = false;
+    public bool OpenKeyBind = false;
+    public bool OpenArrowsMenu = false;
+    public bool OpenSplashMenu = false;
+    public bool ExitMenu = false;
+    public bool ToggleVSync = false;
+    public bool ToggleFullscreen = false;
+    public int AdjustCameraZoom = 0; // -1=zoom in, 1=zoom out, 0=no change
+    public float AdjustVolume = 0f; // delta for volume adjustment
+    public float SeekSong = 0f; // seconds to seek (+ or -)
+}

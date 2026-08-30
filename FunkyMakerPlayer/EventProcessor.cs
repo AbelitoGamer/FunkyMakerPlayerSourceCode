@@ -1,0 +1,1560 @@
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using Microsoft.Xna.Framework;
+
+namespace FunkyMakerPlayer;
+
+public class ScreenFlash
+{
+    public Color Color    { get; set; }
+    public float Duration { get; set; }
+    public float Elapsed  { get; set; }
+    public float Alpha    => MathHelper.Clamp(1f - Elapsed / Duration, 0f, 1f);
+    public bool  Done     => Elapsed >= Duration;
+}
+
+/// <summary>
+/// Camera state.
+///
+/// GameMaker camera movement uses frame-by-frame lerp (exponential approach):
+///   each frame: pos += (target - pos) * speed
+/// This gives the characteristic "fast start, slow finish" feel.
+/// For timed transitions (transitionTime > 0) we use easing curves.
+/// For "default" easing we use GM-style exponential lerp.
+/// </summary>
+public class CameraState
+{
+    public float X     { get; set; }
+    public float Y     { get; set; }
+    public float Scale { get; set; } = 1f;
+    
+    // Store the base scale from scene.json camera
+    // This is used as reference when CameraSet loads a new camera
+    public float BaseScale { get; set; } = 1f;
+
+    // ── Position transition state (X/Y only) ─────────────────────────────────
+    private float _sx, _sy; // start position
+    public float TargetX  { get; set; }
+    public float TargetY  { get; set; }
+    public float PosTransTime { get; set; }
+    public float PosTransElapsed { get; set; }
+    public string PosEasingType { get; set; } = "default";
+    
+    // ── Scale transition state (zoom only) ───────────────────────────────────
+    private float _ss; // start scale
+    public float TargetScale { get; set; } = 1f;
+    public float ScaleTransTime { get; set; }
+    public float ScaleTransElapsed { get; set; }
+    public string ScaleEasingType { get; set; } = "default";
+    
+    // ── Legacy properties for backward compatibility ─────────────────────────
+    public float TransTime { get => Math.Max(PosTransTime, ScaleTransTime); set => PosTransTime = value; }
+    public float TransElapsed { get => Math.Max(PosTransElapsed, ScaleTransElapsed); set => PosTransElapsed = value; }
+    public string EasingType { get => PosEasingType; set => PosEasingType = value; }
+
+
+    // ── Camera shake ─────────────────────────────────────────────────────────
+    private float _shakeStrength;
+    private float _shakeDelay;
+    private float _shakeCount;
+    private float _shakeTimer;
+    private static readonly Random _shakeRng = new();
+
+    /// <summary>Offset applied by shake — add to X/Y when building camera matrix.</summary>
+    public float ShakeOffsetX { get; private set; }
+    public float ShakeOffsetY { get; private set; }
+
+    public void StartShake(float strength, float delay, float shakes)
+    {
+        _shakeStrength = strength;
+        _shakeDelay    = delay > 0f ? delay : 0.05f;
+        _shakeCount    = shakes > 0f ? shakes : 3f;
+        _shakeTimer    = 0f;
+        ShakeOffsetX   = 0f;
+        ShakeOffsetY   = 0f;
+    }
+
+    public void StartTransition(float tx, float ty, float ts,
+                                float transTime, string easing)
+    {
+        _sx = X; _sy = Y; _ss = Scale;
+        TargetX = tx; TargetY = ty; TargetScale = ts;
+        
+        // Set BOTH position and scale transitions
+        PosTransTime = transTime; PosTransElapsed = 0f; PosEasingType = easing;
+        ScaleTransTime = transTime; ScaleTransElapsed = 0f; ScaleEasingType = easing;
+        
+        if (transTime <= 0f) { X = tx; Y = ty; Scale = ts; }
+    }
+    
+    /// <summary>
+    /// Start ONLY a scale transition, preserving any active position transition
+    /// </summary>
+    public void StartScaleTransition(float targetScale, float transTime, string easing)
+    {
+        _ss = Scale;
+        TargetScale = targetScale;
+        ScaleTransTime = transTime;
+        ScaleTransElapsed = 0f;
+        ScaleEasingType = easing;
+        
+        if (transTime <= 0f) { Scale = targetScale; }
+    }
+
+    public void Update(float dt)
+    {
+        // ── Camera shake ─────────────────────────────────────────────────────
+        if (_shakeCount > 0f)
+        {
+            _shakeTimer += dt;
+            if (_shakeTimer >= _shakeDelay)
+            {
+                _shakeTimer -= _shakeDelay;
+                _shakeCount -= 1f;
+                if (_shakeCount > 0f)
+                {
+                    float angle = (float)(_shakeRng.NextDouble() * Math.PI * 2);
+                    float decay = _shakeCount / Math.Max(1f, _shakeCount + 1f);
+                    ShakeOffsetX = MathF.Cos(angle) * _shakeStrength * decay;
+                    ShakeOffsetY = MathF.Sin(angle) * _shakeStrength * decay;
+                }
+                else
+                {
+                    ShakeOffsetX = 0f;
+                    ShakeOffsetY = 0f;
+                }
+            }
+        }
+
+        // ── Position transition (X/Y) ────────────────────────────────────────
+        if (PosTransTime > 0f)
+        {
+            PosTransElapsed = Math.Min(PosTransElapsed + dt, PosTransTime);
+            
+            // Only snap when time expires - don't use nearTarget check
+            // because easing curves can slow down near the end causing premature termination
+            bool timeExpired = PosTransElapsed >= PosTransTime;
+            
+            if (timeExpired)
+            {
+                X = TargetX; 
+                Y = TargetY; 
+                PosTransTime = 0f; // Mark position transition as complete
+            }
+            else
+            {
+                if (PosEasingType == "default")
+                {
+                    // FNF-style: fast exponential lerp that snaps quickly to target.
+                    float lerpRate = PosTransTime > 0f ? 8.0f / PosTransTime : 60f;
+                    float alpha = 1f - MathF.Exp(-lerpRate * dt);
+                    X += (TargetX - X) * alpha;
+                    Y += (TargetY - Y) * alpha;
+                }
+                else
+                {
+                    float e = Ease(PosTransElapsed / PosTransTime, PosEasingType);
+                    X = MathHelper.Lerp(_sx, TargetX, e);
+                    Y = MathHelper.Lerp(_sy, TargetY, e);
+                }
+            }
+        }
+        
+        // ── Scale transition (zoom) ──────────────────────────────────────────
+        if (ScaleTransTime > 0f)
+        {
+            ScaleTransElapsed = Math.Min(ScaleTransElapsed + dt, ScaleTransTime);
+            
+            // Only snap when time expires - don't use nearTarget check
+            // because easing curves can slow down near the end causing premature termination
+            bool timeExpired = ScaleTransElapsed >= ScaleTransTime;
+            
+            if (timeExpired)
+            {
+                Scale = TargetScale;
+                ScaleTransTime = 0f; // Mark scale transition as complete
+            }
+            else
+            {
+                if (ScaleEasingType == "default")
+                {
+                    float lerpRate = ScaleTransTime > 0f ? 8.0f / ScaleTransTime : 60f;
+                    float alpha = 1f - MathF.Exp(-lerpRate * dt);
+                    Scale += (TargetScale - Scale) * alpha;
+                }
+                else
+                {
+                    float e = Ease(ScaleTransElapsed / ScaleTransTime, ScaleEasingType);
+                    Scale = MathHelper.Lerp(_ss, TargetScale, e);
+                }
+            }
+        }
+    }
+
+    private static float Ease(float t, string type) => type switch
+    {
+        "circ"  => MathF.Sqrt(1f - MathF.Pow(t - 1f, 2f)),
+        "quad"  => t * (2f - t),
+        "cubic" => 1f - MathF.Pow(1f - t, 3f),
+        "sine"  => MathF.Sin(t * MathF.PI / 2f),
+        "expo"  => t >= 1f ? 1f : 1f - MathF.Pow(2f, -10f * t),
+        "bounce"=> EaseBounce(t),
+        _       => t,
+    };
+
+    private static float EaseBounce(float t)
+    {
+        if (t < 1f / 2.75f) return 7.5625f * t * t;
+        if (t < 2f / 2.75f) { t -= 1.5f / 2.75f;   return 7.5625f * t * t + 0.75f; }
+        if (t < 2.5f / 2.75f) { t -= 2.25f / 2.75f; return 7.5625f * t * t + 0.9375f; }
+        t -= 2.625f / 2.75f; return 7.5625f * t * t + 0.984375f;
+    }
+}
+
+/// <summary>
+/// Fires FNMM events at the correct beat time.
+///
+/// Objects are indexed 0-74 (GameMaker array).
+/// Cameras are indexed 0-49 (GameMaker array), but CameraSet target is 1-based.
+///
+/// If no CameraSet events exist, the camera auto-follows the last character
+/// that sang (classic FNF behavior).
+/// </summary>
+public class EventProcessor
+{
+    private readonly FnmmLevel                          _level;
+    private readonly SpriteAnimator?[]                  _objAnimators;
+    private readonly Dictionary<string, List<Microsoft.Xna.Framework.Graphics.Texture2D>> _texCache;
+    private int  _nextEventIndex  = 0;
+    private bool _hasCameraEvents = false;
+
+    // Unknown event type logger
+    private readonly HashSet<string> _unknownTypes = new();
+    private static readonly HashSet<string> KnownTypes = new()
+    {
+        "ObjectAnimationSet", "ObjectVisibilitySet", "ObjectSpriteSet",
+        "ObjectBlendColor", "ObjectOpacitySet", "ObjectTransformSet", "ObjectPositionSet",
+        "CameraSet", "CameraZoom", "ScreenFlash", "BarIconChange",
+        "RunActionPack", "PlayerHealth", "ObjectChartChange", "CameraShake", "GUI"
+    };
+
+    /// <summary>
+    /// Set of event type strings that were encountered but not handled.
+    /// Populated in real-time as events fire. Useful for debug overlay.
+    /// </summary>
+    public IReadOnlyCollection<string> UnknownEventTypes => _unknownTypes;
+
+    // Per-object opacity (0..1), separate from Visible flag
+    private readonly float[] _objOpacity;
+    // Per-object opacity tween: (startOpacity, targetOpacity, elapsed, duration)
+    private readonly (float from, float to, float elapsed, float duration)[] _opacityTween;
+
+    // Object transform tweens (for v3 format multi-position objects)
+    private class ObjectTransformTween
+    {
+        public int      ObjIndex           { get; set; }
+        public int      PosIdx             { get; set; }  // Transform array index to update
+        public float    StartTime          { get; set; }
+        public float    Duration           { get; set; }
+        public Vector2  StartPos           { get; set; }
+        public Vector2  EndPos             { get; set; }
+        public Vector2  StartScale         { get; set; }
+        public Vector2  EndScale           { get; set; }
+        public Func<float, float> Ease     { get; set; } = (t) => t;
+        public int      NewTransformIndex  { get; set; }
+    }
+    private readonly List<ObjectTransformTween> _tweens = new();
+    
+    // Track which objects have active tweens (so Game1 doesn't overwrite their positions)
+    private readonly HashSet<int> _objectsWithActiveTweens = new();
+    
+    // Track which objects ever had position events (these are controlled by EventProcessor)
+    private readonly HashSet<int> _objectsWithPositionEvents = new();
+    
+    // Track current song time for tween creation during FireEvent
+    private float _currentSongTime = 0f;
+
+    // Auto-camera: smoothly follows a target world position
+    private float _autoCamTargetX, _autoCamTargetY, _autoCamTargetScale;
+    private const float AUTO_CAM_SPEED = 2.0f;
+
+    public float AutoCamTargetX => _autoCamTargetX;
+    public float AutoCamTargetY => _autoCamTargetY;
+
+    public CameraState       Camera        { get; } = new();
+    public List<ScreenFlash> ActiveFlashes { get; } = new();
+    public bool              HasCameraEvents => _hasCameraEvents;
+
+    /// <summary>
+    /// Check if an object has an active tween (so Game1 doesn't overwrite its position)
+    /// </summary>
+    public bool HasActiveTween(int objIndex) => _objectsWithActiveTweens.Contains(objIndex);
+    
+    /// <summary>
+    /// Check if an object ever had position events (these objects are controlled by EventProcessor)
+    /// </summary>
+    public bool HasPositionEvents(int objIndex) => _objectsWithPositionEvents.Contains(objIndex);
+
+    /// <summary>
+    /// Whether the engine HUD (health bar, score, timer) should be visible.
+    /// Controlled by GUI events (action_pack type "GUI" with visible=true/false).
+    /// </summary>
+    public bool HudVisible { get; private set; } = true;
+
+    /// <summary>Fired when BarIconChange event occurs. Args: (target 0=opp/1=player, spriteName)</summary>
+    public Action<int, string>? OnBarIconChange;
+    /// <summary>Fired when PlayerHealth event occurs. Args: (delta -1..1, minHealth 0..1)</summary>
+    public Action<float, float>? OnPlayerHealth;
+    /// <summary>Fired when PlayerHealth op=set occurs. Args: (targetHealth 0..1, minHealth 0..1)</summary>
+    public Action<float, float>? OnPlayerHealthSet;
+
+    // Called by NoteRenderer when a note is hit — used for auto-camera
+    // strumlineIndex: 0=player, 1=opponent
+    public void NotifyNoteHit(int strumlineIndex)
+    {
+        if (_hasCameraEvents)
+        {
+            // Level has manual camera events - don't auto-move
+            return;
+        }
+
+        var objs = _level.Scene.Objects;
+
+        // Only move auto-camera for strumlines 0 (player) and 1 (opponent).
+        if (strumlineIndex > 1) return;
+
+        // When multiple characters share the same strumline (e.g. one at the top
+        // and one at the bottom of the scene), follow the one closest to where the
+        // camera already is — this matches the character that is currently singing.
+        SceneObject? best     = null;
+        float            bestDist = float.MaxValue;
+        foreach (var o in objs)
+        {
+            if ((int)o.StrumLine != strumlineIndex) continue;
+            if (!o.Visible) continue;
+            float dx   = o.X - Camera.X;
+            float dy   = o.Y - Camera.Y;
+            float dist = dx * dx + dy * dy;
+            if (dist < bestDist) { bestDist = dist; best = o; }
+        }
+        // Fallback: any object on this strumline even if not visible
+        if (best == null)
+        {
+            foreach (var o in objs)
+            {
+                if ((int)o.StrumLine != strumlineIndex) continue;
+                float dx   = o.X - Camera.X;
+                float dy   = o.Y - Camera.Y;
+                float dist = dx * dx + dy * dy;
+                if (dist < bestDist) { bestDist = dist; best = o; }
+            }
+        }
+        if (best == null) return;
+
+        _autoCamTargetX = best.X;
+        _autoCamTargetY = best.Y;
+        // Use the matching camera scale for this character's region
+        var cams = _level.Scene.Cameras;
+        float baseScale = cams.Count > 0 ? (float)cams[0].Scale : 0.75f;
+        // Clamp to maximum 1.0
+        baseScale = Math.Min(baseScale, 1.0f);
+        _autoCamTargetScale = baseScale;
+    }
+
+    public EventProcessor(FnmmLevel level,
+                          SpriteAnimator?[] objAnimators,
+                          Dictionary<string, List<Microsoft.Xna.Framework.Graphics.Texture2D>> texCache)
+    {
+        _level        = level;
+        _objAnimators = objAnimators;
+        _texCache     = texCache;
+
+        int maxObjs = Math.Max(75, objAnimators.Length);
+        _objOpacity    = new float[maxObjs];
+        _opacityTween  = new (float, float, float, float)[maxObjs];
+        for (int i = 0; i < maxObjs; i++) _objOpacity[i] = 1f;
+
+        // Convert event times to seconds if needed, using the same rule as note times.
+        // version >= 2.0 or bpm=0 → already in seconds. version < 2.0 with bpm > 0 → beats.
+        if (!level.Data.TimesAreSeconds && level.Data.Bpm > 0f)
+        {
+            float bpm = level.Data.Bpm;
+            foreach (var ev in level.Events.Events)
+                ev.Time = ev.Time / bpm * 60f;
+        }
+
+        _level.Events.Events.Sort((a, b) => a.Time.CompareTo(b.Time));
+
+        // Log ActionPacks count
+        Console.WriteLine($"[EventProcessor] Loaded {level.Events.ActionPacks.Count} ActionPacks");
+
+        // Check if this level has any CameraSet events
+        _hasCameraEvents = level.Events.Events
+            .Any(ev => ev.Actions.Any(a => a.Type == "CameraSet"));
+        
+        int cameraSetCount = level.Events.Events.Count(ev => ev.Actions.Any(a => a.Type == "CameraSet"));
+        Console.WriteLine($"[EventProcessor] _hasCameraEvents = {_hasCameraEvents} (found {cameraSetCount} CameraSet events)");
+
+        var cams = level.Scene.Cameras;
+
+        // ──────────────────────────────────────────────────────────────────────
+        // CAMERA SCALE COMPATIBILITY FIX
+        // Legacy format: {x, y, scale} where scale ~0.4-0.5 needs inversion (scale → 1/scale)
+        // New format: {position: {x, y}, scale} where scale is used directly
+        // 
+        // Detection: Check if camera uses UsesNestedPositionFormat flag (set by FnmmLoader)
+        // Only apply scale inversion for legacy format cameras (flat {x, y, scale})
+        // ──────────────────────────────────────────────────────────────────────
+        // DISABLED: Legacy camera compatibility transform was inverting scale incorrectly
+        // Levels with scale < 0.6 (close camera) were being inverted to scale > 1.0 (far camera)
+        /*
+        bool hasLegacyCamera = cams.Any(c => !c.UsesNestedPositionFormat && c.Scale < 0.6f);
+        if (hasLegacyCamera)
+        {
+            Console.WriteLine($"[EventProcessor] Detected legacy camera format (flat {{x, y, scale}} with scale < 0.6)");
+            Console.WriteLine($"[EventProcessor] Applying compatibility transform: scale → 1/scale for legacy cameras");
+            foreach (var cam in cams.Where(c => !c.UsesNestedPositionFormat && c.Scale < 0.6f))
+            {
+                float oldScale = cam.Scale;
+                float newScale = 1.0f / Math.Max(0.1f, oldScale);
+                newScale = Math.Min(newScale, 1.0f);
+                cam.Scale = newScale;
+                Console.WriteLine($"[EventProcessor] Camera scale adjusted: {oldScale:F3} → {newScale:F3} (clamped to max 1.0)");
+            }
+        }
+        */
+        
+        // Log camera format info
+        foreach (var cam in cams)
+        {
+            string format = cam.UsesNestedPositionFormat ? "nested" : "legacy";
+            Console.WriteLine($"[EventProcessor] Camera at ({cam.X}, {cam.Y}) scale={cam.Scale:F3} format={format}");
+        }
+
+        // Always start with cams[1] (player camera) as default if available, otherwise cams[0].
+        // cams[0] = opponent, cams[1] = player (FNF convention)
+        int defaultCam = cams.Count >= 2 ? 1 : 0;
+        if (cams.Count > 0)
+        {
+            // Clamp scale to maximum 1.0 (closer camera)
+            // If level has scale > 1.0, force it to 1.0
+            float levelScale = (float)cams[defaultCam].Scale;
+            float clampedScale = Math.Min(levelScale, 1.0f);
+            
+            Camera.X     = Camera.TargetX     = (float)cams[defaultCam].X;
+            Camera.Y     = Camera.TargetY     = (float)cams[defaultCam].Y;
+            Camera.Scale = Camera.TargetScale = clampedScale;
+            Camera.BaseScale = clampedScale;
+            _autoCamTargetX     = (float)cams[defaultCam].X;
+            _autoCamTargetY     = (float)cams[defaultCam].Y;
+            _autoCamTargetScale = clampedScale;
+            
+            if (levelScale > 1.0f)
+                Console.WriteLine($"[EventProcessor] Camera scale clamped: {levelScale:F3} → {clampedScale:F3}");
+        }
+
+        if (_hasCameraEvents)
+        {
+            // Override with first CameraSet at time=0 if present
+            bool foundInitialCam = false;
+            foreach (var ev in level.Events.Events)
+            {
+                if (ev.Time > 0f) break;
+                foreach (var action in ev.Actions)
+                {
+                    if (action.Type != "CameraSet" || foundInitialCam) continue;
+                    int camIdx = (int)(action.Props.Target ?? 0f);
+                    if (camIdx < 0 || camIdx >= cams.Count) continue;
+                    var cam = cams[camIdx];
+                    
+                    // Clamp scale to maximum 1.0
+                    float levelScale = (float)cam.Scale;
+                    float clampedScale = Math.Min(levelScale, 1.0f);
+                    
+                    Camera.X     = Camera.TargetX     = (float)cam.X;
+                    Camera.Y     = Camera.TargetY     = (float)cam.Y;
+                    Camera.Scale = Camera.TargetScale = clampedScale;
+                    Camera.BaseScale = clampedScale;
+                    Console.WriteLine($"[EventProcessor] Initial CameraSet: target={camIdx} pos=({cam.X:F1},{cam.Y:F1}) scale={clampedScale:F3}" + 
+                        (levelScale > 1.0f ? $" (clamped from {levelScale:F3})" : ""));
+                    foundInitialCam = true;  // Only use the first CameraSet at time=0
+                }
+            }
+        }
+        else
+        {
+            // No CameraSet events.
+            // If the level only has 1 camera defined, keep it fixed — the author
+            // designed a static shot and auto-camera would look wrong.
+            // Only use auto-camera when there are 2+ cameras (player + opponent positions).
+            var objs = level.Scene.Objects;
+            var playerObj   = objs.Find(o => (int)o.StrumLine == 0);
+            var opponentObj = objs.Find(o => (int)o.StrumLine == 1);
+
+            bool hasMultipleCams = cams.Count >= 2;
+
+            if (hasMultipleCams && playerObj != null && opponentObj != null)
+            {
+                // Start camera at player's position (strumline 0), not centered
+                float cx = playerObj.X;
+                float cy = playerObj.Y;
+                // Use the player camera scale (cams[1]) as default zoom
+                float defaultScale = cams.Count >= 2 ? (float)cams[1].Scale : 0.6f;
+                _autoCamTargetScale = defaultScale;
+                Camera.X = Camera.TargetX = _autoCamTargetX = cx;
+                Camera.Y = Camera.TargetY = _autoCamTargetY = cy;
+                Camera.Scale = Camera.TargetScale = _autoCamTargetScale;
+            }
+            else
+            {
+                // Single camera or no characters → stay fixed on cams[0], no auto-movement
+                _hasCameraEvents = true;  // treat as "scripted" so Update() doesn't lerp
+            }
+        }
+    }
+
+    /// <summary>
+    /// Applies only the instantaneous (transitionTime=0) actions from events at time=0.
+    /// Called during SetupLevel so objects start in the correct visible/opacity state
+    /// without starting long-running transitions that would be offset by load time.
+    /// </summary>
+    public void ApplyInitialState()
+    {
+        foreach (var ev in _level.Events.Events)
+        {
+            if (ev.Time > 0f) break;
+            // Apply ALL actions at time=0 — both instant and transitional.
+            // Transitional ones (like long opacity fades) need to start at time=0.
+            FireEvent(ev);
+        }
+        // Advance _nextEventIndex past all time=0 events so they don't fire again
+        // when _songTime reaches 0 during gameplay.
+        _nextEventIndex = 0;
+        while (_nextEventIndex < _level.Events.Events.Count &&
+               _level.Events.Events[_nextEventIndex].Time <= 0f)
+            _nextEventIndex++;
+    }
+
+    public void Update(float songTime, float dt)
+    {
+        _currentSongTime = songTime;  // Store for use in FireEvent
+        var events = _level.Events.Events;
+        while (_nextEventIndex < events.Count &&
+               events[_nextEventIndex].Time <= songTime)
+        {
+            FireEvent(events[_nextEventIndex]);
+            _nextEventIndex++;
+        }
+
+        if (_hasCameraEvents)
+        {
+            Camera.Update(dt);
+        }
+        else
+        {
+            // Auto-camera: FNF-style fast smooth lerp toward the singer's position.
+            // Increased lerpRate from 4.0 to 12.0 for snappy camera movement like FNF
+            // This makes the camera reach the target much faster (98% in ~0.35 seconds)
+            const float lerpRate = 12.0f;
+            float speed = 1f - MathF.Exp(-lerpRate * dt);
+            Camera.X     = MathHelper.Lerp(Camera.X,     _autoCamTargetX,     speed);
+            Camera.Y     = MathHelper.Lerp(Camera.Y,     _autoCamTargetY,     speed);
+            Camera.Scale = MathHelper.Lerp(Camera.Scale, _autoCamTargetScale, speed);
+            Camera.Update(dt);  // handles shake offset
+        }
+
+        // Update opacity tweens
+        for (int i = 0; i < _opacityTween.Length; i++)
+        {
+            var (from, to, elapsed, duration) = _opacityTween[i];
+            if (duration <= 0f) continue;
+            elapsed += dt;
+            float t = Math.Min(elapsed / duration, 1f);
+            _objOpacity[i] = MathHelper.Lerp(from, to, t);
+            if (_objAnimators[i] != null)
+                _objAnimators[i]!.Opacity = _objOpacity[i];
+            _opacityTween[i] = (from, to, elapsed, duration);
+            if (elapsed >= duration)
+                _opacityTween[i] = (to, to, 0f, 0f); // done
+        }
+
+        // Update transform tweens (v3 format multi-position objects)
+        // Also update the set of objects with active tweens
+        _objectsWithActiveTweens.Clear();
+        
+        for (int i = _tweens.Count - 1; i >= 0; i--)
+        {
+            var tween = _tweens[i];
+            float elapsed = songTime - tween.StartTime;
+            
+            if (elapsed >= tween.Duration)
+            {
+                // Tween complete - snap to final position and update transform index
+                var objs = _level.Scene.Objects;
+                if (tween.ObjIndex < objs.Count && tween.NewTransformIndex >= 0)
+                {
+                    // Update transform index FIRST so GetPosition() returns correct value
+                    objs[tween.ObjIndex].CurrentTransformIndex = tween.NewTransformIndex;
+                }
+                
+                // Then update animator to final position
+                if (_objAnimators[tween.ObjIndex] != null)
+                {
+                    _objAnimators[tween.ObjIndex]!.Position = tween.EndPos;
+                    _objAnimators[tween.ObjIndex]!.Scale = tween.EndScale;
+                }
+                
+                // Remove tween (this will cause Game1 to start reading from GetPosition() again)
+                _tweens.RemoveAt(i);
+            }
+            else
+            {
+                // Interpolate
+                float t = tween.Ease(elapsed / tween.Duration);
+                if (_objAnimators[tween.ObjIndex] != null)
+                {
+                    var pos = Vector2.Lerp(tween.StartPos, tween.EndPos, t);
+                    var scale = Vector2.Lerp(tween.StartScale, tween.EndScale, t);
+                    _objAnimators[tween.ObjIndex]!.Position = pos;
+                    _objAnimators[tween.ObjIndex]!.Scale = scale;
+                    
+                    // Mark this object as having an active tween
+                    _objectsWithActiveTweens.Add(tween.ObjIndex);
+                }
+            }
+        }
+
+        for (int i = ActiveFlashes.Count - 1; i >= 0; i--)
+        {
+            ActiveFlashes[i].Elapsed += dt;
+            if (ActiveFlashes[i].Done) ActiveFlashes.RemoveAt(i);
+        }
+    }
+
+    /// <summary>
+    /// Jumps the event processor to the given song time.
+    /// Replays all events up to targetTime instantly so object states
+    /// (visibility, opacity, sprite, camera) are correct at the new position.
+    /// </summary>
+    public void SeekTo(float targetTime)
+    {
+        _currentSongTime = targetTime;  // Store for use in FireEvent during seek
+        
+        // Reset camera to initial state (same as in constructor)
+        var cams = _level.Scene.Cameras;
+        if (cams.Count > 0)
+        {
+            var cam0 = cams[0];
+            float levelScale = (float)cam0.Scale;
+            float clampedScale = Math.Min(levelScale, 1.0f);
+            
+            Camera.X     = Camera.TargetX     = (float)cam0.X;
+            Camera.Y     = Camera.TargetY     = (float)cam0.Y;
+            Camera.Scale = Camera.TargetScale = clampedScale;
+            Camera.BaseScale = clampedScale;
+        }
+        
+        // Reset all objects to initial state before replaying events
+        // so we don't get double-applied visibility/opacity/sprite changes
+        foreach (var obj in _level.Scene.Objects)
+            obj.ResetToInitialState();
+
+        // Reset all animator states to match initial object state
+        var objs = _level.Scene.Objects;
+        for (int i = 0; i < objs.Count && i < _objAnimators.Length; i++)
+        {
+            var anim = _objAnimators[i];
+            if (anim == null) continue;
+            anim.Visible  = objs[i].Visible;
+            anim.Opacity  = 1f;
+            anim.TintColor = Microsoft.Xna.Framework.Color.White;
+        }
+
+        // Reset opacity tweens
+        for (int i = 0; i < _opacityTween.Length; i++)
+            _opacityTween[i] = (1f, 1f, 0f, 0f);
+        for (int i = 0; i < _objOpacity.Length; i++)
+            _objOpacity[i] = 1f;
+
+        // Clear transform tweens
+        _tweens.Clear();
+
+        // Reset HUD visibility to default
+        HudVisible = true;
+
+        // Clear active flashes
+        ActiveFlashes.Clear();
+
+        _nextEventIndex = 0;
+        var events = _level.Events.Events;
+        
+        // Execute all events up to targetTime to ensure correct state
+        while (_nextEventIndex < events.Count &&
+               events[_nextEventIndex].Time <= targetTime)
+        {
+            var ev = events[_nextEventIndex];
+            
+            // Skip pure visual effects during seek (flashes, shakes)
+            // but process ALL state-changing events
+            bool hasVisualOnly = ev.Actions.All(a =>
+                a.Type == "ScreenFlash" || a.Type == "CameraShake");
+            
+            if (!hasVisualOnly)
+            {
+                // Execute the event normally (will apply all state changes)
+                FireEvent(ev);
+            }
+            
+            _nextEventIndex++;
+        }
+    }
+
+    private void FireEvent(FnmmEvent ev)
+    {
+        var objs = _level.Scene.Objects;
+        var cams = _level.Scene.Cameras;
+        
+        foreach (var action in ev.Actions)
+        {
+            int objIdx = action.Props.Object.HasValue ? (int)action.Props.Object.Value : -1;
+
+            // Track unknown event types for the log
+            if (!KnownTypes.Contains(action.Type) && !string.IsNullOrEmpty(action.Type))
+            {
+                if (_unknownTypes.Add(action.Type))  // Add returns true only on first insertion
+                    Console.WriteLine($"[Event] UNKNOWN type: \"{action.Type}\" — props: {System.Text.Json.JsonSerializer.Serialize(action.Props)}");
+            }
+
+            switch (action.Type)
+            {
+                // ── Object index 0-74 ────────────────────────────────────────
+
+                case "ObjectChartChange":
+                    // Reassigns an object to a different strumline at runtime.
+                    // Game1's OnNoteHit/OnNoteMiss callbacks read StrumLine dynamically,
+                    // so this takes effect immediately on the next note hit.
+                    if (ValidObj(objIdx) && objIdx < objs.Count)
+                    {
+                        float oldStrumLine = objs[objIdx].StrumLine;
+                        float newStrumLine = action.Props.StrumLine ?? -1f;
+                        
+                        // CRITICAL FIX: When strumLine changes, force return to idle immediately
+                        // But ONLY for objects that are being replaced, not the one changing
+                        if (oldStrumLine != newStrumLine)
+                        {
+                            // Reset all objects on the OLD strumLine (they're losing this strumLine)
+                            // EXCEPT the object that's changing
+                            if (oldStrumLine >= 0)
+                            {
+                                for (int i = 0; i < objs.Count; i++)
+                                {
+                                    if (i != objIdx && objs[i].StrumLine == oldStrumLine && _objAnimators[i] != null)
+                                    {
+                                        var anim = _objAnimators[i]!;
+                                        
+                                        // ONLY reset if NOT set by an event
+                                        if (!anim.IsSetByEvent)
+                                        {
+                                            anim.HoldUntil = -1f;
+                                            anim.SetSingTimer(0f);
+                                            // Force idle immediately - they lost their strumLine
+                                            int idleAnim = (anim.AnimCount > 1 && anim.CurrentAnimData.FrameCount == 1) ? 1 : 0;
+                                            anim.SetAnimation(idleAnim);
+                                        }
+                                    }
+                                }
+                            }
+                            
+                            // Reset the object that's changing strumLine
+                            if (_objAnimators[objIdx] != null)
+                            {
+                                var anim = _objAnimators[objIdx]!;
+                                
+                                // ONLY reset to idle if NOT set by an event
+                                // Event-driven animations should persist through strumLine changes
+                                if (!anim.IsSetByEvent)
+                                {
+                                    anim.HoldUntil = -1f;
+                                    anim.SetSingTimer(0f);
+                                    int idleAnim = (anim.AnimCount > 1 && anim.CurrentAnimData.FrameCount == 1) ? 1 : 0;
+                                    anim.SetAnimation(idleAnim);
+                                }
+                            }
+                            
+                            // Reset all objects on the NEW strumLine (they're getting replaced)
+                            // EXCEPT the object that's changing
+                            if (newStrumLine >= 0)
+                            {
+                                for (int i = 0; i < objs.Count; i++)
+                                {
+                                    if (i != objIdx && objs[i].StrumLine == newStrumLine && _objAnimators[i] != null)
+                                    {
+                                        var anim = _objAnimators[i]!;
+                                        
+                                        // ONLY reset if NOT set by an event
+                                        if (!anim.IsSetByEvent)
+                                        {
+                                            anim.HoldUntil = -1f;
+                                            anim.SetSingTimer(0f);
+                                            int idleAnim = (anim.AnimCount > 1 && anim.CurrentAnimData.FrameCount == 1) ? 1 : 0;
+                                            anim.SetAnimation(idleAnim);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        
+                        // Now change the strumLine
+                        objs[objIdx].StrumLine = newStrumLine;
+                        
+                        // CRITICAL: Update IsCharacter flag based on new strumLine
+                        // Objects moving from strumLine -1 to >= 0 become characters
+                        // Objects moving from >= 0 to -1 become background objects
+                        if (_objAnimators[objIdx] != null)
+                        {
+                            _objAnimators[objIdx]!.IsCharacter = newStrumLine >= 0f;
+                        }
+                    }
+                    break;
+
+                case "ObjectAnimationSet":
+                    if (ValidObj(objIdx))
+                    {
+                        int anim = (int)(action.Props.Anim ?? 0);
+                        
+                        // When setting to idle (anim 0), don't mark as event-controlled
+                        // This allows notes to override idle animations normally
+                        bool setByEvent = (anim != 0);
+                        
+                        Console.WriteLine($"[ObjectAnimationSet] t={_currentSongTime:F2} Obj {objIdx} ({objs[objIdx].Spr}) → anim={anim} (setByEvent={setByEvent})");
+                        
+                        // Pass setByEvent based on whether it's an idle animation
+                        _objAnimators[objIdx]?.SetAnimation(anim, setByEvent: setByEvent);
+                    }
+                    break;
+
+                case "ObjectVisibilitySet":
+                    if (ValidObj(objIdx))
+                    {
+                        bool vis = action.Props.Value ?? true;
+                        if (objIdx < objs.Count) objs[objIdx]!.Visible = vis;
+                        if (_objAnimators[objIdx] != null)
+                        {
+                            _objAnimators[objIdx]!.Visible = vis;
+                            Console.WriteLine($"[ObjectVisibilitySet] t={_currentSongTime:F2} Obj {objIdx} ({objs[objIdx]!.Spr}) → visible={vis}");
+                        }
+                    }
+                    break;
+
+                case "ObjectOpacitySet":
+                    if (ValidObj(objIdx))
+                    {
+                        float targetOpacity = action.Props.ValueFloat ?? 1f;
+                        float transSecs = action.Props.TransitionTime ?? 0f;
+                        // Default timeUnit is "seconds" — only convert if explicitly "beats"
+                        if (action.Props.TransitionTimeUnit == "beats" && transSecs > 0f)
+                            transSecs = transSecs / _level.Data!.EffectiveBpm * 60f;
+
+                        if (transSecs <= 0f)
+                        {
+                            _objOpacity[objIdx] = targetOpacity;
+                            _opacityTween[objIdx] = (targetOpacity, targetOpacity, 0f, 0f);
+                            if (_objAnimators[objIdx] != null)
+                                _objAnimators[objIdx]!.Opacity = targetOpacity;
+                        }
+                        else
+                        {
+                            _opacityTween[objIdx] = (_objOpacity[objIdx], targetOpacity, 0f, transSecs);
+                        }
+                    }
+                    break;
+
+                case "ObjectSpriteSet":
+                    if (ValidObj(objIdx) && action.Props.Sprite != null)
+                    {
+                        string newSpr = action.Props.Sprite;
+                        // Update scene object's current sprite name
+                        if (objIdx < objs.Count) objs[objIdx]!.Spr = newSpr;
+
+                        // Swap animator to use the new sprite's textures
+                        if (_level.Sprites.TryGetValue(newSpr, out var sprData) &&
+                            _texCache.TryGetValue(newSpr, out var textures))
+                        {
+                            // Preserve position/scale/color/opacity from the old animator
+                            // Use GetPosition()/GetScale() to respect transform arrays
+                            var objPos   = objIdx < objs.Count ? objs[objIdx]!.GetPosition() : new Vec2 { X = 0, Y = 0 };
+                            var objScale = objIdx < objs.Count ? objs[objIdx]!.GetScale() : new Vec2 { X = 1, Y = 1 };
+                            var pos   = new Vector2(objPos.X, objPos.Y);
+                            var scale = new Vector2(objScale.X, objScale.Y);
+                            // Use object's current visibility state, not the old animator's
+                            bool vis      = objIdx < objs.Count ? objs[objIdx]!.Visible : true;
+                            Color tint    = _objAnimators[objIdx]?.TintColor ?? Color.White;
+                            float opacity = _objAnimators[objIdx]?.Opacity ?? 1.0f;
+                            bool isChar   = objIdx < objs.Count && objs[objIdx]!.StrumLine >= 0f;
+                            
+                            // Preserve event control state and animation info
+                            bool wasSetByEvent = _objAnimators[objIdx]?.IsSetByEvent ?? false;
+                            int currentAnim = _objAnimators[objIdx]?.CurrentAnimIndex ?? 0;
+                            float holdUntil = _objAnimators[objIdx]?.HoldUntil ?? -1f;
+
+                            _objAnimators[objIdx] = new SpriteAnimator(
+                                newSpr, sprData.Def, textures, pos, scale)
+                            {
+                                Bpm         = _level.Data!.Bpm,
+                                Visible     = vis,
+                                TintColor   = tint,
+                                Opacity     = opacity,
+                                IsCharacter = isChar,
+                            };
+                            
+                            // Restore animation state on the new sprite
+                            if (_objAnimators[objIdx] != null)
+                            {
+                                // Set to the same animation index (clamped to new sprite's anim count)
+                                int safeAnim = Math.Clamp(currentAnim, 0, _objAnimators[objIdx].AnimCount - 1);
+                                _objAnimators[objIdx].SetAnimation(safeAnim, setByEvent: wasSetByEvent);
+                                _objAnimators[objIdx].HoldUntil = holdUntil;
+                                
+                                Console.WriteLine($"[ObjectSpriteSet] t={_currentSongTime:F2} Obj {objIdx} ({objs[objIdx]!.Spr}) → preserved anim={safeAnim} IsSetByEvent={wasSetByEvent}");
+                            }
+                        }
+                    }
+                    break;
+
+                case "ObjectTransformSet":
+                    // Changes the transform index of an object to switch between
+                    // multiple positions/scales defined in scene.json
+                    if (ValidObj(objIdx) && objIdx < objs.Count)
+                    {
+                        // Mark this object as having position events (EventProcessor controls it)
+                        _objectsWithPositionEvents.Add(objIdx);
+                        
+                        var obj = objs[objIdx];
+                        
+                        // Check if object has multiple transforms
+                        if (obj.Transform == null || obj.Transform.Count == 0)
+                        {
+                            // Object doesn't have multiple transforms, ignore event
+                            break;
+                        }
+
+                        int posIdx = (int)(action.Props.Position ?? 0f);
+                        if (posIdx < 0 || posIdx >= obj.Transform!.Count)
+                        {
+                            // Invalid position index
+                            break;
+                        }
+
+                        float duration = action.Props.Duration ?? 0f;
+                        bool isSeconds = (action.Props.TimeUnit ?? "seconds") == "seconds";
+                        if (!isSeconds) duration = BeatsToSeconds(duration, _level.Data!.EffectiveBpm);
+
+                        if (duration <= 0f)
+                        {
+                            // Instant change
+                            obj.CurrentTransformIndex = posIdx;
+                            if (_objAnimators[objIdx] != null)
+                            {
+                                var animator = _objAnimators[objIdx]!;
+                                var newPos = obj.GetPosition();
+                                var newScale = obj.GetScale();
+                                animator.Position = new Vector2(newPos.X, newPos.Y);
+                                animator.Scale = new Vector2(newScale.X, newScale.Y);
+                            }
+                            // Cancel any active tween for this object
+                            CancelObjectTween(objIdx);
+                        }
+                        else
+                        {
+                            // Interpolated change
+                            if (_objAnimators[objIdx] != null)
+                            {
+                                var targetTransform = obj.Transform[posIdx];
+                                var targetPos = new Vector2(targetTransform.Position.X, targetTransform.Position.Y);
+                                var targetScale = new Vector2(targetTransform.Scale.X, targetTransform.Scale.Y);
+                                
+                                // Check if there's already an active tween for this object
+                                bool hasActiveTween = false;
+                                float remainingTime = 0f;
+                                
+                                foreach (var existingTween in _tweens)
+                                {
+                                    if (existingTween.ObjIndex == objIdx)
+                                    {
+                                        remainingTime = (existingTween.StartTime + existingTween.Duration) - _currentSongTime;
+                                        if (remainingTime > 0f)
+                                        {
+                                            hasActiveTween = true;
+                                            break;
+                                        }
+                                    }
+                                }
+                                
+                                // Tolerance: if remaining time is < 0.1 seconds, consider it done
+                                const float TOLERANCE = 0.1f;
+                                
+                                if (hasActiveTween && remainingTime > TOLERANCE)
+                                {
+                                    // Active tween with significant time remaining
+                                    // Cancel it and start new one from current position
+                                    CancelObjectTween(objIdx);
+                                }
+                                
+                                var startPos = _objAnimators[objIdx]!.Position;
+                                var startScale = _objAnimators[objIdx]!.Scale;
+
+                                string easeName = action.Props.Interpolation ?? "linear";
+                                
+                                var tween = new ObjectTransformTween
+                                {
+                                    ObjIndex     = objIdx,
+                                    PosIdx       = posIdx,
+                                    StartTime    = _currentSongTime,
+                                    Duration     = duration,
+                                    StartPos     = startPos,
+                                    EndPos       = targetPos,
+                                    StartScale   = startScale,
+                                    EndScale     = targetScale,
+                                    Ease         = GetEaseFunction(easeName),
+                                    NewTransformIndex = posIdx,
+                                };
+                                _tweens.Add(tween);
+                            }
+                        }
+                    }
+                    break;
+
+                case "ObjectPositionSet":
+                    // Simple position change event (doesn't affect scale)
+                    // Used in legacy levels or for direct position control
+                    if (ValidObj(objIdx) && _objAnimators[objIdx] != null)
+                    {
+                        // Mark this object as having position events (EventProcessor controls it)
+                        _objectsWithPositionEvents.Add(objIdx);
+                        
+                        // Get target position from action properties
+                        // The position index references a transform if using v3 format
+                        // Some levels use "transform" property name instead of "position"
+                        int posIdx = (int)(action.Props.Position ?? action.Props.Transform ?? 0f);
+                        
+                        float duration = action.Props.TransitionTime ?? 0f;
+                        bool isSeconds = (action.Props.TransitionTimeUnit ?? "seconds") == "seconds";
+                        if (!isSeconds && _level.Data != null) duration = BeatsToSeconds(duration, _level.Data.EffectiveBpm);
+
+                        var obj = objs[objIdx];
+                        Vector2 targetPos;
+
+                        // Check if object has transform array
+                        if (obj.Transform != null && obj.Transform.Count > 0 && 
+                            posIdx >= 0 && posIdx < obj.Transform.Count)
+                        {
+                            // Use transform array position
+                            var transform = obj.Transform[posIdx];
+                            targetPos = new Vector2(transform.Position.X, transform.Position.Y);
+                            
+                            // CRITICAL: If object is fixed, coordinates are normalized
+                            // (typically -2 to +3 range, where 0-1 is visible screen)
+                            // Convert to screen coordinates for animator
+                            if (obj.Fixed)
+                            {
+                                // Detect if coordinates are normalized by checking if they're in reasonable range
+                                // Normalized coords typically range from -2 to +3 (allowing off-screen positioning)
+                                bool looksNormalized = Math.Abs(targetPos.X) < 10f && Math.Abs(targetPos.Y) < 10f;
+                                
+                                if (looksNormalized)
+                                {
+                                    // Get screen dimensions from level settings or use defaults
+                                    int screenW = 1280; // Default width
+                                    int screenH = 720;  // Default height
+                                    targetPos = new Vector2(targetPos.X * screenW, targetPos.Y * screenH);
+                                }
+                            }
+                        }
+                        else
+                        {
+                            // Legacy or no transform array: use current position (no-op)
+                            targetPos = _objAnimators[objIdx]!.Position;
+                        }
+
+                        string objName = obj.Spr ?? objIdx.ToString();
+                        bool wasVisible = _objAnimators[objIdx]!.Visible;
+                        if (duration <= 0f)
+                        {
+                            // Instant change - update position AND scale
+                            _objAnimators[objIdx]!.Position = targetPos;
+                            
+                            // Update scale if object has Transform array
+                            if (obj.Transform != null && obj.Transform.Count > 0 && 
+                                posIdx >= 0 && posIdx < obj.Transform.Count)
+                            {
+                                var transform = obj.Transform[posIdx];
+                                var transformScale = new Vector2(transform.Scale.X, transform.Scale.Y);
+                                
+                                // Fixed objects: multiply by camera scale to match world object size
+                                if (obj.Fixed)
+                                {
+                                    float camScale = Camera.Scale;
+                                    _objAnimators[objIdx]!.Scale = transformScale * camScale;
+                                }
+                                else
+                                {
+                                    _objAnimators[objIdx]!.Scale = transformScale;
+                                }
+                            }
+                            
+                            Console.WriteLine($"[ObjectPositionSet] t={_currentSongTime:F2} Obj {objIdx} ({objName}) → pos=({targetPos.X:F3},{targetPos.Y:F3}) posIdx={posIdx} visible={wasVisible} (instant)");
+                            // Cancel any active tween for this object
+                            CancelObjectTween(objIdx);
+                            
+                            // CRITICAL FIX: Update CurrentTransformIndex so GetPosition() returns correct transform
+                            // Game1.cs will read GetPosition() each frame and convert coordinates appropriately
+                            if (objIdx < objs.Count)
+                            {
+                                if (obj.Transform != null && obj.Transform.Count > 0 && 
+                                    posIdx >= 0 && posIdx < obj.Transform.Count)
+                                {
+                                    // Update the current transform index
+                                    objs[objIdx].CurrentTransformIndex = posIdx;
+                                    Console.WriteLine($"[ObjectPositionSet] DEBUG: Updated CurrentTransformIndex to {posIdx}, Fixed={obj.Fixed}");
+                                }
+                                else
+                                {
+                                    // Update X/Y directly for objects without Transform array
+                                    objs[objIdx].X = targetPos.X;
+                                    objs[objIdx].Y = targetPos.Y;
+                                    Console.WriteLine($"[ObjectPositionSet] DEBUG: Updated obj.X/Y to ({targetPos.X:F3},{targetPos.Y:F3}), Fixed={obj.Fixed}");
+                                }
+                            }
+                        }
+                        else
+                        {
+                            // Interpolated change
+                            Console.WriteLine($"[ObjectPositionSet] t={_currentSongTime:F2} Obj {objIdx} ({objName}) → pos=({targetPos.X:F3},{targetPos.Y:F3}) posIdx={posIdx} visible={wasVisible} dur={duration:F2}s");
+                            Console.WriteLine($"[ObjectPositionSet] DEBUG: Starting tween from ({_objAnimators[objIdx]!.Position.X:F3},{_objAnimators[objIdx]!.Position.Y:F3}) to ({targetPos.X:F3},{targetPos.Y:F3})");
+                            // Check if there's already an active tween for this object
+                            bool hasActiveTween = false;
+                            float remainingTime = 0f;
+                            
+                            foreach (var existingTween in _tweens)
+                            {
+                                if (existingTween.ObjIndex == objIdx)
+                                {
+                                    remainingTime = (existingTween.StartTime + existingTween.Duration) - _currentSongTime;
+                                    if (remainingTime > 0f)
+                                    {
+                                        hasActiveTween = true;
+                                        break;
+                                    }
+                                }
+                            }
+                            
+                            // Tolerance: if remaining time is < 0.1 seconds, consider it done
+                            const float TOLERANCE = 0.1f;
+                            
+                            if (hasActiveTween && remainingTime > TOLERANCE)
+                            {
+                                // Active tween with significant time remaining
+                                // Cancel it and start new one from current position
+                                CancelObjectTween(objIdx);
+                            }
+                            
+                            var startPos = _objAnimators[objIdx]!.Position;
+                            var startScale = _objAnimators[objIdx]!.Scale;
+                            var endScale = startScale; // Default: keep scale unchanged
+                            
+                            // If object has Transform array, get the target scale
+                            if (obj.Transform != null && obj.Transform.Count > 0 && 
+                                posIdx >= 0 && posIdx < obj.Transform.Count)
+                            {
+                                var transform = obj.Transform[posIdx];
+                                var transformScale = new Vector2(transform.Scale.X, transform.Scale.Y);
+                                
+                                // Fixed objects: multiply by camera scale to match world object size
+                                // This compensates for the lack of camera zoom on Fixed objects
+                                if (obj.Fixed)
+                                {
+                                    float camScale = Camera.Scale;
+                                    endScale = transformScale * camScale;
+                                }
+                                else
+                                {
+                                    endScale = transformScale;
+                                }
+                            }
+                            
+                            string easeName = action.Props.EasingType ?? "linear";
+                            
+                            var tween = new ObjectTransformTween
+                            {
+                                ObjIndex     = objIdx,
+                                PosIdx       = posIdx,
+                                StartTime    = _currentSongTime,
+                                Duration     = duration,
+                                StartPos     = startPos,
+                                EndPos       = targetPos,
+                                StartScale   = startScale,
+                                EndScale     = endScale,
+                                Ease         = GetEaseFunction(easeName),
+                                NewTransformIndex = posIdx, // Update to new transform index when tween completes
+                            };
+                            _tweens.Add(tween);
+                        }
+                    }
+                    break;
+
+                case "ObjectBlendColor":
+                    if (ValidObj(objIdx) && _objAnimators[objIdx] != null)
+                    {
+                        byte r = Clamp255(action.Props.ColorR ?? 255f);
+                        byte g = Clamp255(action.Props.ColorG ?? 255f);
+                        byte b = Clamp255(action.Props.ColorB ?? 255f);
+                        _objAnimators[objIdx]!.TintColor = new Color(r, g, b);
+                    }
+                    break;
+
+                // ── Camera index 0-based (matches GameMaker/Funky Maker array) ──
+
+                case "CameraSet":
+                {
+                    // mode="auto" → switch to auto-camera
+                    if (action.Props.Mode == "auto")
+                    {
+                        _hasCameraEvents = false;
+                        
+                        // If we're mid-transition, use the TARGET values as the starting point
+                        // for auto-camera to avoid visual jumps
+                        if (Camera!.TransTime > 0f && Camera!.TransElapsed < Camera!.TransTime)
+                        {
+                            _autoCamTargetX     = Camera!.TargetX;
+                            _autoCamTargetY     = Camera!.TargetY;
+                            _autoCamTargetScale = Camera!.TargetScale;
+                        }
+                        else
+                        {
+                            // Use current camera position as starting point
+                            _autoCamTargetX     = Camera!.X;
+                            _autoCamTargetY     = Camera!.Y;
+                            _autoCamTargetScale = Camera!.Scale;
+                        }
+                        
+                        // Cancel any active camera transition so it doesn't fight the auto-camera lerp
+                        Camera.TransTime = 0f;
+                        Camera.TransElapsed = 0f;
+                        break;
+                    }
+
+                    // target is 0-based index into the cameras array
+                    int camIdx = (int)(action.Props.Target ?? 0f);
+                    if (camIdx < 0 || camIdx >= cams.Count)
+                    {
+                        // Out of range → fallback to auto
+                        _hasCameraEvents = false;
+                        
+                        // Same logic as mode="auto" above
+                        if (Camera!.TransTime > 0f && Camera!.TransElapsed < Camera!.TransTime)
+                        {
+                            _autoCamTargetX     = Camera!.TargetX;
+                            _autoCamTargetY     = Camera!.TargetY;
+                            _autoCamTargetScale = Camera!.TargetScale;
+                        }
+                        else
+                        {
+                            _autoCamTargetX     = Camera!.X;
+                            _autoCamTargetY     = Camera!.Y;
+                            _autoCamTargetScale = Camera!.Scale;
+                        }
+                        
+                        Camera.TransTime    = 0f;
+                        Camera.TransElapsed = 0f;
+                        break;
+                    }
+
+                    var cam = cams[camIdx];
+                    float transTime = action.Props.TransitionTime ?? 0f;
+                    if (action.Props.TransitionTimeUnit == "beats" && transTime > 0f)
+                        transTime = transTime / _level.Data!.EffectiveBpm * 60f;
+
+                    _hasCameraEvents = true;
+                    
+                    // Clamp scale to maximum 1.0
+                    float levelScale = (float)cam.Scale;
+                    float clampedScale = Math.Min(levelScale, 1.0f);
+                    
+                    Console.WriteLine($"[CameraSet] target={camIdx} pos=({cam.X:F1},{cam.Y:F1}) levelScale={levelScale:F3} clampedScale={clampedScale:F3} transTime={transTime:F2}s");
+                    
+                    // Store the base scale for this camera
+                    if (Camera != null)
+                        Camera.BaseScale = clampedScale;
+                    
+                    // SMART TRANSITION: If position isn't changing, only transition scale
+                    // This prevents CameraSet from canceling active position transitions
+                    // when legacy levels use CameraSet for zoom-only changes
+                    float targetX = (float)cam.X;
+                    float targetY = (float)cam.Y;
+                    
+                    bool positionChanging = Math.Abs(targetX - Camera!.TargetX) > 1f || 
+                                           Math.Abs(targetY - Camera!.TargetY) > 1f;
+                    bool scaleChanging = Math.Abs(clampedScale - Camera!.TargetScale) > 0.01f;
+                    
+                    if (!positionChanging && scaleChanging && Camera!.PosTransTime > 0f)
+                    {
+                        // Position isn't changing AND there's an active position transition
+                        // Only transition the scale to preserve the position animation
+                        Camera.StartScaleTransition(
+                            clampedScale,
+                            transTime,
+                            action.Props.EasingType ?? "default");
+                    }
+                    else
+                    {
+                        // Normal full transition (position + scale)
+                        Camera.StartTransition(
+                            targetX, targetY, clampedScale,
+                            transTime,
+                            action.Props.EasingType ?? "default");
+                    }
+                    break;
+                }
+
+                case "CameraZoom":
+{
+                    // CameraZoom applies zoom as a PERCENTAGE relative to BASE camera scale
+                    // BaseScale is the original scale from scene.json (set by CameraSet)
+                    // This ensures zoom always works from the camera's original scale,
+                    // not from a previously zoomed scale
+                    //
+                    // Funky Maker semantics:
+                    //   value=1.0 → 100% = keep base scale unchanged
+                    //   value=0.0 → apply max zoom IN from base scale
+                    //   value=0.5 → 50% zoom between max IN and base
+                    //
+                    // MonoGame: lower scale = zoom IN (closer), higher scale = zoom OUT (farther)
+                    //
+                    // Formula: targetScale = baseScale * zoomValue
+                    //   value=1.0 → scale = baseScale (no zoom)
+                    //   value=0.5 → scale = baseScale * 0.5 (zoomed in)
+                    //   value=0.0 → scale = baseScale * 0.1 (max zoom in, clamped)
+                    
+                    float zoomValue = action.Props.ValueFloat ?? 1.0f;
+                    float duration = action.Props.TransitionTime ?? 0f;
+                    
+                    // Convert beats to seconds if needed
+                    if (action.Props.TransitionTimeUnit == "beats" && duration > 0f)
+                        duration = duration / _level.Data!.EffectiveBpm * 60f;
+                    
+                    _hasCameraEvents = true;
+                    
+                    // Use BaseScale as the 100% reference (from scene.json camera)
+                    // This ensures we always zoom from the camera's original scale,
+                    // even if a previous CameraZoom modified the current scale
+                    float baseScale = Camera?.BaseScale ?? 1.0f;
+                    
+                    // Use zoom value directly as percentage
+                    // Clamp minimum to prevent extreme zoom
+                    float zoomPercentage = Math.Max(0.1f, zoomValue);
+                    
+                    // Apply percentage to base scale
+                    float targetScale = baseScale * zoomPercentage;
+                    
+                    // Use StartScaleTransition to preserve any active position transitions
+                    Camera!.StartScaleTransition(
+                        targetScale,
+                        duration,
+                        action.Props.EasingType ?? "default");
+                    break;
+                }
+
+                // ── Screen flash ─────────────────────────────────────────────
+
+                case "BarIconChange":
+                {
+                    int iconTarget = (int)(action.Props.Target ?? 0f);
+                    string? newSprite = action.Props.Sprite;
+                    if (newSprite != null)
+                        OnBarIconChange?.Invoke(iconTarget, newSprite);
+                    break;
+                }
+
+                case "PlayerHealth":
+                {
+                    // operation: "add", "remove", or "set"
+                    // value: 0..100 (percentage points) → convert to 0..1
+                    // minHealth: minimum health floor (0..100) → convert to 0..1
+                    string op  = action.Props.Operation ?? "remove";
+                    float  val = (action.Props.ValueFloat ?? 0f) / 100f;
+                    float  minH = action.Props.MinHealth.HasValue
+                        ? action.Props.MinHealth.Value / 100f
+                        : 0f;
+                    float delta = op switch
+                    {
+                        "add"    =>  val,
+                        "remove" => -val,
+                        "set"    =>  val,   // absolute set — Game1 handles via special value
+                        _        => -val,
+                    };
+                    // Pack minHealth into the callback: positive delta = add/set, negative = remove
+                    // For "set", we pass a special flag via a large negative sentinel
+                    // Game1 checks: if delta >= -10f treat as normal delta, else it's a "set" op
+                    // Simpler: fire two values — use a tuple-like encoding
+                    // Actually cleanest: add a new event callback for "set"
+                    if (op == "set")
+                        OnPlayerHealthSet?.Invoke(val, minH);
+                    else
+                        OnPlayerHealth?.Invoke(delta, minH);
+                    break;
+                }
+
+                case "RunActionPack":
+                {
+                    // Execute an action_pack by index (0-based) from the timeline
+                    int packIdx = (int)(action.Props.ActionPack ?? -1f);
+                    Console.WriteLine($"[RunActionPack] Executing ActionPack {packIdx} at time {_currentSongTime:F2}s");
+                    FireActionPack(packIdx);
+                    break;
+                }
+
+                case "ScreenFlash":
+                {
+                    float dur = action.Props.Duration ?? 0.2f;
+                    if (action.Props.TimeUnit == "beats" && dur > 0f)
+                        dur = dur / _level.Data!.EffectiveBpm * 60f;
+
+                    byte r = Clamp255(action.Props.ColorR ?? 255f);
+                    byte g = Clamp255(action.Props.ColorG ?? 255f);
+                    byte b = Clamp255(action.Props.ColorB ?? 255f);
+                    float a = action.Props.Alpha ?? 0.5f;
+
+                    ActiveFlashes.Add(new ScreenFlash
+                    {
+                        Color    = new Color(r, g, b) * a,
+                        Duration = Math.Max(0.01f, dur),
+                        Elapsed  = 0f,
+                    });
+                    break;
+                }
+
+                case "CameraShake":
+                {
+                    float strength = action.Props.Strength ?? 10f;
+                    float delay    = action.Props.Delay    ?? 0.05f;
+                    float shakes   = action.Props.Shakes   ?? 3f;
+                    // Convert delay from beats if needed
+                    if (action.Props.TimeUnit == "beats" && delay > 0f)
+                        delay = delay / _level.Data!.EffectiveBpm * 60f;
+                    Camera?.StartShake(strength, delay, shakes);
+                    break;
+                }
+
+                case "GUI":
+                    // GUI events control HUD visibility (health bar, score, etc.)
+                    // Supports both {"visible": bool} and {"value": bool} prop formats.
+                    HudVisible = action.Props.VisibleBool
+                              ?? action.Props.Value
+                              ?? true;
+                    break;
+            }
+        }
+    }
+
+    /// <summary>
+    /// Execute an action_pack by index (0-based).
+    /// Called from NoteRenderer callbacks when onPressEvent/onMissEvent fires.
+    /// </summary>
+    public void FireActionPack(int packIndex)
+    {
+        var packs = _level.Events.ActionPacks;
+        if (packIndex < 0 || packIndex >= packs.Count)
+        {
+            Console.WriteLine($"[FireActionPack] ERROR: Invalid pack index {packIndex} (total packs: {packs.Count})");
+            return;
+        }
+        
+        Console.WriteLine($"[FireActionPack] Firing pack {packIndex} with {packs[packIndex].Actions.Count} actions");
+        
+        foreach (var action in packs[packIndex].Actions)
+        {
+            var fakeEvent = new FnmmEvent { Time = 0f };
+            fakeEvent.Actions.Add(action);
+            FireEvent(fakeEvent);
+        }
+    }
+
+    // ── Helpers ──────────────────────────────────────────────────────────────
+
+    // Object indices are 0-74
+    private bool ValidObj(int idx) => idx >= 0 && idx < _objAnimators.Length;
+
+    private static byte Clamp255(float v) => (byte)Math.Clamp(v, 0f, 255f);
+
+    /// <summary>Converts beats to seconds using the level's effective BPM.</summary>
+    private static float BeatsToSeconds(float beats, float bpm)
+    {
+        return beats / bpm * 60f;
+    }
+
+    /// <summary>Cancels any active transform tween for the specified object.</summary>
+    private void CancelObjectTween(int objIdx)
+    {
+        for (int i = _tweens.Count - 1; i >= 0; i--)
+        {
+            if (_tweens[i].ObjIndex == objIdx)
+            {
+                _tweens.RemoveAt(i);
+            }
+        }
+    }
+    
+    /// <summary>Gets the easing function by name.</summary>
+    private static Func<float, float> GetEaseFunction(string name) => name.ToLower() switch
+    {
+        "linear"   => (t) => t,
+        "quad"     => (t) => t * t,
+        "cubic"    => (t) => t * t * t,
+        "sine"     => (t) => MathF.Sin(t * MathF.PI / 2f),
+        "expo"     => (t) => t >= 1f ? 1f : 1f - MathF.Pow(2f, -10f * t),
+        "circ"     => (t) => 1f - MathF.Sqrt(1f - t * t),
+        "bounce"   => EaseBounce,
+        "elastic"  => EaseElastic,
+        _          => (t) => t,  // default to linear
+    };
+    
+    private static float EaseBounce(float t)
+    {
+        if (t < 1f / 2.75f) return 7.5625f * t * t;
+        if (t < 2f / 2.75f) { t -= 1.5f / 2.75f;   return 7.5625f * t * t + 0.75f; }
+        if (t < 2.5f / 2.75f) { t -= 2.25f / 2.75f; return 7.5625f * t * t + 0.9375f; }
+        t -= 2.625f / 2.75f; return 7.5625f * t * t + 0.984375f;
+    }
+    
+    private static float EaseElastic(float t)
+    {
+        if (t <= 0f) return 0f;
+        if (t >= 1f) return 1f;
+        return MathF.Pow(2f, -10f * t) * MathF.Sin((t - 0.075f) * (2f * MathF.PI) / 0.3f) + 1f;
+    }
+
+    /// <summary>
+    /// Write unknown event types to a log file next to the exe.
+    /// Call this when the song ends.
+    /// </summary>
+    public void FlushUnknownLog(string levelName)
+    {
+        if (_unknownTypes.Count == 0) return;
+        try
+        {
+            string logPath = System.IO.Path.Combine(
+                AppContext.BaseDirectory, "unknown_events.log");
+            var lines = new System.Collections.Generic.List<string>
+            {
+                $"=== {levelName} — {DateTime.Now:yyyy-MM-dd HH:mm:ss} ===",
+            };
+            foreach (var t in _unknownTypes.OrderBy(x => x))
+                lines.Add($"  UNKNOWN EVENT TYPE: {t}");
+            lines.Add("");
+            System.IO.File.AppendAllLines(logPath, lines);
+            Console.WriteLine($"[FunkyMakerPlayer] Unknown events logged to {logPath}");
+        }
+        catch { }
+    }
+}

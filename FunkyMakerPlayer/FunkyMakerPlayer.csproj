@@ -1,0 +1,122 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <RollForward>Major</RollForward>
+    <PublishReadyToRun>false</PublishReadyToRun>
+    <TieredCompilation>false</TieredCompilation>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <Version>0.4.2</Version>
+    <AssemblyVersion>0.4.2</AssemblyVersion>
+    <!-- Icon and manifest only apply on Windows builds -->
+    <ApplicationManifest Condition="'$(RuntimeIdentifier)' != 'linux-x64'">app.manifest</ApplicationManifest>
+    <ApplicationIcon Condition="'$(RuntimeIdentifier)' != 'linux-x64'">Icon.ico</ApplicationIcon>
+  </PropertyGroup>
+  
+  <!-- Single-file publish configuration (both platforms) -->
+  <PropertyGroup Condition="'$(Configuration)' == 'Release'">
+    <PublishSingleFile>true</PublishSingleFile>
+    <SelfContained>true</SelfContained>
+    <PublishTrimmed>false</PublishTrimmed>
+    <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
+    <IncludeAllContentForSelfExtract>true</IncludeAllContentForSelfExtract>
+    <!-- Bundle ALL managed assemblies into the single exe, including NuGet deps -->
+    <EnableCompressionInSingleFile>true</EnableCompressionInSingleFile>
+  </PropertyGroup>
+
+  <!-- Windows-specific: WinExe hides the console, app.manifest, icon -->
+  <PropertyGroup Condition="'$(Configuration)' == 'Release' And '$(RuntimeIdentifier)' == 'win-x64'">
+    <OutputType>WinExe</OutputType>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <ApplicationIcon>Icon.ico</ApplicationIcon>
+  </PropertyGroup>
+
+  <!-- Linux-specific: keep Exe (no WinExe on Linux) -->
+  <PropertyGroup Condition="'$(Configuration)' == 'Release' And '$(RuntimeIdentifier)' == 'linux-x64'">
+    <OutputType>Exe</OutputType>
+  </PropertyGroup>
+  
+  <!-- Exclude Legacy folder from compilation -->
+  <ItemGroup>
+    <Compile Remove="Legacy\**" />
+    <EmbeddedResource Remove="Legacy\**" />
+    <None Remove="Legacy\**" />
+  </ItemGroup>
+  
+  <ItemGroup>
+    <None Remove="Icon.ico" />
+    <None Remove="Icon.bmp" />
+  </ItemGroup>
+  <ItemGroup>
+    <EmbeddedResource Include="Icon.ico">
+      <LogicalName>Icon.ico</LogicalName>
+    </EmbeddedResource>
+    <EmbeddedResource Include="Icon.bmp">
+      <LogicalName>Icon.bmp</LogicalName>
+    </EmbeddedResource>
+  </ItemGroup>
+  
+  <!-- Copy Assets folder to output directory -->
+  <ItemGroup>
+    <None Include="..\Assets\**\*.*" Link="Assets\%(RecursiveDir)%(Filename)%(Extension)">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+  </ItemGroup>
+
+  <!-- Create notestyles folder in output (empty placeholder for custom skins) -->
+  <ItemGroup>
+    <None Include="notestyles\README.txt" Condition="Exists('notestyles\README.txt')">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <Link>notestyles\README.txt</Link>
+    </None>
+  </ItemGroup>
+
+  <!-- Copy notesplashes folder to output directory (custom splash effects) -->
+  <ItemGroup>
+    <None Include="..\notesplashes\**\*.*" Link="notesplashes\%(RecursiveDir)%(Filename)%(Extension)">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+  </ItemGroup>
+
+  <!-- Copy Icon.ico next to the exe (like FNF does) -->
+  <ItemGroup>
+    <None Include="Icon.ico">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <Link>Icon.ico</Link>
+    </None>
+    <None Include="version.txt">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <Link>version.txt</Link>
+    </None>
+  </ItemGroup>
+  
+  <ItemGroup>
+    <PackageReference Include="Microsoft.AspNetCore.SignalR.Client" Version="10.0.8" />
+    <PackageReference Include="MonoGame.Extended" Version="4.0.3" />
+    <PackageReference Include="MonoGame.Framework.DesktopGL" Version="3.8.*" />
+    <PackageReference Include="MonoGame.Content.Builder.Task" Version="3.8.*" />
+    <PackageReference Include="NVorbis" Version="0.10.5" />
+    <PackageReference Include="SharpCompress" Version="0.39.0">
+      <ExcludeAssets>none</ExcludeAssets>
+    </PackageReference>
+    <PackageReference Include="SixLabors.ImageSharp" Version="3.1.12" />
+    <PackageReference Include="DiscordRichPresence" Version="1.2.1.24" />
+    <PackageReference Include="FontStashSharp.MonoGame" Version="1.3.7" />
+  </ItemGroup>
+  
+  <!-- Windows Forms for file dialog (Windows only) -->
+  <ItemGroup Condition="'$(RuntimeIdentifier)' != 'linux-x64'">
+    <PackageReference Include="System.Windows.Forms" Version="4.0.0" />
+  </ItemGroup>
+  
+  <!-- Native libraries not needed for WindowsDX (DirectX is built into Windows) -->
+
+  <!-- Ensure native libraries (SDL2.dll, etc.) are included in single-file publish -->
+  <Target Name="IncludeNativeLibraries" AfterTargets="Publish">
+    <ItemGroup>
+      <NativeLibs Include="$(PublishDir)runtimes\**\*.dll" />
+    </ItemGroup>
+    <Copy SourceFiles="@(NativeLibs)" DestinationFolder="$(PublishDir)" SkipUnchangedFiles="true" />
+  </Target>
+</Project>

@@ -1,0 +1,52 @@
+# Build results
+[Bb]in/
+[Oo]bj/
+[Bb]uilds/
+[Dd]ebug/
+[Rr]elease/
+x64/
+x86/
+bld/
+[Bb]in/
+[Oo]bj/
+
+# Visual Studio cache/options
+.vs/
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
+
+# Build artifacts
+*.dll
+*.exe
+*.pdb
+*.cache
+*.log
+
+# NuGet Packages
+*.nupkg
+**/packages/*
+!**/packages/build/
+
+# MonoGame Content
+**/Content/**/*.xnb
+
+# Levels and mods (optional - remove if you want to include them)
+**/levels/
+**/mods/
+
+# Temporary files
+*.tmp
+*.temp
+*.rar
+*.zip
+
+# User-specific files
+*.suo
+*.user
+*.sln.docstates
+
+# OS files
+Thumbs.db
+.DS_Store
