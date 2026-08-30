@@ -3974,19 +3974,9 @@ public partial class Game1 : Game
                 wantMode = 0;
             else
             {
-                // Fixed objects with position events should use mode 1 (no matrix transform)
-                // to allow EventProcessor to control position directly in screen space
-                if (hasPositionEvents)
-                {
-                    // Objects with position events: use mode 1 (no camera matrix)
-                    wantMode = 1;
-                }
-                else
-                {
-                    // Static Fixed objects: check if normalized
-                    bool normalized = obj.X >= 0f && obj.X <= 1f && obj.Y >= 0f && obj.Y <= 1f;
-                    wantMode = normalized ? 1 : 2;
-                }
+                // Use initial coordinates (obj.X/Y) to determine if normalized, not current position
+                bool normalized = obj.X >= 0f && obj.X <= 1f && obj.Y >= 0f && obj.Y <= 1f;
+                wantMode = normalized ? 1 : 2;
             }
 
             if (wantMode != currentMode || wantBilinear != currentBilinear)
