@@ -3992,53 +3992,37 @@ public partial class Game1 : Game
             {
                 if (wantMode == 1)
                 {
-                    // For fixed objects with Transform arrays:
-                    bool hasTransformArray = obj.Transform != null && obj.Transform.Count > 1;
-                    bool hasPositionEvents = hasTransformArray && _events.HasPositionEvents(i);
-                    bool hasActiveTween = _events.HasActiveTween(i);
+                    // Normalized coordinates (0-1) - convert to screen pixels
+                    anim.Position = new Vector2(pos.X * sw, pos.Y * sh);
                     
-                    if (!hasPositionEvents)
-                    {
-                        // No position events - update position and scale from Transform
-                        bool isNormalized = Math.Abs(pos.X) < 10f && Math.Abs(pos.Y) < 10f;
-                        
-                        if (isNormalized)
-                        {
-                            // Normalized coordinates (0-1 range) - convert to screen pixels
-                            anim.Position = new Vector2(pos.X * sw, pos.Y * sh);
-                        }
-                        else
-                        {
-                            // Already in pixel coordinates - use directly
-                            anim.Position = new Vector2(pos.X, pos.Y);
-                        }
-                        
-                        // Update scale from Transform (don't multiply here, FixedPixelScale handles it)
-                        anim.Scale = new Vector2(scale.X, scale.Y);
-                    }
-                    else if (!hasActiveTween)
-                    {
-                        // Has position events but NO active tween right now
-                        // Update scale from Transform (don't multiply here, FixedPixelScale handles it)
-                        anim.Scale = new Vector2(scale.X, scale.Y);
-                    }
-                    
-                    // Use camera scale as FixedPixelScale to match world object size
+                    // Calculate FixedPixelScale using the original formula
+                    const float CAM_W = 1920f;
+                    const float CAM_H = 1080f;
                     float camScale = _events?.Camera.Scale ?? 1f;
-                    anim.FixedPixelScale = hasTransformArray ? camScale : CalculateFixedPixelScale(sw, sh);
+                    float actual = Math.Min((float)sw / (CAM_W * camScale), (float)sh / (CAM_H * camScale));
+                    float basePs = Math.Min((float)sw / CAM_W, (float)sh / CAM_H);
+                    anim.FixedPixelScale = Math.Min(actual, basePs);
+                    
+                    // For Transform arrays: update scale from GetScale()
+                    bool hasTransformArray = obj.Transform != null && obj.Transform.Count > 1;
+                    if (hasTransformArray)
+                    {
+                        anim.Scale = new Vector2(scale.X, scale.Y);
+                    }
                 }
                 else
                 {
                     // Fixed world coordinates (mode 2)
+                    anim.Position = new Vector2(pos.X, pos.Y);
+                    anim.FixedPixelScale = 0f;
+                    
+                    // For Transform arrays: update scale from GetScale()
                     bool hasTransformArray = obj.Transform != null && obj.Transform.Count > 1;
                     bool hasPositionEvents = hasTransformArray && _events.HasPositionEvents(i);
-                    
-                    if (!hasPositionEvents)
+                    if (hasTransformArray && !hasPositionEvents)
                     {
-                        anim.Position = new Vector2(pos.X, pos.Y);
                         anim.Scale = new Vector2(scale.X, scale.Y);
                     }
-                    anim.FixedPixelScale = 0f;
                 }
             }
             else
