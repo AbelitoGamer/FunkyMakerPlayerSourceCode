@@ -3995,13 +3995,13 @@ public partial class Game1 : Game
             bool hasActiveTween = _events.HasActiveTween(i);
             
             // Update position and scale if NOT controlled by active tween
-            // For Fixed objects with wantMode == 2 (pixel coordinates), DON'T update - EventProcessor handles it
             if (!hasActiveTween)
             {
-                if (obj.Fixed && wantMode == 2)
+                if (obj.Fixed && wantMode == 2 && hasPositionEvents)
                 {
-                    // Fixed pixel-coordinate objects: EventProcessor controls position/scale via tweens
-                    // Don't override here
+                    // Fixed pixel-coordinate objects with position events:
+                    // EventProcessor controls position/scale via tweens - don't override
+                    // Position is already set by EventProcessor in anim.Position
                 }
                 else if (!hasPositionEvents || hasTransformArray)
                 {
@@ -4024,10 +4024,16 @@ public partial class Game1 : Game
                     float basePs = Math.Min((float)sw / CAM_W, (float)sh / CAM_H);
                     anim.FixedPixelScale = Math.Min(actual, basePs);
                 }
-                else
+                else // wantMode == 2
                 {
                     // Fixed world coordinates (mode 2): use same FixedPixelScale formula as mode 1
-                    // EventProcessor controls position via tweens, so we keep current position
+                    if (!hasPositionEvents)
+                    {
+                        // No position events: update position from Transform
+                        anim.Position = new Vector2(pos.X, pos.Y);
+                    }
+                    // else: EventProcessor controls position via tweens, keep current anim.Position
+                    
                     const float CAM_W = 1920f;
                     const float CAM_H = 1080f;
                     float camScale = _events?.Camera.Scale ?? 1f;
