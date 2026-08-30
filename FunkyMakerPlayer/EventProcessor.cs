@@ -1091,8 +1091,9 @@ public class EventProcessor
                                 var transform = obj.Transform[posIdx];
                                 var transformScale = new Vector2(transform.Scale.X, transform.Scale.Y);
                                 
-                                // Fixed objects: multiply by camera scale to match world object size
-                                if (obj.Fixed)
+                                // World objects: multiply by camera scale
+                                // Fixed objects: use scale directly (FixedPixelScale handles camera-independent rendering)
+                                if (!obj.Fixed)
                                 {
                                     float camScale = Camera.Scale;
                                     _objAnimators[objIdx]!.Scale = transformScale * camScale;
@@ -1170,9 +1171,9 @@ public class EventProcessor
                                 var transform = obj.Transform[posIdx];
                                 var transformScale = new Vector2(transform.Scale.X, transform.Scale.Y);
                                 
-                                // Fixed objects: multiply by camera scale to match world object size
-                                // This compensates for the lack of camera zoom on Fixed objects
-                                if (obj.Fixed)
+                                // World objects: multiply by camera scale
+                                // Fixed objects: use scale directly (FixedPixelScale handles camera-independent rendering)
+                                if (!obj.Fixed)
                                 {
                                     float camScale = Camera.Scale;
                                     endScale = transformScale * camScale;
