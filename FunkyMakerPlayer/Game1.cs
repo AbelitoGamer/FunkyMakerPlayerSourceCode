@@ -3970,7 +3970,8 @@ public partial class Game1 : Game
                 wantMode = 0;
             else
             {
-                bool normalized = pos.X >= 0f && pos.X <= 1f && pos.Y >= 0f && pos.Y <= 1f;
+                // Use initial coordinates (obj.X/Y) to determine if normalized, not current position
+                bool normalized = obj.X >= 0f && obj.X <= 1f && obj.Y >= 0f && obj.Y <= 1f;
                 wantMode = normalized ? 1 : 2;
             }
 
@@ -3994,9 +3995,15 @@ public partial class Game1 : Game
             bool hasActiveTween = _events.HasActiveTween(i);
             
             // Update position and scale if NOT controlled by active tween
+            // For Fixed objects with wantMode == 2 (pixel coordinates), DON'T update - EventProcessor handles it
             if (!hasActiveTween)
             {
-                if (!hasPositionEvents || hasTransformArray)
+                if (obj.Fixed && wantMode == 2)
+                {
+                    // Fixed pixel-coordinate objects: EventProcessor controls position/scale via tweens
+                    // Don't override here
+                }
+                else if (!hasPositionEvents || hasTransformArray)
                 {
                     anim.Position = new Vector2(pos.X, pos.Y);
                     anim.Scale = new Vector2(scale.X, scale.Y);
@@ -4008,7 +4015,8 @@ public partial class Game1 : Game
             {
                 if (wantMode == 1)
                 {
-                    // Normalized coordinates (0-1): scale to screen pixels
+                    // Normalized coordinates (0-1): scale to screen pixels and apply FixedPixelScale
+                    anim.Position = new Vector2(pos.X * sw, pos.Y * sh);
                     const float CAM_W = 1920f;
                     const float CAM_H = 1080f;
                     float camScale = _events?.Camera.Scale ?? 1f;
@@ -4018,7 +4026,8 @@ public partial class Game1 : Game
                 }
                 else
                 {
-                    // Fixed world coordinates (mode 2)
+                    // Fixed world coordinates (mode 2): use fixedWorldMatrix, no FixedPixelScale
+                    anim.Position = new Vector2(pos.X, pos.Y);
                     anim.FixedPixelScale = 0f;
                 }
             }

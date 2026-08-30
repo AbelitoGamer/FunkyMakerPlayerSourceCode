@@ -1091,17 +1091,8 @@ public class EventProcessor
                                 var transform = obj.Transform[posIdx];
                                 var transformScale = new Vector2(transform.Scale.X, transform.Scale.Y);
                                 
-                                // World objects: multiply by camera scale
-                                // Fixed objects: use scale directly (FixedPixelScale handles camera-independent rendering)
-                                if (!obj.Fixed)
-                                {
-                                    float camScale = Camera.Scale;
-                                    _objAnimators[objIdx]!.Scale = transformScale * camScale;
-                                }
-                                else
-                                {
-                                    _objAnimators[objIdx]!.Scale = transformScale;
-                                }
+                                // Use scale directly from Transform - it's already in the correct coordinate system
+                                _objAnimators[objIdx]!.Scale = transformScale;
                             }
                             
                             Console.WriteLine($"[ObjectPositionSet] t={_currentSongTime:F2} Obj {objIdx} ({objName}) → pos=({targetPos.X:F3},{targetPos.Y:F3}) posIdx={posIdx} visible={wasVisible} (instant)");
@@ -1171,17 +1162,8 @@ public class EventProcessor
                                 var transform = obj.Transform[posIdx];
                                 var transformScale = new Vector2(transform.Scale.X, transform.Scale.Y);
                                 
-                                // World objects: multiply by camera scale
-                                // Fixed objects: use scale directly (FixedPixelScale handles camera-independent rendering)
-                                if (!obj.Fixed)
-                                {
-                                    float camScale = Camera.Scale;
-                                    endScale = transformScale * camScale;
-                                }
-                                else
-                                {
-                                    endScale = transformScale;
-                                }
+                                // Use scale directly from Transform - it's already in the correct coordinate system
+                                endScale = transformScale;
                             }
                             
                             string easeName = action.Props.EasingType ?? "linear";
