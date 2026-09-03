@@ -18,7 +18,7 @@ public partial class FreeplayMenu
     // ── Public ───────────────────────────────────────────────────────────────
     public bool   LevelChosen  { get; set; }
     public string LevelPath    { get; private set; } = "";
-    /// <summary>-1=none, 1=HUD Editor, 2=Credits, 3=Multiplayer — consumed once read</summary>
+    /// <summary>-1=none, 1=HUD Editor, 2=Credits, 3=Multiplayer, 4=Import File (Android), 5=Open Mods Folder (Android) — consumed once read</summary>
     public int    MenuAction   { get; internal set; } = -1;
     
     /// <summary>Action to call when file picker should be opened (Blazor only)</summary>
@@ -58,7 +58,7 @@ public partial class FreeplayMenu
     private int _lastWindowWidth = 1280;   // Actual window width
     private int _lastWindowHeight = 720;   // Actual window height
 
-    // Main menu selection: 0=Freeplay, 1=HUD Editor, 2=Multiplayer, 3=Credits
+    // Main menu selection: 0=Freeplay, 1=Open Mods (Android) or HUD Editor (Desktop), 2=Import File (Android) or Multiplayer (Desktop), 3=Multiplayer (Android) or Credits (Desktop), 4=Credits (Android)
     private int  _menuSel     = 0;
     private bool _inPanel     = false;  // true when navigating the level list
 
@@ -206,6 +206,8 @@ public partial class FreeplayMenu
             {
                 #if BLAZORGL
                 OnFilePickerRequested?.Invoke();
+                #elif ANDROID
+                OpenAndroidFilePicker();
                 #else
                 OpenFolderBrowser();
                 #endif
@@ -296,16 +298,28 @@ public partial class FreeplayMenu
             if (up)   
             {
                 // Skip disabled items
+                #if ANDROID
                 do {
-                    _menuSel = (_menuSel - 1 + 4) % 4;
+                    _menuSel = (_menuSel - 1 + 5) % 5;  // 5 items on Android
                 } while (!IsMenuItemEnabledInternal(_menuSel));
+                #else
+                do {
+                    _menuSel = (_menuSel - 1 + 4) % 4;  // 4 items on Desktop
+                } while (!IsMenuItemEnabledInternal(_menuSel));
+                #endif
             }
             if (down) 
             {
                 // Skip disabled items  
+                #if ANDROID
                 do {
-                    _menuSel = (_menuSel + 1) % 4;
+                    _menuSel = (_menuSel + 1) % 5;  // 5 items on Android
                 } while (!IsMenuItemEnabledInternal(_menuSel));
+                #else
+                do {
+                    _menuSel = (_menuSel + 1) % 4;  // 4 items on Desktop
+                } while (!IsMenuItemEnabledInternal(_menuSel));
+                #endif
             }
 
             if (enter && IsMenuItemEnabledInternal(_menuSel))
@@ -315,7 +329,27 @@ public partial class FreeplayMenu
                     _panelOpen = true;
                     _inPanel   = true;
                 }
-                else if (_menuSel == 1)  // HUD Editor
+                #if ANDROID
+                else if (_menuSel == 1)  // OPEN MODS (Android only)
+                {
+                    MenuAction = 5;  // Signal to open mods folder
+                }
+                else if (_menuSel == 2)  // IMPORT FILE (Android only)
+                {
+                    MenuAction = 4;  // Signal to open file picker for mods
+                }
+                else if (_menuSel == 3)  // Multiplayer
+                {
+                    MenuAction = 3;  // Signal to open multiplayer menu
+                }
+                else if (_menuSel == 4)  // Credits — fade in
+                {
+                    _transition   = TransitionState.CreditsIn;
+                    _transTimer   = 0f;
+                    _creditsAlpha = 0f;
+                }
+                #else
+                else if (_menuSel == 1)  // HUD Editor (Desktop only)
                 {
                     MenuAction = 1;  // Signal to open HUD editor screen
                 }
@@ -329,6 +363,7 @@ public partial class FreeplayMenu
                     _transTimer   = 0f;
                     _creditsAlpha = 0f;
                 }
+                #endif
             }
         }
 
@@ -423,7 +458,11 @@ public partial class FreeplayMenu
                 Color.White * 0.4f, subSize);
 
             // Menu items — Modern card-style buttons - RESPONSIVE
+            #if ANDROID
+            string[] items = { "FREEPLAY", "OPEN MODS", "IMPORT FILE", "MULTIPLAYER", "CREDITS" };
+            #else
             string[] items = { "FREEPLAY", "HUD EDITOR", "MULTIPLAYER", "CREDITS" };
+            #endif
             float menuY = sh * 0.56f;
             int menuSize = (int)(sh * 0.038f);  // Reducido de 0.058f a 0.038f
             menuSize = Math.Clamp(menuSize, 24, 48);  // Ajustado rango
@@ -1012,8 +1051,42 @@ public partial class FreeplayMenu
         return sb.ToString();
     }
 
-    public static string GetDefaultLevelsFolder() =>
-        Path.Combine(AppContext.BaseDirectory, "mods", "levels");
+    public static string GetDefaultLevelsFolder()
+    {
+#if ANDROID
+        // Use Documents/FunkyMakerPlayerPublicMods/mods/levels/ on Android for easy access
+        var documentsDir = global::Android.OS.Environment.GetExternalStoragePublicDirectory(global::Android.OS.Environment.DirectoryDocuments);
+        if (documentsDir != null)
+        {
+            var funkyMakerPublicDir = System.IO.Path.Combine(documentsDir.AbsolutePath, "FunkyMakerPlayerPublicMods");
+            var modsDir = System.IO.Path.Combine(funkyMakerPublicDir, "mods");
+            var levelsDir = System.IO.Path.Combine(modsDir, "levels");
+            
+            // Create all required subdirectories
+            if (!Directory.Exists(levelsDir))
+            {
+                try
+                {
+                    Directory.CreateDirectory(levelsDir);
+                }
+                catch { }
+            }
+            
+            // Also create fonts, notesplashes, and notestyles folders
+            try
+            {
+                Directory.CreateDirectory(System.IO.Path.Combine(modsDir, "fonts"));
+                Directory.CreateDirectory(System.IO.Path.Combine(modsDir, "notesplashes"));
+                Directory.CreateDirectory(System.IO.Path.Combine(modsDir, "notestyles"));
+            }
+            catch { }
+            
+            return levelsDir;
+        }
+#endif
+        // Desktop/other platforms use local mods folder
+        return Path.Combine(AppContext.BaseDirectory, "mods", "levels");
+    }
     
     // ── Platform-specific menu item state ────────────────────────────────────
     /// <summary>
@@ -1025,7 +1098,7 @@ public partial class FreeplayMenu
         #if BLAZORGL
         return IsMenuItemEnabled(index);
         #else
-        return true;  // All items enabled on desktop
+        return true;  // All items enabled on desktop and Android
         #endif
     }
     
@@ -1154,7 +1227,7 @@ public partial class FreeplayMenu
     /// </summary>
     private void OpenFolderBrowser()
     {
-        #if !BLAZORGL && WINDOWS
+        #if !BLAZORGL && WINDOWS && !ANDROID
         try
         {
             var dialog = new System.Windows.Forms.OpenFileDialog
@@ -1187,4 +1260,31 @@ public partial class FreeplayMenu
         }
         #endif
     }
+
+#if ANDROID
+    /// <summary>
+    /// Opens Android file picker to select .FNMM files.
+    /// </summary>
+    private async void OpenAndroidFilePicker()
+    {
+        try
+        {
+            var filePath = await PlatformPaths.OpenFilePickerAsync();
+            
+            if (!string.IsNullOrEmpty(filePath))
+            {
+                Console.WriteLine($"[FreeplayMenu] File selected: {filePath}");
+                Refresh();  // Reload level list
+            }
+            else
+            {
+                Console.WriteLine("[FreeplayMenu] File picker cancelled");
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[FreeplayMenu] Error opening Android file picker: {ex.Message}");
+        }
+    }
+#endif
 }

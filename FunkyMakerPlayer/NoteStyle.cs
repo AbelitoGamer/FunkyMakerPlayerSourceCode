@@ -466,6 +466,31 @@ public class NoteStyle
                 string x = Path.ChangeExtension(p, ".xml");
                 if (File.Exists(p) && File.Exists(x)) { notePng = p; noteXml = x; }
             }
+            
+            // NEW: If still not found, search for ANY PNG+XML pair in the folder
+            if (notePng == null)
+            {
+                try
+                {
+                    var pngFiles = Directory.GetFiles(folderPath, "*.png", SearchOption.TopDirectoryOnly);
+                    foreach (var png in pngFiles)
+                    {
+                        string xml = Path.ChangeExtension(png, ".xml");
+                        if (File.Exists(xml))
+                        {
+                            notePng = png;
+                            noteXml = xml;
+                            Console.WriteLine($"[NoteStyle] Auto-detected note files: {Path.GetFileName(png)} + {Path.GetFileName(xml)}");
+                            break;
+                        }
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"[NoteStyle] Error searching for PNG+XML files: {ex.Message}");
+                }
+            }
+            
             if (notePng == null) return null;
 
             Texture2D noteTex;
@@ -536,6 +561,31 @@ public class NoteStyle
                 string x = Path.ChangeExtension(p, ".xml");
                 if (File.Exists(p) && File.Exists(x)) { recPng = p; recXml = x; }
             }
+            
+            // NEW: If still not found, search for any OTHER PNG+XML pair (different from notes)
+            if (recPng == null)
+            {
+                try
+                {
+                    var pngFiles = Directory.GetFiles(folderPath, "*.png", SearchOption.TopDirectoryOnly);
+                    foreach (var png in pngFiles)
+                    {
+                        string xml = Path.ChangeExtension(png, ".xml");
+                        if (File.Exists(xml) && png != notePng)
+                        {
+                            recPng = png;
+                            recXml = xml;
+                            Console.WriteLine($"[NoteStyle] Auto-detected receptor files: {Path.GetFileName(png)} + {Path.GetFileName(xml)}");
+                            break;
+                        }
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"[NoteStyle] Error searching for receptor PNG+XML files: {ex.Message}");
+                }
+            }
+            
             // If still not found, try using the same atlas as notes (some skins combine both)
             if (recPng == null) { recPng = notePng; recXml = noteXml; }
 
@@ -843,7 +893,7 @@ public class NoteStyle
     public static List<string> GetAvailableStyles(string assetsRoot)
     {
         var styles = new List<string> { "Default" };
-        string stylesDir = Path.Combine(AppContext.BaseDirectory, "mods", "notestyles");
+        string stylesDir = PlatformPaths.GetNoteStylesPath();
         if (Directory.Exists(stylesDir))
         {
             foreach (var dir in Directory.GetDirectories(stylesDir))
@@ -868,7 +918,7 @@ public class NoteStyle
         if (name == "Default" || string.IsNullOrEmpty(name))
             return LoadFromFolder(assetsRoot, gd);
 
-        string stylesDir = Path.Combine(AppContext.BaseDirectory, "mods", "notestyles");
+        string stylesDir = PlatformPaths.GetNoteStylesPath();
         string skinDir   = Path.Combine(stylesDir, name);
         if (!Directory.Exists(skinDir))
             return LoadFromFolder(assetsRoot, gd);  // fallback to default

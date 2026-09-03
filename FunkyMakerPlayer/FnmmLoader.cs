@@ -385,33 +385,36 @@ public static class FnmmLoader
     {
         try
         {
-            using var doc = JsonDocument.Parse(sceneJson);
-            if (doc.RootElement.TryGetProperty("cameras", out var camerasArray) && 
-                camerasArray.ValueKind == JsonValueKind.Array)
+            Console.WriteLine($"[FnmmLoader] ========================================");
+            Console.WriteLine($"[FnmmLoader] Detecting camera format for {scene.Cameras.Count} cameras");
+            
+            // After JSON deserialization, check if cameras have NestedPosition populated
+            for (int i = 0; i < scene.Cameras.Count; i++)
             {
-                int index = 0;
-                foreach (var camElement in camerasArray.EnumerateArray())
+                var cam = scene.Cameras[i];
+                
+                if (cam.NestedPosition != null)
                 {
-                    if (index < scene.Cameras.Count)
-                    {
-                        // Check if this camera has a "position" property
-                        bool hasPosition = camElement.TryGetProperty("position", out var positionObj);
-                        scene.Cameras[index].UsesNestedPositionFormat = hasPosition;
-                        
-                        if (hasPosition && positionObj.ValueKind == JsonValueKind.Object)
-                        {
-                            // Manually extract x and y from nested position
-                            if (positionObj.TryGetProperty("x", out var xElement))
-                                scene.Cameras[index].X = (float)xElement.GetDouble();
-                            if (positionObj.TryGetProperty("y", out var yElement))
-                                scene.Cameras[index].Y = (float)yElement.GetDouble();
-                            
-                            Console.WriteLine($"[FnmmLoader] Camera {index} uses nested position format: ({scene.Cameras[index].X}, {scene.Cameras[index].Y})");
-                        }
-                    }
-                    index++;
+                    // Nested format detected - copy position from NestedPosition
+                    cam.X = cam.NestedPosition.X;
+                    cam.Y = cam.NestedPosition.Y;
+                    cam.UsesNestedPositionFormat = true;
+                    
+                    Console.WriteLine($"[FnmmLoader] Camera {i}: NESTED format");
+                    Console.WriteLine($"              Position: ({cam.X:F1}, {cam.Y:F1})");
+                    Console.WriteLine($"              Scale: {cam.Scale:F3}");
+                }
+                else
+                {
+                    // Legacy format - X and Y are already set directly
+                    cam.UsesNestedPositionFormat = false;
+                    Console.WriteLine($"[FnmmLoader] Camera {i}: LEGACY format");
+                    Console.WriteLine($"              Position: ({cam.X:F1}, {cam.Y:F1})");
+                    Console.WriteLine($"              Scale: {cam.Scale:F3}");
                 }
             }
+            
+            Console.WriteLine($"[FnmmLoader] ========================================");
         }
         catch (Exception ex)
         {

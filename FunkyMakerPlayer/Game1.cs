@@ -105,6 +105,11 @@ public partial class Game1 : Game
     private SpriteFont?           _font;
     private Texture2D?            _pixel;
     public bool                  _isFullscreen = false;  // Public for SettingsManager
+    
+#if ANDROID
+    // ── Touch Controls (Android only) ────────────────────────────────────────
+    private TouchControls? _touchControls;
+#endif
 
     // ── Letterbox render target ───────────────────────────────────────────────
     // The game always renders to a fixed-size target (the level's native resolution),
@@ -275,6 +280,9 @@ public partial class Game1 : Game
     public static float MusicVolume = 0.85f;
     // Bilinear filtering for sprites (smooth vs pixel-perfect)
     public static bool   BilinearFiltering = true;
+    // ── Android Touch Controls Settings ───────────────────────────────────────
+    // Hide touch hitbox colors (android only)
+    public static bool   HideTouchHitboxColors = false;
     // Note style name — "Default" or a folder name in mods/notestyles/
     public static string NoteStyleName     = "Default";
     // NoteSplash style name — "Default" (programmatic) or a folder name in mods/notesplashes/
@@ -347,40 +355,22 @@ public partial class Game1 : Game
     {
         try
         {
-            // Generate crash report inline
-            var report = new System.Text.StringBuilder();
-            report.AppendLine("═══════════════════════════════════════════════════════════════");
-            report.AppendLine("  FUNKYMAKER PLAYER - CRASH REPORT");
-            report.AppendLine("═══════════════════════════════════════════════════════════════");
-            report.AppendLine();
-            report.AppendLine($"Time: {DateTime.Now:yyyy-MM-dd HH:mm:ss}");
-            report.AppendLine($"Version: {typeof(Game1).Assembly.GetName().Version}");
-            report.AppendLine($"Platform: {RuntimeInformation.OSDescription}");
-            report.AppendLine($"Architecture: {RuntimeInformation.ProcessArchitecture}");
-            report.AppendLine($"Framework: {RuntimeInformation.FrameworkDescription}");
-            report.AppendLine($"Context: {context} method");
-            report.AppendLine();
-            report.AppendLine("───────────────────────────────────────────────────────────────");
-            report.AppendLine("  EXCEPTION DETAILS");
-            report.AppendLine("───────────────────────────────────────────────────────────────");
-            report.AppendLine();
-            report.AppendLine(ex.ToString());
-            report.AppendLine();
-            report.AppendLine("═══════════════════════════════════════════════════════════════");
-            
-            string crashReport = report.ToString();
+            // Log the crash
+            CrashLogger.LogException(ex, $"Gameplay error in {context}");
             
             // Write to console
             Console.Error.WriteLine($"\n[GAMEPLAY ERROR in {context}]");
-            Console.Error.WriteLine(crashReport);
+            Console.Error.WriteLine(ex.ToString());
             
-            // Write to crash.log file
+#if !ANDROID
+            // Desktop: Write to crash.log file
             try
             {
                 string crashPath = Path.Combine(AppContext.BaseDirectory, "crash.log");
-                File.WriteAllText(crashPath, crashReport);
+                File.WriteAllText(crashPath, CrashLogger.GetCrashLog());
             }
             catch { /* Ignore if file write fails */ }
+#endif
             
             // Try to show error message in-game if possible
             _errorMsg = $"Gameplay error in {context}: {ex.Message}";
@@ -403,14 +393,19 @@ public partial class Game1 : Game
     {
         _graphics = new GraphicsDeviceManager(this)
         {
+#if ANDROID
+            // Android: use full screen resolution (detected at runtime in Initialize)
+            IsFullScreen = true,
+            SupportedOrientations = DisplayOrientation.Portrait | DisplayOrientation.LandscapeLeft | DisplayOrientation.LandscapeRight,
+#else
             PreferredBackBufferWidth  = 1280,
             PreferredBackBufferHeight = 720,
-            SynchronizeWithVerticalRetrace = true,  // vsync on by default
             HardwareModeSwitch = false,             // borderless windowed fullscreen — allows screen capture
-            #if BLAZORGL
-            // Force HiDef profile for WebGL to support larger textures (up to 16384px vs 2048px in Reach)
+#endif
+            SynchronizeWithVerticalRetrace = true,  // vsync on by default
+            // Force HiDef profile to support larger textures (up to 16384px vs 2048px in Reach)
+            // Required for Android/PC to handle large spritesheets
             GraphicsProfile = GraphicsProfile.HiDef,
-            #endif
         };
         Content.RootDirectory = "Content";
         IsMouseVisible  = true;
@@ -439,12 +434,57 @@ public partial class Game1 : Game
 
     protected override void Initialize()
     {
+#if ANDROID
+        // Android: Adapt to device screen resolution
+        var displayMode = GraphicsAdapter.DefaultAdapter.CurrentDisplayMode;
+        _graphics.PreferredBackBufferWidth = displayMode.Width;
+        _graphics.PreferredBackBufferHeight = displayMode.Height;
+        _graphics.IsFullScreen = true;
+        _graphics.ApplyChanges();
+        
+        // Hide mouse cursor on Android (touch only)
+        IsMouseVisible = false;
+        
+        Console.WriteLine($"[Android] Screen resolution: {displayMode.Width}x{displayMode.Height}");
+        
+        // Initialize crash logger with Android dialog callback
+        CrashLogger.Initialize(crashReport =>
+        {
+            var activity = Microsoft.Xna.Framework.Game.Activity as Platforms.Android.MainActivity;
+            if (activity != null)
+            {
+                Platforms.Android.CrashDialog.Show(activity, crashReport);
+            }
+        });
+        
+        // Initialize mod directories and scan for content
+        string scanSummary = PlatformPaths.InitializeModDirectories();
+        
+        // Show scan result in Toast notification
+        var activity = Microsoft.Xna.Framework.Game.Activity as Platforms.Android.MainActivity;
+        if (activity != null)
+        {
+            activity.RunOnUiThread(() =>
+            {
+                var toast = global::Android.Widget.Toast.MakeText(
+                    activity,
+                    scanSummary,
+                    global::Android.Widget.ToastLength.Long
+                );
+                toast?.Show();
+            });
+        }
+#else
         // Enable Game Mode hints for better recording software detection
         GameModeHelper.EnableGameMode();
         
         Window.AllowUserResizing = true;
         try { SDL_EventState(0x1000 /*SDL_DROPFILE*/, 1 /*SDL_ENABLE*/); } catch { }
         Window.FileDrop += OnFileDrop;
+        
+        // Initialize crash logger (desktop writes to file)
+        CrashLogger.Initialize();
+#endif
 
         // Hook audio device change
         GraphicsDevice.DeviceReset += (_, _) => _audioDeviceReset = true;
@@ -713,8 +753,8 @@ public partial class Game1 : Game
             // Priority: mods/fonts/main.otf > mods/fonts/main.ttf > Assets/Font/MilkyNice.otf
             string? fontPath = null;
             
-            // Check mods/fonts/ first
-            string modsFontsFolder = Path.Combine(AppContext.BaseDirectory, "mods", "fonts");
+            // Check mods/fonts/ first using PlatformPaths (works on Android publicmods)
+            string modsFontsFolder = PlatformPaths.GetFontsPath();
             string[] customFontPaths = {
                 Path.Combine(modsFontsFolder, "main.otf"),
                 Path.Combine(modsFontsFolder, "main.ttf"),
@@ -781,6 +821,15 @@ public partial class Game1 : Game
         _multiplayerHUD = new Multiplayer.MultiplayerHUD(_connectionIndicator);
         _opponentInterpolator = new Multiplayer.OpponentStateInterpolator();
 
+#if ANDROID
+        // Initialize touch controls for Android
+        _touchControls = new TouchControls();
+        _touchControls.Initialize(GraphicsDevice, 
+            GraphicsDevice.PresentationParameters.BackBufferWidth,
+            GraphicsDevice.PresentationParameters.BackBufferHeight);
+        Console.WriteLine("[TouchControls] Initialized for Android");
+#endif
+
         // Load persisted settings — must happen before NoteStyle so NoteStyleName is set
         Settings.Load(this);
 
@@ -805,6 +854,34 @@ public partial class Game1 : Game
             Console.Error.WriteLine($"[FunkyMakerPlayer] {ex}");
         }
     }
+
+#if ANDROID
+    /// <summary>
+    /// Called when the app loses focus (minimized, switched away, etc.)
+    /// Auto-pause to prevent music/gameplay desync on Android
+    /// </summary>
+    protected override void OnDeactivated(object sender, EventArgs args)
+    {
+        base.OnDeactivated(sender, args);
+        
+        // Auto-pause if gameplay is active (not in menus)
+        if (_level != null && _started && !_paused && !_inPauseMenu && !_gameOver)
+        {
+            Console.WriteLine("[Android] App deactivated, auto-pausing gameplay");
+            _inPauseMenu = true;
+            PauseSong();
+        }
+    }
+    
+    /// <summary>
+    /// Called when the app regains focus
+    /// </summary>
+    protected override void OnActivated(object sender, EventArgs args)
+    {
+        base.OnActivated(sender, args);
+        Console.WriteLine("[Android] App reactivated");
+    }
+#endif
 
     
     // ── SetupLevel ───────────────────────────────────────────────────────────
@@ -831,6 +908,8 @@ public partial class Game1 : Game
 
         // ── Window aspect ratio / render target ──────────────────────────────
         bool landscape = _level.Scene.Landscape;
+        
+        // Use fixed resolution for gameplay (letterboxing will be applied)
         int  rtW = landscape ? 1280 : 720;
         int  rtH = landscape ? 720  : 1280;
 
@@ -851,9 +930,10 @@ public partial class Game1 : Game
         // We keep textures alive for the level lifetime.
         // For very wide strips (exceeding GPU max texture size), split into
         // per-frame textures — but only for background/prop sprites (strumLine = -1).
-        int maxTexSize = GraphicsDevice.Adapter.CurrentDisplayMode.Width > 0
-            ? 16384  // safe limit for modern GPUs
-            : 4096;
+        
+        // Get ACTUAL GPU max texture size from OpenGL
+        int maxTexSize = GetGpuMaxTextureSize();
+        Console.WriteLine($"[GPU] Max texture size: {maxTexSize}px (device limit)");
 
         // Build set of sprite names used ONLY by background objects (strumLine < 0)
         // AND never used by characters (strumLine >= 0)
@@ -897,6 +977,8 @@ public partial class Game1 : Game
         int spriteIndex = 0;
         int totalSprites = _level.Sprites.Count;
         var stopwatch = System.Diagnostics.Stopwatch.StartNew();
+        int spritesProcessedSinceLastUpdate = 0;
+        const int SPRITES_PER_UPDATE = 5;  // Update screen every 5 sprites instead of every sprite
         
         foreach (var (name, (def, frames)) in _level.Sprites)
         {
@@ -912,38 +994,15 @@ public partial class Game1 : Game
                     _loadingScreen.CurrentStep = step;
                 }
                 
-                // Every 16ms (~60fps), force a frame render in main window so UI stays responsive
-                if (_loadingScreen != null && stopwatch.ElapsedMilliseconds >= 16)
+                // Update screen every N sprites or every 500ms (whichever comes first)
+                spritesProcessedSinceLastUpdate++;
+                if (_loadingScreen != null && 
+                    (spritesProcessedSinceLastUpdate >= SPRITES_PER_UPDATE || stopwatch.ElapsedMilliseconds >= 500))
                 {
-                    // Update loading screen animation
-                    _loadingScreen.Update(0.016f, false, false, sw, sh);
-                    
-                    // Redraw the loading screen
-                    GraphicsDevice.SetRenderTarget(_renderTarget);
-                    GraphicsDevice.Clear(Color.Black);
-                    _spriteBatch.Begin(samplerState: SamplerState.PointClamp);
-                    _loadingScreen.Draw(_spriteBatch, sw, sh);
-                    _spriteBatch.End();
-                    
-                    // Blit to screen
-                    GraphicsDevice.SetRenderTarget(null);
-                    GraphicsDevice.Clear(Color.Black);
-                    var winBounds = Window.ClientBounds;
-                    int ww = winBounds.Width;
-                    int wh = winBounds.Height;
-                    float scaleX = ww / (float)sw;
-                    float scaleY = wh / (float)sh;
-                    float scale  = Math.Min(scaleX, scaleY);
-                    int   dstW   = (int)(sw * scale);
-                    int   dstH   = (int)(sh * scale);
-                    int   offsetX = (ww - dstW) / 2;
-                    int   offsetY = (wh - dstH) / 2;
-                    _spriteBatch.Begin(samplerState: BilinearFiltering ? SamplerState.LinearClamp : SamplerState.PointClamp);
-                    _spriteBatch.Draw(_renderTarget, new Rectangle(offsetX, offsetY, dstW, dstH), Color.White);
-                    _spriteBatch.End();
-                    
-                    GraphicsDevice.Present();
+                    Console.WriteLine($"[SetupLevel] Rendering loading screen: {_loadingScreen.LoadingProgress * 100:F0}% - {_loadingScreen.CurrentStep}");
+                    RenderLoadingScreen();
                     stopwatch.Restart();
+                    spritesProcessedSinceLastUpdate = 0;
                 }
             }
             spriteIndex++;
@@ -1003,8 +1062,27 @@ public partial class Game1 : Game
             // type 3 (icon): never split — small PNGs
             bool isBgSprite = def.Type == 2.0f || (def.Type == 0.0f && !usedByChar);
 
+            // Track frame processing for loading screen updates
+            // On Android: Update VERY frequently to prevent ANR (every frame OR every 100ms)
+            // On PC: Less frequent updates (every 5 frames OR every 500ms)
+#if ANDROID
+            const int FRAMES_PER_UPDATE = 1;  // Update EVERY frame on Android
+            const int MAX_MS_BETWEEN_UPDATES = 100;  // Max 100ms between updates (ANR limit is 5000ms)
+#else
+            const int FRAMES_PER_UPDATE = 5;
+            const int MAX_MS_BETWEEN_UPDATES = 500;
+#endif
+            var lastFrameUpdateTime = System.Diagnostics.Stopwatch.StartNew();
+            
             for (int fi = 0; fi < frames.Count; fi++)
             {
+                // Update loading screen periodically during frame processing
+                if (fi % FRAMES_PER_UPDATE == 0 || lastFrameUpdateTime.ElapsedMilliseconds > MAX_MS_BETWEEN_UPDATES)
+                {
+                    RenderLoadingScreen();
+                    lastFrameUpdateTime.Restart();
+                }
+                
                 int frameCount = fi < def.Data.Count ? def.Data[fi].FrameCount : 1;
                 // Peek PNG dimensions without full decode to decide split strategy
                 int pngW = 0, pngH = 0;
@@ -1110,21 +1188,31 @@ public partial class Game1 : Game
                 // The key question is whether the INDIVIDUAL FRAME fits in GPU:
                 //   fw0 = pngW / frameCount  (width of one frame)
                 //
-                // Case A: fw0 > maxTexSize — even one frame is too wide for GPU (char only).
-                //   → Downscale the strip so each frame fits exactly at maxTexSize.
+                // Case A: fw0 > maxTexSize OR pngH > maxTexSize — frame dimensions exceed GPU limit
+                //   → Downscale to fit within maxTexSize x maxTexSize
                 //   → Sets DownscaleCompensation so the sprite draws at original visual size.
                 //
-                // Case B: fw0 <= maxTexSize but pngW > maxTexSize (many frames, strip too wide).
+                // Case B: fw0 <= maxTexSize AND pngH <= maxTexSize but pngW > maxTexSize (many frames, strip too wide).
                 //   → Split per-frame (char) or into chunks (bg). Each frame loads fine.
                 //
                 // Case B2: bg single-frame, pngW > maxTexSize — tile into maxTexSize-wide chunks.
                 //   → Full quality, no downscale. SpriteAnimator uses chunk mode to draw.
                 //
-                // Case C: pngW <= maxTexSize — strip fits as-is. Load normally.
-                bool needsDownscale = isCharSprite && fw0 > maxTexSize;
+                // Case C: pngW <= maxTexSize AND pngH <= maxTexSize — texture fits as-is. Load normally.
+                bool needsDownscale = (fw0 > maxTexSize || pngH > maxTexSize);
                 bool needsBgTile    = isBgSprite && actualFrameCount == 1 && pngW > maxTexSize;
-                bool needsSplit     = !needsDownscale && !needsBgTile && pngW > maxTexSize
-                                      && actualFrameCount > 1 && (isBgSprite || isCharSprite);
+                // Apply splitting to ALL sprites that exceed GPU limits, not just bg/char
+                bool needsSplit     = !needsDownscale && !needsBgTile && pngW > maxTexSize && actualFrameCount > 1;
+                
+                // Log when texture exceeds limits
+                if (needsDownscale)
+                {
+                    Console.WriteLine($"[Texture] {name}[{fi}]: Needs downscale - frame size {fw0}x{pngH}px exceeds GPU limit {maxTexSize}px");
+                }
+                else if (needsSplit)
+                {
+                    Console.WriteLine($"[Texture] {name}[{fi}]: Needs split - total width {pngW}px exceeds GPU limit {maxTexSize}px");
+                }
 
                 Texture2D? fullTex = null;
                 if (!needsSplit && !needsBgTile)
@@ -1178,6 +1266,11 @@ public partial class Game1 : Game
 #else
                         fullTex = LoadTextureViaImageSharp(GraphicsDevice, frames[fi]);
 #endif
+                        
+                        // Update loading screen after each texture load (especially important for heavy textures)
+#if ANDROID
+                        RenderLoadingScreen();
+#endif
                     }
                     catch (Exception ex)
                     {
@@ -1221,6 +1314,11 @@ public partial class Game1 : Game
                         {
                             Console.WriteLine($"[Texture] {name}[{fi}]: Atlas packing failed for character");
                         }
+                        
+                        // Update loading screen after atlas packing
+#if ANDROID
+                        RenderLoadingScreen();
+#endif
                     }
                     catch (Exception ex2)
                     {
@@ -1266,6 +1364,11 @@ public partial class Game1 : Game
                                 def.Data[fi].AtlasFrameRects   = packResults[0].FrameCoordinates;
                                 def.Data[fi].FrameWidth        = fw;
                             }
+                            
+                            // Update loading screen after atlas packing
+#if ANDROID
+                            RenderLoadingScreen();
+#endif
                         }
                         else
                         {
@@ -1280,6 +1383,11 @@ public partial class Game1 : Game
                                 def.Data[fi].ChunkFrames  = framesPerChunk;
                                 def.Data[fi].FrameWidth   = fw;
                             }
+                            
+                            // Update loading screen after chunking
+#if ANDROID
+                            RenderLoadingScreen();
+#endif
                         }
                     }
                     else
@@ -1307,6 +1415,11 @@ public partial class Game1 : Game
                                 def.Data[fi].AtlasFrameRects   = packResults[0].FrameCoordinates;
                                 def.Data[fi].FrameWidth        = fw;
                             }
+                            
+                            // Update loading screen after character atlas packing
+#if ANDROID
+                            RenderLoadingScreen();
+#endif
                         }
                         else
                         {
@@ -1320,6 +1433,11 @@ public partial class Game1 : Game
                                 def.Data[fi].ChunkFrames  = 0;
                                 def.Data[fi].FrameWidth   = fw;
                             }
+                            
+                            // Update loading screen after frame splitting
+#if ANDROID
+                            RenderLoadingScreen();
+#endif
                         }
                     }
                     continue;
@@ -1340,6 +1458,11 @@ public partial class Game1 : Game
                         def.Data[fi].ChunkFrames = 1;
                         def.Data[fi].FrameWidth  = tileW;
                     }
+                    
+                    // Update loading screen after tiling
+#if ANDROID
+                    RenderLoadingScreen();
+#endif
                     continue;
                 }
 
@@ -1411,6 +1534,7 @@ public partial class Game1 : Game
         {
             _loadingScreen.LoadingProgress = 0.80f;
             _loadingScreen.CurrentStep = "Textures loaded!";
+            RenderLoadingScreen();  // Force render
         }
 
         // ── Build one animator per scene object (index 0-74) ─────────────────
@@ -1418,6 +1542,7 @@ public partial class Game1 : Game
         {
             _loadingScreen.LoadingProgress = 0.85f;
             _loadingScreen.CurrentStep = "Initializing scene objects...";
+            RenderLoadingScreen();  // Force render
         }
         
         // Each object has a current sprite name that can change via ObjectSpriteSet.
@@ -1452,6 +1577,37 @@ public partial class Game1 : Game
 
                 var pos = obj.GetPosition();
                 var scale = obj.GetScale();
+                
+                // CRITICAL FIX: For Fixed objects with Transform array, use Transform[0] as initial position
+                // This ensures the first ObjectPositionSet tween starts from the EXACT position specified in events
+                if (obj.Fixed && obj.Transform != null && obj.Transform.Count > 0)
+                {
+                    // Use Transform[0] as the initial position for Fixed objects
+                    var transform0 = obj.Transform[0];
+                    bool isNormalized = transform0.Position.X >= 0f && transform0.Position.X <= 1f && 
+                                       transform0.Position.Y >= 0f && transform0.Position.Y <= 1f;
+                    
+                    if (isNormalized)
+                    {
+                        // Convert from normalized to pixels
+                        pos = new Vec2
+                        {
+                            X = transform0.Position.X * rtW,
+                            Y = transform0.Position.Y * rtH
+                        };
+                        Console.WriteLine($"[Scene] Object {i} (Fixed): Using Transform[0].Position converted to pixels: ({pos.X:F1}, {pos.Y:F1})");
+                    }
+                    else
+                    {
+                        // Use Transform[0] directly (already in pixels)
+                        pos = new Vec2
+                        {
+                            X = transform0.Position.X,
+                            Y = transform0.Position.Y
+                        };
+                        Console.WriteLine($"[Scene] Object {i} (Fixed): Using Transform[0].Position as-is: ({pos.X:F1}, {pos.Y:F1})");
+                    }
+                }
                 
                 Console.WriteLine($"[Scene] Object {i} pos=({pos.X}, {pos.Y}), scale=({scale.X}, {scale.Y}), textures={textures.Count}");
 
@@ -1512,6 +1668,7 @@ public partial class Game1 : Game
         {
             _loadingScreen.LoadingProgress = 0.90f;
             _loadingScreen.CurrentStep = "Loading icons...";
+            RenderLoadingScreen();  // Force render
         }
         
         // FNF convention: icons[0] = opponent (left/red side), icons[1] = player (right/green side)
@@ -1637,6 +1794,15 @@ public partial class Game1 : Game
             renderer.SetSplashStyle(_noteSplashStyle);  // Apply splash style (null = programmatic default)
             // Set whether this strumline is controlled by local player (always strumline 0)
             renderer.SetIsPlayer(i == 0);
+            
+#if ANDROID
+            // Set touch controls for Android input detection (player strumline only)
+            if (i == 0 && _touchControls != null)
+            {
+                renderer.SetTouchControls(_touchControls);
+            }
+#endif
+            
             // Opponent strumline (index 1): always semi-transparent so player doesn't confuse it with theirs
             // In multiplayer, always show opponent regardless of HideOpponentStrumline setting
             if (i == 1)
@@ -1802,6 +1968,7 @@ public partial class Game1 : Game
         {
             _loadingScreen.LoadingProgress = 0.93f;
             _loadingScreen.CurrentStep = "Initializing events...";
+            RenderLoadingScreen();  // Force render
         }
         
         _events = new EventProcessor(_level, _objAnimators, texCache);
@@ -1852,6 +2019,7 @@ public partial class Game1 : Game
         {
             _loadingScreen.LoadingProgress = 0.96f;
             _loadingScreen.CurrentStep = "Loading music...";
+            RenderLoadingScreen();  // Force render
         }
         
         if (_level.MusicData != null)
@@ -1982,12 +2150,46 @@ public partial class Game1 : Game
     private void UpdateInternal(GameTime gameTime)
     {
         var kb  = Keyboard.GetState();
+        
+#if ANDROID
+        // Merge touch controls with keyboard input (Android only)
+        kb = MergeTouchWithKeyboard(kb);
+#endif
+        
+#if ANDROID
+        // Update touch controls
+        _touchControls?.Update();
+        
+        // Auto-switch touch control mode based on game state
+        if (_touchControls != null)
+        {
+            bool inGameplay = _level != null && _started && !_inPauseMenu && 
+                             !_inFreeplay && !(_settingsManager?.IsActive ?? false) &&
+                             !(_arrowsMenu?.IsActive ?? false) && !(_splashMenu?.IsActive ?? false) &&
+                             !(_countdownMenu?.IsActive ?? false) && !(_fontMenu?.IsActive ?? false) &&
+                             !_inMultiplayer && !_inMainSettings && !_inHudEditor;
+            
+            var targetMode = inGameplay ? TouchControls.ControlMode.Gameplay : TouchControls.ControlMode.Menu;
+            if (_touchControls.GetMode() != targetMode)
+            {
+                _touchControls.SetMode(targetMode);
+            }
+        }
+        
+        // Merge touch input into keyboard state for seamless integration
+        kb = MergeTouchWithKeyboard(kb);
+#endif
+        
         float dt = Math.Min((float)gameTime.ElapsedGameTime.TotalSeconds, 0.1f);  // clamp to 100ms max to prevent camera jumps on first frame
         _lastDt  = gameTime.ElapsedGameTime.TotalSeconds;
 
         // ESC opens pause menu (or settings if no level loaded)
         // Skip if in arrows or splash menu (they handle ESC themselves)
-        if (kb.IsKeyDown(Keys.Escape) && !_prevKb.IsKeyDown(Keys.Escape) && 
+        // P key also pauses (for touch controls)
+        bool escPressedForPause = kb.IsKeyDown(Keys.Escape) && !_prevKb.IsKeyDown(Keys.Escape);
+        bool pPressed = kb.IsKeyDown(Keys.P) && !_prevKb.IsKeyDown(Keys.P);
+        
+        if ((escPressedForPause || pPressed) && 
             !(_arrowsMenu?.IsActive ?? false) && !(_splashMenu?.IsActive ?? false) &&
             !(_countdownMenu?.IsActive ?? false) && !(_fontMenu?.IsActive ?? false))
         {
@@ -2020,6 +2222,10 @@ public partial class Game1 : Game
             {
                 // In settings - go back to pause menu
                 if (_settingsManager != null) _settingsManager.IsActive = false;
+#if ANDROID
+                // Hide Q and E buttons when leaving settings
+                _touchControls?.SetSettingsButtonsVisible(false);
+#endif
                 _inPauseMenu = true;
                 // Never auto-resume when going back to pause menu — user stays paused
                 _pausedByTimeskip = false;
@@ -2173,6 +2379,11 @@ public partial class Game1 : Game
         // ── Settings menu ────────────────────────────────────────────────────
         if (_settingsManager?.IsActive == true && _settingsManager != null)
         {
+#if ANDROID
+            // Show Q and E buttons for tab navigation on Android
+            _touchControls?.SetSettingsButtonsVisible(true);
+#endif
+            
             // Tab navigation with Q/E
             if (kb.IsKeyDown(Keys.Q) && !_prevKb.IsKeyDown(Keys.Q))
                 _settingsManager.PrevTab();
@@ -2235,6 +2446,10 @@ public partial class Game1 : Game
                 
                 if (result.ExitMenu)
                 {
+#if ANDROID
+                    // Hide Q and E buttons when exiting settings menu
+                    _touchControls?.SetSettingsButtonsVisible(false);
+#endif
                     if (_level != null)
                         _inPauseMenu = true;
                     if (_pausedByTimeskip && _paused && _started && _level != null)
@@ -2352,6 +2567,20 @@ public partial class Game1 : Game
                 _multiplayerMenu?.ResetInputCooldown();
                 _freeplay.MenuAction = -1;
             }
+            #if ANDROID
+            // Check if user selected IMPORT FILE (Android only)
+            if (_freeplay.MenuAction == 4)
+            {
+                OpenAndroidFilePicker();
+                _freeplay.MenuAction = -1;
+            }
+            // Check if user selected OPEN MODS (Android only)
+            if (_freeplay.MenuAction == 5)
+            {
+                OpenAndroidModsFolder();
+                _freeplay.MenuAction = -1;
+            }
+            #endif
             
             // Update song transition if active (stickers fading out over menu)
             if (_songTransition != null)
@@ -3293,6 +3522,9 @@ public partial class Game1 : Game
 
     private void DrawInternal(GameTime gameTime)
     {
+        // Safety: Close any pending SpriteBatch before starting
+        try { _spriteBatch?.End(); } catch { }
+        
         int sw = _rtWidth;
         int sh = _rtHeight;
 
@@ -3322,7 +3554,8 @@ public partial class Game1 : Game
                 _spriteBatch.End();
             }
             
-            base.Draw(gameTime);
+            // Draw touch controls LAST before present
+            DrawTouchControls();
             return;
         }
         
@@ -3338,7 +3571,8 @@ public partial class Game1 : Game
             _mainSettingsMenu.Draw(_spriteBatch, winBounds.Width, winBounds.Height);
             _spriteBatch.End();
             
-            base.Draw(gameTime);
+            // Draw touch controls LAST before present
+            DrawTouchControls();
             return;
         }
         
@@ -3356,7 +3590,8 @@ public partial class Game1 : Game
             // Blit to screen with letterboxing
             BlitToScreen();
             
-            base.Draw(gameTime);
+            // Draw touch controls LAST before present
+            DrawTouchControls();
             return;
         }
 
@@ -3381,7 +3616,8 @@ public partial class Game1 : Game
                 _spriteBatch.End();
             }
             
-            base.Draw(gameTime);
+            // Draw touch controls LAST before present
+            DrawTouchControls();
             return;
         }
 
@@ -3398,7 +3634,9 @@ public partial class Game1 : Game
             _loadingScreen.Draw(_spriteBatch, sw, sh);
             _spriteBatch.End();
             BlitToScreen();
-            base.Draw(gameTime);
+            
+            // Draw touch controls LAST before present
+            DrawTouchControls();
             return;
         }
 
@@ -3410,7 +3648,9 @@ public partial class Game1 : Game
             else                   DrawDropHint();
             _spriteBatch.End();
             BlitToScreen();
-            base.Draw(gameTime);
+            
+            // Draw touch controls LAST before present
+            DrawTouchControls();
             return;
         }
 
@@ -3547,7 +3787,48 @@ public partial class Game1 : Game
             _spriteBatch.End();
         }
 
+        // ── Touch controls (Android only) - drawn LAST on top of everything ───
+        DrawTouchControls();
+
         base.Draw(gameTime);
+    }
+
+    /// <summary>
+    /// Draw touch controls on top of everything (Android only).
+    /// Must be called AFTER all other rendering is done.
+    /// </summary>
+    private void DrawTouchControls()
+    {
+#if ANDROID
+        if (_touchControls == null) return;
+        
+        try
+        {
+            // CRITICAL: Asegurar que dibujamos en la pantalla REAL, no en render target
+            GraphicsDevice.SetRenderTarget(null);
+            
+            // Safety: Terminar cualquier SpriteBatch pendiente
+            try { _spriteBatch?.End(); } catch { /* ignore */ }
+            
+            // Comenzar nuevo batch con blend alpha para transparencias
+            _spriteBatch.Begin(
+                sortMode: SpriteSortMode.Deferred,
+                blendState: BlendState.AlphaBlend,
+                samplerState: SamplerState.PointClamp,
+                depthStencilState: null,
+                rasterizerState: null,
+                effect: null,
+                transformMatrix: null
+            );
+            
+            _touchControls.Draw(_spriteBatch, _font);
+            _spriteBatch.End();
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[TouchControls Draw Error] {ex.Message}");
+        }
+#endif
     }
 
     /// <summary>
@@ -3588,6 +3869,98 @@ public partial class Game1 : Game
     // BASE_W is derived from the level: the width of the world the author designed for.
     // Funky Maker landscape levels use 2160px wide world (standard GameMaker room).
     //
+    // ── GPU Capabilities ──────────────────────────────────────────────────────
+    
+    // MonoGame internal limit (regardless of GPU capability)
+    private const int MONOGAME_MAX_TEXTURE_SIZE = 16384;
+    
+    // P/Invoke para OpenGL (Windows/Linux/Android)
+    [System.Runtime.InteropServices.DllImport("opengl32.dll", EntryPoint = "glGetIntegerv")]
+    private static extern void glGetIntegerv_Windows(int pname, out int value);
+    
+    [System.Runtime.InteropServices.DllImport("libGL.so.1", EntryPoint = "glGetIntegerv")]
+    private static extern void glGetIntegerv_Linux(int pname, out int value);
+    
+    [System.Runtime.InteropServices.DllImport("libGLESv2.so", EntryPoint = "glGetIntegerv")]
+    private static extern void glGetIntegerv_Android(int pname, out int value);
+    
+    private const int GL_MAX_TEXTURE_SIZE = 0x0D33;
+    
+    /// <summary>
+    /// Gets the maximum texture size supported by the device.
+    /// Returns the MINIMUM of GPU limit and MonoGame internal limit (16384px).
+    /// </summary>
+    private int GetGpuMaxTextureSize()
+    {
+        try
+        {
+            int gpuMaxSize = 0;
+            
+            // Try to query OpenGL directly based on platform
+            try
+            {
+#if ANDROID
+                glGetIntegerv_Android(GL_MAX_TEXTURE_SIZE, out gpuMaxSize);
+                Console.WriteLine($"[GPU] Device GPU reports max texture size: {gpuMaxSize}px");
+#elif WINDOWS
+                glGetIntegerv_Windows(GL_MAX_TEXTURE_SIZE, out gpuMaxSize);
+                Console.WriteLine($"[GPU] Device GPU reports max texture size: {gpuMaxSize}px");
+#else
+                // Try Linux first, fallback to Windows
+                try
+                {
+                    glGetIntegerv_Linux(GL_MAX_TEXTURE_SIZE, out gpuMaxSize);
+                    Console.WriteLine($"[GPU] Device GPU reports max texture size: {gpuMaxSize}px");
+                }
+                catch
+                {
+                    glGetIntegerv_Windows(GL_MAX_TEXTURE_SIZE, out gpuMaxSize);
+                    Console.WriteLine($"[GPU] Device GPU reports max texture size: {gpuMaxSize}px");
+                }
+#endif
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[GPU] Failed to query GPU limit via OpenGL: {ex.Message}");
+            }
+            
+            // Validate GPU query result (sanity check)
+            if (gpuMaxSize <= 0 || gpuMaxSize > 65536)
+            {
+                Console.WriteLine($"[GPU] Invalid GPU limit ({gpuMaxSize}px), using safe fallback");
+#if ANDROID
+                gpuMaxSize = 4096;  // Conservative Android fallback
+#else
+                gpuMaxSize = 16384; // Desktop fallback (MonoGame max)
+#endif
+            }
+            
+            // Apply MonoGame internal limit - never exceed 16384px
+            int finalLimit = Math.Min(gpuMaxSize, MONOGAME_MAX_TEXTURE_SIZE);
+            
+            if (gpuMaxSize > MONOGAME_MAX_TEXTURE_SIZE)
+            {
+                Console.WriteLine($"[GPU] GPU supports {gpuMaxSize}px but MonoGame max is {MONOGAME_MAX_TEXTURE_SIZE}px");
+                Console.WriteLine($"[GPU] Capping at MonoGame limit to prevent issues: {finalLimit}px");
+            }
+            else
+            {
+                Console.WriteLine($"[GPU] Using GPU limit: {finalLimit}px");
+            }
+            
+            return finalLimit;
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[GPU] Error detecting max texture size: {ex.Message}");
+#if ANDROID
+            return 4096;  // Safe Android fallback
+#else
+            return 16384; // Safe desktop fallback (MonoGame max)
+#endif
+        }
+    }
+    
     // ── Texture splitting ────────────────────────────────────────────────────
     /// <summary>
     /// Splits a wide texture strip into individual frame textures using the GPU.
@@ -3839,6 +4212,73 @@ public partial class Game1 : Game
     }
     private static string? FindAssetsRoot()
     {
+#if ANDROID
+        // On Android, Assets are bundled in the APK and copied to internal storage
+        try
+        {
+            var filesDir = global::Android.App.Application.Context.FilesDir?.AbsolutePath;
+            if (filesDir != null)
+            {
+                string assetsPath = Path.Combine(filesDir, "Assets");
+                
+                // Check if extraction is needed
+                if (!Directory.Exists(assetsPath) || !File.Exists(Path.Combine(assetsPath, "Font", "MilkyNice.otf")))
+                {
+                    Console.WriteLine("[FindAssetsRoot] Assets folder not found or incomplete");
+                    
+                    // Check if extraction is already in progress or completed
+                    string markerFile = Path.Combine(filesDir, ".assets_extracted");
+                    if (File.Exists(markerFile))
+                    {
+                        // Already extracted, just use it
+                        Console.WriteLine("[FindAssetsRoot] Assets already extracted previously");
+                    }
+                    else
+                    {
+                        // Extract in background thread to avoid ANR (Application Not Responding)
+                        Console.WriteLine("[FindAssetsRoot] Starting background extraction...");
+                        System.Threading.Tasks.Task.Run(() => {
+                            try
+                            {
+                                ExtractAssetsFromAPK();
+                                // Create marker file to indicate extraction is complete
+                                File.WriteAllText(markerFile, DateTime.Now.ToString());
+                                Console.WriteLine("[FindAssetsRoot] Background extraction completed");
+                            }
+                            catch (Exception ex)
+                            {
+                                Console.WriteLine($"[FindAssetsRoot] Background extraction failed: {ex.Message}");
+                            }
+                        });
+                        
+                        // Wait a bit for extraction to start (non-blocking)
+                        for (int i = 0; i < 50 && !Directory.Exists(assetsPath); i++)
+                        {
+                            System.Threading.Thread.Sleep(100); // 100ms * 50 = 5 seconds max
+                        }
+                    }
+                }
+                
+                if (Directory.Exists(assetsPath))
+                {
+                    Console.WriteLine($"[FindAssetsRoot] Found Assets at: {assetsPath}");
+                    return assetsPath;
+                }
+                else
+                {
+                    Console.WriteLine("[FindAssetsRoot] Assets not found yet, extraction may still be in progress");
+                    // Return the path anyway, files will be loaded as they become available
+                    return assetsPath;
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[FindAssetsRoot] Error accessing Assets: {ex.Message}");
+        }
+        
+        return null;
+#else
         // Look for the Assets folder relative to exe or working directory
         string[] candidates =
         {
@@ -3854,10 +4294,340 @@ public partial class Game1 : Game
                 return norm;
         }
         return null;
+#endif
     }
+
+#if ANDROID
+    /// <summary>
+    /// Extract Assets folder from APK to internal storage (Android only)
+    /// This allows the game to access bundled assets like fonts, images, etc.
+    /// Note: AndroidAsset paths in APK are lowercase: assets/ not Assets/
+    /// </summary>
+    private static void ExtractAssetsFromAPK()
+    {
+        try
+        {
+            var context = global::Android.App.Application.Context;
+            var assetManager = context.Assets;
+            var filesDir = context.FilesDir?.AbsolutePath;
+            
+            if (filesDir == null)
+            {
+                Console.WriteLine("[ExtractAssets] ERROR: FilesDir is null");
+                return;
+            }
+            
+            string targetAssetsPath = Path.Combine(filesDir, "Assets");
+            
+            Console.WriteLine($"[ExtractAssets] Starting extraction to: {targetAssetsPath}");
+            
+            // List what's at the root of the APK assets
+            string[]? rootItems = assetManager.List("");
+            Console.WriteLine($"[ExtractAssets] Root APK assets count: {rootItems?.Length ?? 0}");
+            if (rootItems != null)
+            {
+                foreach (var item in rootItems.Take(10))
+                {
+                    Console.WriteLine($"[ExtractAssets] Root item: {item}");
+                }
+            }
+            
+            // Copy everything that's inside the "assets" folder in the APK
+            // Note: In APK, AndroidAsset files are at root level, not inside an "assets" folder
+            // We need to filter and copy only the ones we need
+            CopyAndroidAssets(assetManager, targetAssetsPath);
+            
+            Console.WriteLine("[ExtractAssets] Successfully extracted Assets from APK");
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[ExtractAssets] ERROR: {ex.Message}\n{ex.StackTrace}");
+        }
+    }
+    
+    /// <summary>
+    /// Copy Android assets from APK to filesystem, recreating folder structure
+    /// Only copies essential files to avoid long extraction times
+    /// </summary>
+    private static void CopyAndroidAssets(global::Android.Content.Res.AssetManager assetManager, string targetRootPath)
+    {
+        try
+        {
+            // List of essential folders to extract (skip large unnecessary files)
+            string[] essentialFolders = { "Font", "LoadingScreen", "data", "images", "shared", "Content" };
+            
+            Console.WriteLine($"[CopyAndroidAssets] Extracting essential folders to: {targetRootPath}");
+            
+            foreach (var folder in essentialFolders)
+            {
+                Console.WriteLine($"[CopyAndroidAssets] Processing folder: {folder}");
+                
+                // Check if folder exists in APK
+                string[] items = assetManager.List(folder) ?? Array.Empty<string>();
+                if (items.Length > 0)
+                {
+                    string targetFolder = Path.Combine(targetRootPath, folder);
+                    CopyAssetItemRecursive(assetManager, folder, targetFolder);
+                }
+            }
+            
+            Console.WriteLine("[CopyAndroidAssets] Extraction complete");
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[CopyAndroidAssets] ERROR: {ex.Message}");
+        }
+    }
+    
+    /// <summary>
+    /// Recursively copy an asset item (file or folder)
+    /// </summary>
+    private static void CopyAssetItemRecursive(global::Android.Content.Res.AssetManager assetManager, string assetPath, string targetPath)
+    {
+        try
+        {
+            // Check if it's a directory by listing its contents
+            string[]? subItems = assetManager.List(assetPath);
+            
+            if (subItems != null && subItems.Length > 0)
+            {
+                // It's a directory
+                Console.WriteLine($"[CopyAssetItem] Directory: {assetPath} ({subItems.Length} items)");
+                
+                if (!Directory.Exists(targetPath))
+                    Directory.CreateDirectory(targetPath);
+                
+                foreach (var subItem in subItems)
+                {
+                    string subAssetPath = $"{assetPath}/{subItem}";
+                    string subTargetPath = Path.Combine(targetPath, subItem);
+                    CopyAssetItemRecursive(assetManager, subAssetPath, subTargetPath);
+                }
+            }
+            else
+            {
+                // It's a file
+                if (File.Exists(targetPath))
+                {
+                    Console.WriteLine($"[CopyAssetItem] Skip existing: {targetPath}");
+                    return;
+                }
+                
+                Console.WriteLine($"[CopyAssetItem] Copying file: {assetPath} -> {targetPath}");
+                
+                // Ensure parent directory exists
+                string? parentDir = Path.GetDirectoryName(targetPath);
+                if (parentDir != null && !Directory.Exists(parentDir))
+                    Directory.CreateDirectory(parentDir);
+                
+                using (var inputStream = assetManager.Open(assetPath))
+                using (var outputStream = File.Create(targetPath))
+                {
+                    inputStream.CopyTo(outputStream);
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[CopyAssetItem] ERROR copying {assetPath}: {ex.Message}");
+        }
+    }
+    
+    /// <summary>
+    /// Recursively copy a folder from APK assets to internal storage
+    /// </summary>
+    /// <param name="assetManager">Android AssetManager</param>
+    /// <param name="sourceFolder">Source folder path in APK (lowercase, e.g. "assets/Font")</param>
+    /// <param name="targetFolder">Target folder path in filesystem</param>
+    /// <param name="apkPrefix">Prefix to add to AssetManager.Open() calls (e.g. "assets/")</param>
+    private static void CopyAssetFolder(global::Android.Content.Res.AssetManager assetManager, string sourceFolder, string targetFolder, string apkPrefix = "")
+    {
+        try
+        {
+            // Create target directory
+            if (!Directory.Exists(targetFolder))
+            {
+                Directory.CreateDirectory(targetFolder);
+                Console.WriteLine($"[CopyAssetFolder] Created directory: {targetFolder}");
+            }
+            
+            // List items - AssetManager.List() requires lowercase path without prefix
+            string listPath = string.IsNullOrEmpty(sourceFolder) ? "assets" : sourceFolder.ToLowerInvariant().Replace(apkPrefix, "");
+            string[]? items = assetManager.List(listPath);
+            
+            Console.WriteLine($"[CopyAssetFolder] Listing '{listPath}', found {items?.Length ?? 0} items");
+            
+            if (items == null || items.Length == 0)
+            {
+                return;
+            }
+            
+            // Process each item
+            foreach (string item in items)
+            {
+                string sourceItemPath = string.IsNullOrEmpty(listPath) || listPath == "assets" 
+                    ? item 
+                    : $"{listPath}/{item}";
+                string targetItemPath = Path.Combine(targetFolder, item);
+                
+                Console.WriteLine($"[CopyAssetFolder] Processing: {sourceItemPath}");
+                
+                // Check if it's a folder or file by trying to list it
+                string[]? subItems = assetManager.List(sourceItemPath);
+                if (subItems != null && subItems.Length > 0)
+                {
+                    // It's a folder, recurse
+                    Console.WriteLine($"[CopyAssetFolder] '{sourceItemPath}' is a folder with {subItems.Length} items");
+                    CopyAssetFolder(assetManager, sourceItemPath, targetItemPath, "");
+                }
+                else
+                {
+                    // It's a file, copy it
+                    Console.WriteLine($"[CopyAssetFolder] '{sourceItemPath}' is a file");
+                    CopyAssetFile(assetManager, sourceItemPath, targetItemPath);
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[CopyAssetFolder] ERROR copying {sourceFolder}: {ex.Message}\n{ex.StackTrace}");
+        }
+    }
+    
+    /// <summary>
+    /// Copy a single file from APK assets to internal storage
+    /// </summary>
+    private static void CopyAssetFile(global::Android.Content.Res.AssetManager assetManager, string sourceFile, string targetFile)
+    {
+        try
+        {
+            // Skip if file already exists
+            if (File.Exists(targetFile))
+            {
+                Console.WriteLine($"[CopyAssetFile] Skipping (exists): {targetFile}");
+                return;
+            }
+            
+            // Ensure target directory exists
+            string? targetDir = Path.GetDirectoryName(targetFile);
+            if (targetDir != null && !Directory.Exists(targetDir))
+            {
+                Directory.CreateDirectory(targetDir);
+            }
+            
+            using (var inputStream = assetManager.Open(sourceFile))
+            using (var outputStream = File.Create(targetFile))
+            {
+                inputStream.CopyTo(outputStream);
+            }
+            
+            Console.WriteLine($"[CopyAssetFile] Copied: {sourceFile} -> {targetFile}");
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[CopyAssetFile] ERROR copying {sourceFile}: {ex.Message}");
+        }
+    }
+#endif
 
     private float GetBaseW() => _level?.Scene.Landscape == true ? 2160f : 1920f;
     private float GetBaseH() => _level?.Scene.Landscape == true ? 1920f : 2160f;
+
+    /// <summary>
+    /// Force render the loading screen immediately (used during SetupLevel to keep Android responsive)
+    /// </summary>
+    private void RenderLoadingScreen()
+    {
+        if (_loadingScreen == null) return;
+        
+        try
+        {
+            // Force a complete frame cycle on ALL platforms to show loading progress
+            int sw = _rtWidth;
+            int sh = _rtHeight;
+            
+            // Update loading screen
+            _loadingScreen.Update(0.016f, false, false, sw, sh);
+            
+            // Draw the loading screen
+            if (_renderTarget != null && _spriteBatch != null)
+            {
+                GraphicsDevice.SetRenderTarget(_renderTarget);
+                GraphicsDevice.Clear(Color.Black);
+                _spriteBatch.Begin(samplerState: SamplerState.PointClamp);
+                _loadingScreen.Draw(_spriteBatch, sw, sh);
+                _spriteBatch.End();
+                
+                // Blit to screen
+                GraphicsDevice.SetRenderTarget(null);
+                GraphicsDevice.Clear(Color.Black);
+                var winBounds = Window.ClientBounds;
+                int ww = winBounds.Width;
+                int wh = winBounds.Height;
+                float scaleX = ww / (float)sw;
+                float scaleY = wh / (float)sh;
+                float scale  = Math.Min(scaleX, scaleY);
+                int   dstW   = (int)(sw * scale);
+                int   dstH   = (int)(sh * scale);
+                int   offsetX = (ww - dstW) / 2;
+                int   offsetY = (wh - dstH) / 2;
+                _spriteBatch.Begin(samplerState: BilinearFiltering ? SamplerState.LinearClamp : SamplerState.PointClamp);
+                _spriteBatch.Draw(_renderTarget, new Rectangle(offsetX, offsetY, dstW, dstH), Color.White);
+                _spriteBatch.End();
+                
+                // Present immediately to show progress
+                GraphicsDevice.Present();
+            }
+            
+#if ANDROID
+            // Give Android MINIMAL time to process events
+            // Reduced to 1ms to let system respond faster (ANR happens after 5 seconds of blocking)
+            System.Threading.Thread.Sleep(1);
+#endif
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[RenderLoadingScreen] Error: {ex.Message}");
+        }
+    }
+
+#if ANDROID
+    /// <summary>
+    /// Merge touch controls into keyboard state (Android only)
+    /// </summary>
+    private KeyboardState MergeTouchWithKeyboard(KeyboardState kb)
+    {
+        if (_touchControls == null) return kb;
+        
+        // Get all currently pressed keys from keyboard
+        var pressedKeys = new List<Keys>(kb.GetPressedKeys());
+        
+        // Add virtual keys from touch controls
+        // Include D, F, J, K for gameplay (note lanes) + menu navigation keys + Q, E for settings tabs
+        foreach (var key in new[] { Keys.D, Keys.F, Keys.J, Keys.K, Keys.Left, Keys.Right, Keys.Up, Keys.Down, Keys.Space, Keys.Enter, Keys.Escape, Keys.P, Keys.Q, Keys.E })
+        {
+            if (_touchControls.IsKeyDown(key) && !pressedKeys.Contains(key))
+                pressedKeys.Add(key);
+        }
+        
+        // Create new keyboard state with merged keys
+        return new KeyboardState(pressedKeys.ToArray());
+    }
+#endif
+
+    /// <summary>
+    /// Check if a key is down (combines physical keyboard + touch controls on Android)
+    /// </summary>
+    private bool IsKeyDown(KeyboardState kb, Keys key)
+    {
+#if ANDROID
+        // On Android, check both keyboard (for testing) and touch controls
+        return kb.IsKeyDown(key) || (_touchControls?.IsKeyDown(key) ?? false);
+#else
+        return kb.IsKeyDown(key);
+#endif
+    }
+
 
     private float CalculateFixedPixelScale(int sw, int sh)
     {
@@ -5331,5 +6101,113 @@ public partial class Game1 : Game
         // Note: Cannot directly update NoteRenderer properties as they have private setters
         // The interpolator handles smooth animation and MultiplayerHUD displays the stats
     }
+
+#if ANDROID
+    // ══════════════════════════════════════════════════════════════════════════
+    // Android-specific: File Picker for Mods
+    // ══════════════════════════════════════════════════════════════════════════
+    
+    /// <summary>
+    /// Open the mods folder in file manager (like FNF's "OPEN DATA FOLDER")
+    /// </summary>
+    private void OpenAndroidModsFolder()
+    {
+        var activity = Microsoft.Xna.Framework.Game.Activity as Platforms.Android.MainActivity;
+        if (activity == null)
+        {
+            Console.WriteLine("[Game1] Cannot open mods folder: MainActivity not found");
+            return;
+        }
+        
+        Console.WriteLine("[Game1] Opening mods folder...");
+        activity.OpenModsFolder();
+    }
+    
+    /// <summary>
+    /// Open Android file picker to load a custom level/mod (.fnmm or .rar)
+    /// </summary>
+    private void OpenAndroidFilePicker()
+    {
+        var activity = Microsoft.Xna.Framework.Game.Activity as Platforms.Android.MainActivity;
+        if (activity == null)
+        {
+            Console.WriteLine("[Game1] Cannot open file picker: MainActivity not found");
+            return;
+        }
+        
+        Console.WriteLine("[Game1] Opening Android file picker for mods...");
+        
+        activity.PickFile((uri, fileName, stream) =>
+        {
+            if (uri == null || stream == null || string.IsNullOrEmpty(fileName))
+            {
+                Console.WriteLine("[Game1] File picker cancelled or failed");
+                return;
+            }
+            
+            try
+            {
+                Console.WriteLine($"[Game1] File picked: {fileName}");
+                
+                // Load the level from the stream
+                LoadLevelFromStream(stream, fileName);
+                
+                // Return to freeplay menu to show the loaded level
+                _inFreeplay = true;
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[Game1] Error loading file from picker: {ex.Message}");
+                _errorMsg = $"Failed to load {fileName}:\n{ex.Message}";
+            }
+            finally
+            {
+                stream?.Dispose();
+            }
+        });
+    }
+    
+    /// <summary>
+    /// Load a level from a stream (supports .fnmm and .rar files)
+    /// </summary>
+    private void LoadLevelFromStream(Stream stream, string fileName)
+    {
+        try
+        {
+            Console.WriteLine($"[Game1] Loading level from stream: {fileName}");
+            
+            // Get the mods folder to save the file
+            string levelsFolder = FreeplayMenu.GetDefaultLevelsFolder();
+            if (!Directory.Exists(levelsFolder))
+            {
+                Directory.CreateDirectory(levelsFolder);
+            }
+            
+            // Save the file to the mods folder
+            string destPath = Path.Combine(levelsFolder, fileName);
+            
+            using (var fileStream = File.Create(destPath))
+            {
+                stream.CopyTo(fileStream);
+            }
+            
+            Console.WriteLine($"[Game1] Level saved to: {destPath}");
+            
+            // Refresh the freeplay menu to show the new level
+            _freeplay.Refresh();
+            
+            // Show success message
+            _errorMsg = null; // Clear any previous error
+            
+            // Return to freeplay
+            _inFreeplay = true;
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[Game1] Error loading level from stream: {ex.Message}");
+            _errorMsg = $"Failed to load {fileName}:\n{ex.Message}";
+        }
+    }
+#endif
 
 }

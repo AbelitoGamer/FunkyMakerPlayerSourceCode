@@ -36,6 +36,7 @@ public class SettingsManager
         ["Countdown Style"] = "Visual countdown style before the song starts (Ready, Set, Go!).",
         ["Font Style"] = "Choose the font used throughout the game. Add custom fonts to mods/fonts/.",
         ["Show Combo"] = "Display combo counter and accuracy rating during gameplay.",
+        ["Camera Follow Player"] = "Camera follows singing character (player/opponent). Uses object movement from events.",
         
         // CONTROLS
         ["Rebind Keys"] = "Customize keyboard controls for all 4 lanes.",
@@ -142,7 +143,7 @@ public class SettingsManager
     {
         return CurrentTab switch
         {
-            0 => 11,  // GAMEPLAY: 11 items (added Font Style)
+            0 => 12,  // GAMEPLAY: 12 items (added Camera Follow Player)
             1 => 2,   // CONTROLS: 2 items (Rebind Keys, Back)
             2 => GetGraphicsItemCount(),  // GRAPHICS: 13-19 items (dynamic based on ShowTimer and Color Grading)
             3 => 2,   // AUDIO: 2 items (Volume, Back)
@@ -254,7 +255,10 @@ public class SettingsManager
             case 9: // Show Combo
                 Game1.ShowCombo = !Game1.ShowCombo;
                 break;
-            case 10: // Back
+            case 10: // Camera Follow Player
+                NoteRenderer.CameraFollowPlayer = !NoteRenderer.CameraFollowPlayer;
+                break;
+            case 11: // Back
                 result.ExitMenu = true;
                 IsActive = false;
                 result.NeedsSave = false;
@@ -967,6 +971,7 @@ public class SettingsManager
             ("Countdown Style", Game1.SelectedCountdown),
             ("Font Style", "→"),
             ("Show Combo", Game1.ShowCombo ? "ON" : "OFF"),
+            ("Camera Follow Player", NoteRenderer.CameraFollowPlayer ? "ON" : "OFF"),
             ("Back", "")
         };
         
@@ -1227,6 +1232,7 @@ public class SettingsManager
                 entries.Add(("Countdown Style", ""));
                 entries.Add(("Font Style", ""));
                 entries.Add(("Show Combo", ""));
+                entries.Add(("Camera Follow Player", ""));
                 entries.Add(("Back", ""));
                 break;
                 

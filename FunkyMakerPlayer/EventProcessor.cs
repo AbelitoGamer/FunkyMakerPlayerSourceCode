@@ -32,6 +32,12 @@ public class CameraState
     // Store the base scale from scene.json camera
     // This is used as reference when CameraSet loads a new camera
     public float BaseScale { get; set; } = 1f;
+    
+    // ── World bounds for camera clamping ─────────────────────────────────────
+    private const float WORLD_WIDTH = 2160f;
+    private const float WORLD_HEIGHT = 1920f;
+    private const float VIEWPORT_WIDTH = 1920f;
+    private const float VIEWPORT_HEIGHT = 1080f;
 
     // ── Position transition state (X/Y only) ─────────────────────────────────
     private float _sx, _sy; // start position
@@ -41,12 +47,22 @@ public class CameraState
     public float PosTransElapsed { get; set; }
     public string PosEasingType { get; set; } = "default";
     
+    // Beat-time support for position transitions
+    public bool UseBeatTimePos { get; set; }
+    public float StartBeatPos { get; set; }
+    public float DurationBeatsPos { get; set; }
+    
     // ── Scale transition state (zoom only) ───────────────────────────────────
     private float _ss; // start scale
     public float TargetScale { get; set; } = 1f;
     public float ScaleTransTime { get; set; }
     public float ScaleTransElapsed { get; set; }
     public string ScaleEasingType { get; set; } = "default";
+    
+    // Beat-time support for scale transitions
+    public bool UseBeatTimeScale { get; set; }
+    public float StartBeatScale { get; set; }
+    public float DurationBeatsScale { get; set; }
     
     // ── Legacy properties for backward compatibility ─────────────────────────
     public float TransTime { get => Math.Max(PosTransTime, ScaleTransTime); set => PosTransTime = value; }
@@ -76,7 +92,8 @@ public class CameraState
     }
 
     public void StartTransition(float tx, float ty, float ts,
-                                float transTime, string easing)
+                                float transTime, string easing,
+                                bool useBeatTime = false, float startBeat = 0f, float durationBeats = 0f)
     {
         _sx = X; _sy = Y; _ss = Scale;
         TargetX = tx; TargetY = ty; TargetScale = ts;
@@ -85,13 +102,22 @@ public class CameraState
         PosTransTime = transTime; PosTransElapsed = 0f; PosEasingType = easing;
         ScaleTransTime = transTime; ScaleTransElapsed = 0f; ScaleEasingType = easing;
         
+        // Beat-time support
+        UseBeatTimePos = useBeatTime;
+        UseBeatTimeScale = useBeatTime;
+        StartBeatPos = startBeat;
+        StartBeatScale = startBeat;
+        DurationBeatsPos = durationBeats;
+        DurationBeatsScale = durationBeats;
+        
         if (transTime <= 0f) { X = tx; Y = ty; Scale = ts; }
     }
     
     /// <summary>
     /// Start ONLY a scale transition, preserving any active position transition
     /// </summary>
-    public void StartScaleTransition(float targetScale, float transTime, string easing)
+    public void StartScaleTransition(float targetScale, float transTime, string easing,
+                                     bool useBeatTime = false, float startBeat = 0f, float durationBeats = 0f)
     {
         _ss = Scale;
         TargetScale = targetScale;
@@ -99,10 +125,45 @@ public class CameraState
         ScaleTransElapsed = 0f;
         ScaleEasingType = easing;
         
+        // Beat-time support
+        UseBeatTimeScale = useBeatTime;
+        StartBeatScale = startBeat;
+        DurationBeatsScale = durationBeats;
+        
         if (transTime <= 0f) { Scale = targetScale; }
     }
 
-    public void Update(float dt)
+    /// <summary>
+    /// Clamps camera position to prevent black borders outside world bounds.
+    /// </summary>
+    private void ClampToWorldBounds()
+    {
+        // Calculate visible area in world space based on scale
+        float visibleWidth = VIEWPORT_WIDTH * Scale;
+        float visibleHeight = VIEWPORT_HEIGHT * Scale;
+        
+        // Calculate safe bounds (camera can't get too close to edges)
+        float minX = visibleWidth / 2f;
+        float maxX = WORLD_WIDTH - visibleWidth / 2f;
+        float minY = visibleHeight / 2f;
+        float maxY = WORLD_HEIGHT - visibleHeight / 2f;
+        
+        // Clamp camera position AND targets to prevent transition "tilteo"
+        X = Math.Clamp(X, minX, maxX);
+        Y = Math.Clamp(Y, minY, maxY);
+        TargetX = Math.Clamp(TargetX, minX, maxX);
+        TargetY = Math.Clamp(TargetY, minY, maxY);
+    }
+    
+    /// <summary>
+    /// Public method to clamp camera position (called after manual position changes).
+    /// </summary>
+    public void ClampPosition()
+    {
+        ClampToWorldBounds();
+    }
+
+    public void Update(float dt, float currentBeat = 0f)
     {
         // ── Camera shake ─────────────────────────────────────────────────────
         if (_shakeCount > 0f)
@@ -130,31 +191,44 @@ public class CameraState
         // ── Position transition (X/Y) ────────────────────────────────────────
         if (PosTransTime > 0f)
         {
-            PosTransElapsed = Math.Min(PosTransElapsed + dt, PosTransTime);
+            // Calculate elapsed based on timing mode
+            float elapsed, duration;
+            if (UseBeatTimePos)
+            {
+                elapsed = currentBeat - StartBeatPos;
+                duration = DurationBeatsPos;
+            }
+            else
+            {
+                PosTransElapsed = Math.Min(PosTransElapsed + dt, PosTransTime);
+                elapsed = PosTransElapsed;
+                duration = PosTransTime;
+            }
             
             // Only snap when time expires - don't use nearTarget check
             // because easing curves can slow down near the end causing premature termination
-            bool timeExpired = PosTransElapsed >= PosTransTime;
+            bool timeExpired = elapsed >= duration;
             
             if (timeExpired)
             {
                 X = TargetX; 
                 Y = TargetY; 
                 PosTransTime = 0f; // Mark position transition as complete
+                UseBeatTimePos = false;
             }
             else
             {
                 if (PosEasingType == "default")
                 {
                     // FNF-style: fast exponential lerp that snaps quickly to target.
-                    float lerpRate = PosTransTime > 0f ? 8.0f / PosTransTime : 60f;
+                    float lerpRate = duration > 0f ? 8.0f / duration : 60f;
                     float alpha = 1f - MathF.Exp(-lerpRate * dt);
                     X += (TargetX - X) * alpha;
                     Y += (TargetY - Y) * alpha;
                 }
                 else
                 {
-                    float e = Ease(PosTransElapsed / PosTransTime, PosEasingType);
+                    float e = Ease(elapsed / duration, PosEasingType);
                     X = MathHelper.Lerp(_sx, TargetX, e);
                     Y = MathHelper.Lerp(_sy, TargetY, e);
                 }
@@ -164,32 +238,48 @@ public class CameraState
         // ── Scale transition (zoom) ──────────────────────────────────────────
         if (ScaleTransTime > 0f)
         {
-            ScaleTransElapsed = Math.Min(ScaleTransElapsed + dt, ScaleTransTime);
+            // Calculate elapsed based on timing mode
+            float elapsed, duration;
+            if (UseBeatTimeScale)
+            {
+                elapsed = currentBeat - StartBeatScale;
+                duration = DurationBeatsScale;
+            }
+            else
+            {
+                ScaleTransElapsed = Math.Min(ScaleTransElapsed + dt, ScaleTransTime);
+                elapsed = ScaleTransElapsed;
+                duration = ScaleTransTime;
+            }
             
             // Only snap when time expires - don't use nearTarget check
             // because easing curves can slow down near the end causing premature termination
-            bool timeExpired = ScaleTransElapsed >= ScaleTransTime;
+            bool timeExpired = elapsed >= duration;
             
             if (timeExpired)
             {
                 Scale = TargetScale;
                 ScaleTransTime = 0f; // Mark scale transition as complete
+                UseBeatTimeScale = false;
             }
             else
             {
                 if (ScaleEasingType == "default")
                 {
-                    float lerpRate = ScaleTransTime > 0f ? 8.0f / ScaleTransTime : 60f;
+                    float lerpRate = duration > 0f ? 8.0f / duration : 60f;
                     float alpha = 1f - MathF.Exp(-lerpRate * dt);
                     Scale += (TargetScale - Scale) * alpha;
                 }
                 else
                 {
-                    float e = Ease(ScaleTransElapsed / ScaleTransTime, ScaleEasingType);
+                    float e = Ease(elapsed / duration, ScaleEasingType);
                     Scale = MathHelper.Lerp(_ss, TargetScale, e);
                 }
             }
         }
+        
+        // ── Clamp camera to world bounds ─────────────────────────────────────
+        ClampToWorldBounds();
     }
 
     private static float Ease(float t, string type) => type switch
@@ -247,8 +337,22 @@ public class EventProcessor
 
     // Per-object opacity (0..1), separate from Visible flag
     private readonly float[] _objOpacity;
-    // Per-object opacity tween: (startOpacity, targetOpacity, elapsed, duration)
-    private readonly (float from, float to, float elapsed, float duration)[] _opacityTween;
+    
+    // Per-object opacity tween
+    private class OpacityTween
+    {
+        public float From { get; set; }
+        public float To { get; set; }
+        public float Elapsed { get; set; }
+        public float Duration { get; set; }
+        public bool UseBeatTime { get; set; }
+        public float StartBeat { get; set; }
+        public float DurationBeats { get; set; }
+        
+        public bool IsDone(float elapsed) => elapsed >= Duration;
+        public bool IsActive => Duration > 0f;
+    }
+    private readonly OpacityTween[] _opacityTween;
 
     // Object transform tweens (for v3 format multi-position objects)
     private class ObjectTransformTween
@@ -263,6 +367,9 @@ public class EventProcessor
         public Vector2  EndScale           { get; set; }
         public Func<float, float> Ease     { get; set; } = (t) => t;
         public int      NewTransformIndex  { get; set; }
+        public bool     UseBeatTime        { get; set; }  // If true, use beat-based timing instead of seconds
+        public float    StartBeat          { get; set; }  // Starting beat (if UseBeatTime=true)
+        public float    DurationBeats      { get; set; }  // Duration in beats (if UseBeatTime=true)
     }
     private readonly List<ObjectTransformTween> _tweens = new();
     
@@ -274,6 +381,7 @@ public class EventProcessor
     
     // Track current song time for tween creation during FireEvent
     private float _currentSongTime = 0f;
+    private float _currentBeat = 0f;  // Current beat position for beat-based tweens
 
     // Auto-camera: smoothly follows a target world position
     private float _autoCamTargetX, _autoCamTargetY, _autoCamTargetScale;
@@ -285,6 +393,29 @@ public class EventProcessor
     public CameraState       Camera        { get; } = new();
     public List<ScreenFlash> ActiveFlashes { get; } = new();
     public bool              HasCameraEvents => _hasCameraEvents;
+
+    // ══════════════════════════════════════════════════════════════════════════
+    // HELPER: Get camera scale with proper format handling
+    // ══════════════════════════════════════════════════════════════════════════
+    /// <summary>
+    /// Gets the effective camera scale, handling both nested and legacy formats.
+    /// Nested format: scale is used directly
+    /// Legacy format: scale is also used directly (inversion disabled)
+    /// </summary>
+    private static float GetCameraScale(SceneCamera cam)
+    {
+        float scale = (float)cam.Scale;
+        
+        // For nested format, use scale directly
+        if (cam.UsesNestedPositionFormat)
+        {
+            return Math.Min(scale, 1.0f);  // Clamp to max 1.0
+        }
+        
+        // For legacy format, use scale directly (inversion disabled)
+        // Legacy cameras with scale < 0.6 were being inverted incorrectly
+        return Math.Min(scale, 1.0f);  // Clamp to max 1.0
+    }
 
     /// <summary>
     /// Check if an object has an active tween (so Game1 doesn't overwrite its position)
@@ -352,14 +483,54 @@ public class EventProcessor
         }
         if (best == null) return;
 
-        _autoCamTargetX = best.X;
-        _autoCamTargetY = best.Y;
-        // Use the matching camera scale for this character's region
+        // Find the camera that belongs to this strumline by checking which camera the character is assigned to
         var cams = _level.Scene.Cameras;
-        float baseScale = cams.Count > 0 ? (float)cams[0].Scale : 0.75f;
-        // Clamp to maximum 1.0
-        baseScale = Math.Min(baseScale, 1.0f);
-        _autoCamTargetScale = baseScale;
+        
+        // FNF/GameMaker convention:
+        // - Camera 0 = Opponent (StrumLine 1)
+        // - Camera 1 = Player (StrumLine 0)
+        // So we look for objects in this strumline and check their assigned camera
+        
+        // First, check if the object we found has a valid camera assigned
+        int camIdx = best.Camera;
+        
+        if (camIdx >= 0 && camIdx < cams.Count)
+        {
+            // Object has valid camera assignment - use it
+            _autoCamTargetX = (float)cams[camIdx].X;
+            _autoCamTargetY = (float)cams[camIdx].Y;
+            float baseScale = GetCameraScale(cams[camIdx]);
+            _autoCamTargetScale = baseScale;
+            
+            Console.WriteLine($"[AutoCamera] Strumline {strumlineIndex} → Camera {camIdx} (from object.Camera={best.Camera}) pos=({_autoCamTargetX:F1}, {_autoCamTargetY:F1}) scale={_autoCamTargetScale:F3}");
+        }
+        else
+        {
+            // Object has no camera assigned (Camera=-1), use FNF convention as fallback:
+            // StrumLine 0 (player) → Camera 1
+            // StrumLine 1 (opponent) → Camera 0
+            camIdx = strumlineIndex == 0 ? 1 : 0;
+            
+            if (camIdx >= 0 && camIdx < cams.Count)
+            {
+                _autoCamTargetX = (float)cams[camIdx].X;
+                _autoCamTargetY = (float)cams[camIdx].Y;
+                float baseScale = GetCameraScale(cams[camIdx]);
+                _autoCamTargetScale = baseScale;
+                
+                Console.WriteLine($"[AutoCamera] Strumline {strumlineIndex} → Camera {camIdx} (FNF convention fallback) pos=({_autoCamTargetX:F1}, {_autoCamTargetY:F1}) scale={_autoCamTargetScale:F3}");
+            }
+            else
+            {
+                // Final fallback: use character position if no camera defined
+                _autoCamTargetX = best.X;
+                _autoCamTargetY = best.Y;
+                float baseScale = cams.Count > 0 ? GetCameraScale(cams[0]) : 0.75f;
+                _autoCamTargetScale = baseScale;
+                
+                Console.WriteLine($"[AutoCamera] Strumline {strumlineIndex} → FALLBACK to character pos=({_autoCamTargetX:F1}, {_autoCamTargetY:F1}) scale={_autoCamTargetScale:F3}");
+            }
+        }
     }
 
     public EventProcessor(FnmmLevel level,
@@ -372,8 +543,12 @@ public class EventProcessor
 
         int maxObjs = Math.Max(75, objAnimators.Length);
         _objOpacity    = new float[maxObjs];
-        _opacityTween  = new (float, float, float, float)[maxObjs];
-        for (int i = 0; i < maxObjs; i++) _objOpacity[i] = 1f;
+        _opacityTween  = new OpacityTween[maxObjs];
+        for (int i = 0; i < maxObjs; i++)
+        {
+            _objOpacity[i] = 1f;
+            _opacityTween[i] = new OpacityTween();
+        }
 
         // Convert event times to seconds if needed, using the same rule as note times.
         // version >= 2.0 or bpm=0 → already in seconds. version < 2.0 with bpm > 0 → beats.
@@ -389,14 +564,18 @@ public class EventProcessor
         // Log ActionPacks count
         Console.WriteLine($"[EventProcessor] Loaded {level.Events.ActionPacks.Count} ActionPacks");
 
-        // Check if this level has any CameraSet events
-        _hasCameraEvents = level.Events.Events
-            .Any(ev => ev.Actions.Any(a => a.Type == "CameraSet"));
-        
-        int cameraSetCount = level.Events.Events.Count(ev => ev.Actions.Any(a => a.Type == "CameraSet"));
-        Console.WriteLine($"[EventProcessor] _hasCameraEvents = {_hasCameraEvents} (found {cameraSetCount} CameraSet events)");
-
         var cams = level.Scene.Cameras;
+        Console.WriteLine($"[EventProcessor] Level has {cams.Count} camera(s) defined in scene.json");
+        
+        // Check if this level has any CameraSet events (for logging purposes only)
+        int cameraSetCount = level.Events.Events.Count(ev => ev.Actions.Any(a => a.Type == "CameraSet"));
+        Console.WriteLine($"[EventProcessor] Found {cameraSetCount} CameraSet events in level");
+
+        // CAMERA AUTO LOGIC:
+        // - Start with auto-camera ENABLED by default (if 2+ cameras exist)
+        // - Only disable if there's just 1 camera (static shot design)
+        // - CameraSet events can disable auto-camera when they execute (not at init)
+        _hasCameraEvents = false;  // Start with auto-camera enabled
 
         // ──────────────────────────────────────────────────────────────────────
         // CAMERA SCALE COMPATIBILITY FIX
@@ -437,80 +616,31 @@ public class EventProcessor
         int defaultCam = cams.Count >= 2 ? 1 : 0;
         if (cams.Count > 0)
         {
-            // Clamp scale to maximum 1.0 (closer camera)
-            // If level has scale > 1.0, force it to 1.0
-            float levelScale = (float)cams[defaultCam].Scale;
-            float clampedScale = Math.Min(levelScale, 1.0f);
+            // Get scale with proper format handling
+            float clampedScale = GetCameraScale(cams[defaultCam]);
             
             Camera.X     = Camera.TargetX     = (float)cams[defaultCam].X;
             Camera.Y     = Camera.TargetY     = (float)cams[defaultCam].Y;
             Camera.Scale = Camera.TargetScale = clampedScale;
             Camera.BaseScale = clampedScale;
+            Camera.ClampPosition();  // Clamp initial position to world bounds
             _autoCamTargetX     = (float)cams[defaultCam].X;
             _autoCamTargetY     = (float)cams[defaultCam].Y;
             _autoCamTargetScale = clampedScale;
-            
-            if (levelScale > 1.0f)
-                Console.WriteLine($"[EventProcessor] Camera scale clamped: {levelScale:F3} → {clampedScale:F3}");
         }
 
-        if (_hasCameraEvents)
+        // Only disable auto-camera if there's just 1 camera (static shot design)
+        // CameraSet events will control auto-camera activation/deactivation during gameplay
+        if (cams.Count < 2)
         {
-            // Override with first CameraSet at time=0 if present
-            bool foundInitialCam = false;
-            foreach (var ev in level.Events.Events)
-            {
-                if (ev.Time > 0f) break;
-                foreach (var action in ev.Actions)
-                {
-                    if (action.Type != "CameraSet" || foundInitialCam) continue;
-                    int camIdx = (int)(action.Props.Target ?? 0f);
-                    if (camIdx < 0 || camIdx >= cams.Count) continue;
-                    var cam = cams[camIdx];
-                    
-                    // Clamp scale to maximum 1.0
-                    float levelScale = (float)cam.Scale;
-                    float clampedScale = Math.Min(levelScale, 1.0f);
-                    
-                    Camera.X     = Camera.TargetX     = (float)cam.X;
-                    Camera.Y     = Camera.TargetY     = (float)cam.Y;
-                    Camera.Scale = Camera.TargetScale = clampedScale;
-                    Camera.BaseScale = clampedScale;
-                    Console.WriteLine($"[EventProcessor] Initial CameraSet: target={camIdx} pos=({cam.X:F1},{cam.Y:F1}) scale={clampedScale:F3}" + 
-                        (levelScale > 1.0f ? $" (clamped from {levelScale:F3})" : ""));
-                    foundInitialCam = true;  // Only use the first CameraSet at time=0
-                }
-            }
+            _hasCameraEvents = true;  // Disable auto-camera for single-camera levels
+            Console.WriteLine($"[EventProcessor] Single camera detected: Auto-camera disabled");
         }
         else
         {
-            // No CameraSet events.
-            // If the level only has 1 camera defined, keep it fixed — the author
-            // designed a static shot and auto-camera would look wrong.
-            // Only use auto-camera when there are 2+ cameras (player + opponent positions).
-            var objs = level.Scene.Objects;
-            var playerObj   = objs.Find(o => (int)o.StrumLine == 0);
-            var opponentObj = objs.Find(o => (int)o.StrumLine == 1);
-
-            bool hasMultipleCams = cams.Count >= 2;
-
-            if (hasMultipleCams && playerObj != null && opponentObj != null)
-            {
-                // Start camera at player's position (strumline 0), not centered
-                float cx = playerObj.X;
-                float cy = playerObj.Y;
-                // Use the player camera scale (cams[1]) as default zoom
-                float defaultScale = cams.Count >= 2 ? (float)cams[1].Scale : 0.6f;
-                _autoCamTargetScale = defaultScale;
-                Camera.X = Camera.TargetX = _autoCamTargetX = cx;
-                Camera.Y = Camera.TargetY = _autoCamTargetY = cy;
-                Camera.Scale = Camera.TargetScale = _autoCamTargetScale;
-            }
-            else
-            {
-                // Single camera or no characters → stay fixed on cams[0], no auto-movement
-                _hasCameraEvents = true;  // treat as "scripted" so Update() doesn't lerp
-            }
+            // Auto-camera enabled by default for multi-camera levels
+            _hasCameraEvents = false;
+            Console.WriteLine($"[EventProcessor] Auto-camera enabled by default ({cams.Count} cameras available)");
         }
     }
 
@@ -539,6 +669,7 @@ public class EventProcessor
     public void Update(float songTime, float dt)
     {
         _currentSongTime = songTime;  // Store for use in FireEvent
+        _currentBeat = _level.Data != null ? songTime * _level.Data.EffectiveBpm / 60f : 0f;  // Calculate current beat
         var events = _level.Events.Events;
         while (_nextEventIndex < events.Count &&
                events[_nextEventIndex].Time <= songTime)
@@ -547,36 +678,145 @@ public class EventProcessor
             _nextEventIndex++;
         }
 
+        // Camera Follow Player: Smooth follow singing character when enabled
+        // This mode follows whichever character is currently singing (has active notes)
+        // Similar to auto-camera but uses actual object positions instead of fixed camera positions
+        if (NoteRenderer.CameraFollowPlayer && !_hasCameraEvents)
+        {
+            // Determine which strumline is currently singing (has notes in the near future)
+            int activeStrumline = -1;
+            float lookAheadTime = 0.5f;  // Look 0.5 seconds ahead for upcoming notes
+            
+            // Check which strumline has notes coming up (or just played)
+            // Priority: strumline with notes in the next 0.5s
+            // This mimics FNF's camera switching behavior
+            if (_level.Data?.Strumlines != null && _level.Data.Strumlines.Count >= 2)
+            {
+                float nearestNoteTime0 = float.MaxValue;
+                float nearestNoteTime1 = float.MaxValue;
+                
+                // Check strumline 0 (player)
+                if (_level.Data.Strumlines.Count > 0)
+                {
+                    foreach (var lane in _level.Data.Strumlines[0])
+                    {
+                        foreach (var note in lane)
+                        {
+                            float noteTime = _level.Data.ToSeconds(note.Start);
+                            if (noteTime >= songTime && noteTime < songTime + lookAheadTime)
+                            {
+                                nearestNoteTime0 = Math.Min(nearestNoteTime0, noteTime);
+                            }
+                        }
+                    }
+                }
+                
+                // Check strumline 1 (opponent)
+                if (_level.Data.Strumlines.Count > 1)
+                {
+                    foreach (var lane in _level.Data.Strumlines[1])
+                    {
+                        foreach (var note in lane)
+                        {
+                            float noteTime = _level.Data.ToSeconds(note.Start);
+                            if (noteTime >= songTime && noteTime < songTime + lookAheadTime)
+                            {
+                                nearestNoteTime1 = Math.Min(nearestNoteTime1, noteTime);
+                            }
+                        }
+                    }
+                }
+                
+                // Determine active strumline based on nearest note
+                if (nearestNoteTime0 < float.MaxValue || nearestNoteTime1 < float.MaxValue)
+                {
+                    // If both have notes, use the one with the nearest note
+                    activeStrumline = nearestNoteTime0 < nearestNoteTime1 ? 0 : 1;
+                }
+                else
+                {
+                    // No notes coming up - maintain last camera position or default to opponent
+                    activeStrumline = 1;  // Default to opponent when no notes
+                }
+            }
+            
+            // Find the character for the active strumline
+            var objs = _level.Scene.Objects;
+            Vector2? targetPos = null;
+            
+            for (int i = 0; i < objs.Count; i++)
+            {
+                if ((int)objs[i].StrumLine == activeStrumline && objs[i].Visible && _objAnimators[i] != null)
+                {
+                    var anim = _objAnimators[i]!;
+                    if (anim.Visible && anim.Opacity > 0.01f && anim.IsCharacter)
+                    {
+                        targetPos = anim.Position;
+                        break;  // Use first visible character on this strumline
+                    }
+                }
+            }
+            
+            // If character found, smoothly follow their position
+            if (targetPos.HasValue)
+            {
+                const float followSpeed = 8.0f;  // Smooth but responsive following
+                float speed = 1f - MathF.Exp(-followSpeed * dt);
+                Camera.X = MathHelper.Lerp(Camera.X, targetPos.Value.X, speed);
+                Camera.Y = MathHelper.Lerp(Camera.Y, targetPos.Value.Y, speed);
+                // Don't adjust scale when following - keep current zoom
+            }
+        }
+
         if (_hasCameraEvents)
         {
-            Camera.Update(dt);
+            Camera.Update(dt, _currentBeat);
         }
         else
         {
-            // Auto-camera: FNF-style fast smooth lerp toward the singer's position.
-            // Increased lerpRate from 4.0 to 12.0 for snappy camera movement like FNF
-            // This makes the camera reach the target much faster (98% in ~0.35 seconds)
-            const float lerpRate = 12.0f;
+            // Auto-camera: FNF-style smooth lerp toward the singer's position.
+            // Reduced lerpRate from 12.0 to 4.5 for smoother camera transitions
+            // This makes the camera reach the target smoothly without brusque jumps
+            // (reaches ~90% in ~0.5 seconds, ~98% in ~0.85 seconds)
+            const float lerpRate = 4.5f;
             float speed = 1f - MathF.Exp(-lerpRate * dt);
             Camera.X     = MathHelper.Lerp(Camera.X,     _autoCamTargetX,     speed);
             Camera.Y     = MathHelper.Lerp(Camera.Y,     _autoCamTargetY,     speed);
             Camera.Scale = MathHelper.Lerp(Camera.Scale, _autoCamTargetScale, speed);
-            Camera.Update(dt);  // handles shake offset
+            Camera.Update(dt, _currentBeat);  // handles shake offset
         }
 
         // Update opacity tweens
         for (int i = 0; i < _opacityTween.Length; i++)
         {
-            var (from, to, elapsed, duration) = _opacityTween[i];
-            if (duration <= 0f) continue;
-            elapsed += dt;
+            var tween = _opacityTween[i];
+            if (!tween.IsActive) continue;
+            
+            // Calculate elapsed based on timing mode
+            float elapsed, duration;
+            if (tween.UseBeatTime)
+            {
+                elapsed = _currentBeat - tween.StartBeat;
+                duration = tween.DurationBeats;
+            }
+            else
+            {
+                tween.Elapsed += dt;
+                elapsed = tween.Elapsed;
+                duration = tween.Duration;
+            }
+            
             float t = Math.Min(elapsed / duration, 1f);
-            _objOpacity[i] = MathHelper.Lerp(from, to, t);
+            _objOpacity[i] = MathHelper.Lerp(tween.From, tween.To, t);
             if (_objAnimators[i] != null)
                 _objAnimators[i]!.Opacity = _objOpacity[i];
-            _opacityTween[i] = (from, to, elapsed, duration);
-            if (elapsed >= duration)
-                _opacityTween[i] = (to, to, 0f, 0f); // done
+            
+            if (tween.IsDone(elapsed))
+            {
+                // Tween complete
+                _objOpacity[i] = tween.To;
+                tween.Duration = 0f; // Mark as inactive
+            }
         }
 
         // Update transform tweens (v3 format multi-position objects)
@@ -586,9 +826,23 @@ public class EventProcessor
         for (int i = _tweens.Count - 1; i >= 0; i--)
         {
             var tween = _tweens[i];
-            float elapsed = songTime - tween.StartTime;
             
-            if (elapsed >= tween.Duration)
+            // Calculate elapsed time based on timing mode
+            float elapsed, duration;
+            if (tween.UseBeatTime)
+            {
+                // Beat-based timing: calculate elapsed beats
+                elapsed = _currentBeat - tween.StartBeat;
+                duration = tween.DurationBeats;
+            }
+            else
+            {
+                // Time-based timing: calculate elapsed seconds
+                elapsed = songTime - tween.StartTime;
+                duration = tween.Duration;
+            }
+            
+            if (elapsed >= duration)
             {
                 // Tween complete - snap to final position and update transform index
                 var objs = _level.Scene.Objects;
@@ -611,7 +865,7 @@ public class EventProcessor
             else
             {
                 // Interpolate
-                float t = tween.Ease(elapsed / tween.Duration);
+                float t = tween.Ease(elapsed / duration);
                 if (_objAnimators[tween.ObjIndex] != null)
                 {
                     var pos = Vector2.Lerp(tween.StartPos, tween.EndPos, t);
@@ -641,6 +895,12 @@ public class EventProcessor
     {
         _currentSongTime = targetTime;  // Store for use in FireEvent during seek
         
+        // Update current beat for beat-time system
+        if (_level.Data != null && _level.Data.EffectiveBpm > 0f)
+        {
+            _currentBeat = targetTime * _level.Data.EffectiveBpm / 60f;
+        }
+        
         // Reset camera to initial state (same as in constructor)
         var cams = _level.Scene.Cameras;
         if (cams.Count > 0)
@@ -667,15 +927,26 @@ public class EventProcessor
             var anim = _objAnimators[i];
             if (anim == null) continue;
             anim.Visible  = objs[i].Visible;
-            anim.Opacity  = 1f;
+            // Use initial opacity from scene.json, default to 1.0 if not specified
+            float initialOpacity = objs[i].Opacity ?? 1f;
+            anim.Opacity  = initialOpacity;
             anim.TintColor = Microsoft.Xna.Framework.Color.White;
         }
 
-        // Reset opacity tweens
+        // Reset opacity tweens to initial scene values
         for (int i = 0; i < _opacityTween.Length; i++)
-            _opacityTween[i] = (1f, 1f, 0f, 0f);
+        {
+            float initialOpacity = i < objs.Count ? (objs[i].Opacity ?? 1f) : 1f;
+            _opacityTween[i].From = initialOpacity;
+            _opacityTween[i].To = initialOpacity;
+            _opacityTween[i].Elapsed = 0f;
+            _opacityTween[i].Duration = 0f;
+            _opacityTween[i].UseBeatTime = false;
+        }
         for (int i = 0; i < _objOpacity.Length; i++)
-            _objOpacity[i] = 1f;
+        {
+            _objOpacity[i] = i < objs.Count ? (objs[i].Opacity ?? 1f) : 1f;
+        }
 
         // Clear transform tweens
         _tweens.Clear();
@@ -854,21 +1125,39 @@ public class EventProcessor
                     if (ValidObj(objIdx))
                     {
                         float targetOpacity = action.Props.ValueFloat ?? 1f;
-                        float transSecs = action.Props.TransitionTime ?? 0f;
-                        // Default timeUnit is "seconds" — only convert if explicitly "beats"
-                        if (action.Props.TransitionTimeUnit == "beats" && transSecs > 0f)
-                            transSecs = transSecs / _level.Data!.EffectiveBpm * 60f;
+                        float durationOriginal = action.Props.TransitionTime ?? 0f;
+                        bool isSeconds = (action.Props.TransitionTimeUnit ?? "seconds") == "seconds";
+                        float duration = durationOriginal;
+                        
+                        // Convert beats to seconds if needed (for logging only)
+                        if (!isSeconds && _level.Data != null)
+                            duration = BeatsToSeconds(durationOriginal, _level.Data.EffectiveBpm);
 
-                        if (transSecs <= 0f)
+                        string objName = objIdx < objs.Count ? objs[objIdx]!.Spr : $"obj{objIdx}";
+                        
+                        if (duration <= 0f)
                         {
                             _objOpacity[objIdx] = targetOpacity;
-                            _opacityTween[objIdx] = (targetOpacity, targetOpacity, 0f, 0f);
+                            _opacityTween[objIdx].From = targetOpacity;
+                            _opacityTween[objIdx].To = targetOpacity;
+                            _opacityTween[objIdx].Duration = 0f;
                             if (_objAnimators[objIdx] != null)
                                 _objAnimators[objIdx]!.Opacity = targetOpacity;
+                            Console.WriteLine($"[ObjectOpacitySet] t={eventTime:F2} Obj {objIdx} ({objName}) ␦ opacity={targetOpacity:F2} (instant)");
                         }
                         else
                         {
-                            _opacityTween[objIdx] = (_objOpacity[objIdx], targetOpacity, 0f, transSecs);
+                            var tween = _opacityTween[objIdx];
+                            tween.From = _objOpacity[objIdx];
+                            tween.To = targetOpacity;
+                            tween.Elapsed = 0f;
+                            tween.Duration = duration;
+                            tween.UseBeatTime = !isSeconds;
+                            tween.StartBeat = _currentBeat;
+                            tween.DurationBeats = durationOriginal;
+                            
+                            string timeMode = !isSeconds ? "beats" : "seconds";
+                            Console.WriteLine($"[ObjectOpacitySet] t={eventTime:F2} Obj {objIdx} ({objName}) ␦ opacity {_objOpacity[objIdx]:F2}→{targetOpacity:F2} dur={duration:F2}s ({durationOriginal:F2}{(isSeconds ? "s" : "b")}) [mode={timeMode}]");
                         }
                     }
                     break;
@@ -949,9 +1238,11 @@ public class EventProcessor
                             break;
                         }
 
-                        float duration = action.Props.Duration ?? 0f;
+                        float durationOriginal = action.Props.Duration ?? 0f;
                         bool isSeconds = (action.Props.TimeUnit ?? "seconds") == "seconds";
-                        if (!isSeconds) duration = BeatsToSeconds(duration, _level.Data!.EffectiveBpm);
+                        float duration = durationOriginal;
+                        if (!isSeconds && _level.Data != null)
+                            duration = BeatsToSeconds(durationOriginal, _level.Data.EffectiveBpm);
 
                         if (duration <= 0f)
                         {
@@ -1021,8 +1312,16 @@ public class EventProcessor
                                     EndScale     = targetScale,
                                     Ease         = GetEaseFunction(easeName),
                                     NewTransformIndex = posIdx,
+                                    // Use beat-time for non-Fixed objects when duration is in beats
+                                    UseBeatTime   = !obj.Fixed && !isSeconds,
+                                    StartBeat     = _currentBeat,
+                                    DurationBeats = durationOriginal,
                                 };
                                 _tweens.Add(tween);
+                                
+                                string objName = obj.Spr ?? objIdx.ToString();
+                                string timeMode = !obj.Fixed && !isSeconds ? "beats" : "seconds";
+                                Console.WriteLine($"[ObjectTransformSet] t={_currentSongTime:F2} Obj {objIdx} ({objName}) → transform={posIdx} dur={duration:F2}s ({durationOriginal:F2}{(isSeconds ? "s" : "b")}) [mode={timeMode}]");
                             }
                         }
                     }
@@ -1041,9 +1340,10 @@ public class EventProcessor
                         // Some levels use "transform" property name instead of "position"
                         int posIdx = (int)(action.Props.Position ?? action.Props.Transform ?? 0f);
                         
-                        float duration = action.Props.TransitionTime ?? 0f;
+                        float durationOriginal = action.Props.TransitionTime ?? 0f;
                         bool isSeconds = (action.Props.TransitionTimeUnit ?? "seconds") == "seconds";
-                        if (!isSeconds && _level.Data != null) duration = BeatsToSeconds(duration, _level.Data.EffectiveBpm);
+                        float duration = durationOriginal;
+                        if (!isSeconds && _level.Data != null) duration = BeatsToSeconds(durationOriginal, _level.Data.EffectiveBpm);
 
                         var obj = objs[objIdx];
                         Vector2 targetPos;
@@ -1130,8 +1430,9 @@ public class EventProcessor
                             bool hasActiveTween = false;
                             float remainingTime = 0f;
                             
-                            foreach (var existingTween in _tweens)
+                            for (int i = 0; i < _tweens.Count; i++)
                             {
+                                var existingTween = _tweens[i];
                                 if (existingTween.ObjIndex == objIdx)
                                 {
                                     remainingTime = (existingTween.StartTime + existingTween.Duration) - _currentSongTime;
@@ -1143,13 +1444,14 @@ public class EventProcessor
                                 }
                             }
                             
-                            // Tolerance: if remaining time is < 0.1 seconds, consider it done
-                            const float TOLERANCE = 0.1f;
-                            
-                            if (hasActiveTween && remainingTime > TOLERANCE)
+                            // For Fixed objects: always cancel and create a single fused tween
+                            // For non-Fixed objects: just cancel
+                            if (hasActiveTween)
                             {
-                                // Active tween with significant time remaining
-                                // Cancel it and start new one from current position
+                                if (obj.Fixed && remainingTime > 0.01f)
+                                {
+                                    Console.WriteLine($"[TweenFuse] Obj {objIdx} ({objName}): Canceling old tween ({remainingTime:F3}s left), will fuse into new movement");
+                                }
                                 CancelObjectTween(objIdx);
                             }
                             
@@ -1170,29 +1472,44 @@ public class EventProcessor
                             
                             string easeName = action.Props.EasingType ?? "linear";
                             
-                            // CRITICAL FIX: For Fixed objects, compensate for event processing delay
-                            // by adjusting duration so the tween finishes at the correct time
-                            float tweenStartTime = _currentSongTime;
-                            float tweenDuration = duration;
+                            // Calculate processing delay
+                            float eventDelay = _currentSongTime - eventTime;
                             
-                            if (obj.Fixed)
+                            // CRITICAL: For Fixed objects, adjust duration to compensate for ALL delays
+                            // This includes both processing delay AND time lost from cancelled tweens
+                            // This ensures animations arrive at the target position at the correct time
+                            float tweenStartTime;
+                            float tweenDuration;
+                            
+                            if (obj.Fixed && eventDelay > 0.0001f && remainingTime < 0.01f)
                             {
-                                // Calculate how late this event is being processed
-                                float eventDelay = _currentSongTime - eventTime;
+                                // FIXED OBJECTS (UI/HUD): Only compensate for INITIAL processing delay
+                                // NOT for cancelled tweens (those should use full duration for smooth animation)
+                                // This is for single-shot UI animations that need to arrive on time
+                                tweenStartTime = _currentSongTime;
+                                tweenDuration = duration - eventDelay;
                                 
-                                if (eventDelay > 0f && eventDelay < duration)
+                                // Safety: Don't let duration go below minimum threshold (10ms)
+                                const float MIN_DURATION = 0.01f;
+                                if (tweenDuration < MIN_DURATION)
                                 {
-                                    // Event is late - reduce duration so tween finishes on time
-                                    // Example: Event at t=25.0, duration=1.6s, processed at t=25.3
-                                    // New duration = 1.6 - 0.3 = 1.3s, finishes at t=26.6 (correct)
-                                    tweenDuration = duration - eventDelay;
-                                    Console.WriteLine($"[FixedDelay] Obj {objIdx} ({objName}): eventTime={eventTime:F3}, currentTime={_currentSongTime:F3}, delay={eventDelay:F3}s, originalDur={duration:F2}s, adjustedDur={tweenDuration:F2}s, finishTime={(_currentSongTime + tweenDuration):F3}");
+                                    tweenDuration = MIN_DURATION;
                                 }
-                                else if (eventDelay >= duration)
+                                
+                                Console.WriteLine($"[FixedDelay] Obj {objIdx} ({objName}): eventTime={eventTime:F3}, currentTime={_currentSongTime:F3}, delay={eventDelay:F3}s, originalDur={duration:F2}s, adjustedDur={tweenDuration:F2}s (initial event compensated)");
+                            }
+                            else
+                            {
+                                // WORLD OBJECTS (Fixed=false) OR overlapping animations: Use original duration
+                                // This ensures smooth animation without teleporting
+                                // Even Fixed objects get smooth animation when events overlap (like water moving continuously)
+                                tweenStartTime = _currentSongTime;
+                                tweenDuration = duration;
+                                
+                                if (remainingTime > 0.01f)
                                 {
-                                    // Event is SO late that it's past the target finish time - snap instantly
-                                    Console.WriteLine($"[FixedDelay] Obj {objIdx} ({objName}): Event VERY late (delay={eventDelay:F3}s > duration={duration:F2}s) - snapping to target position");
-                                    tweenDuration = 0f; // Instant snap
+                                    string timeMode = !obj.Fixed && !isSeconds ? "beats" : "seconds";
+                                    Console.WriteLine($"[SmoothFuse] Obj {objIdx} ({objName}): Fused animation using full duration {duration:F2}s ({durationOriginal:F2}{(isSeconds ? "s" : "b")}) for smooth transition (skipTime={remainingTime:F3}s ignored) [mode={timeMode}]");
                                 }
                             }
                             
@@ -1208,6 +1525,10 @@ public class EventProcessor
                                 EndScale     = endScale,
                                 Ease         = GetEaseFunction(easeName),
                                 NewTransformIndex = posIdx, // Update to new transform index when tween completes
+                                // Use beat-time for non-Fixed objects when duration is in beats
+                                UseBeatTime   = !obj.Fixed && !isSeconds,
+                                StartBeat     = _currentBeat,
+                                DurationBeats = durationOriginal,
                             };
                             _tweens.Add(tween);
                         }
@@ -1233,6 +1554,8 @@ public class EventProcessor
                     {
                         _hasCameraEvents = false;
                         
+                        Console.WriteLine($"[CameraSet] Switching to AUTO mode");
+                        
                         // If we're mid-transition, use the TARGET values as the starting point
                         // for auto-camera to avoid visual jumps
                         if (Camera!.TransTime > 0f && Camera!.TransElapsed < Camera!.TransTime)
@@ -1240,6 +1563,7 @@ public class EventProcessor
                             _autoCamTargetX     = Camera!.TargetX;
                             _autoCamTargetY     = Camera!.TargetY;
                             _autoCamTargetScale = Camera!.TargetScale;
+                            Console.WriteLine($"[CameraSet] Auto-camera starting from transition target: ({_autoCamTargetX:F1}, {_autoCamTargetY:F1})");
                         }
                         else
                         {
@@ -1247,6 +1571,7 @@ public class EventProcessor
                             _autoCamTargetX     = Camera!.X;
                             _autoCamTargetY     = Camera!.Y;
                             _autoCamTargetScale = Camera!.Scale;
+                            Console.WriteLine($"[CameraSet] Auto-camera starting from current pos: ({_autoCamTargetX:F1}, {_autoCamTargetY:F1})");
                         }
                         
                         // Cancel any active camera transition so it doesn't fight the auto-camera lerp
@@ -1282,17 +1607,21 @@ public class EventProcessor
                     }
 
                     var cam = cams[camIdx];
-                    float transTime = action.Props.TransitionTime ?? 0f;
-                    if (action.Props.TransitionTimeUnit == "beats" && transTime > 0f)
-                        transTime = transTime / _level.Data!.EffectiveBpm * 60f;
+                    float durationOriginal = action.Props.TransitionTime ?? 0f;
+                    bool isSeconds = (action.Props.TransitionTimeUnit ?? "seconds") == "seconds";
+                    float transTime = durationOriginal;
+                    
+                    // Convert beats to seconds if needed (for logging only)
+                    if (!isSeconds && _level.Data != null)
+                        transTime = BeatsToSeconds(durationOriginal, _level.Data.EffectiveBpm);
 
                     _hasCameraEvents = true;
                     
-                    // Clamp scale to maximum 1.0
-                    float levelScale = (float)cam.Scale;
-                    float clampedScale = Math.Min(levelScale, 1.0f);
+                    // Get scale with proper format handling
+                    float clampedScale = GetCameraScale(cam);
                     
-                    Console.WriteLine($"[CameraSet] target={camIdx} pos=({cam.X:F1},{cam.Y:F1}) levelScale={levelScale:F3} clampedScale={clampedScale:F3} transTime={transTime:F2}s");
+                    string timeMode = !isSeconds ? "beats" : "seconds";
+                    Console.WriteLine($"[CameraSet] target={camIdx} pos=({cam.X:F1},{cam.Y:F1}) scale={clampedScale:F3} transTime={transTime:F2}s ({durationOriginal:F2}{(isSeconds ? "s" : "b")}) [mode={timeMode}] format={(cam.UsesNestedPositionFormat ? "nested" : "legacy")}");
                     
                     // Store the base scale for this camera
                     if (Camera != null)
@@ -1315,7 +1644,10 @@ public class EventProcessor
                         Camera.StartScaleTransition(
                             clampedScale,
                             transTime,
-                            action.Props.EasingType ?? "default");
+                            action.Props.EasingType ?? "default",
+                            !isSeconds,
+                            _currentBeat,
+                            durationOriginal);
                     }
                     else
                     {
@@ -1323,13 +1655,17 @@ public class EventProcessor
                         Camera.StartTransition(
                             targetX, targetY, clampedScale,
                             transTime,
-                            action.Props.EasingType ?? "default");
+                            action.Props.EasingType ?? "default",
+                            !isSeconds,
+                            _currentBeat,
+                            durationOriginal);
+                        Camera.ClampPosition();  // Clamp after setting transition targets
                     }
                     break;
                 }
 
                 case "CameraZoom":
-{
+                {
                     // CameraZoom applies zoom as a PERCENTAGE relative to BASE camera scale
                     // BaseScale is the original scale from scene.json (set by CameraSet)
                     // This ensures zoom always works from the camera's original scale,
@@ -1348,11 +1684,13 @@ public class EventProcessor
                     //   value=0.0 → scale = baseScale * 0.1 (max zoom in, clamped)
                     
                     float zoomValue = action.Props.ValueFloat ?? 1.0f;
-                    float duration = action.Props.TransitionTime ?? 0f;
+                    float durationOriginal = action.Props.TransitionTime ?? 0f;
+                    bool isSeconds = (action.Props.TransitionTimeUnit ?? "seconds") == "seconds";
+                    float duration = durationOriginal;
                     
-                    // Convert beats to seconds if needed
-                    if (action.Props.TransitionTimeUnit == "beats" && duration > 0f)
-                        duration = duration / _level.Data!.EffectiveBpm * 60f;
+                    // Convert beats to seconds if needed (for logging only)
+                    if (!isSeconds && _level.Data != null)
+                        duration = BeatsToSeconds(durationOriginal, _level.Data.EffectiveBpm);
                     
                     _hasCameraEvents = true;
                     
@@ -1368,11 +1706,17 @@ public class EventProcessor
                     // Apply percentage to base scale
                     float targetScale = baseScale * zoomPercentage;
                     
+                    string timeMode = !isSeconds ? "beats" : "seconds";
+                    Console.WriteLine($"[CameraZoom] value={zoomValue:F2} targetScale={targetScale:F3} dur={duration:F2}s ({durationOriginal:F2}{(isSeconds ? "s" : "b")}) [mode={timeMode}]");
+                    
                     // Use StartScaleTransition to preserve any active position transitions
                     Camera!.StartScaleTransition(
                         targetScale,
                         duration,
-                        action.Props.EasingType ?? "default");
+                        action.Props.EasingType ?? "default",
+                        !isSeconds,
+                        _currentBeat,
+                        durationOriginal);
                     break;
                 }
 
@@ -1485,7 +1829,8 @@ public class EventProcessor
         
         foreach (var action in packs[packIndex].Actions)
         {
-            var fakeEvent = new FnmmEvent { Time = 0f };
+            // Use current song time so Fixed object delay compensation works correctly
+            var fakeEvent = new FnmmEvent { Time = _currentSongTime };
             fakeEvent.Actions.Add(action);
             FireEvent(fakeEvent);
         }

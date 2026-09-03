@@ -2,8 +2,10 @@ using System;
 using System.Net.Http;
 using System.Text.Json;
 using System.Threading.Tasks;
+#if !ANDROID
 using DiscordRPC;
 using DiscordRPC.Logging;
+#endif
 
 namespace FunkyMakerPlayer;
 
@@ -28,6 +30,7 @@ namespace FunkyMakerPlayer;
 /// </summary>
 public static class DiscordRpc
 {
+#if !ANDROID
     // ── Configuration ─────────────────────────────────────────────────────────
     private const string CLIENT_ID = "1476660744673169489";
     private const string GITHUB_REPO = "Thisisfenix/thisisfenix.github.io";
@@ -268,4 +271,22 @@ public static class DiscordRpc
 
     private static string Truncate(string s, int max) =>
         s.Length <= max ? s : s[..max] + "…";
+#else
+    // ═══════════════════════════════════════════════════════════════════════
+    // ANDROID STUBS - Discord RPC not available on mobile
+    // ═══════════════════════════════════════════════════════════════════════
+    public static void Initialize() { }
+    public static void Update() { }
+    public static void Shutdown() { }
+    public static void SetMenu() { }
+    public static void SetBrowsingMusic() { }
+    public static void SetLoading(string levelName) { }
+    public static void SetPlaying(string levelName) { }
+    public static void SetPlayingMultiplayer(string levelName) { }
+    [Obsolete("Use SetPlaying(levelName) instead")]
+    public static void UpdateScore(string levelName, int score, int combo, int misses) { }
+    public static void SetParty(string partyId, int currentSize, int maxSize) { }
+    public static void ClearParty() { }
+    public static void SetMultiplayer(string state, string? details = null) { }
+#endif
 }

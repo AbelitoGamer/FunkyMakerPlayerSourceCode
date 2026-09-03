@@ -61,7 +61,7 @@ public class CountdownMenu
         
         try
         {
-            string countdownsDir = Path.Combine(AppContext.BaseDirectory, "mods", "countdowns");
+            string countdownsDir = PlatformPaths.GetCountdownsPath();
             if (Directory.Exists(countdownsDir))
             {
                 var dirs = Directory.GetDirectories(countdownsDir);
@@ -109,7 +109,7 @@ public class CountdownMenu
             }
             else
             {
-                baseDir = Path.Combine(AppContext.BaseDirectory, "mods", "countdowns", packName);
+                baseDir = Path.Combine(PlatformPaths.GetCountdownsPath(), packName);
             }
             
             string readyPath = Path.Combine(baseDir, "ready.png");

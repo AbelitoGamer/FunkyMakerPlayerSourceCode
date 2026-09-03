@@ -74,6 +74,14 @@ public static class Settings
         public float SafeFramesTime    { get; set; } = 0.083f;
         
         /// <summary>
+        /// Camera Follow Player: When enabled, camera smoothly follows the singing character.
+        /// Automatically switches between player and opponent based on who has upcoming notes.
+        /// Uses actual object positions from movement events.
+        /// Default: false (disabled)
+        /// </summary>
+        public bool CameraFollowPlayer { get; set; } = false;
+        
+        /// <summary>
         /// Icon positioning mode: Fixed (FNF base - icons move with health %) or Dynamic (icons stay at ends)
         /// Default: 0 (Fixed/FNF Base style)
         /// </summary>
@@ -97,6 +105,13 @@ public static class Settings
         /// Default: 0.25 (25% chance)
         /// </summary>
         public float ArrowEffectChance       { get; set; } = 0.25f;
+        
+        // ── Android Touch Controls Settings ───────────────────────────────────
+        /// <summary>
+        /// Hide Touch Hitbox Colors: When true, touch hitboxes are completely invisible (android only).
+        /// Default: false (hitboxes show subtle colors when pressed)
+        /// </summary>
+        public bool  HideTouchHitboxColors   { get; set; } = false;
         
         /// <summary>
         /// Selected Arrow Effect: 0=Random, 1=WhiteGlow, 2=BounceVertical, 3=Spin360, 4=BounceHorizontal, 5=Dizzy
@@ -127,6 +142,7 @@ public static class Settings
             NoteRenderer.GhostTapping      = d.GhostTapping;
             NoteRenderer.InputBuffer       = d.InputBuffer;
             NoteRenderer.SafeFramesTime    = d.SafeFramesTime;
+            NoteRenderer.CameraFollowPlayer = d.CameraFollowPlayer;
             Game1.ShowTimer                = d.ShowTimer;
             Game1.TimeskipEnabled          = d.TimeskipEnabled;
             Game1.TimeskipSeconds          = d.TimeskipSeconds;
@@ -158,6 +174,7 @@ public static class Settings
             ArrowEffectManager.EffectChance    = d.ArrowEffectChance;
             ArrowEffectManager.SelectedEffect  = d.ArrowSelectedEffect;
             Game1.SelectedCountdown            = d.SelectedCountdown;
+            Game1.HideTouchHitboxColors        = d.HideTouchHitboxColors;
             // VSync is applied via GraphicsDeviceManager — handled in Game1.ApplySettings
             game.ApplyLoadedSettings(d.VSync);
         }
@@ -182,6 +199,7 @@ public static class Settings
                 GhostTapping     = NoteRenderer.GhostTapping,
                 InputBuffer      = NoteRenderer.InputBuffer,
                 SafeFramesTime   = NoteRenderer.SafeFramesTime,
+                CameraFollowPlayer = NoteRenderer.CameraFollowPlayer,
                 ShowTimer        = Game1.ShowTimer,
                 TimeskipEnabled  = Game1.TimeskipEnabled,
                 TimeskipSeconds  = Game1.TimeskipSeconds,
@@ -213,6 +231,7 @@ public static class Settings
                 ArrowEffectChance = ArrowEffectManager.EffectChance,
                 ArrowSelectedEffect = ArrowEffectManager.SelectedEffect,
                 SelectedCountdown = Game1.SelectedCountdown,
+                HideTouchHitboxColors = Game1.HideTouchHitboxColors,
             };
             File.WriteAllText(_path, JsonSerializer.Serialize(d,
                 new JsonSerializerOptions { WriteIndented = true }));

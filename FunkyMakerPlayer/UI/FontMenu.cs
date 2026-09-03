@@ -73,7 +73,7 @@ public class FontMenu
         // Scan mods/fonts/ folder
         try
         {
-            string fontsDir = Path.Combine(AppContext.BaseDirectory, "mods", "fonts");
+            string fontsDir = PlatformPaths.GetFontsPath();
             if (Directory.Exists(fontsDir))
             {
                 var files = Directory.GetFiles(fontsDir);

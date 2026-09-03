@@ -44,7 +44,7 @@ public class NoteRenderer
     };
 
     // ── Global options ───────────────────────────────────────────────────────
-    public static bool  Autoplay         = true;
+    public static bool  Autoplay         = false;  // Changed to false - players must press notes manually
     public static bool  Downscroll       = false;
     /// <summary>
     /// Centers the player strumline in the middle of the screen (hides opponent strumline).
@@ -75,6 +75,14 @@ public class NoteRenderer
     /// Default: 5 frames (~0.083s at 60fps) - prevents accidental early misses.
     /// </summary>
     public static float SafeFramesTime = 0.083f;
+    
+    /// <summary>
+    /// Camera Follow Player: When enabled, camera follows the singing character.
+    /// Switches between player/opponent based on upcoming notes (FNF-style).
+    /// Uses actual object positions from ObjectPositionSet/ObjectTransformSet events.
+    /// Does NOT interfere with CameraSet events.
+    /// </summary>
+    public static bool CameraFollowPlayer = false;
 
     // ── Per-instance state ───────────────────────────────────────────────────
     private readonly int              _strumlineIndex;
@@ -92,8 +100,53 @@ public class NoteRenderer
     private readonly float[]          _holdEndTime = new float[LANE_COUNT];
     private readonly int[]            _recState    = new int[LANE_COUNT];
     private readonly float[]          _recAnimTime = new float[LANE_COUNT];
+    
+#if ANDROID
+    // Touch controls for Android (optional)
+    private TouchControls?            _touchControls;
+#endif
 
     // ── Public API ────────────────────────────────────────────────────────────
+    
+    /// <summary>
+    /// Helper to check if a key is down (combines keyboard + touch controls)
+    /// </summary>
+    private bool IsKeyDown(KeyboardState kb, Keys key)
+    {
+#if ANDROID
+        return kb.IsKeyDown(key) || (_touchControls?.IsKeyDown(key) ?? false);
+#else
+        return kb.IsKeyDown(key);
+#endif
+    }
+    
+    /// <summary>
+    /// Helper to check if a key was just pressed THIS frame
+    /// On Android, uses tap detection from TouchControls instead of frame-to-frame comparison
+    /// </summary>
+    private bool IsKeyJustPressed(KeyboardState kb, KeyboardState prevKb, Keys key)
+    {
+#if ANDROID
+        // On Android, use TouchControls tap detection which is more reliable for touch
+        bool touchJustPressed = _touchControls?.IsKeyJustPressed(key) ?? false;
+        if (touchJustPressed) return true;
+        
+        // Also check keyboard for testing
+        return kb.IsKeyDown(key) && !prevKb.IsKeyDown(key);
+#else
+        return kb.IsKeyDown(key) && !prevKb.IsKeyDown(key);
+#endif
+    }
+    
+#if ANDROID
+    /// <summary>
+    /// Set the touch controls for Android input detection
+    /// </summary>
+    public void SetTouchControls(TouchControls? touchControls)
+    {
+        _touchControls = touchControls;
+    }
+#endif
     
     /// <summary>
     /// Check if a hold note is currently active in the specified lane
@@ -357,6 +410,12 @@ public class NoteRenderer
             _splashTimer[i] = Math.Max(0f, _splashTimer[i] - dt);
             _comboBreakTimer[i] = Math.Max(0f, _comboBreakTimer[i] - dt);
             
+            // Auto-return to idle after ghosttap press animation expires
+            if (_glowTimer[i] <= 0f && _recState[i] == 1)  // State 1 = press
+            {
+                SetRecState(i, 0);  // Return to idle
+            }
+            
             // Update confirm hold timer (FNF-style)
             if (_confirmHoldTimer[i] >= 0)
             {
@@ -448,9 +507,11 @@ public class NoteRenderer
     {
         for (int lane = 0; lane < LANE_COUNT; lane++)
         {
-            bool held         = kb.IsKeyDown(PlayerKeys[lane]);
-            bool justPressed  = held && !prevKb.IsKeyDown(PlayerKeys[lane]);
-            bool justReleased = !held && prevKb.IsKeyDown(PlayerKeys[lane]);
+            // Check both keyboard and touch controls (Android)
+            bool held = IsKeyDown(kb, PlayerKeys[lane]);
+            bool heldPrev = IsKeyDown(prevKb, PlayerKeys[lane]);
+            bool justPressed = IsKeyJustPressed(kb, prevKb, PlayerKeys[lane]);  // Use new tap detection
+            bool justReleased = !held && heldPrev;
             
             _keyHeld[lane] = held;  // Track key state for receptor rendering
 

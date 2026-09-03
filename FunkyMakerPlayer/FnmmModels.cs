@@ -177,12 +177,23 @@ public class SceneCamera
     [JsonPropertyName("y")]     public float Y     { get; set; }
     [JsonPropertyName("scale")] public float Scale { get; set; } = 1.0f;
     
+    // For nested format: {"position": {"x": 514, "y": 1070}, "scale": 0.95}
+    [JsonPropertyName("position")]
+    public Position? NestedPosition { get; set; }
+    
     /// <summary>
     /// True if this camera uses nested position format {position: {x, y}, scale}.
     /// Set manually during scene loading if needed.
     /// </summary>
     [System.Text.Json.Serialization.JsonIgnore]
     public bool UsesNestedPositionFormat { get; set; }
+    
+    // Helper class for nested position format
+    public class Position
+    {
+        [JsonPropertyName("x")] public float X { get; set; }
+        [JsonPropertyName("y")] public float Y { get; set; }
+    }
 }
 
 public class FnmmScene

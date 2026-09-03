@@ -80,6 +80,30 @@ public class NoteSplashStyle
                 }
             }
 
+            // NEW: If still not found, search for ANY PNG+XML pair in the folder
+            if (splashPng == null)
+            {
+                try
+                {
+                    var pngFiles = Directory.GetFiles(folderPath, "*.png", SearchOption.TopDirectoryOnly);
+                    foreach (var png in pngFiles)
+                    {
+                        string xml = Path.ChangeExtension(png, ".xml");
+                        if (File.Exists(xml))
+                        {
+                            splashPng = png;
+                            splashXml = xml;
+                            Console.WriteLine($"[NoteSplash] Auto-detected splash files: {Path.GetFileName(png)} + {Path.GetFileName(xml)}");
+                            break;
+                        }
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"[NoteSplash] Error searching for PNG+XML files: {ex.Message}");
+                }
+            }
+
             // No texture files found → use programmatic fallback
             if (splashPng == null) return null;
 
@@ -193,7 +217,7 @@ public class NoteSplashStyle
     public static List<string> GetAvailableStyles()
     {
         var styles = new List<string> { "Default" };
-        string splashesDir = Path.Combine(AppContext.BaseDirectory, "mods", "notesplashes");
+        string splashesDir = PlatformPaths.GetNoteSplashesPath();
         
         if (Directory.Exists(splashesDir))
         {
@@ -223,7 +247,7 @@ public class NoteSplashStyle
         if (name == "Default" || string.IsNullOrEmpty(name))
             return null;
 
-        string splashesDir = Path.Combine(AppContext.BaseDirectory, "mods", "notesplashes");
+        string splashesDir = PlatformPaths.GetNoteSplashesPath();
         string styleDir = Path.Combine(splashesDir, name);
         
         if (!Directory.Exists(styleDir))
