@@ -782,7 +782,13 @@ public class EventProcessor
             float speed = 1f - MathF.Exp(-lerpRate * dt);
             Camera.X     = MathHelper.Lerp(Camera.X,     _autoCamTargetX,     speed);
             Camera.Y     = MathHelper.Lerp(Camera.Y,     _autoCamTargetY,     speed);
-            Camera.Scale = MathHelper.Lerp(Camera.Scale, _autoCamTargetScale, speed);
+            // CRITICAL FIX: Only lerp scale if it's different from current
+            // This preserves CameraZoom changes made during auto-camera mode
+            // Auto-camera targets come from CameraSet events or initial setup
+            if (Math.Abs(Camera.Scale - _autoCamTargetScale) > 0.001f)
+            {
+                Camera.Scale = MathHelper.Lerp(Camera.Scale, _autoCamTargetScale, speed);
+            }
             Camera.Update(dt, _currentBeat);  // handles shake offset
         }
 
@@ -902,17 +908,24 @@ public class EventProcessor
         }
         
         // Reset camera to initial state (same as in constructor)
+        // CRITICAL FIX: Use default camera (cams[1] for player if available, else cams[0])
+        // This matches the initialization logic in the constructor
         var cams = _level.Scene.Cameras;
         if (cams.Count > 0)
         {
-            var cam0 = cams[0];
-            float levelScale = (float)cam0.Scale;
-            float clampedScale = Math.Min(levelScale, 1.0f);
+            int defaultCam = cams.Count >= 2 ? 1 : 0;
+            var cam = cams[defaultCam];
+            float clampedScale = GetCameraScale(cam);
             
-            Camera.X     = Camera.TargetX     = (float)cam0.X;
-            Camera.Y     = Camera.TargetY     = (float)cam0.Y;
+            Camera.X     = Camera.TargetX     = (float)cam.X;
+            Camera.Y     = Camera.TargetY     = (float)cam.Y;
             Camera.Scale = Camera.TargetScale = clampedScale;
             Camera.BaseScale = clampedScale;
+            _autoCamTargetX     = (float)cam.X;
+            _autoCamTargetY     = (float)cam.Y;
+            _autoCamTargetScale = clampedScale;
+            
+            Console.WriteLine($"[SeekTo] Reset camera to cam[{defaultCam}]: pos=({cam.X:F1},{cam.Y:F1}) scale={clampedScale:F3} BaseScale={clampedScale:F3}");
         }
         
         // Reset all objects to initial state before replaying events
@@ -1472,45 +1485,25 @@ public class EventProcessor
                             
                             string easeName = action.Props.EasingType ?? "linear";
                             
-                            // Calculate processing delay
+                            // SIMPLIFIED DELAY HANDLING:
+                            // - Always use full duration (no compensation)
+                            // - Beat-time system handles music sync automatically
+                            // - This prevents timing inconsistencies between Fixed and World objects
+                            float tweenStartTime = _currentSongTime;
+                            float tweenDuration = duration;
+                            
+                            // Only log if there's a significant processing delay (>10ms)
                             float eventDelay = _currentSongTime - eventTime;
-                            
-                            // CRITICAL: For Fixed objects, adjust duration to compensate for ALL delays
-                            // This includes both processing delay AND time lost from cancelled tweens
-                            // This ensures animations arrive at the target position at the correct time
-                            float tweenStartTime;
-                            float tweenDuration;
-                            
-                            if (obj.Fixed && eventDelay > 0.0001f && remainingTime < 0.01f)
+                            if (eventDelay > 0.01f && remainingTime < 0.01f)
                             {
-                                // FIXED OBJECTS (UI/HUD): Only compensate for INITIAL processing delay
-                                // NOT for cancelled tweens (those should use full duration for smooth animation)
-                                // This is for single-shot UI animations that need to arrive on time
-                                tweenStartTime = _currentSongTime;
-                                tweenDuration = duration - eventDelay;
-                                
-                                // Safety: Don't let duration go below minimum threshold (10ms)
-                                const float MIN_DURATION = 0.01f;
-                                if (tweenDuration < MIN_DURATION)
-                                {
-                                    tweenDuration = MIN_DURATION;
-                                }
-                                
-                                Console.WriteLine($"[FixedDelay] Obj {objIdx} ({objName}): eventTime={eventTime:F3}, currentTime={_currentSongTime:F3}, delay={eventDelay:F3}s, originalDur={duration:F2}s, adjustedDur={tweenDuration:F2}s (initial event compensated)");
+                                string timeMode = !obj.Fixed && !isSeconds ? "beats" : "seconds";
+                                Console.WriteLine($"[TweenStart] Obj {objIdx} ({objName}): delay={eventDelay:F3}s, dur={duration:F2}s ({durationOriginal:F2}{(isSeconds ? "s" : "b")}) [mode={timeMode}] [Fixed={obj.Fixed}]");
                             }
-                            else
+                            
+                            if (remainingTime > 0.01f)
                             {
-                                // WORLD OBJECTS (Fixed=false) OR overlapping animations: Use original duration
-                                // This ensures smooth animation without teleporting
-                                // Even Fixed objects get smooth animation when events overlap (like water moving continuously)
-                                tweenStartTime = _currentSongTime;
-                                tweenDuration = duration;
-                                
-                                if (remainingTime > 0.01f)
-                                {
-                                    string timeMode = !obj.Fixed && !isSeconds ? "beats" : "seconds";
-                                    Console.WriteLine($"[SmoothFuse] Obj {objIdx} ({objName}): Fused animation using full duration {duration:F2}s ({durationOriginal:F2}{(isSeconds ? "s" : "b")}) for smooth transition (skipTime={remainingTime:F3}s ignored) [mode={timeMode}]");
-                                }
+                                string timeMode = !obj.Fixed && !isSeconds ? "beats" : "seconds";
+                                Console.WriteLine($"[SmoothFuse] Obj {objIdx} ({objName}): Fused animation using full duration {duration:F2}s ({durationOriginal:F2}{(isSeconds ? "s" : "b")}) for smooth transition (skipTime={remainingTime:F3}s ignored) [mode={timeMode}]");
                             }
                             
                             var tween = new ObjectTransformTween
@@ -1692,7 +1685,9 @@ public class EventProcessor
                     if (!isSeconds && _level.Data != null)
                         duration = BeatsToSeconds(durationOriginal, _level.Data.EffectiveBpm);
                     
-                    _hasCameraEvents = true;
+                    // CRITICAL FIX: CameraZoom does NOT disable auto-camera
+                    // It works in BOTH manual and auto-camera modes
+                    // Don't set _hasCameraEvents = true here
                     
                     // Use BaseScale as the 100% reference (from scene.json camera)
                     // This ensures we always zoom from the camera's original scale,
@@ -1706,8 +1701,17 @@ public class EventProcessor
                     // Apply percentage to base scale
                     float targetScale = baseScale * zoomPercentage;
                     
+                    string cameraMode = _hasCameraEvents ? "manual" : "auto";
                     string timeMode = !isSeconds ? "beats" : "seconds";
-                    Console.WriteLine($"[CameraZoom] value={zoomValue:F2} targetScale={targetScale:F3} dur={duration:F2}s ({durationOriginal:F2}{(isSeconds ? "s" : "b")}) [mode={timeMode}]");
+                    Console.WriteLine($"[CameraZoom] value={zoomValue:F2} baseScale={baseScale:F3} targetScale={targetScale:F3} dur={duration:F2}s ({durationOriginal:F2}{(isSeconds ? "s" : "b")}) [mode={timeMode}] [camera={cameraMode}]");
+                    
+                    // Update auto-camera target if in auto-camera mode
+                    // This ensures auto-camera doesn't fight against the zoom
+                    if (!_hasCameraEvents)
+                    {
+                        _autoCamTargetScale = targetScale;
+                        Console.WriteLine($"[CameraZoom] Updated auto-camera target scale to {targetScale:F3}");
+                    }
                     
                     // Use StartScaleTransition to preserve any active position transitions
                     Camera!.StartScaleTransition(

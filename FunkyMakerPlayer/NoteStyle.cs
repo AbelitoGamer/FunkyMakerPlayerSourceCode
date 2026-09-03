@@ -117,6 +117,15 @@ public class TextureAtlas
         var frames = GetFrames(prefix);
         return frames.Count > 0 ? frames[0] : null;
     }
+    
+    /// <summary>Get all frame names in this atlas (for generic fallback detection).</summary>
+    public List<string> GetAllFrameNames()
+    {
+        var names = new List<string>();
+        foreach (var f in _allFrames)
+            names.Add(f.Name);
+        return names;
+    }
 
     private static int ExtractSuffix(string name, int prefixLen)
     {
@@ -527,13 +536,45 @@ public class NoteStyle
                 string[] codenamePrefixes = { "arrowLEFT", "arrowDOWN", "arrowUP", "arrowRIGHT" };
                 string[] colorPrefixes = { "purple", "blue", "green", "red" };
                 
+                // ANDROID FIX: Count how many frames were found for diagnostics
+                int foundFrames = 0;
+                
                 for (int i = 0; i < 4; i++)
                 {
                     style.NoteFrames[i, 0] = noteAtlas.GetFirstFrame(notePrefixes[i] + "0")
                                           ?? noteAtlas.GetFirstFrame(notePrefixes[i])
                                           ?? noteAtlas.GetFirstFrame(codenamePrefixes[i])
                                           ?? noteAtlas.GetFirstFrame(colorPrefixes[i]);
+                    
+                    if (style.NoteFrames[i, 0] != null) foundFrames++;
                 }
+                
+                // ANDROID FIX: If no frames found with standard names, use generic fallback
+                // This handles custom XMLs with non-standard frame names
+                if (foundFrames == 0)
+                {
+                    Console.WriteLine($"[NoteStyle] No standard frame names found, trying generic frame detection...");
+                    
+                    // Get all frame names from the atlas
+                    var allFrames = noteAtlas.GetAllFrameNames();
+                    if (allFrames != null && allFrames.Count > 0)
+                    {
+                        Console.WriteLine($"[NoteStyle] Found {allFrames.Count} frames in XML: {string.Join(", ", allFrames.Take(10))}");
+                        
+                        // Try to assign frames cyclically (frame 0 → left, frame 1 → down, etc.)
+                        for (int i = 0; i < 4 && i < allFrames.Count; i++)
+                        {
+                            style.NoteFrames[i, 0] = noteAtlas.GetFirstFrame(allFrames[i]);
+                            if (style.NoteFrames[i, 0] != null)
+                            {
+                                Console.WriteLine($"[NoteStyle] Assigned frame '{allFrames[i]}' to direction {i} (left=0, down=1, up=2, right=3)");
+                                foundFrames++;
+                            }
+                        }
+                    }
+                }
+                
+                Console.WriteLine($"[NoteStyle] Loaded {foundFrames}/4 note frames");
             }
             
             // skinType 1 = damage, 2 = instakill, 3 = heal (always use fallback detection)
@@ -920,10 +961,29 @@ public class NoteStyle
 
         string stylesDir = PlatformPaths.GetNoteStylesPath();
         string skinDir   = Path.Combine(stylesDir, name);
-        if (!Directory.Exists(skinDir))
-            return LoadFromFolder(assetsRoot, gd);  // fallback to default
-
-        return LoadFromFolder(skinDir, gd) ?? LoadFromFolder(assetsRoot, gd);
+        
+        // Try to load from named subfolder first
+        if (Directory.Exists(skinDir))
+        {
+            var style = LoadFromFolder(skinDir, gd);
+            if (style != null) return style;
+        }
+        
+        // ANDROID FIX: Also try to load directly from notestyles/ root
+        // Users may place files there instead of in a subfolder
+        if (Directory.Exists(stylesDir))
+        {
+            Console.WriteLine($"[NoteStyle] '{name}' subfolder not found, searching in notestyles/ root...");
+            var style = LoadFromFolder(stylesDir, gd);
+            if (style != null)
+            {
+                Console.WriteLine($"[NoteStyle] Found note style in notestyles/ root!");
+                return style;
+            }
+        }
+        
+        // Fallback to default
+        return LoadFromFolder(assetsRoot, gd);
     }
 
     private static Microsoft.Xna.Framework.Color ParseColorArray(System.Text.Json.JsonElement arr)
