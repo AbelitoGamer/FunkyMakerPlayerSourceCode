@@ -544,10 +544,21 @@ public class EventProcessor
         int maxObjs = Math.Max(75, objAnimators.Length);
         _objOpacity    = new float[maxObjs];
         _opacityTween  = new OpacityTween[maxObjs];
+        
+        // Initialize opacity from scene.json (respects initial opacity values)
+        var objs = level.Scene.Objects;
         for (int i = 0; i < maxObjs; i++)
         {
-            _objOpacity[i] = 1f;
+            // Use initial opacity from scene.json, default to 1.0 if not specified
+            float initialOpacity = i < objs.Count ? (objs[i].Opacity ?? 1f) : 1f;
+            _objOpacity[i] = initialOpacity;
             _opacityTween[i] = new OpacityTween();
+            
+            // Also apply to animator if it exists
+            if (i < objAnimators.Length && objAnimators[i] != null)
+            {
+                objAnimators[i]!.Opacity = initialOpacity;
+            }
         }
 
         // Convert event times to seconds if needed, using the same rule as note times.
@@ -1616,9 +1627,33 @@ public class EventProcessor
                     string timeMode = !isSeconds ? "beats" : "seconds";
                     Console.WriteLine($"[CameraSet] target={camIdx} pos=({cam.X:F1},{cam.Y:F1}) scale={clampedScale:F3} transTime={transTime:F2}s ({durationOriginal:F2}{(isSeconds ? "s" : "b")}) [mode={timeMode}] format={(cam.UsesNestedPositionFormat ? "nested" : "legacy")}");
                     
-                    // Store the base scale for this camera
+                    // ZOOM PRESERVATION: If current scale differs from BaseScale, preserve the zoom ratio
+                    // This ensures CameraSet doesn't reset zoom when switching cameras
+                    float currentZoomRatio = 1.0f;
+                    if (Camera != null && Camera.BaseScale > 0.01f)
+                    {
+                        // Calculate current zoom as ratio: currentScale / baseScale
+                        // If CameraZoom set scale to 0.5 and baseScale is 1.0, ratio = 0.5
+                        currentZoomRatio = Camera.Scale / Camera.BaseScale;
+                        
+                        // Only preserve zoom if it's significantly different from 1.0 (not at base scale)
+                        if (Math.Abs(currentZoomRatio - 1.0f) > 0.05f)
+                        {
+                            Console.WriteLine($"[CameraSet] Preserving zoom ratio {currentZoomRatio:F2}x (current={Camera.Scale:F3}, base={Camera.BaseScale:F3})");
+                        }
+                        else
+                        {
+                            currentZoomRatio = 1.0f; // Reset to no zoom if very close to 1.0
+                        }
+                    }
+                    
+                    // Update base scale for new camera
                     if (Camera != null)
                         Camera.BaseScale = clampedScale;
+                    
+                    // Apply preserved zoom ratio to new camera's base scale
+                    float targetScale = clampedScale * currentZoomRatio;
+                    Console.WriteLine($"[CameraSet] New base scale={clampedScale:F3}, zoom ratio={currentZoomRatio:F2}x → target scale={targetScale:F3}");
                     
                     // SMART TRANSITION: If position isn't changing, only transition scale
                     // This prevents CameraSet from canceling active position transitions
@@ -1628,14 +1663,14 @@ public class EventProcessor
                     
                     bool positionChanging = Math.Abs(targetX - Camera!.TargetX) > 1f || 
                                            Math.Abs(targetY - Camera!.TargetY) > 1f;
-                    bool scaleChanging = Math.Abs(clampedScale - Camera!.TargetScale) > 0.01f;
+                    bool scaleChanging = Math.Abs(targetScale - Camera!.TargetScale) > 0.01f;
                     
                     if (!positionChanging && scaleChanging && Camera!.PosTransTime > 0f)
                     {
                         // Position isn't changing AND there's an active position transition
                         // Only transition the scale to preserve the position animation
                         Camera.StartScaleTransition(
-                            clampedScale,
+                            targetScale,
                             transTime,
                             action.Props.EasingType ?? "default",
                             !isSeconds,
@@ -1646,7 +1681,7 @@ public class EventProcessor
                     {
                         // Normal full transition (position + scale)
                         Camera.StartTransition(
-                            targetX, targetY, clampedScale,
+                            targetX, targetY, targetScale,
                             transTime,
                             action.Props.EasingType ?? "default",
                             !isSeconds,
@@ -1817,21 +1852,28 @@ public class EventProcessor
     }
 
     /// <summary>
-    /// Execute an action_pack by index (0-based).
+    /// Execute an action_pack by index (1-based, matching note properties).
     /// Called from NoteRenderer callbacks when onPressEvent/onMissEvent fires.
     /// </summary>
     public void FireActionPack(int packIndex)
     {
         var packs = _level.Events.ActionPacks;
-        if (packIndex < 0 || packIndex >= packs.Count)
+        Console.WriteLine($"[FireActionPack] Requested pack {packIndex} (1-based), total packs available: {packs.Count}");
+        
+        // packIndex comes from note properties and is 1-based
+        // Convert to 0-based array index
+        int arrayIndex = packIndex - 1;
+        
+        if (packIndex <= 0 || arrayIndex >= packs.Count)
         {
             Console.WriteLine($"[FireActionPack] ERROR: Invalid pack index {packIndex} (total packs: {packs.Count})");
+            Console.WriteLine($"[FireActionPack] NOTE: If action_packs are defined in events.json, ensure they're being loaded into FnmmLevel.Events.ActionPacks");
             return;
         }
         
-        Console.WriteLine($"[FireActionPack] Firing pack {packIndex} with {packs[packIndex].Actions.Count} actions");
+        Console.WriteLine($"[FireActionPack] Firing pack {packIndex} (array index {arrayIndex}) with {packs[arrayIndex].Actions.Count} actions");
         
-        foreach (var action in packs[packIndex].Actions)
+        foreach (var action in packs[arrayIndex].Actions)
         {
             // Use current song time so Fixed object delay compensation works correctly
             var fakeEvent = new FnmmEvent { Time = _currentSongTime };

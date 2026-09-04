@@ -126,6 +126,7 @@ public partial class Game1 : Game
     public FnmmLevel?      _level;  // Public for SettingsManager
     private List<NoteRenderer> _noteRenderers = new();  // Support multiple strumlines
     public EventProcessor? _events;  // Public for SettingsManager
+    private Microsoft.Xna.Framework.Vector2 _initialCameraPos = Microsoft.Xna.Framework.Vector2.Zero;  // Initial camera position for scrollFactor
 
     // ── Sprite Texture Cache ────────────────────────────────────────────────
     // Caches converted textures to avoid reloading on song restart
@@ -1578,6 +1579,8 @@ public partial class Game1 : Game
                 var pos = obj.GetPosition();
                 var scale = obj.GetScale();
                 
+                Console.WriteLine($"[Scene] Object {i} pos=({pos.X}, {pos.Y}), scale=({scale.X}, {scale.Y}), textures={textures.Count}");
+                
                 // CRITICAL FIX: For Fixed objects with Transform array, use Transform[0] as initial position
                 // This ensures the first ObjectPositionSet tween starts from the EXACT position specified in events
                 if (obj.Fixed && obj.Transform != null && obj.Transform.Count > 0)
@@ -1611,14 +1614,23 @@ public partial class Game1 : Game
                 
                 Console.WriteLine($"[Scene] Object {i} pos=({pos.X}, {pos.Y}), scale=({scale.X}, {scale.Y}), textures={textures.Count}");
 
+                // Debug: Log sprite offset from first animation
+                if (sprData.Def.Data != null && sprData.Def.Data.Count > 0)
+                {
+                    var firstAnim = sprData.Def.Data[0];
+                    Console.WriteLine($"[Scene] Object {i} ({obj.Spr}) first anim offset: ({firstAnim.Offset.X}, {firstAnim.Offset.Y}), scale: {firstAnim.Scale}");
+                }
+
                 _objAnimators[i] = new SpriteAnimator(obj.Spr, sprData.Def, textures,
                     new Vector2(pos.X, pos.Y),
                     new Vector2(scale.X, scale.Y))
                 {
-                    Bpm         = _level.Data.EffectiveBpm,
-                    Visible     = obj.Visible,
-                    IsCharacter = obj.StrumLine >= 0f,
-                    IsFixed     = obj.Fixed,
+                    Bpm          = _level.Data.EffectiveBpm,
+                    Visible      = obj.Visible,
+                    IsCharacter  = obj.StrumLine >= 0f,
+                    IsBG         = sprData.Def.Type == 2.0f,
+                    LevelVersion = _level.Data.Version,
+                    IsFixed      = obj.Fixed,
                     RenderWidth  = rtW,
                     RenderHeight = rtH,
                 };
@@ -1972,6 +1984,13 @@ public partial class Game1 : Game
         }
         
         _events = new EventProcessor(_level, _objAnimators, texCache);
+        
+        // Store initial camera position for scrollFactor calculations
+        if (_events.Camera != null)
+        {
+            _initialCameraPos = new Microsoft.Xna.Framework.Vector2(_events.Camera.X, _events.Camera.Y);
+            Console.WriteLine($"[ScrollFactor] Initial camera position: ({_initialCameraPos.X}, {_initialCameraPos.Y})");
+        }
 
         // Wire BarIconChange — swap health bar icons mid-song
         _events.OnBarIconChange = (target, spriteName) =>
@@ -4733,7 +4752,8 @@ public partial class Game1 : Game
             var pos = obj.GetPosition();
             var scale = obj.GetScale();
 
-            // Check if object has Transform array with position events
+            // Check if object has Transform array with multiple positions (for scrollFactor)
+            // Transform[0] is the default position, scrollFactor only applies if there are multiple transforms
             bool hasTransformArray = obj.Transform != null && obj.Transform.Count > 1;
             bool hasPositionEvents = hasTransformArray && _events.HasPositionEvents(i);
 
@@ -4785,7 +4805,40 @@ public partial class Game1 : Game
                 }
                 else if (!hasPositionEvents || hasTransformArray)
                 {
-                    anim.Position = new Vector2(pos.X, pos.Y);
+                    Vector2 finalPos = new Vector2(pos.X, pos.Y);
+                    
+                    // Apply scroll factor for parallax to objects that use Transform (objectPosition)
+                    // ScrollFactor controls how much camera MOVEMENT affects the object:
+                    // 0.0 = object stays fixed in world space (infinite distance)
+                    // 0.5 = object moves half as much as camera (background/far)
+                    // 1.0 = object moves with camera normally (default)
+                    // 2.0 = object moves twice as much as camera (foreground/close)
+                    //
+                    // IMPORTANT: ScrollFactor only affects camera MOVEMENT, not absolute position
+                    // We calculate: adjustedPos = objectPos + (cameraMovement * (1 - scrollFactor))
+                    // where cameraMovement = currentCameraPos - initialCameraPos
+                    if (hasTransformArray)
+                    {
+                        Vec2 scrollFactor = obj.GetScrollFactor();
+                        if (Math.Abs(scrollFactor.X - 1f) > 0.01f || Math.Abs(scrollFactor.Y - 1f) > 0.01f)
+                        {
+                            // Get camera position
+                            var cam = _events?.Camera;
+                            if (cam != null)
+                            {
+                                // Calculate camera movement from initial position
+                                float camMovementX = cam.X - _initialCameraPos.X;
+                                float camMovementY = cam.Y - _initialCameraPos.Y;
+                                
+                                // Apply scrollFactor only to camera movement
+                                float offsetX = camMovementX * (1f - scrollFactor.X);
+                                float offsetY = camMovementY * (1f - scrollFactor.Y);
+                                finalPos = new Vector2(pos.X + offsetX, pos.Y + offsetY);
+                            }
+                        }
+                    }
+                    
+                    anim.Position = finalPos;
                     anim.Scale = new Vector2(scale.X, scale.Y);
                 }
             }
@@ -4968,14 +5021,17 @@ public partial class Game1 : Game
                 }
                 else
                 {
-                    // Fallback: if no character found, stack near opponent (strumLine 1)
+                    // Fallback: if no character found, stack above opponent (strumLine 1)
+                    // Extra strumlines (2+) should appear above the enemy, not the player
                     var oppObj = objs.Find(o => (int)o.StrumLine == 1);
                     if (oppObj != null)
                     {
                         var v = Vector2.Transform(new Vector2(oppObj.X, oppObj.Y), _lastCamMatrix);
                         float sy = _rtHeight / 720f;
-                        _noteRenderers[slIndex].SetXOffset(v.X - laneW * 0.6f / 2f - laneW * 0.6f * (slIndex - 1));
-                        _noteRenderers[slIndex].SetStrumY(v.Y - 160f * sy);
+                        // Position above opponent, stacked vertically for multiple extra strumlines
+                        float verticalOffset = 180f * sy * (slIndex - 1);  // Stack upward
+                        _noteRenderers[slIndex].SetXOffset(v.X - laneW * 0.6f / 2f);
+                        _noteRenderers[slIndex].SetStrumY(v.Y - 160f * sy - verticalOffset);
                         _noteRenderers[slIndex].NoteScale = 0.6f;
                     }
                 }

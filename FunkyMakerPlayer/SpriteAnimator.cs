@@ -59,6 +59,19 @@ public class SpriteAnimator
     public bool IsCharacter = false;
     
     /// <summary>
+    /// When true, the sprite is a background object that needs offset subtraction.
+    /// Set based on sprite definition type (def.Type == 2 or background detection).
+    /// </summary>
+    public bool IsBG = false;
+    
+    /// <summary>
+    /// Level format version. Affects offset application logic.
+    /// V3 (< 4.0): All sprites apply offset subtraction.
+    /// V4 (>= 4.0): Only IsCharacter and IsBG sprites apply offset.
+    /// </summary>
+    public float LevelVersion = 3.0f;
+    
+    /// <summary>
     /// When true, the sprite is a fixed (screen-space) overlay.
     /// The offset is applied without scaling — it's a direct screen-pixel anchor.
     /// </summary>
@@ -70,6 +83,9 @@ public class SpriteAnimator
     /// When 0, fixed objects use their raw Scale without camera adaptation.
     /// </summary>
     public float FixedPixelScale = 0f;
+    
+    // Debug flag to log offset only once per sprite
+    private bool _offsetLogged = false;
 
     /// <summary>Render target dimensions — used for fixed object stretch-to-fit when scale > 1.</summary>
     public int RenderWidth  = 1280;
@@ -565,15 +581,31 @@ public class SpriteAnimator
         else
         {
             var absObjScale = new Vector2(Math.Abs(Scale.X), Math.Abs(Scale.Y));
-            // Funky Maker / GameMaker flip semantics:
-            // When Scale.X < 0 (flipped), the sprite origin is measured from the
-            // RIGHT edge of the frame after flip. MonoGame FlipHorizontally flips
-            // the drawn pixels but keeps drawPos at the top-left, so we must
-            // adjust the X offset: effectiveOffsetX = frameWidth - offset.X
-            // Same logic applies to Y when Scale.Y < 0.
-            float effOX = Scale.X < 0 ? (fw - offset.X) : offset.X;
-            float effOY = Scale.Y < 0 ? (fh - offset.Y) : offset.Y;
-            var drawPos = Position - new Vector2(effOX, effOY) * absObjScale * sprScale;
+            Vector2 drawPos;
+            
+            // V3: All sprites apply offset with subtraction
+            // V4: Only IsCharacter and IsBG apply offset
+            bool applyOffset = (LevelVersion < 4.0f) || IsCharacter || IsBG;
+            
+            if (applyOffset)
+            {
+                float effOX = Scale.X < 0 ? (fw - offset.X) : offset.X;
+                float effOY = Scale.Y < 0 ? (fh - offset.Y) : offset.Y;
+                drawPos = Position - new Vector2(effOX, effOY) * absObjScale * sprScale;
+            }
+            else
+            {
+                drawPos = Position;
+            }
+            
+            // Debug log for offset application (only log first frame)
+            if (_currentFrame < 1 && !_offsetLogged)
+            {
+                string mode = applyOffset ? $"OFFSET APPLIED (v{LevelVersion})" : "NO OFFSET";
+                Console.WriteLine($"[SpriteOffset] Normal Draw: offset=({offset.X},{offset.Y}), Position=({Position.X},{Position.Y}), drawPos=({drawPos.X},{drawPos.Y}) [{mode}]");
+                _offsetLogged = true;
+            }
+            
             sb.Draw(tex, drawPos, src, BlendColor, 0f, Vector2.Zero, finalScale, effects, 0f);
         }
     }
@@ -623,10 +655,31 @@ public class SpriteAnimator
         else
         {
             var absObjScale = new Vector2(Math.Abs(Scale.X), Math.Abs(Scale.Y));
-            // Same flip-offset correction as DrawStrip
-            float effOX = Scale.X < 0 ? (tex.Width  - offset.X) : offset.X;
-            float effOY = Scale.Y < 0 ? (tex.Height - offset.Y) : offset.Y;
-            var drawPos = Position - new Vector2(effOX, effOY) * absObjScale * sprScale;
+            Vector2 drawPos;
+            
+            // V3: All sprites apply offset with subtraction
+            // V4: Only IsCharacter and IsBG apply offset
+            bool applyOffset = (LevelVersion < 4.0f) || IsCharacter || IsBG;
+            
+            if (applyOffset)
+            {
+                float effOX = Scale.X < 0 ? (tex.Width - offset.X) : offset.X;
+                float effOY = Scale.Y < 0 ? (tex.Height - offset.Y) : offset.Y;
+                drawPos = Position - new Vector2(effOX, effOY) * absObjScale * sprScale;
+            }
+            else
+            {
+                drawPos = Position;
+            }
+            
+            // Debug log for offset application (only log first frame)
+            if (_currentFrame < 1 && !_offsetLogged)
+            {
+                string mode = applyOffset ? $"OFFSET APPLIED (v{LevelVersion})" : "NO OFFSET";
+                Console.WriteLine($"[SpriteOffset] Single Draw: offset=({offset.X},{offset.Y}), Position=({Position.X},{Position.Y}), drawPos=({drawPos.X},{drawPos.Y}) [{mode}]");
+                _offsetLogged = true;
+            }
+            
             sb.Draw(tex, drawPos, null, BlendColor, 0f, Vector2.Zero, finalScale, effects, 0f);
         }
     }
@@ -647,11 +700,32 @@ public class SpriteAnimator
 
         var finalScale  = Scale * sprScale;
         var effects     = BuildEffects(ref finalScale);
+        
         var absObjScale = new Vector2(Math.Abs(Scale.X), Math.Abs(Scale.Y));
-        // Same flip-offset correction as DrawStrip
-        float effOX2 = Scale.X < 0 ? (fw - offset.X) : offset.X;
-        float effOY2 = Scale.Y < 0 ? (fh - offset.Y) : offset.Y;
-        var drawPos   = Position - new Vector2(effOX2, effOY2) * absObjScale * sprScale;
+        Vector2 drawPos;
+        
+        // V3: All sprites apply offset with subtraction
+        // V4: Only IsCharacter and IsBG apply offset
+        bool applyOffset = (LevelVersion < 4.0f) || IsCharacter || IsBG;
+        
+        if (applyOffset)
+        {
+            float effOX2 = Scale.X < 0 ? (fw - offset.X) : offset.X;
+            float effOY2 = Scale.Y < 0 ? (fh - offset.Y) : offset.Y;
+            drawPos = Position - new Vector2(effOX2, effOY2) * absObjScale * sprScale;
+        }
+        else
+        {
+            drawPos = Position;
+        }
+        
+        // Debug log for offset application (only log first few frames)
+        if (_currentFrame < 1 && !_offsetLogged)
+        {
+            string mode = applyOffset ? $"OFFSET APPLIED (v{LevelVersion})" : "NO OFFSET";
+            Console.WriteLine($"[SpriteOffset] Strip Draw: offset=({offset.X},{offset.Y}), Position=({Position.X},{Position.Y}), drawPos=({drawPos.X},{drawPos.Y}) [{mode}]");
+            _offsetLogged = true;
+        }
 
         sb.Draw(tex, drawPos, src, BlendColor, 0f, Vector2.Zero, finalScale, effects, 0f);
     }
@@ -705,11 +779,19 @@ public class SpriteAnimator
         }
         else
         {
-            // Non-fixed: standard positioning
+            // Non-fixed: standard positioning with offset applied
             var absObjScale = new Vector2(Math.Abs(Scale.X), Math.Abs(Scale.Y));
             float effOX = Scale.X < 0 ? (fw - offset.X) : offset.X;
             float effOY = Scale.Y < 0 ? (fh - offset.Y) : offset.Y;
             var drawPos = Position - new Vector2(effOX, effOY) * absObjScale * sprScale;
+            
+            // Debug log for offset application (only log first few frames)
+            if (_currentFrame < 1 && !_offsetLogged)
+            {
+                Console.WriteLine($"[SpriteOffset] Atlas Draw: offset=({offset.X},{offset.Y}), effOffset=({effOX},{effOY}), Position=({Position.X},{Position.Y}), drawPos=({drawPos.X},{drawPos.Y})");
+                _offsetLogged = true;
+            }
+            
             sb.Draw(tex, drawPos, src, BlendColor, 0f, Vector2.Zero, finalScale, effects, 0f);
         }
     }

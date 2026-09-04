@@ -78,8 +78,9 @@ public class RgbColor
 
 public class Transform
 {
-    [JsonPropertyName("position")] public Vec2 Position { get; set; } = new();
-    [JsonPropertyName("scale")]    public Vec2 Scale    { get; set; } = new();
+    [JsonPropertyName("position")]     public Vec2 Position     { get; set; } = new();
+    [JsonPropertyName("scale")]        public Vec2 Scale        { get; set; } = new();
+    [JsonPropertyName("scrollFactor")] public Vec2 ScrollFactor { get; set; } = new() { X = 1f, Y = 1f };
 }
 
 public class SceneObject
@@ -138,6 +139,19 @@ public class SceneObject
             return Transform[idx].Scale;
         }
         return Scale ?? new Vec2 { X = 1f, Y = 1f };
+    }
+
+    /// <summary>Gets the active scrollFactor based on current transform index.</summary>
+    public Vec2 GetScrollFactor()
+    {
+        // V3 format: get from transform array
+        if (Transform != null && Transform.Count > 0)
+        {
+            int idx = System.Math.Clamp(CurrentTransformIndex, 0, Transform.Count - 1);
+            return Transform[idx].ScrollFactor;
+        }
+        // V2 format or no transform: default scrollFactor is 1.0 (moves with camera)
+        return new Vec2 { X = 1f, Y = 1f };
     }
 
     /// <summary>Save current values as the initial state (call once after loading).</summary>
