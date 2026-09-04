@@ -59,6 +59,10 @@ public class CameraState
     public float ScaleTransElapsed { get; set; }
     public string ScaleEasingType { get; set; } = "default";
     
+    // Track if the current scale transition is from a CameraZoom event
+    // Used to determine if zoom should be preserved across CameraSet changes
+    public bool IsZoomEvent { get; set; }
+    
     // Beat-time support for scale transitions
     public bool UseBeatTimeScale { get; set; }
     public float StartBeatScale { get; set; }
@@ -101,6 +105,7 @@ public class CameraState
         // Set BOTH position and scale transitions
         PosTransTime = transTime; PosTransElapsed = 0f; PosEasingType = easing;
         ScaleTransTime = transTime; ScaleTransElapsed = 0f; ScaleEasingType = easing;
+        IsZoomEvent = false; // CameraSet transitions are NOT zoom events
         
         // Beat-time support
         UseBeatTimePos = useBeatTime;
@@ -117,13 +122,15 @@ public class CameraState
     /// Start ONLY a scale transition, preserving any active position transition
     /// </summary>
     public void StartScaleTransition(float targetScale, float transTime, string easing,
-                                     bool useBeatTime = false, float startBeat = 0f, float durationBeats = 0f)
+                                     bool useBeatTime = false, float startBeat = 0f, float durationBeats = 0f,
+                                     bool isZoomEvent = false)
     {
         _ss = Scale;
         TargetScale = targetScale;
         ScaleTransTime = transTime;
         ScaleTransElapsed = 0f;
         ScaleEasingType = easing;
+        IsZoomEvent = isZoomEvent; // Track if this is a CameraZoom event
         
         // Beat-time support
         UseBeatTimeScale = useBeatTime;
@@ -261,6 +268,7 @@ public class CameraState
                 Scale = TargetScale;
                 ScaleTransTime = 0f; // Mark scale transition as complete
                 UseBeatTimeScale = false;
+                IsZoomEvent = false; // Reset zoom event flag when transition completes
             }
             else
             {
@@ -349,7 +357,7 @@ public class EventProcessor
         public float StartBeat { get; set; }
         public float DurationBeats { get; set; }
         
-        public bool IsDone(float elapsed) => elapsed >= Duration;
+        public bool IsDone(float elapsed) => UseBeatTime ? elapsed >= DurationBeats : elapsed >= Duration;
         public bool IsActive => Duration > 0f;
     }
     private readonly OpacityTween[] _opacityTween;
@@ -386,6 +394,11 @@ public class EventProcessor
     // Auto-camera: smoothly follows a target world position
     private float _autoCamTargetX, _autoCamTargetY, _autoCamTargetScale;
     private const float AUTO_CAM_SPEED = 2.0f;
+    
+    // Auto-camera cooldown: prevents camera from switching too quickly between characters
+    private float _autoCamLastSwitchTime = 0f;
+    private const float AUTO_CAM_SWITCH_COOLDOWN = 0.5f;  // Minimum 0.5 seconds between switches
+    private int _autoCamLastStrumline = -1;  // Track which strumline camera is currently following
 
     public float AutoCamTargetX => _autoCamTargetX;
     public float AutoCamTargetY => _autoCamTargetY;
@@ -447,6 +460,7 @@ public class EventProcessor
         if (_hasCameraEvents)
         {
             // Level has manual camera events - don't auto-move
+            // Console.WriteLine($"[AutoCamera] Blocked: Manual camera mode active (_hasCameraEvents=true)");
             return;
         }
 
@@ -454,6 +468,26 @@ public class EventProcessor
 
         // Only move auto-camera for strumlines 0 (player) and 1 (opponent).
         if (strumlineIndex > 1) return;
+        
+        // COOLDOWN: Prevent camera from switching too quickly between characters
+        // Only switch if enough time has passed OR if this is the first note hit
+        float currentTime = _currentSongTime;
+        if (_autoCamLastStrumline == strumlineIndex)
+        {
+            // Same strumline - always allow (keeps camera on current singer)
+            _autoCamLastSwitchTime = currentTime;
+        }
+        else if (_autoCamLastStrumline >= 0 && (currentTime - _autoCamLastSwitchTime) < AUTO_CAM_SWITCH_COOLDOWN)
+        {
+            // Different strumline but cooldown not expired - ignore this note
+            return;
+        }
+        else
+        {
+            // Different strumline and cooldown expired - allow switch
+            _autoCamLastStrumline = strumlineIndex;
+            _autoCamLastSwitchTime = currentTime;
+        }
 
         // When multiple characters share the same strumline (e.g. one at the top
         // and one at the bottom of the scene), follow the one closest to where the
@@ -502,7 +536,7 @@ public class EventProcessor
             float baseScale = GetCameraScale(cams[camIdx]);
             _autoCamTargetScale = baseScale;
             
-            Console.WriteLine($"[AutoCamera] Strumline {strumlineIndex} → Camera {camIdx} (from object.Camera={best.Camera}) pos=({_autoCamTargetX:F1}, {_autoCamTargetY:F1}) scale={_autoCamTargetScale:F3}");
+            Console.WriteLine($"[AutoCamera] Strumline {strumlineIndex} → Camera {camIdx} (from object.Camera={best.Camera}) pos=({_autoCamTargetX:F1}, {_autoCamTargetY:F1}) scale={_autoCamTargetScale:F3} [cooldown active]");
         }
         else
         {
@@ -518,7 +552,7 @@ public class EventProcessor
                 float baseScale = GetCameraScale(cams[camIdx]);
                 _autoCamTargetScale = baseScale;
                 
-                Console.WriteLine($"[AutoCamera] Strumline {strumlineIndex} → Camera {camIdx} (FNF convention fallback) pos=({_autoCamTargetX:F1}, {_autoCamTargetY:F1}) scale={_autoCamTargetScale:F3}");
+                Console.WriteLine($"[AutoCamera] Strumline {strumlineIndex} → Camera {camIdx} (FNF convention fallback) pos=({_autoCamTargetX:F1}, {_autoCamTargetY:F1}) scale={_autoCamTargetScale:F3} [cooldown active]");
             }
             else
             {
@@ -528,7 +562,7 @@ public class EventProcessor
                 float baseScale = cams.Count > 0 ? GetCameraScale(cams[0]) : 0.75f;
                 _autoCamTargetScale = baseScale;
                 
-                Console.WriteLine($"[AutoCamera] Strumline {strumlineIndex} → FALLBACK to character pos=({_autoCamTargetX:F1}, {_autoCamTargetY:F1}) scale={_autoCamTargetScale:F3}");
+                Console.WriteLine($"[AutoCamera] Strumline {strumlineIndex} → FALLBACK to character pos=({_autoCamTargetX:F1}, {_autoCamTargetY:F1}) scale={_autoCamTargetScale:F3} [cooldown active]");
             }
         }
     }
@@ -793,14 +827,17 @@ public class EventProcessor
             float speed = 1f - MathF.Exp(-lerpRate * dt);
             Camera.X     = MathHelper.Lerp(Camera.X,     _autoCamTargetX,     speed);
             Camera.Y     = MathHelper.Lerp(Camera.Y,     _autoCamTargetY,     speed);
-            // CRITICAL FIX: Only lerp scale if it's different from current
-            // This preserves CameraZoom changes made during auto-camera mode
-            // Auto-camera targets come from CameraSet events or initial setup
-            if (Math.Abs(Camera.Scale - _autoCamTargetScale) > 0.001f)
+            
+            // CRITICAL: Only lerp scale towards auto-camera target if:
+            // 1. No active scale transition (from CameraZoom)
+            // 2. Scale differs from target
+            // This preserves CameraZoom transitions during auto-camera mode
+            bool hasActiveScaleTransition = Camera.ScaleTransTime > 0f && Camera.ScaleTransElapsed < Camera.ScaleTransTime;
+            if (!hasActiveScaleTransition && Math.Abs(Camera.Scale - _autoCamTargetScale) > 0.001f)
             {
                 Camera.Scale = MathHelper.Lerp(Camera.Scale, _autoCamTargetScale, speed);
             }
-            Camera.Update(dt, _currentBeat);  // handles shake offset
+            Camera.Update(dt, _currentBeat);  // handles shake offset and scale transitions
         }
 
         // Update opacity tweens
@@ -833,6 +870,8 @@ public class EventProcessor
                 // Tween complete
                 _objOpacity[i] = tween.To;
                 tween.Duration = 0f; // Mark as inactive
+                if (_objAnimators[i] != null)
+                    _objAnimators[i]!.Opacity = tween.To;
             }
         }
 
@@ -1558,7 +1597,7 @@ public class EventProcessor
                     {
                         _hasCameraEvents = false;
                         
-                        Console.WriteLine($"[CameraSet] Switching to AUTO mode");
+                        Console.WriteLine($"[CameraSet] Switching to AUTO mode (_hasCameraEvents=false)");
                         
                         // If we're mid-transition, use the TARGET values as the starting point
                         // for auto-camera to avoid visual jumps
@@ -1589,6 +1628,7 @@ public class EventProcessor
                     if (camIdx < 0 || camIdx >= cams.Count)
                     {
                         // Out of range → fallback to auto
+                        Console.WriteLine($"[CameraSet] WARNING: Camera target {camIdx} out of range (0-{cams.Count - 1}), falling back to AUTO mode");
                         _hasCameraEvents = false;
                         
                         // Same logic as mode="auto" above
@@ -1621,25 +1661,33 @@ public class EventProcessor
 
                     _hasCameraEvents = true;
                     
+                    Console.WriteLine($"[CameraSet] MANUAL mode activated (_hasCameraEvents=true)");
+                    
                     // Get scale with proper format handling
                     float clampedScale = GetCameraScale(cam);
                     
                     string timeMode = !isSeconds ? "beats" : "seconds";
                     Console.WriteLine($"[CameraSet] target={camIdx} pos=({cam.X:F1},{cam.Y:F1}) scale={clampedScale:F3} transTime={transTime:F2}s ({durationOriginal:F2}{(isSeconds ? "s" : "b")}) [mode={timeMode}] format={(cam.UsesNestedPositionFormat ? "nested" : "legacy")}");
                     
-                    // ZOOM PRESERVATION: If current scale differs from BaseScale, preserve the zoom ratio
-                    // This ensures CameraSet doesn't reset zoom when switching cameras
+                    // ZOOM PRESERVATION: Only preserve zoom if there's an active CameraZoom EVENT
+                    // Check IsZoomEvent flag to distinguish CameraZoom from regular CameraSet transitions
+                    // This prevents false "zoom preservation" when switching between cameras with different base scales
                     float currentZoomRatio = 1.0f;
-                    if (Camera != null && Camera.BaseScale > 0.01f)
+                    bool hasActiveZoomEvent = Camera != null && 
+                                              Camera.IsZoomEvent && 
+                                              Camera.ScaleTransTime > 0f && 
+                                              Camera.ScaleTransElapsed < Camera.ScaleTransTime;
+                    
+                    if (hasActiveZoomEvent && Camera != null && Camera.BaseScale > 0.01f)
                     {
                         // Calculate current zoom as ratio: currentScale / baseScale
-                        // If CameraZoom set scale to 0.5 and baseScale is 1.0, ratio = 0.5
+                        // Only preserve if there's an active CameraZoom event
                         currentZoomRatio = Camera.Scale / Camera.BaseScale;
                         
-                        // Only preserve zoom if it's significantly different from 1.0 (not at base scale)
+                        // Only preserve zoom if it's significantly different from 1.0
                         if (Math.Abs(currentZoomRatio - 1.0f) > 0.05f)
                         {
-                            Console.WriteLine($"[CameraSet] Preserving zoom ratio {currentZoomRatio:F2}x (current={Camera.Scale:F3}, base={Camera.BaseScale:F3})");
+                            Console.WriteLine($"[CameraSet] Preserving zoom ratio {currentZoomRatio:F2}x (current={Camera.Scale:F3}, base={Camera.BaseScale:F3}) [active CameraZoom event]");
                         }
                         else
                         {
@@ -1755,7 +1803,8 @@ public class EventProcessor
                         action.Props.EasingType ?? "default",
                         !isSeconds,
                         _currentBeat,
-                        durationOriginal);
+                        durationOriginal,
+                        isZoomEvent: true); // Mark this as a CameraZoom event
                     break;
                 }
 
@@ -1858,22 +1907,19 @@ public class EventProcessor
     public void FireActionPack(int packIndex)
     {
         var packs = _level.Events.ActionPacks;
-        Console.WriteLine($"[FireActionPack] Requested pack {packIndex} (1-based), total packs available: {packs.Count}");
+        Console.WriteLine($"[FireActionPack] Requested pack {packIndex} (0-based), total packs available: {packs.Count}");
         
-        // packIndex comes from note properties and is 1-based
-        // Convert to 0-based array index
-        int arrayIndex = packIndex - 1;
-        
-        if (packIndex <= 0 || arrayIndex >= packs.Count)
+        // packIndex is 0-based (standard array indexing)
+        if (packIndex < 0 || packIndex >= packs.Count)
         {
-            Console.WriteLine($"[FireActionPack] ERROR: Invalid pack index {packIndex} (total packs: {packs.Count})");
+            Console.WriteLine($"[FireActionPack] ERROR: Invalid pack index {packIndex} (valid range: 0-{packs.Count - 1})");
             Console.WriteLine($"[FireActionPack] NOTE: If action_packs are defined in events.json, ensure they're being loaded into FnmmLevel.Events.ActionPacks");
             return;
         }
         
-        Console.WriteLine($"[FireActionPack] Firing pack {packIndex} (array index {arrayIndex}) with {packs[arrayIndex].Actions.Count} actions");
+        Console.WriteLine($"[FireActionPack] Firing pack {packIndex} with {packs[packIndex].Actions.Count} actions");
         
-        foreach (var action in packs[arrayIndex].Actions)
+        foreach (var action in packs[packIndex].Actions)
         {
             // Use current song time so Fixed object delay compensation works correctly
             var fakeEvent = new FnmmEvent { Time = _currentSongTime };

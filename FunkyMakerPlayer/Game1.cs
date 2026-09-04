@@ -3292,12 +3292,15 @@ public partial class Game1 : Game
         // Use smaller gap for Midlescroll (opponent arrows split around player)
         float gap = NoteRenderer.Midlescroll ? 50f : 200f;
         int strumlineCount = _noteRenderers.Count;
+        
+        // Treat as 2 strumlines if HideExtraStrumlines is enabled (classic mode)
+        int effectiveCount = HideExtraStrumlines ? Math.Min(strumlineCount, 2) : strumlineCount;
 
-        if (strumlineCount == 1)
+        if (effectiveCount == 1)
         {
             _noteRenderers[0].SetXOffset(sw / 2f - totalWidth / 2f);
         }
-        else if (strumlineCount == 2 && NoteRenderer.Midlescroll)
+        else if (effectiveCount == 2 && NoteRenderer.Midlescroll)
         {
             // Player: centered
             _noteRenderers[0].SetXOffset(sw / 2f - totalWidth / 2f);
@@ -4976,10 +4979,16 @@ public partial class Game1 : Game
         var   objs  = _level.Scene.Objects;
         int   count = _noteRenderers.Count;
 
-        // With 3+ strumlines: position opponent (1) and extras (2+) over their characters
-        // With 2 strumlines: classic FNF layout — both stay at fixed positions
-        if (count >= 3)
+        // Position strumlines based on mode:
+        // - Classic mode (HideExtraStrumlines = true): 2 strumlines in fixed FNF positions (centered)
+        // - Extra strumlines mode (HideExtraStrumlines = false AND count >= 3): position strumlines 1+ above characters
+        // This allows levels with 3+ strumlines to work in classic mode when the setting is enabled
+        
+        bool useClassicMode = HideExtraStrumlines || count < 3;
+        
+        if (!useClassicMode)
         {
+            // Extra strumlines mode: position opponent (1) and extras (2+) over their characters
             // For each strumline 1+, find the VISIBLE character currently assigned to it
             // Use _objAnimators to get runtime strumLine (handles ObjectChartChange events)
             for (int slIndex = 1; slIndex < count; slIndex++)
