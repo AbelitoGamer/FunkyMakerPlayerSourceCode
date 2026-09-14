@@ -27,9 +27,11 @@ namespace FunkyMakerPlayer.Platforms.Android
     {
         private Game1 _game;
         private Action<global::Android.Net.Uri?, string?, Stream?>? _filePickerCallback;
+        private Action<global::Android.Net.Uri?>? _folderPickerCallback;
         
         private const int FILE_PICKER_REQUEST_CODE = 1001;
         private const int OPEN_MODS_FOLDER_REQUEST_CODE = 1002;
+        private const int FOLDER_PICKER_REQUEST_CODE = 1003;
         
         protected override void OnCreate(Bundle? savedInstanceState)
         {
@@ -154,6 +156,45 @@ namespace FunkyMakerPlayer.Platforms.Android
             }
             
             StartActivityForResult(Intent.CreateChooser(intent, "Seleccionar archivo de nivel"), FILE_PICKER_REQUEST_CODE);
+        }
+        
+        /// <summary>
+        /// Pick a folder using Storage Access Framework (SAF)
+        /// This gives persistent read/write access to user-selected folders
+        /// </summary>
+        public void PickModsFolder(Action<global::Android.Net.Uri?> callback)
+        {
+            _folderPickerCallback = callback;
+            
+            try
+            {
+                // Use ACTION_OPEN_DOCUMENT_TREE for folder selection
+                var intent = new Intent(Intent.ActionOpenDocumentTree);
+                intent.AddFlags(ActivityFlags.GrantReadUriPermission | ActivityFlags.GrantWriteUriPermission | ActivityFlags.GrantPersistableUriPermission);
+                
+                // Try to start from Documents/FunkyMakerPlayerPublicMods
+                if (Build.VERSION.SdkInt >= BuildVersionCodes.O)
+                {
+                    try
+                    {
+                        var initialUri = global::Android.Net.Uri.Parse("content://com.android.externalstorage.documents/document/primary:Documents/FunkyMakerPlayerPublicMods");
+                        intent.PutExtra(DocumentsContract.ExtraInitialUri, initialUri);
+                    }
+                    catch (Exception ex)
+                    {
+                        Console.WriteLine($"[MainActivity] Could not set initial URI: {ex.Message}");
+                    }
+                }
+                
+                StartActivityForResult(intent, FOLDER_PICKER_REQUEST_CODE);
+                Console.WriteLine("[MainActivity] Launched folder picker");
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[MainActivity] Error launching folder picker: {ex.Message}");
+                _folderPickerCallback?.Invoke(null);
+                _folderPickerCallback = null;
+            }
         }
         
         /// <summary>
@@ -405,6 +446,48 @@ namespace FunkyMakerPlayer.Platforms.Android
                 }
                 
                 _filePickerCallback = null;
+            }
+            else if (requestCode == FOLDER_PICKER_REQUEST_CODE)
+            {
+                // User selected a folder with ACTION_OPEN_DOCUMENT_TREE
+                if (resultCode == Result.Ok && data?.Data != null)
+                {
+                    var folderUri = data.Data;
+                    Console.WriteLine($"[MainActivity] User selected folder: {folderUri}");
+                    
+                    try
+                    {
+                        // Take persistent permission for this folder
+                        var takeFlags = ActivityFlags.GrantReadUriPermission | ActivityFlags.GrantWriteUriPermission;
+                        ContentResolver?.TakePersistableUriPermission(folderUri, takeFlags);
+                        Console.WriteLine($"[MainActivity] Granted persistent permissions for: {folderUri}");
+                        
+                        // Save the URI to preferences
+                        var prefs = GetSharedPreferences("FunkyMakerPlayer", FileCreationMode.Private);
+                        var editor = prefs?.Edit();
+                        editor?.PutString("mods_folder_uri", folderUri.ToString());
+                        editor?.Apply();
+                        Console.WriteLine($"[MainActivity] Saved mods folder URI to preferences");
+                        
+                        // IMPORTANT: Import files from selected folder to app storage
+                        Console.WriteLine($"[MainActivity] Starting import from selected folder...");
+                        PlatformPaths.ImportFromCustomFolder(folderUri);
+                    }
+                    catch (Exception ex)
+                    {
+                        Console.WriteLine($"[MainActivity] Error taking persistent permission: {ex.Message}");
+                    }
+                    
+                    _folderPickerCallback?.Invoke(folderUri);
+                }
+                else
+                {
+                    // Cancelled
+                    Console.WriteLine($"[MainActivity] Folder picker cancelled");
+                    _folderPickerCallback?.Invoke(null);
+                }
+                
+                _folderPickerCallback = null;
             }
             else if (requestCode == OPEN_MODS_FOLDER_REQUEST_CODE)
             {

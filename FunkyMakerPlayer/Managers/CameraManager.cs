@@ -1,5 +1,7 @@
 using System;
 using Microsoft.Xna.Framework;
+using Microsoft.Xna.Framework.Graphics;
+using MonoGame.Extended;
 
 namespace FunkyMakerPlayer.Managers;
 
@@ -14,6 +16,10 @@ public class CameraManager
     private float _camZoom = 1.0f;         // Current zoom level (beat-synced)
     private int   _lastBeat = -1;          // Last beat that triggered zoom
     private Matrix _lastCameraMatrix = Matrix.Identity;
+    
+    // ── MonoGame.Extended Camera (Beta) ───────────────────────────────────────
+    private OrthographicCamera? _extendedCamera;  // Extended camera for scrollFactor support
+    public bool UseExtendedCamera { get; set; } = false;  // Toggle for beta feature
 
     // ── Constants ─────────────────────────────────────────────────────────────
     private const float ZOOM_BEAT_AMOUNT = 0.03f;   // How much to zoom on beat (3%)
@@ -37,6 +43,16 @@ public class CameraManager
     public CameraManager()
     {
         Console.WriteLine("[CameraManager] Initialized");
+    }
+    
+    /// <summary>
+    /// Initializes MonoGame.Extended OrthographicCamera for parallax support.
+    /// Call this after graphics device is available.
+    /// </summary>
+    public void InitializeExtendedCamera(GraphicsDevice graphicsDevice)
+    {
+        _extendedCamera = new OrthographicCamera(graphicsDevice);
+        Console.WriteLine("[CameraManager] Extended camera initialized");
     }
 
     /// <summary>
@@ -69,6 +85,34 @@ public class CameraManager
         
         // Smoothly lerp zoom back to 1.0
         _camZoom = MathHelper.Lerp(_camZoom, 1.0f, ZOOM_LERP_SPEED * deltaTime);
+    }
+    
+    /// <summary>
+    /// Updates MonoGame.Extended camera position and zoom.
+    /// Call this every frame when UseExtendedCamera is enabled.
+    /// </summary>
+    public void UpdateExtendedCamera(CameraState camera, int screenWidth, int screenHeight, bool hasCameraEvents)
+    {
+        if (_extendedCamera == null) return;
+        
+        // Manual override ALWAYS takes priority
+        float scale = (_camScaleOverride > 0f) ? _camScaleOverride : camera.Scale;
+        
+        // Apply beat zoom only when no camera events and no manual override
+        float finalScale = (hasCameraEvents && _camScaleOverride == 0f) ? scale : (scale / _camZoom);
+        
+        // Set camera position (OrthographicCamera uses center position)
+        _extendedCamera.Position = new Vector2(camera.X + camera.ShakeOffsetX, camera.Y + camera.ShakeOffsetY);
+        
+        // Set zoom (Extended camera uses Zoom property, not Scale)
+        _extendedCamera.Zoom = finalScale;
+        
+        // Update viewport size if changed
+        if (_extendedCamera.BoundingRectangle.Width != screenWidth || 
+            _extendedCamera.BoundingRectangle.Height != screenHeight)
+        {
+            // OrthographicCamera adjusts to viewport automatically
+        }
     }
 
     // ── Manual Zoom Control ───────────────────────────────────────────────────
@@ -114,6 +158,14 @@ public class CameraManager
     /// </summary>
     public Matrix BuildCameraMatrix(int screenWidth, int screenHeight, CameraState camera, bool hasCameraEvents)
     {
+        // If using Extended camera, return its view matrix
+        if (UseExtendedCamera && _extendedCamera != null)
+        {
+            _lastCameraMatrix = _extendedCamera.GetViewMatrix();
+            return _lastCameraMatrix;
+        }
+        
+        // Original matrix building logic
         // Manual override ALWAYS takes priority if set (even with camera events)
         float scale = (_camScaleOverride > 0f) ? _camScaleOverride : camera.Scale;
 

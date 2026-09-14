@@ -72,6 +72,7 @@ public class SettingsManager
         ["  Effect Intensity"] = "How strong the arrow effects are. 100% = full effect.",
         ["  Effect Type"] = "Which effect to apply: Bounce, Wave, Rotate, Scale, or Random.",
         ["  Effect Chance"] = "Probability of effect triggering per beat. 100% = every beat.",
+        ["Extended Camera (Beta)"] = "BETA: Use MonoGame.Extended camera system for improved scrollFactor parallax. May fix positioning issues.",
         ["Brightness"] = "Overall screen brightness. 1.0 = normal, higher = brighter.",
         
         // BACK
@@ -147,7 +148,7 @@ public class SettingsManager
             1 => 2,   // CONTROLS: 2 items (Rebind Keys, Back)
             2 => GetGraphicsItemCount(),  // GRAPHICS: 13-19 items (dynamic based on ShowTimer and Color Grading)
             3 => 2,   // AUDIO: 2 items (Volume, Back)
-            4 => ArrowEffectManager.Enabled ? 10 : 7,  // ADVANCED: 7-10 items (dynamic based on Arrow Effects)
+            4 => ArrowEffectManager.Enabled ? 11 : 8,  // ADVANCED: 8-11 items (+ Extended Camera)
             _ => 1
         };
     }
@@ -417,6 +418,7 @@ public class SettingsManager
         int effectIntensity = ArrowEffectManager.Enabled ? idx++ : -1;
         int effectType = ArrowEffectManager.Enabled ? idx++ : -1;
         int effectChance = ArrowEffectManager.Enabled ? idx++ : -1;
+        int extendedCamera = idx++;  // NEW: Extended Camera option
         int brightness = idx++;
         int back = idx++;
         
@@ -443,6 +445,12 @@ public class SettingsManager
         else if (Selection == effectChance && effectChance != -1)
         {
             // Use left/right
+        }
+        else if (Selection == extendedCamera)
+        {
+            Game1.UseExtendedCamera = !Game1.UseExtendedCamera;
+            game._cameraManager.UseExtendedCamera = Game1.UseExtendedCamera;
+            Console.WriteLine($"[Settings] Extended Camera (Beta): {(Game1.UseExtendedCamera ? "ON" : "OFF")}");
         }
         else if (Selection == brightness)
         {
@@ -1069,6 +1077,7 @@ public class SettingsManager
             entries.Add(("  Effect Chance", $"{(int)(ArrowEffectManager.EffectChance * 100)}%"));
         }
         
+        entries.Add(("Extended Camera (Beta)", Game1.UseExtendedCamera ? "ON" : "OFF"));
         entries.Add(("Brightness", $"{Game1.ColorGradeBrightness:F2}"));
         entries.Add(("Back", ""));
         

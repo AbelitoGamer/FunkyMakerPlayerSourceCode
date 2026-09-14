@@ -93,3 +93,8 @@ desktop.ini
 # IDE folders
 .vscode/
 .idea/
+
+# Android Signing Keys (NEVER commit these!)
+*.keystore
+*.jks
+keystore.properties

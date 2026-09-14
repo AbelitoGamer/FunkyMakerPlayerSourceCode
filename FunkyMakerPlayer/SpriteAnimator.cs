@@ -65,9 +65,8 @@ public class SpriteAnimator
     public bool IsBG = false;
     
     /// <summary>
-    /// Level format version. Affects offset application logic.
-    /// V3 (< 4.0): All sprites apply offset subtraction.
-    /// V4 (>= 4.0): Only IsCharacter and IsBG sprites apply offset.
+    /// Level format version. Always use V3 behavior.
+    /// V3: All sprites apply offset subtraction (correct for scrollFactor coordinates).
     /// </summary>
     public float LevelVersion = 3.0f;
     
@@ -583,9 +582,9 @@ public class SpriteAnimator
             var absObjScale = new Vector2(Math.Abs(Scale.X), Math.Abs(Scale.Y));
             Vector2 drawPos;
             
-            // V3: All sprites apply offset with subtraction
-            // V4: Only IsCharacter and IsBG apply offset
-            bool applyOffset = (LevelVersion < 4.0f) || IsCharacter || IsBG;
+            // Always apply offset subtraction (V3 behavior)
+            // This is correct when positions use scrollFactor coordinate system
+            bool applyOffset = true;
             
             if (applyOffset)
             {
@@ -601,7 +600,7 @@ public class SpriteAnimator
             // Debug log for offset application (only log first frame)
             if (_currentFrame < 1 && !_offsetLogged)
             {
-                string mode = applyOffset ? $"OFFSET APPLIED (v{LevelVersion})" : "NO OFFSET";
+                string mode = applyOffset ? "OFFSET APPLIED (V3)" : "NO OFFSET";
                 Console.WriteLine($"[SpriteOffset] Normal Draw: offset=({offset.X},{offset.Y}), Position=({Position.X},{Position.Y}), drawPos=({drawPos.X},{drawPos.Y}) [{mode}]");
                 _offsetLogged = true;
             }
@@ -657,9 +656,9 @@ public class SpriteAnimator
             var absObjScale = new Vector2(Math.Abs(Scale.X), Math.Abs(Scale.Y));
             Vector2 drawPos;
             
-            // V3: All sprites apply offset with subtraction
-            // V4: Only IsCharacter and IsBG apply offset
-            bool applyOffset = (LevelVersion < 4.0f) || IsCharacter || IsBG;
+            // Always apply offset subtraction (V3 behavior)
+            // This is correct when positions use scrollFactor coordinate system
+            bool applyOffset = true;
             
             if (applyOffset)
             {

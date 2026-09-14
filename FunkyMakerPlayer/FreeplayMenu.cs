@@ -18,7 +18,7 @@ public partial class FreeplayMenu
     // ── Public ───────────────────────────────────────────────────────────────
     public bool   LevelChosen  { get; set; }
     public string LevelPath    { get; private set; } = "";
-    /// <summary>-1=none, 1=HUD Editor, 2=Credits, 3=Multiplayer, 4=Import File (Android), 5=Open Mods Folder (Android) — consumed once read</summary>
+    /// <summary>-1=none, 1=HUD Editor, 2=Credits, 3=Multiplayer, 4=Import File (Android), 5=Open Mods Folder (Android), 6=Grant Folder Access (Android) — consumed once read</summary>
     public int    MenuAction   { get; internal set; } = -1;
     
     /// <summary>Action to call when file picker should be opened (Blazor only)</summary>
@@ -58,7 +58,7 @@ public partial class FreeplayMenu
     private int _lastWindowWidth = 1280;   // Actual window width
     private int _lastWindowHeight = 720;   // Actual window height
 
-    // Main menu selection: 0=Freeplay, 1=Open Mods (Android) or HUD Editor (Desktop), 2=Import File (Android) or Multiplayer (Desktop), 3=Multiplayer (Android) or Credits (Desktop), 4=Credits (Android)
+    // Main menu selection: 0=Freeplay, 1=Open Mods (Android) or HUD Editor (Desktop), 2=Import File (Android) or Multiplayer (Desktop), 3=Multiplayer (Android) or Credits (Desktop), 4=Credits (Android), 5=Grant Folder Access (Android)
     private int  _menuSel     = 0;
     private bool _inPanel     = false;  // true when navigating the level list
 
@@ -106,6 +106,9 @@ public partial class FreeplayMenu
         _paths.Clear();
         _names.Clear();
 
+        Console.WriteLine($"[FreeplayMenu] === REFRESH START ===");
+        Console.WriteLine($"[FreeplayMenu] Levels folder: {_levelsFolder}");
+
         // Ensure folder exists before scanning
         if (!Directory.Exists(_levelsFolder))
         {
@@ -123,12 +126,17 @@ public partial class FreeplayMenu
             }
         }
 
-        var files = new List<string>(Directory.GetFiles(_levelsFolder, "*.FNMM", SearchOption.TopDirectoryOnly));
-        foreach (var f in Directory.GetFiles(_levelsFolder, "*.fnmm", SearchOption.TopDirectoryOnly))
+        var files = new List<string>(Directory.GetFiles(_levelsFolder, "*.FNMM", SearchOption.AllDirectories));
+        Console.WriteLine($"[FreeplayMenu] Found {files.Count} .FNMM files");
+        
+        foreach (var f in Directory.GetFiles(_levelsFolder, "*.fnmm", SearchOption.AllDirectories))
             if (!files.Contains(f)) files.Add(f);
+        Console.WriteLine($"[FreeplayMenu] Total after .fnmm: {files.Count} files");
+        
         // Also list .rar level archives
-        foreach (var f in Directory.GetFiles(_levelsFolder, "*.rar", SearchOption.TopDirectoryOnly))
+        foreach (var f in Directory.GetFiles(_levelsFolder, "*.rar", SearchOption.AllDirectories))
             if (!files.Contains(f)) files.Add(f);
+        Console.WriteLine($"[FreeplayMenu] Total after .rar: {files.Count} files");
         
         // Also list folders that contain a meta.json file (unpacked levels)
         foreach (var dir in Directory.GetDirectories(_levelsFolder))
@@ -137,6 +145,7 @@ public partial class FreeplayMenu
             if (File.Exists(metaPath))
                 files.Add(dir);
         }
+        Console.WriteLine($"[FreeplayMenu] Total after folders: {files.Count} items");
 
         files.Sort(StringComparer.OrdinalIgnoreCase);
 
@@ -144,9 +153,11 @@ public partial class FreeplayMenu
         {
             _paths.Add(f);
             _names.Add(Path.GetFileNameWithoutExtension(f));
+            Console.WriteLine($"[FreeplayMenu]   - {Path.GetFileName(f)}");
         }
 
         _selected = Math.Clamp(_selected, 0, Math.Max(0, _paths.Count - 1));
+        Console.WriteLine($"[FreeplayMenu] === REFRESH COMPLETE: {_paths.Count} levels ===");
     }
 
     public void Update(float dt, KeyboardState kb)
@@ -300,7 +311,7 @@ public partial class FreeplayMenu
                 // Skip disabled items
                 #if ANDROID
                 do {
-                    _menuSel = (_menuSel - 1 + 5) % 5;  // 5 items on Android
+                    _menuSel = (_menuSel - 1 + 6) % 6;  // 6 items on Android
                 } while (!IsMenuItemEnabledInternal(_menuSel));
                 #else
                 do {
@@ -313,7 +324,7 @@ public partial class FreeplayMenu
                 // Skip disabled items  
                 #if ANDROID
                 do {
-                    _menuSel = (_menuSel + 1) % 5;  // 5 items on Android
+                    _menuSel = (_menuSel + 1) % 6;  // 6 items on Android
                 } while (!IsMenuItemEnabledInternal(_menuSel));
                 #else
                 do {
@@ -347,6 +358,10 @@ public partial class FreeplayMenu
                     _transition   = TransitionState.CreditsIn;
                     _transTimer   = 0f;
                     _creditsAlpha = 0f;
+                }
+                else if (_menuSel == 5)  // GRANT FOLDER ACCESS (Android only)
+                {
+                    MenuAction = 6;  // Signal to open SAF folder picker
                 }
                 #else
                 else if (_menuSel == 1)  // HUD Editor (Desktop only)
@@ -459,7 +474,7 @@ public partial class FreeplayMenu
 
             // Menu items — Modern card-style buttons - RESPONSIVE
             #if ANDROID
-            string[] items = { "FREEPLAY", "OPEN MODS", "IMPORT FILE", "MULTIPLAYER", "CREDITS" };
+            string[] items = { "FREEPLAY", "OPEN MODS", "IMPORT FILE", "MULTIPLAYER", "CREDITS", "GRANT FOLDER ACCESS" };
             #else
             string[] items = { "FREEPLAY", "HUD EDITOR", "MULTIPLAYER", "CREDITS" };
             #endif
@@ -1054,38 +1069,12 @@ public partial class FreeplayMenu
     public static string GetDefaultLevelsFolder()
     {
 #if ANDROID
-        // Use Documents/FunkyMakerPlayerPublicMods/mods/levels/ on Android for easy access
-        var documentsDir = global::Android.OS.Environment.GetExternalStoragePublicDirectory(global::Android.OS.Environment.DirectoryDocuments);
-        if (documentsDir != null)
-        {
-            var funkyMakerPublicDir = System.IO.Path.Combine(documentsDir.AbsolutePath, "FunkyMakerPlayerPublicMods");
-            var modsDir = System.IO.Path.Combine(funkyMakerPublicDir, "mods");
-            var levelsDir = System.IO.Path.Combine(modsDir, "levels");
-            
-            // Create all required subdirectories
-            if (!Directory.Exists(levelsDir))
-            {
-                try
-                {
-                    Directory.CreateDirectory(levelsDir);
-                }
-                catch { }
-            }
-            
-            // Also create fonts, notesplashes, and notestyles folders
-            try
-            {
-                Directory.CreateDirectory(System.IO.Path.Combine(modsDir, "fonts"));
-                Directory.CreateDirectory(System.IO.Path.Combine(modsDir, "notesplashes"));
-                Directory.CreateDirectory(System.IO.Path.Combine(modsDir, "notestyles"));
-            }
-            catch { }
-            
-            return levelsDir;
-        }
-#endif
+        // Use PlatformPaths to get the correct levels folder (app-private storage)
+        return PlatformPaths.GetLevelsPath();
+#else
         // Desktop/other platforms use local mods folder
         return Path.Combine(AppContext.BaseDirectory, "mods", "levels");
+#endif
     }
     
     // ── Platform-specific menu item state ────────────────────────────────────

@@ -30,7 +30,7 @@ public static class CrashLogger
     /// <summary>
     /// Log an exception manually
     /// </summary>
-    public static void LogException(Exception ex, string context = "")
+    public static string LogException(Exception ex, string context = "")
     {
         var timestamp = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss");
         var crashReport = BuildCrashReport(ex, context, timestamp);
@@ -55,6 +55,8 @@ public static class CrashLogger
         // On Desktop, write to file
         WriteCrashToFile(crashReport);
 #endif
+        
+        return crashReport;
     }
     
     private static void OnUnhandledException(object sender, UnhandledExceptionEventArgs e)
