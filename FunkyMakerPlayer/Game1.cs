@@ -12,6 +12,7 @@ using Microsoft.Xna.Framework.Input;
 using SixLabors.ImageSharp.Processing;
 using FunkyMakerPlayer.Managers;  // ← NUEVO: Import de managers
 using FunkyMakerPlayer.UI;  // ← NUEVO: Import de UI menus
+using FunkyMakerPlayer.Multiplayer;  // ← NUEVO: Import de multiplayer
 using MonoGame.Extended;  // ← MonoGame.Extended for OrthographicCamera
 
 namespace FunkyMakerPlayer;
@@ -2770,9 +2771,34 @@ public partial class Game1 : Game
             // Check if starting a multiplayer game
             if (_multiplayerMenu.IsStartingGame())
             {
-                // TODO: Load multiplayer game
-                Console.WriteLine("[Game1] Starting multiplayer game...");
-                _inMultiplayer = false;
+                // Launch GameMultiplayer with selected level
+                string? levelPath = _multiplayerMenu.SelectedLevelPath;
+                if (!string.IsNullOrEmpty(levelPath) && System.IO.File.Exists(levelPath))
+                {
+                    Console.WriteLine($"[Game1] Starting multiplayer game with level: {levelPath}");
+                    
+                    // Create and launch GameMultiplayer instance
+                    var gameMultiplayer = new GameMultiplayer(
+                        levelPath,
+                        NetworkManager.Instance,
+                        NetworkManager.Instance.OpponentName, // Use opponent name as ID
+                        NetworkManager.Instance.OpponentName
+                    );
+                    
+                    // Initialize and run the multiplayer game
+                    gameMultiplayer.Run();
+                    
+                    // After game ends, return to multiplayer menu
+                    _inMultiplayer = true;
+                    _inFreeplay = false;
+                    _multiplayerMenu.ResetAfterMatch();
+                    Console.WriteLine("[Game1] Multiplayer match ended, returning to lobby");
+                }
+                else
+                {
+                    Console.WriteLine($"[Game1] ERROR: Level path not found: {levelPath}");
+                    _inMultiplayer = true; // Stay in multiplayer menu
+                }
             }
             
             // Update song transition if active (stickers fading out over menu)

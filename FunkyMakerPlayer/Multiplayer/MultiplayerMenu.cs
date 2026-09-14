@@ -239,7 +239,7 @@ namespace FunkyMakerPlayer.Multiplayer
             // Scan levels folder for .FNMM files
             if (System.IO.Directory.Exists(_levelsFolder))
             {
-                var files = System.IO.Directory.GetFiles(_levelsFolder, "*.FNMM");
+                var files = System.IO.Directory.GetFiles(_levelsFolder, "*.FNMM", System.IO.SearchOption.AllDirectories);
                 foreach (var file in files)
                 {
                     string filename = System.IO.Path.GetFileName(file);
@@ -2647,6 +2647,20 @@ namespace FunkyMakerPlayer.Multiplayer
         public bool IsStartingGame()
         {
             return _state == MenuState.InGame;
+        }
+
+        /// <summary>
+        /// Reset menu state after a multiplayer match ends.
+        /// </summary>
+        public void ResetAfterMatch()
+        {
+            _state = MenuState.Lobby;
+            _isReady = false;
+            _opponentReady = false;
+            _isCountdownActive = false;
+            _countdownValue = 0f;
+            _searchTimer = 0f;
+            Console.WriteLine("[MultiplayerMenu] Reset after match, returning to lobby");
         }
 
         /// <summary>
