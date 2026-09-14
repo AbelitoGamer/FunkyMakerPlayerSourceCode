@@ -5,6 +5,7 @@ using System.Linq;
 using Microsoft.Xna.Framework;
 using Microsoft.Xna.Framework.Graphics;
 using Microsoft.Xna.Framework.Input;
+using Microsoft.Xna.Framework.Input.Touch;
 using FunkyMakerPlayer.Managers;
 using FunkyMakerPlayer.Multiplayer;
 
@@ -57,6 +58,10 @@ public class GameMultiplayer : Game
     
     // ── Input ──────────────────────────────────────────────────────────────
     private KeyboardState _previousKeyboardState;
+    
+#if ANDROID
+    private TouchControls? _touchControls;
+#endif
     
     // ── Multiplayer State ──────────────────────────────────────────────────
     private string _opponentId = string.Empty;
@@ -199,6 +204,16 @@ public class GameMultiplayer : Game
         // Create pixel texture for UI
         _pixel = new Texture2D(GraphicsDevice, 1, 1);
         _pixel.SetData(new[] { Microsoft.Xna.Framework.Color.White });
+        
+#if ANDROID
+        // Initialize touch controls for Android
+        _touchControls = new TouchControls();
+        _touchControls.Initialize(GraphicsDevice, 
+            _graphics.PreferredBackBufferWidth, 
+            _graphics.PreferredBackBufferHeight,
+            NoteRenderer.Downscroll);
+        Console.WriteLine("[GameMultiplayer] Touch controls initialized for Android");
+#endif
         
         // Load level
         LoadLevel(_levelPath);
@@ -377,6 +392,18 @@ public class GameMultiplayer : Game
         // Handle input
         var keyboardState = Keyboard.GetState();
         
+#if ANDROID
+        // Update touch controls
+        if (_touchControls != null)
+        {
+            var touchState = TouchPanel.GetState();
+            _touchControls.Update(touchState, deltaTime);
+            
+            // Get virtual keyboard state from touch controls
+            keyboardState = _touchControls.GetVirtualKeyboardState();
+        }
+#endif
+        
         // Exit
         if (keyboardState.IsKeyDown(Keys.Escape))
         {
@@ -506,6 +533,11 @@ public class GameMultiplayer : Game
             // Draw UI
             DrawUI(sw, sh);
         }
+        
+#if ANDROID
+        // Draw touch controls
+        _touchControls?.Draw(_spriteBatch);
+#endif
         
         _spriteBatch.End();
         
