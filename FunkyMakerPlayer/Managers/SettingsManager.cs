@@ -223,9 +223,8 @@ public class SettingsManager
         
         switch (Selection)
         {
-            case 0: // Autoplay
-                if (!game._isMultiplayerMatch)
-                    NoteRenderer.Autoplay = !NoteRenderer.Autoplay;
+            case 0: // Autoplay (always allowed, Game1 doesn't handle multiplayer anymore)
+                NoteRenderer.Autoplay = !NoteRenderer.Autoplay;
                 break;
             case 1: // Downscroll
                 NoteRenderer.Downscroll = !NoteRenderer.Downscroll;

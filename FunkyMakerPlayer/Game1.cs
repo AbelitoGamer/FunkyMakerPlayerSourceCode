@@ -178,19 +178,6 @@ public partial class Game1 : Game
     private bool          _inMultiplayer = false;
     
     // ── Multiplayer match state ────────────────────────────────────────────── 
-    // ── Multiplayer (Legacy - kept for backwards compatibility) ─────────────
-    // NOTE: Active multiplayer matches now use GameMultiplayer.cs
-    // These variables remain to avoid breaking existing code paths in Game1
-    public bool   _isMultiplayerMatch = false;  // Public for SettingsManager access
-    private string _multiplayerOpponentName = "";
-    private long   _multiplayerStartTimestamp = 0;
-    private int    _multiplayerPlayerRole = 1;
-    private string _multiplayerLevelHash = "";
-    private int    _lastHitLane = 0;
-    private Multiplayer.UI.ConnectionIndicator? _connectionIndicator;
-    private Multiplayer.MultiplayerHUD? _multiplayerHUD;
-    private Multiplayer.OpponentStateInterpolator? _opponentInterpolator;
-
     // ── Health icons ─────────────────────────────────────────────────────────
     // Icons are full SpriteAnimators: anim 0 = normal, anim 1 = losing
     private SpriteAnimator? _iconPlayerAnim;
@@ -516,15 +503,6 @@ public partial class Game1 : Game
         DiscordRpc.Initialize();
         Exiting += (_, _) => DiscordRpc.Shutdown();
 
-        // DEPRECATED: Multiplayer events moved to GameMultiplayer.cs
-        /*
-        Multiplayer.NetworkManager.Instance.OnMatchFound += HandleMultiplayerMatchFound;
-        Multiplayer.NetworkManager.Instance.OnCountdownStart += HandleMultiplayerCountdownStart;
-        Multiplayer.NetworkManager.Instance.OnGameStart += HandleMultiplayerGameStart;
-        Multiplayer.NetworkManager.Instance.OnOpponentHit += HandleOpponentHit;
-        Multiplayer.NetworkManager.Instance.OnOpponentState += HandleOpponentState;
-        */
-
         // Initialize managers
         _cameraManager = new CameraManager();
         _settingsManager = new SettingsManager();
@@ -628,7 +606,7 @@ public partial class Game1 : Game
 
         // Show loading screen in main window
         _loadingScreen   = new LoadingScreen(levelName, _pixel!, _font,
-                               FindAssetsRoot(), GraphicsDevice, _isMultiplayerMatch);
+                               FindAssetsRoot(), GraphicsDevice, false /* multiplayer disabled in Game1 */);
         _loadingComplete = false;
 
         // Load file on background thread (no GPU calls here)
@@ -850,12 +828,6 @@ public partial class Game1 : Game
         // Init multiplayer menu (for accessing multiplayer lobby)
         _multiplayerMenu = new Multiplayer.MultiplayerMenu();
         
-        // DEPRECATED: Multiplayer UI components moved to GameMultiplayer.cs
-        // These remain initialized for backwards compatibility
-        _connectionIndicator = new Multiplayer.UI.ConnectionIndicator();
-        _multiplayerHUD = new Multiplayer.MultiplayerHUD(_connectionIndicator);
-        _opponentInterpolator = new Multiplayer.OpponentStateInterpolator();
-
 #if ANDROID
         // Initialize touch controls for Android
         _touchControls = new TouchControls();
@@ -1724,7 +1696,7 @@ public partial class Game1 : Game
         // Multiplayer: Swap icons based on player role
         // Player 1 (BF chart): Normal assignment (opponent=0, player=1)
         // Player 2 (Enemy chart): Swapped (opponent=1, player=0)
-        if (_isMultiplayerMatch && _multiplayerPlayerRole == 2)
+        if (false /* multiplayer disabled in Game1 */ && 0 /* multiplayer disabled */ == 2)
         {
             // Player 2: I play Enemy chart, so I am the "opponent" character
             _iconOpponentAnim = BuildIconAnimator(icons.Count > 1 ? icons[1] : null, texCache);  // BF is my opponent
@@ -1736,7 +1708,7 @@ public partial class Game1 : Game
             // Normal: Player 1 or single-player
             _iconOpponentAnim = BuildIconAnimator(icons.Count > 0 ? icons[0] : null, texCache);
             _iconPlayerAnim   = BuildIconAnimator(icons.Count > 1 ? icons[1] : null, texCache);
-            if (_isMultiplayerMatch)
+            if (false /* multiplayer disabled in Game1 */)
                 Console.WriteLine("[Game1] Multiplayer Role 1: Normal icons (I am BF character)");
         }
 
@@ -1759,18 +1731,18 @@ public partial class Game1 : Game
         int myChartIndex = 1;
         int opponentChartIndex = 1;
         
-        Console.WriteLine($"[Game1] SetupLevel: _isMultiplayerMatch={_isMultiplayerMatch}, _multiplayerPlayerRole={_multiplayerPlayerRole}");
+        Console.WriteLine($"[Game1] SetupLevel: false /* multiplayer disabled in Game1 */={false /* multiplayer disabled in Game1 */}, 0 /* multiplayer disabled */={0 /* multiplayer disabled */}");
         
-        if (_isMultiplayerMatch)
+        if (false /* multiplayer disabled in Game1 */)
         {
-            if (_multiplayerPlayerRole == 1)
+            if (0 /* multiplayer disabled */ == 1)
             {
                 // Player 1: I play chart 1 (BF/Player chart)
                 myChartIndex = 1;
                 opponentChartIndex = 0;  // I see opponent playing chart 0 (Enemy)
                 Console.WriteLine("[Game1] Multiplayer: Role 1 (Player 1) - MY chart=1 (BF), OPPONENT chart=0 (Enemy)");
             }
-            else if (_multiplayerPlayerRole == 2)
+            else if (0 /* multiplayer disabled */ == 2)
             {
                 // Player 2: I play chart 0 (Enemy/Opponent chart)
                 myChartIndex = 0;
@@ -1780,7 +1752,7 @@ public partial class Game1 : Game
             else
             {
                 // Fallback: Role not set correctly!
-                Console.WriteLine($"[Game1] ERROR: Multiplayer role is {_multiplayerPlayerRole} (should be 1 or 2)!");
+                Console.WriteLine($"[Game1] ERROR: Multiplayer role is {0 /* multiplayer disabled */} (should be 1 or 2)!");
                 myChartIndex = 1;  // Default to BF chart
                 opponentChartIndex = 1;
             }
@@ -1824,14 +1796,14 @@ public partial class Game1 : Game
             
             // Determine which chart to load for this strumline
             int chartIndex = i;
-            if (_isMultiplayerMatch && strumlineCount >= 2)
+            if (false /* multiplayer disabled in Game1 */ && strumlineCount >= 2)
             {
                 if (i == 0)
                     chartIndex = myChartIndex;  // Player strumline uses MY chart
                 else if (i == 1)
                     chartIndex = opponentChartIndex;  // Opponent strumline uses THEIR chart
             }
-            else if (_isMultiplayerMatch && strumlineCount < 2)
+            else if (false /* multiplayer disabled in Game1 */ && strumlineCount < 2)
             {
                 chartIndex = 0;  // Fallback: use chart 0 if level only has 1
             }
@@ -1853,12 +1825,12 @@ public partial class Game1 : Game
             // In multiplayer, always show opponent regardless of HideOpponentStrumline setting
             if (i == 1)
             {
-                renderer.Alpha = (_isMultiplayerMatch || !HideOpponentStrumline) ? 0.5f : 0f;
+                renderer.Alpha = (false /* multiplayer disabled in Game1 */ || !HideOpponentStrumline) ? 0.5f : 0f;
             }
             // With 3+ strumlines: extras (2+) hide when idle
             if (strumlineCount >= 3 && i >= 2) renderer.HideWhenIdle = true;
             // Multiplayer: Disable autoplay for opponent (index 1) — hits come from network
-            if (_isMultiplayerMatch && i == 1) renderer.DisableAutoplay = true;
+            if (false /* multiplayer disabled in Game1 */ && i == 1) renderer.DisableAutoplay = true;
             renderer.SetRenderTargetSize(rtW, rtH);
             _noteRenderers.Add(renderer);
         }
@@ -1882,10 +1854,6 @@ public partial class Game1 : Game
             int strumlineIdx = i;
             _noteRenderers[i].OnNoteHit = (lane, holdEnd) =>
             {
-                // Track last hit lane for multiplayer transmission
-                if (strumlineIdx == 0)
-                    _lastHitLane = lane;
-                
                 // Animate ALL visible characters on this strumline
                 // This allows multiple characters with the same strumline to sing together
                 for (int j = 0; j < objs.Count; j++)
@@ -1962,7 +1930,7 @@ public partial class Game1 : Game
                                     new Color(0xFF, 0x44, 0x44));
                 
                 // Multiplayer: Send hit to opponent (only for player strumline)
-                if (_isMultiplayerMatch && _noteRenderers.Count > 0)
+                if (false /* multiplayer disabled in Game1 */ && _noteRenderers.Count > 0)
                 {
                     var playerRenderer = _noteRenderers[0];
                     int noteId = playerRenderer.Combo;
@@ -1970,7 +1938,7 @@ public partial class Game1 : Game
                     
                     Multiplayer.NetworkManager.Instance.SendNoteHit(
                         noteId,
-                        _lastHitLane,  // Use tracked lane
+                        0,  // Use tracked lane
                         timestamp, 
                         j,  // rating string
                         playerRenderer.Combo
@@ -2261,7 +2229,7 @@ public partial class Game1 : Game
             }
 
             // Disable pause during multiplayer matches
-            if (_isMultiplayerMatch && _level != null)
+            if (false /* multiplayer disabled in Game1 */ && _level != null)
             {
                 Console.WriteLine("[Game1] Pause disabled during multiplayer match");
             }
@@ -2545,7 +2513,7 @@ public partial class Game1 : Game
                 
                 if (result.NeedsOpponentAlphaUpdate && _noteRenderers.Count > 1)
                 {
-                    _noteRenderers[1].Alpha = (HideOpponentStrumline && !_isMultiplayerMatch) ? 0f : _notesAlpha;
+                    _noteRenderers[1].Alpha = (HideOpponentStrumline && !false /* multiplayer disabled in Game1 */) ? 0f : _notesAlpha;
                 }
                 
                 if (result.NeedsSave)
@@ -2810,7 +2778,7 @@ public partial class Game1 : Game
         // P toggles pause (disabled during multiplayer matches)
         if (kb.IsKeyDown(Keys.P) && !_prevKb.IsKeyDown(Keys.P))
         {
-            if (_isMultiplayerMatch)
+            if (false /* multiplayer disabled in Game1 */)
             {
                 Console.WriteLine("[Game1] Pause disabled during multiplayer match");
             }
@@ -2896,11 +2864,11 @@ public partial class Game1 : Game
                         // In multiplayer, show loading screen normally and send Ready when done
                         _loadingScreen = new LoadingScreen(
                             _level.LevelName, _pixel!, _font,
-                            FindAssetsRoot(), GraphicsDevice, _isMultiplayerMatch);
+                            FindAssetsRoot(), GraphicsDevice, false /* multiplayer disabled in Game1 */);
                         _loadingComplete = true;
                         
                         // Multiplayer: Send Ready signal to server now that level is loaded
-                        if (_isMultiplayerMatch)
+                        if (false /* multiplayer disabled in Game1 */)
                         {
                             Console.WriteLine("[Game1] 📤 Level loaded! Sending Ready to server...");
                             Multiplayer.NetworkManager.Instance.SendReady(true);
@@ -2925,7 +2893,7 @@ public partial class Game1 : Game
             }
 
             bool enterPressed = kb.IsKeyDown(Keys.Enter) && !_prevKb.IsKeyDown(Keys.Enter);
-            _loadingScreen?.Update(dt, _loadingComplete && _loadState == LoadState.Done, enterPressed, _rtWidth, _rtHeight, _isMultiplayerMatch);
+            _loadingScreen?.Update(dt, _loadingComplete && _loadState == LoadState.Done, enterPressed, _rtWidth, _rtHeight, false /* multiplayer disabled in Game1 */);
             if (_loadingScreen?.CurrentPhase == LoadingScreen.Phase.Done)
             {
                 _loadingScreen = null;
@@ -2940,7 +2908,7 @@ public partial class Game1 : Game
         {
             // ── Game over ────────────────────────────────────────────────────
             // In multiplayer, skip game over entirely (continue until song ends)
-            if (_gameOver && !_isMultiplayerMatch)
+            if (_gameOver && !false /* multiplayer disabled in Game1 */)
             {
                 _gameOverTimer += dt;
                 bool enterPressed = kb.IsKeyDown(Keys.Enter) && !_prevKb.IsKeyDown(Keys.Enter);
@@ -2966,7 +2934,7 @@ public partial class Game1 : Game
             }
             
             // Safety: Reset game over flag if somehow triggered in multiplayer
-            if (_gameOver && _isMultiplayerMatch)
+            if (_gameOver && false /* multiplayer disabled in Game1 */)
             {
                 _gameOver = false;
                 _gameOverTimer = 0f;
@@ -2977,13 +2945,13 @@ public partial class Game1 : Game
             if (!_started)
             {
                 // Multiplayer: Skip countdown, start immediately at synchronized timestamp
-                if (_isMultiplayerMatch && _multiplayerStartTimestamp > 0)
+                if (false /* multiplayer disabled in Game1 */ && 0 /* multiplayer disabled */ > 0)
                 {
                     // Use synchronized server time, NOT local client time
                     long now = Multiplayer.TimeSyncManager.Instance.GetServerTime();
                     
                     // Calculate time until start with microsecond precision
-                    long timeUntilStart = _multiplayerStartTimestamp - now;
+                    long timeUntilStart = 0 /* multiplayer disabled */ - now;
                     
                     if (timeUntilStart <= 0)
                     {
@@ -3051,7 +3019,7 @@ public partial class Game1 : Game
                         
                         // Update Discord RPC
                         string levelName = System.IO.Path.GetFileNameWithoutExtension(FnmmPath);
-                        if (_isMultiplayerMatch)
+                        if (false /* multiplayer disabled in Game1 */)
                             DiscordRpc.SetPlayingMultiplayer(levelName);
                         else
                             DiscordRpc.SetPlaying(levelName);
@@ -3202,17 +3170,17 @@ public partial class Game1 : Game
 
             // ── Health checks ────────────────────────────────────────────────
             // Disable game over in multiplayer (continue until song ends)
-            if (_health <= 0f && !_gameOver && !_isMultiplayerMatch)
+            if (_health <= 0f && !_gameOver && !false /* multiplayer disabled in Game1 */)
             {
                 _gameOver      = true;
                 _gameOverTimer = 0f;
                 _musicInst?.Stop();
                 Console.WriteLine("[Game1] Game over triggered: health <= 0");
             }
-            else if (_health <= 0f && _isMultiplayerMatch)
+            else if (_health <= 0f && false /* multiplayer disabled in Game1 */)
             {
                 // Debug: Log when health hits 0 in multiplayer but game over is blocked
-                Console.WriteLine($"[Game1] Health at 0 in multiplayer - game over BLOCKED (Match: {_isMultiplayerMatch}, Role: {_multiplayerPlayerRole})");
+                Console.WriteLine($"[Game1] Health at 0 in multiplayer - game over BLOCKED (Match: {false /* multiplayer disabled in Game1 */}, Role: {0 /* multiplayer disabled */})");
             }
 
             // ── Song end ─────────────────────────────────────────────────────
@@ -3237,7 +3205,7 @@ public partial class Game1 : Game
                     _songTransition.Start(_rtWidth, _rtHeight);
                     
                     // Multiplayer: Return to multiplayer menu, not freeplay
-                    if (_isMultiplayerMatch)
+                    if (false /* multiplayer disabled in Game1 */)
                     {
                         _transitionToFreeplay = false;  // Don't go to freeplay
                         Console.WriteLine("[Game1] Multiplayer match ended, returning to multiplayer menu");
@@ -3282,10 +3250,7 @@ public partial class Game1 : Game
                     _inMultiplayer = true;
                     ResetWindowTitle();
                     _multiplayerMenu?.ResetInputCooldown();
-                    _isMultiplayerMatch = false;
-                    _multiplayerPlayerRole = 0;
-                    _multiplayerLevelHash = "";
-                    _multiplayerOpponentName = "";
+                    // Multiplayer state reset removed - Game1 no longer handles multiplayer
                     Console.WriteLine("[Game1] Returned to multiplayer menu after match");
                     DiscordRpc.SetMenu();
                     _level = null;
@@ -3320,11 +3285,11 @@ public partial class Game1 : Game
         Multiplayer.NetworkManager.Instance.Update(gameTime);
         
         // ── Update Multiplayer Components ────────────────────────────────────
-        if (_isMultiplayerMatch && _started && !_paused)
+        if (false /* multiplayer disabled in Game1 */ && _started && !_paused)
         {
             // Update interpolator with current server time
             long currentServerTime = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
-            _opponentInterpolator?.Update(dt, currentServerTime);
+            // Multiplayer UI removed: null?.Update(dt, currentServerTime);
             
             // Update MultiplayerHUD with player stats
             if (_noteRenderers.Count > 0)
@@ -3340,18 +3305,11 @@ public partial class Game1 : Game
                     accuracy = (weightedHits / totalNotes) * 100f;
                 }
                 
-                _multiplayerHUD?.UpdatePlayerStats(
-                    Multiplayer.MultiplayerSettings.Instance.Username,
-                    playerRenderer.Score,
-                    playerRenderer.Combo,
-                    playerRenderer.Misses,
-                    accuracy,
-                    _health
-                );
+                // Multiplayer UI removed - stats no longer updated
             }
             
             // Update HUD animations
-            _multiplayerHUD?.Update(dt);
+            // Multiplayer UI removed: null?.Update(dt);
         }
         
         base.Update(gameTime);
@@ -5173,7 +5131,7 @@ public partial class Game1 : Game
                 _noteRenderers[i].Alpha = 0f;
             }
             // Opponent strumline (1): ALWAYS show during multiplayer, respect setting otherwise
-            else if (i == 1 && HideOpponentStrumline && !_isMultiplayerMatch)
+            else if (i == 1 && HideOpponentStrumline && !false /* multiplayer disabled in Game1 */)
             {
                 _noteRenderers[i].Alpha = 0f;
             }
@@ -5385,10 +5343,9 @@ public partial class Game1 : Game
         if (!levelHasOwnBar)
         {
             // ── MULTIPLAYER HUD ──────────────────────────────────────────────
-            if (_isMultiplayerMatch && _multiplayerHUD != null && _font != null && _pixel != null)
+            if (false /* multiplayer disabled in Game1 */ && null /* multiplayer UI removed */ != null && _font != null && _pixel != null)
             {
-                // Use dedicated MultiplayerHUD component
-                _multiplayerHUD.Draw(_spriteBatch, _font, _pixel, sw, sh, NoteRenderer.Downscroll);
+                // Multiplayer HUD removed - Game1 no longer handles multiplayer
             }
             // ── SINGLEPLAYER HUD ─────────────────────────────────────────────
             else
@@ -5945,7 +5902,7 @@ public partial class Game1 : Game
     private void DrawGameOver(int sw, int sh)
     {
         // Never draw game over in multiplayer mode
-        if (!_gameOver || _font == null || _isMultiplayerMatch) return;
+        if (!_gameOver || _font == null || false /* multiplayer disabled in Game1 */) return;
 
         // Fade in over 0.6s
         float fadeT  = Math.Min(_gameOverTimer / 0.6f, 1f);
