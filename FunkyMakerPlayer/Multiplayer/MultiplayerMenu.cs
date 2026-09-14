@@ -21,8 +21,7 @@ namespace FunkyMakerPlayer.Multiplayer
             CreateRoom,    // Create private room with code
             JoinRoom,      // Join private room with code
             Searching,     // Searching for match...
-            MatchFound,    // Match found, waiting for ready
-            InGame,        // Game in progress (handled by Game1)
+            MatchFound,    // Match found, waiting for ready (launches GameMultiplayer after countdown)
             Settings,      // Settings menu
             Leaderboard    // Leaderboard and stats
         }
@@ -857,14 +856,12 @@ namespace FunkyMakerPlayer.Multiplayer
                 }
                 else
                 {
-                    // Countdown finished, start game
+                    // Countdown finished, launch GameMultiplayer!
                     _countdownValue = 0;
-                    _state = MenuState.InGame;
                     _isCountdownActive = false;
                     
-                    // Send GameStartConfirm packet
-                    // TODO: Implement GameStartConfirmPacket sending when needed by server
-                    Console.WriteLine("[Multiplayer] Game starting!");
+                    Console.WriteLine("[MultiplayerMenu] Countdown complete! Launching GameMultiplayer...");
+                    LaunchGameMultiplayer();
                     return;
                 }
             }
@@ -2642,14 +2639,6 @@ namespace FunkyMakerPlayer.Multiplayer
         }
 
         /// <summary>
-        /// Check if game is starting.
-        /// </summary>
-        public bool IsStartingGame()
-        {
-            return _state == MenuState.InGame;
-        }
-
-        /// <summary>
         /// Reset menu state after a multiplayer match ends.
         /// </summary>
         public void ResetAfterMatch()
@@ -2661,6 +2650,54 @@ namespace FunkyMakerPlayer.Multiplayer
             _countdownValue = 0f;
             _searchTimer = 0f;
             Console.WriteLine("[MultiplayerMenu] Reset after match, returning to lobby");
+        }
+
+        /// <summary>
+        /// Launch GameMultiplayer instance with current level and opponent info.
+        /// </summary>
+        private void LaunchGameMultiplayer()
+        {
+            string? levelPath = SelectedLevelPath;
+            if (string.IsNullOrEmpty(levelPath) || !System.IO.File.Exists(levelPath))
+            {
+                Console.WriteLine($"[MultiplayerMenu] ERROR: Level path invalid: {levelPath}");
+                ShowError("Failed to load level");
+                _state = MenuState.Lobby;
+                return;
+            }
+
+            string opponentId = NetworkManager.Instance.OpponentName ?? "Unknown";
+            string opponentName = NetworkManager.Instance.OpponentName ?? "Opponent";
+
+            Console.WriteLine($"[MultiplayerMenu] Launching GameMultiplayer:");
+            Console.WriteLine($"  Level: {levelPath}");
+            Console.WriteLine($"  Opponent: {opponentName}");
+            Console.WriteLine($"  Player Role: {NetworkManager.Instance.PlayerRole}");
+
+            try
+            {
+                // Create GameMultiplayer instance
+                var gameMultiplayer = new GameMultiplayer(
+                    levelPath,
+                    NetworkManager.Instance,
+                    opponentId,
+                    opponentName
+                );
+
+                // Run the game (blocks until game ends)
+                gameMultiplayer.Run();
+
+                // After game ends, return to lobby
+                Console.WriteLine("[MultiplayerMenu] Game ended, returning to lobby");
+                ResetAfterMatch();
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[MultiplayerMenu] ERROR launching GameMultiplayer: {ex.Message}");
+                Console.WriteLine($"[MultiplayerMenu] Stack trace: {ex.StackTrace}");
+                ShowError($"Game launch failed: {ex.Message}");
+                _state = MenuState.Lobby;
+            }
         }
 
         /// <summary>

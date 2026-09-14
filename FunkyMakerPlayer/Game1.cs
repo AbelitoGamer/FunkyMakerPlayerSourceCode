@@ -2724,38 +2724,8 @@ public partial class Game1 : Game
                 _multiplayerMenu.ResetExitFlag();
             }
             
-            // Check if starting a multiplayer game
-            if (_multiplayerMenu.IsStartingGame())
-            {
-                // Launch GameMultiplayer with selected level
-                string? levelPath = _multiplayerMenu.SelectedLevelPath;
-                if (!string.IsNullOrEmpty(levelPath) && System.IO.File.Exists(levelPath))
-                {
-                    Console.WriteLine($"[Game1] Starting multiplayer game with level: {levelPath}");
-                    
-                    // Create and launch GameMultiplayer instance
-                    var gameMultiplayer = new GameMultiplayer(
-                        levelPath,
-                        NetworkManager.Instance,
-                        NetworkManager.Instance.OpponentName, // Use opponent name as ID
-                        NetworkManager.Instance.OpponentName
-                    );
-                    
-                    // Initialize and run the multiplayer game
-                    gameMultiplayer.Run();
-                    
-                    // After game ends, return to multiplayer menu
-                    _inMultiplayer = true;
-                    _inFreeplay = false;
-                    _multiplayerMenu.ResetAfterMatch();
-                    Console.WriteLine("[Game1] Multiplayer match ended, returning to lobby");
-                }
-                else
-                {
-                    Console.WriteLine($"[Game1] ERROR: Level path not found: {levelPath}");
-                    _inMultiplayer = true; // Stay in multiplayer menu
-                }
-            }
+            // NOTE: GameMultiplayer is now launched directly by MultiplayerMenu after countdown
+            // No need to check for game start here anymore
             
             // Update song transition if active (stickers fading out over menu)
             if (_songTransition != null)
