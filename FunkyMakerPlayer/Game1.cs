@@ -12,6 +12,7 @@ using Microsoft.Xna.Framework.Input;
 using SixLabors.ImageSharp.Processing;
 using FunkyMakerPlayer.Managers;  // ← NUEVO: Import de managers
 using FunkyMakerPlayer.UI;  // ← NUEVO: Import de UI menus
+using MonoGame.Extended;  // ← MonoGame.Extended for OrthographicCamera
 
 namespace FunkyMakerPlayer;
 
@@ -127,6 +128,9 @@ public partial class Game1 : Game
     private List<NoteRenderer> _noteRenderers = new();  // Support multiple strumlines
     public EventProcessor? _events;  // Public for SettingsManager
     private Microsoft.Xna.Framework.Vector2 _initialCameraPos = Microsoft.Xna.Framework.Vector2.Zero;  // Initial camera position for scrollFactor
+    
+    // ── MonoGame.Extended Camera (Beta Feature) ──────────────────────────────
+    public static bool UseExtendedCamera = false;  // Toggle for beta feature
 
     // ── Sprite Texture Cache ────────────────────────────────────────────────
     // Caches converted textures to avoid reloading on song restart
@@ -156,6 +160,10 @@ public partial class Game1 : Game
     private FreeplayMenu? _freeplay;
     private bool          _inFreeplay = false;
     private Texture2D?    _folderIcon = null;  // Folder icon for empty state
+    
+    #if ANDROID
+    private ModsHelpScreen? _modsHelpScreen;  // Help screen for Android mods setup
+    #endif
     private FontRenderer? _fontRenderer = null;  // TrueType font renderer for crisp UI
 
     // ── Main Settings menu (accessible from main menu) ───────────────────────
@@ -168,17 +176,30 @@ public partial class Game1 : Game
     private Multiplayer.MultiplayerMenu? _multiplayerMenu;
     private bool          _inMultiplayer = false;
     
-    // ── Multiplayer match state ──────────────────────────────────────────────
-    public bool   _isMultiplayerMatch = false;  // true when playing a multiplayer match (public for SettingsManager)
+    // ── Multiplayer match state ────────────────────────────────────────────── 
+    // DEPRECATED: Multiplayer gameplay moved to GameMultiplayer.cs
+    // These variables remain for backwards compatibility but multiplayer matches now use GameMultiplayer
+    [Obsolete("Use GameMultiplayer.cs for multiplayer matches")]
+    public bool   _isMultiplayerMatch = false;
+    [Obsolete("Use GameMultiplayer.cs for multiplayer matches")]
     private string _multiplayerOpponentName = "";
+    [Obsolete("Use GameMultiplayer.cs for multiplayer matches")]
     private long   _multiplayerStartTimestamp = 0;
-    private int    _multiplayerPlayerRole = 1;   // 1 = Player 1 (chart 0), 2 = Player 2 (chart 1)
+    [Obsolete("Use GameMultiplayer.cs for multiplayer matches")]
+    private int    _multiplayerPlayerRole = 1;
+    [Obsolete("Use GameMultiplayer.cs for multiplayer matches")]
     private string _multiplayerLevelHash = "";
-    private int    _lastHitLane = 0;  // Track last hit lane for multiplayer transmission
+    [Obsolete("Use GameMultiplayer.cs for multiplayer matches")]
+    private int    _lastHitLane = 0;
     
     // ── Multiplayer UI Components ────────────────────────────────────────────
+    // DEPRECATED: Multiplayer UI moved to GameMultiplayer.cs
+    // These remain for backwards compatibility with old multiplayer code paths
+    [Obsolete("Use GameMultiplayer.cs for multiplayer UI")]
     private Multiplayer.UI.ConnectionIndicator? _connectionIndicator;
+    [Obsolete("Use GameMultiplayer.cs for multiplayer UI")]
     private Multiplayer.MultiplayerHUD? _multiplayerHUD;
+    [Obsolete("Use GameMultiplayer.cs for multiplayer UI")]
     private Multiplayer.OpponentStateInterpolator? _opponentInterpolator;
 
     // ── Health icons ─────────────────────────────────────────────────────────
@@ -357,21 +378,32 @@ public partial class Game1 : Game
         try
         {
             // Log the crash
-            CrashLogger.LogException(ex, $"Gameplay error in {context}");
+            string crashReport = CrashLogger.LogException(ex, $"Gameplay error in {context}");
             
             // Write to console
             Console.Error.WriteLine($"\n[GAMEPLAY ERROR in {context}]");
             Console.Error.WriteLine(ex.ToString());
             
-#if !ANDROID
+#if ANDROID
+            // Android: Show crash dialog that allows copying the error
+            var activity = (Android.App.Activity)Microsoft.Xna.Framework.Game.Activity;
+            if (activity != null)
+            {
+                Platforms.Android.CrashDialog.Show(activity, crashReport);
+            }
+            else
+            {
+                // Fallback if activity is null
+                Exit();
+            }
+#else
             // Desktop: Write to crash.log file
             try
             {
                 string crashPath = Path.Combine(AppContext.BaseDirectory, "crash.log");
-                File.WriteAllText(crashPath, CrashLogger.GetCrashLog());
+                File.WriteAllText(crashPath, crashReport);
             }
             catch { /* Ignore if file write fails */ }
-#endif
             
             // Try to show error message in-game if possible
             _errorMsg = $"Gameplay error in {context}: {ex.Message}";
@@ -381,6 +413,7 @@ public partial class Game1 : Game
             
             // Exit the game after showing error
             System.Threading.Tasks.Task.Delay(1000).ContinueWith(_ => Exit());
+#endif
         }
         catch
         {
@@ -494,12 +527,14 @@ public partial class Game1 : Game
         DiscordRpc.Initialize();
         Exiting += (_, _) => DiscordRpc.Shutdown();
 
-        // Multiplayer events
+        // DEPRECATED: Multiplayer events moved to GameMultiplayer.cs
+        /*
         Multiplayer.NetworkManager.Instance.OnMatchFound += HandleMultiplayerMatchFound;
         Multiplayer.NetworkManager.Instance.OnCountdownStart += HandleMultiplayerCountdownStart;
         Multiplayer.NetworkManager.Instance.OnGameStart += HandleMultiplayerGameStart;
         Multiplayer.NetworkManager.Instance.OnOpponentHit += HandleOpponentHit;
         Multiplayer.NetworkManager.Instance.OnOpponentState += HandleOpponentState;
+        */
 
         // Initialize managers
         _cameraManager = new CameraManager();
@@ -651,6 +686,10 @@ public partial class Game1 : Game
         // Initialize main settings menu
         _mainSettingsMenu = new MainSettingsMenu(_pixel, _font);
         
+        // Initialize Extended Camera (for parallax scrollFactor support)
+        _cameraManager?.InitializeExtendedCamera(GraphicsDevice);
+        Console.WriteLine("[Game1] Extended camera initialized");
+        
         // Load color grading shader (try/catch for compatibility)
         try
         {
@@ -800,6 +839,11 @@ public partial class Game1 : Game
         // Init freeplay menu
         _freeplay = new FreeplayMenu(_pixel, _font, levelsFolder, _folderIcon, _fontRenderer);
         
+        #if ANDROID
+        // Init mods help screen
+        _modsHelpScreen = new ModsHelpScreen(_fontRenderer, _pixel);
+        #endif
+        
         // Init pause menu
         _pauseMenu = new PauseMenu(_pixel, _font, _fontRenderer);
         
@@ -814,10 +858,11 @@ public partial class Game1 : Game
         _freeplay.OnFilePickerRequested = () => RequestFilePicker();
         #endif
 
-        // Init multiplayer menu
+        // Init multiplayer menu (for accessing multiplayer lobby)
         _multiplayerMenu = new Multiplayer.MultiplayerMenu();
         
-        // Init multiplayer UI components
+        // DEPRECATED: Multiplayer UI components moved to GameMultiplayer.cs
+        // These remain initialized for backwards compatibility
         _connectionIndicator = new Multiplayer.UI.ConnectionIndicator();
         _multiplayerHUD = new Multiplayer.MultiplayerHUD(_connectionIndicator);
         _opponentInterpolator = new Multiplayer.OpponentStateInterpolator();
@@ -2562,6 +2607,32 @@ public partial class Game1 : Game
         // ── Freeplay menu ────────────────────────────────────────────────────
         if (_inFreeplay && _freeplay != null && _loadingScreen == null)
         {
+            #if ANDROID
+            // Update mods help screen if visible
+            if (_modsHelpScreen != null && _modsHelpScreen.IsVisible)
+            {
+                _modsHelpScreen.Update(gameTime);
+                
+                // If user requested to launch folder picker
+                if (_modsHelpScreen.LaunchFolderPicker)
+                {
+                    PickAndroidModsFolder();
+                }
+                
+                // If user closes help screen, return to freeplay
+                if (!_modsHelpScreen.IsVisible)
+                {
+                    _freeplay.ResetInputCooldown();
+                    // Show touch controls again
+                    _touchControls?.SetAllControlsVisible(true);
+                }
+                
+                _prevKb = kb;
+                base.Update(gameTime);
+                return;
+            }
+            #endif
+            
             var winBounds = _graphics.GraphicsDevice.Viewport.Bounds;
             _freeplay.Update(dt, kb, _rtWidth, _rtHeight, winBounds.Width, winBounds.Height);
             if (_freeplay.LevelChosen)
@@ -2598,6 +2669,16 @@ public partial class Game1 : Game
             {
                 OpenAndroidModsFolder();
                 _freeplay.MenuAction = -1;
+            }
+            // Check if user selected GRANT FOLDER ACCESS (Android only)
+            if (_freeplay.MenuAction == 6)
+            {
+                // Show help screen first
+                _modsHelpScreen?.Show();
+                _freeplay.MenuAction = -1;
+                
+                // Hide touch controls while help screen is visible
+                _touchControls?.SetAllControlsVisible(false);
             }
             #endif
             
@@ -2982,6 +3063,13 @@ public partial class Game1 : Game
                 // ── Camera zoom on beat (FNF style) ──────────────────────────
                 int currentBeat = (int)Math.Floor(_songBeats);
                 _cameraManager?.UpdateBeatZoom(currentBeat, dt);
+                
+                // Update Extended Camera (for scrollFactor parallax support)
+                if (_cameraManager?.UseExtendedCamera == true && _events?.Camera != null)
+                {
+                    var winBounds = Window.ClientBounds;
+                    _cameraManager.UpdateExtendedCamera(_events.Camera, _rtWidth, _rtHeight, _events.HasCameraEvents);
+                }
                 
                 // Audio recovery: if music stopped unexpectedly, try to restart
                 if (_musicInst?.State == SoundState.Stopped && _songTime > 0.5f)
@@ -3567,6 +3655,16 @@ public partial class Game1 : Game
             _spriteBatch.Begin(samplerState: SamplerState.LinearClamp);
             _freeplay.Draw(_spriteBatch, winBounds.Width, winBounds.Height, winBounds.Width, winBounds.Height);
             _spriteBatch.End();
+            
+            #if ANDROID
+            // Draw mods help screen on top if visible
+            if (_modsHelpScreen != null && _modsHelpScreen.IsVisible)
+            {
+                _spriteBatch.Begin(samplerState: SamplerState.LinearClamp);
+                _modsHelpScreen.Draw(_spriteBatch, winBounds.Width, winBounds.Height);
+                _spriteBatch.End();
+            }
+            #endif
             
             // If there's an active song transition, render it over the menu then return
             if (_songTransition != null)
@@ -4755,9 +4853,9 @@ public partial class Game1 : Game
             var pos = obj.GetPosition();
             var scale = obj.GetScale();
 
-            // Check if object has Transform array with multiple positions (for scrollFactor)
-            // Transform[0] is the default position, scrollFactor only applies if there are multiple transforms
-            bool hasTransformArray = obj.Transform != null && obj.Transform.Count > 1;
+            // Check if object has Transform array (for scrollFactor)
+            // scrollFactor applies to all objects with Transform array, regardless of count
+            bool hasTransformArray = obj.Transform != null && obj.Transform.Count > 0;
             bool hasPositionEvents = hasTransformArray && _events.HasPositionEvents(i);
 
             // Log first 3 visible objects once at start
@@ -4810,33 +4908,38 @@ public partial class Game1 : Game
                 {
                     Vector2 finalPos = new Vector2(pos.X, pos.Y);
                     
-                    // Apply scroll factor for parallax to objects that use Transform (objectPosition)
-                    // ScrollFactor controls how much camera MOVEMENT affects the object:
-                    // 0.0 = object stays fixed in world space (infinite distance)
-                    // 0.5 = object moves half as much as camera (background/far)
-                    // 1.0 = object moves with camera normally (default)
-                    // 2.0 = object moves twice as much as camera (foreground/close)
-                    //
-                    // IMPORTANT: ScrollFactor only affects camera MOVEMENT, not absolute position
-                    // We calculate: adjustedPos = objectPos + (cameraMovement * (1 - scrollFactor))
-                    // where cameraMovement = currentCameraPos - initialCameraPos
+                    // Apply scrollFactor for parallax depth effect (FNF/HaxeFlixel style)
+                    // HaxeFlixel formula: screenPos = worldPos - (camera.scroll * scrollFactor)
+                    // FunkyMaker creator formula: x = x + cam.x * scrollfactor.x
+                    // 
+                    // Our camera matrix already subtracts camera position (cam * 1.0)
+                    // So we need to adjust by: (scrollFactor - 1.0) to get net effect of (scrollFactor)
+                    // 
+                    // Result: Objects with scrollFactor < 1.0 move slower (background)
+                    //         Objects with scrollFactor = 1.0 move with camera (characters)
+                    //         Objects with scrollFactor > 1.0 move faster (foreground)
                     if (hasTransformArray)
                     {
                         Vec2 scrollFactor = obj.GetScrollFactor();
-                        if (Math.Abs(scrollFactor.X - 1f) > 0.01f || Math.Abs(scrollFactor.Y - 1f) > 0.01f)
+                        var cam = _events?.Camera;
+                        
+                        if (cam != null && (Math.Abs(scrollFactor.X - 1f) > 0.001f || Math.Abs(scrollFactor.Y - 1f) > 0.001f))
                         {
-                            // Get camera position
-                            var cam = _events?.Camera;
-                            if (cam != null)
+                            // Clamp scrollFactor to valid range [0.01, 4.0]
+                            float clampedFactorX = Math.Clamp(scrollFactor.X, 0.01f, 4.0f);
+                            float clampedFactorY = Math.Clamp(scrollFactor.Y, 0.01f, 4.0f);
+                            
+                            // Apply FNF/HaxeFlixel parallax formula adjusted for our camera system
+                            // Camera matrix will do: worldPos - cam*1.0
+                            // We subtract additional: cam * (scrollFactor - 1.0)
+                            // Net result: worldPos - cam*1.0 - cam*(scrollFactor-1.0) = worldPos - cam*scrollFactor ✓
+                            finalPos.X = pos.X - cam.X * (clampedFactorX - 1.0f);
+                            finalPos.Y = pos.Y - cam.Y * (clampedFactorY - 1.0f);
+                            
+                            // Debug log for first few objects
+                            if (i < 3)
                             {
-                                // Calculate camera movement from initial position
-                                float camMovementX = cam.X - _initialCameraPos.X;
-                                float camMovementY = cam.Y - _initialCameraPos.Y;
-                                
-                                // Apply scrollFactor only to camera movement
-                                float offsetX = camMovementX * (1f - scrollFactor.X);
-                                float offsetY = camMovementY * (1f - scrollFactor.Y);
-                                finalPos = new Vector2(pos.X + offsetX, pos.Y + offsetY);
+                                Console.WriteLine($"[FNF-Parallax] Obj{i}: world=({pos.X:F0},{pos.Y:F0}) cam=({cam.X:F0},{cam.Y:F0}) scroll=({clampedFactorX:F2},{clampedFactorY:F2}) → adjusted=({finalPos.X:F0},{finalPos.Y:F0})");
                             }
                         }
                     }
@@ -6186,6 +6289,34 @@ public partial class Game1 : Game
         
         Console.WriteLine("[Game1] Opening mods folder...");
         activity.OpenModsFolder();
+    }
+    
+    /// <summary>
+    /// Let user pick the mods folder using Storage Access Framework
+    /// This grants persistent read/write access to the selected folder
+    /// </summary>
+    public void PickAndroidModsFolder()
+    {
+        var activity = Microsoft.Xna.Framework.Game.Activity as Platforms.Android.MainActivity;
+        if (activity == null)
+        {
+            Console.WriteLine("[Game1] Cannot pick mods folder: MainActivity not found");
+            return;
+        }
+        
+        Console.WriteLine("[Game1] Launching folder picker...");
+        activity.PickModsFolder((uri) =>
+        {
+            if (uri != null)
+            {
+                Console.WriteLine($"[Game1] User selected mods folder: {uri}");
+                // TODO: Rescan mods from the selected folder
+            }
+            else
+            {
+                Console.WriteLine("[Game1] User cancelled folder picker");
+            }
+        });
     }
     
     /// <summary>

@@ -338,4 +338,45 @@ namespace FunkyMakerPlayer.Multiplayer
         public int TotalMatches { get; set; } = 0;
         public long Timestamp { get; set; }
     }
+
+    // ==================== PvP Character Sync Packets ====================
+    
+    /// <summary>
+    /// Packet to sync player character sprite data at match start
+    /// </summary>
+    public class PlayerCharacterPacket
+    {
+        public string PlayerId { get; set; } = string.Empty;
+        public string CharacterName { get; set; } = string.Empty;
+        public bool HasCustomSprite { get; set; }
+        public byte[]? SpriteData { get; set; } // PNG data if custom
+        public int SpriteWidth { get; set; }
+        public int SpriteHeight { get; set; }
+        public string CharacterColor { get; set; } = "#FFFFFF"; // Hex color
+    }
+
+    /// <summary>
+    /// Packet to sync character animation state
+    /// </summary>
+    public class CharacterAnimationPacket
+    {
+        public string PlayerId { get; set; } = string.Empty;
+        public string AnimationState { get; set; } = "idle"; // idle, sing_left, sing_down, sing_up, sing_right
+        public float AnimationTime { get; set; }
+        public int Direction { get; set; } // 0=left, 1=down, 2=up, 3=right
+    }
+
+    /// <summary>
+    /// Enhanced match found packet with character info
+    /// </summary>
+    public class MatchFoundPacketV2
+    {
+        public string OpponentId { get; set; } = string.Empty;
+        public string OpponentName { get; set; } = string.Empty;
+        public string LevelId { get; set; } = string.Empty;
+        public string LevelName { get; set; } = string.Empty;
+        public LevelSource Source { get; set; }
+        public string? LevelUrl { get; set; }
+        public PlayerCharacterPacket? OpponentCharacter { get; set; }
+    }
 }

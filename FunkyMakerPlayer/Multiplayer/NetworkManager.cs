@@ -71,6 +71,11 @@ namespace FunkyMakerPlayer.Multiplayer
         public event Action<LevelListPacket>? OnLevelListReceived;
         public event Action<LeaderboardResponsePacket>? OnLeaderboardReceived; // v0.2.4 - Global leaderboard
         public event Action<MatchHistoryResponsePacket>? OnMatchHistoryReceived; // v0.2.4 - Match history
+        
+        // ── PvP Character Events (v0.4.3+) ──────────────────────────────────────
+        public event Action<int, float, string>? OnOpponentNoteHit; // direction, time, rating
+        public event Action<string, string, int>? OnCharacterAnimation; // playerId, animState, direction
+        public event Action<string, byte[]?>? OnCharacterSprite; // playerId, spriteData
 
         // Ping measurement & quality tracking
         private long _lastPingTime;
@@ -188,6 +193,10 @@ namespace FunkyMakerPlayer.Multiplayer
                 _hubConnection.On<PongPacket>("Pong", OnPongPacket);
                 _hubConnection.On<LeaderboardResponsePacket>("LeaderboardResponse", OnLeaderboardResponse);
                 _hubConnection.On<MatchHistoryResponsePacket>("MatchHistoryResponse", OnMatchHistoryResponse);
+                
+                // PvP Character handlers (v0.4.3+)
+                _hubConnection.On<PlayerCharacterPacket>("CharacterInfo", OnCharacterInfoPacket);
+                _hubConnection.On<CharacterAnimationPacket>("CharacterAnimation", OnCharacterAnimationPacket);
                 
                 Console.WriteLine($"[Multiplayer] Starting SignalR connection: {SignalRUrl}");
                 await _hubConnection.StartAsync();
@@ -1032,5 +1041,91 @@ namespace FunkyMakerPlayer.Multiplayer
             Console.WriteLine($"[Multiplayer] Received match history: {packet.Matches.Count}/{packet.TotalMatches} matches");
             OnMatchHistoryReceived?.Invoke(packet);
         }
+        
+        // ══════════════════════════════════════════════════════════════════════
+        // PVP CHARACTER SYNC METHODS (v0.4.3+)
+        // ══════════════════════════════════════════════════════════════════════
+        
+        /// <summary>
+        /// Send character sprite and info to opponent
+        /// </summary>
+        public async void SendCharacterInfo(PlayerCharacterPacket packet)
+        {
+            if (!IsConnected || _hubConnection == null) return;
+            
+            try
+            {
+                await _hubConnection.InvokeAsync("SendCharacterInfo", packet);
+                Console.WriteLine($"[Multiplayer] Sent character info for {packet.CharacterName}");
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[Multiplayer] Error sending character info: {ex.Message}");
+            }
+        }
+        
+        /// <summary>
+        /// Send character animation state to opponent
+        /// </summary>
+        public async void SendCharacterAnimation(CharacterAnimationPacket packet)
+        {
+            if (!IsConnected || _hubConnection == null) return;
+            
+            try
+            {
+                await _hubConnection.InvokeAsync("SendCharacterAnimation", packet);
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[Multiplayer] Error sending character animation: {ex.Message}");
+            }
+        }
+        
+        /// <summary>
+        /// Simplified note hit for PvP (just direction and timing)
+        /// </summary>
+        public async void SendNoteHit(int direction, float time, string rating)
+        {
+            if (!IsConnected || _hubConnection == null) return;
+            
+            try
+            {
+                var packet = new NoteHitPacket
+                {
+                    NoteId = direction,
+                    Lane = direction,
+                    Timestamp = (long)time,
+                    Rating = rating,
+                    Combo = 0
+                };
+                
+                await _hubConnection.InvokeAsync("SendNoteHit", packet);
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[Multiplayer] Error sending note hit: {ex.Message}");
+            }
+        }
+        
+        private void OnCharacterInfoPacket(PlayerCharacterPacket packet)
+        {
+            Console.WriteLine($"[Multiplayer] Received character info: {packet.CharacterName}");
+            OnCharacterSprite?.Invoke(packet.PlayerId, packet.SpriteData);
+        }
+        
+        private void OnCharacterAnimationPacket(CharacterAnimationPacket packet)
+        {
+            OnCharacterAnimation?.Invoke(packet.PlayerId, packet.AnimationState, packet.Direction);
+        }
+        
+        /// <summary>
+        /// Property to expose PlayerId for GameMultiplayer
+        /// </summary>
+        public string PlayerId { get; private set; } = Guid.NewGuid().ToString();
+        
+        /// <summary>
+        /// Property to expose PlayerName for GameMultiplayer
+        /// </summary>
+        public string PlayerName => Username;
     }
 }
