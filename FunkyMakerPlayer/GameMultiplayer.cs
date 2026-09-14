@@ -209,9 +209,8 @@ public class GameMultiplayer : Game
         // Initialize touch controls for Android
         _touchControls = new TouchControls();
         _touchControls.Initialize(GraphicsDevice, 
-            _graphics.PreferredBackBufferWidth, 
-            _graphics.PreferredBackBufferHeight,
-            NoteRenderer.Downscroll);
+            GraphicsDevice.PresentationParameters.BackBufferWidth, 
+            GraphicsDevice.PresentationParameters.BackBufferHeight);
         Console.WriteLine("[GameMultiplayer] Touch controls initialized for Android");
 #endif
         
@@ -394,14 +393,10 @@ public class GameMultiplayer : Game
         
 #if ANDROID
         // Update touch controls
-        if (_touchControls != null)
-        {
-            var touchState = TouchPanel.GetState();
-            _touchControls.Update(touchState, deltaTime);
-            
-            // Get virtual keyboard state from touch controls
-            keyboardState = _touchControls.GetVirtualKeyboardState();
-        }
+        _touchControls?.Update();
+        
+        // Merge touch input with keyboard
+        keyboardState = MergeTouchWithKeyboard(keyboardState);
 #endif
         
         // Exit
@@ -480,6 +475,29 @@ public class GameMultiplayer : Game
         Console.WriteLine("[GameMultiplayer] Song started");
     }
     
+#if ANDROID
+    /// <summary>
+    /// Merge touch controls into keyboard state (Android only)
+    /// </summary>
+    private KeyboardState MergeTouchWithKeyboard(KeyboardState kb)
+    {
+        if (_touchControls == null) return kb;
+        
+        // Get all currently pressed keys from keyboard
+        var pressedKeys = new List<Keys>(kb.GetPressedKeys());
+        
+        // Add virtual keys from touch controls (D, F, J, K for note lanes)
+        foreach (var key in new[] { Keys.D, Keys.F, Keys.J, Keys.K, Keys.Escape })
+        {
+            if (_touchControls.IsKeyDown(key) && !pressedKeys.Contains(key))
+                pressedKeys.Add(key);
+        }
+        
+        // Create new keyboard state with merged keys
+        return new KeyboardState(pressedKeys.ToArray());
+    }
+#endif
+    
     private void ExitToMenu()
     {
         // Stop any active audio
@@ -536,7 +554,7 @@ public class GameMultiplayer : Game
         
 #if ANDROID
         // Draw touch controls
-        _touchControls?.Draw(_spriteBatch);
+        _touchControls?.Draw(_spriteBatch, _font);
 #endif
         
         _spriteBatch.End();
