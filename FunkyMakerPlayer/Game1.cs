@@ -835,6 +835,11 @@ public partial class Game1 : Game
             GraphicsDevice.PresentationParameters.BackBufferWidth,
             GraphicsDevice.PresentationParameters.BackBufferHeight);
         Console.WriteLine("[TouchControls] Initialized for Android");
+        
+        // Initialize touch controls for multiplayer menu
+        _multiplayerMenu.InitializeTouchControls(GraphicsDevice,
+            GraphicsDevice.PresentationParameters.BackBufferWidth,
+            GraphicsDevice.PresentationParameters.BackBufferHeight);
 #endif
 
         // Load persisted settings — must happen before NoteStyle so NoteStyleName is set

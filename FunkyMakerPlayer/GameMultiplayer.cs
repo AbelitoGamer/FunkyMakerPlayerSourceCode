@@ -211,7 +211,11 @@ public class GameMultiplayer : Game
         _touchControls.Initialize(GraphicsDevice, 
             GraphicsDevice.PresentationParameters.BackBufferWidth, 
             GraphicsDevice.PresentationParameters.BackBufferHeight);
-        Console.WriteLine("[GameMultiplayer] Touch controls initialized for Android");
+        
+        // Set to Gameplay mode so note buttons work
+        _touchControls.SetMode(TouchControls.ControlMode.Gameplay);
+        
+        Console.WriteLine("[GameMultiplayer] Touch controls initialized for Android (Gameplay mode)");
 #endif
         
         // Load level

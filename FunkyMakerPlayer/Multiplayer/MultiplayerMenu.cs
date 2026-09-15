@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using Microsoft.Xna.Framework;
 using Microsoft.Xna.Framework.Graphics;
 using Microsoft.Xna.Framework.Input;
+using Microsoft.Xna.Framework.Input.Touch;
 
 namespace FunkyMakerPlayer.Multiplayer
 {
@@ -99,6 +100,10 @@ namespace FunkyMakerPlayer.Multiplayer
         private MouseState _prevMouse;
         private float _inputCooldown = 0f;
         private const float INPUT_COOLDOWN_TIME = 0.15f;
+        
+#if ANDROID
+        private TouchControls? _touchControls;
+#endif
         
         // Mouse/Touch support
         private List<Rectangle> _clickableAreas = new();
@@ -229,6 +234,19 @@ namespace FunkyMakerPlayer.Multiplayer
         }
 
         /// <summary>
+        /// Initialize touch controls for Android (must be called after GraphicsDevice is ready)
+        /// </summary>
+        public void InitializeTouchControls(GraphicsDevice graphicsDevice, int screenWidth, int screenHeight)
+        {
+#if ANDROID
+            _touchControls = new TouchControls();
+            _touchControls.Initialize(graphicsDevice, screenWidth, screenHeight);
+            _touchControls.SetMode(TouchControls.ControlMode.Menu);
+            Console.WriteLine("[MultiplayerMenu] Touch controls initialized for Android (Menu mode)");
+#endif
+        }
+
+        /// <summary>
         /// Refresh the list of available levels for multiplayer.
         /// </summary>
         public void RefreshLevelList()
@@ -308,6 +326,14 @@ namespace FunkyMakerPlayer.Multiplayer
 
             var kb = Keyboard.GetState();
             var mouse = Mouse.GetState();
+            
+#if ANDROID
+            // Update touch controls
+            _touchControls?.Update();
+            
+            // Merge touch input with keyboard
+            kb = MergeTouchWithKeyboard(kb);
+#endif
             
             // Update mouse hover detection
             UpdateMouseHover(mouse);
@@ -1639,6 +1665,11 @@ namespace FunkyMakerPlayer.Multiplayer
             {
                 DrawErrorMessage(sb, font, pixel, screenWidth, screenHeight);
             }
+            
+#if ANDROID
+            // Draw touch controls
+            _touchControls?.Draw(sb, font);
+#endif
         }
         
         /// <summary>
@@ -3416,5 +3447,28 @@ namespace FunkyMakerPlayer.Multiplayer
                 return $"{score / 1000.0:F1}K";
             return score.ToString();
         }
+        
+#if ANDROID
+        /// <summary>
+        /// Merge touch controls into keyboard state (Android only)
+        /// </summary>
+        private KeyboardState MergeTouchWithKeyboard(KeyboardState kb)
+        {
+            if (_touchControls == null) return kb;
+            
+            // Get all currently pressed keys from keyboard
+            var pressedKeys = new List<Keys>(kb.GetPressedKeys());
+            
+            // Add virtual keys from touch controls (menu navigation)
+            foreach (var key in new[] { Keys.Left, Keys.Right, Keys.Up, Keys.Down, Keys.Enter, Keys.Escape, Keys.Space, Keys.Q, Keys.E })
+            {
+                if (_touchControls.IsKeyDown(key) && !pressedKeys.Contains(key))
+                    pressedKeys.Add(key);
+            }
+            
+            // Create new keyboard state with merged keys
+            return new KeyboardState(pressedKeys.ToArray());
+        }
+#endif
     }
 }
