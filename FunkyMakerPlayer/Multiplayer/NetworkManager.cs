@@ -1055,8 +1055,9 @@ namespace FunkyMakerPlayer.Multiplayer
             
             try
             {
-                await _hubConnection.InvokeAsync("SendCharacterInfo", packet);
-                Console.WriteLine($"[Multiplayer] Sent character info for {packet.CharacterName}");
+                // DISABLED: Server doesn't support SendCharacterInfo hub method yet
+                // await _hubConnection.InvokeAsync("SendCharacterInfo", packet);
+                Console.WriteLine($"[Multiplayer] SendCharacterInfo skipped (server doesn't support this method yet)");
             }
             catch (Exception ex)
             {

@@ -177,7 +177,13 @@ public partial class Game1 : Game
     private Multiplayer.MultiplayerMenu? _multiplayerMenu;
     private bool          _inMultiplayer = false;
     
-    // ── Multiplayer match state ────────────────────────────────────────────── 
+    // ── Multiplayer match state ──────────────────────────────────────────────
+    private bool _isMultiplayerMatch = false;  // true if this is a PvP match
+    private string? _opponentName = null;
+    private int _multiplayerPlayerRole = 0;  // 1 = Player 1 (plays chart 1 - Boyfriend), 2 = Player 2 (plays chart 0 - Enemy)
+    private int _opponentScore = 0;
+    private float _opponentHealth = 0.5f;
+    
     // ── Health icons ─────────────────────────────────────────────────────────
     // Icons are full SpriteAnimators: anim 0 = normal, anim 1 = losing
     private SpriteAnimator? _iconPlayerAnim;
@@ -421,6 +427,18 @@ public partial class Game1 : Game
         IsMouseVisible  = true;
         IsFixedTimeStep = false;  // uncapped — runs as fast as the PC allows
         Window.Title    = "Funky Maker Player v" + System.Reflection.Assembly.GetExecutingAssembly().GetName().Version?.ToString(3);
+    }
+    
+    /// <summary>
+    /// Constructor for multiplayer PvP matches
+    /// </summary>
+    public Game1(string levelPath, string opponentName, int playerRole) : this()
+    {
+        _isMultiplayerMatch = true;
+        FnmmPath = levelPath;
+        _opponentName = opponentName;
+        _multiplayerPlayerRole = playerRole;  // 1 = Player 1 (chart 1), 2 = Player 2 (chart 0)
+        Console.WriteLine($"[Game1] Multiplayer constructor: opponent={opponentName}, role={playerRole}");
     }
 
     /// <summary>
@@ -852,6 +870,34 @@ public partial class Game1 : Game
         
         // Load notesplash style (null = programmatic default)
         _noteSplashStyle = NoteSplashStyle.LoadByName(NoteSplashStyleName, GraphicsDevice);
+
+        // Setup multiplayer event handlers if this is a PvP match
+        if (_isMultiplayerMatch)
+        {
+            Console.WriteLine("[Game1] Setting up multiplayer event handlers...");
+            
+            // Receive opponent's note hits
+            Multiplayer.NetworkManager.Instance.OnOpponentNoteHit += (lane, time, rating) =>
+            {
+                // Trigger visual animation on opponent strumline (index 1)
+                if (_noteRenderers.Count > 1)
+                {
+                    bool isSick = rating == "Sick!";
+                    _noteRenderers[1].TriggerManualHit(lane, isSick);
+                    Console.WriteLine($"[Multiplayer] Opponent hit: lane={lane}, rating={rating}");
+                }
+            };
+            
+            // Receive opponent's state updates (score, health, combo)
+            Multiplayer.NetworkManager.Instance.OnOpponentState += (packet) =>
+            {
+                _opponentScore = packet.Score;
+                _opponentHealth = packet.Health;
+                // Could show this in UI later
+            };
+            
+            Console.WriteLine($"[Game1] Multiplayer mode initialized: opponent={_opponentName}, role={_multiplayerPlayerRole}");
+        }
 
         try
         {
@@ -1830,12 +1876,12 @@ public partial class Game1 : Game
             // In multiplayer, always show opponent regardless of HideOpponentStrumline setting
             if (i == 1)
             {
-                renderer.Alpha = (false /* multiplayer disabled in Game1 */ || !HideOpponentStrumline) ? 0.5f : 0f;
+                renderer.Alpha = (_isMultiplayerMatch || !HideOpponentStrumline) ? 0.5f : 0f;
             }
             // With 3+ strumlines: extras (2+) hide when idle
             if (strumlineCount >= 3 && i >= 2) renderer.HideWhenIdle = true;
             // Multiplayer: Disable autoplay for opponent (index 1) — hits come from network
-            if (false /* multiplayer disabled in Game1 */ && i == 1) renderer.DisableAutoplay = true;
+            if (_isMultiplayerMatch && i == 1) renderer.DisableAutoplay = true;
             renderer.SetRenderTargetSize(rtW, rtH);
             _noteRenderers.Add(renderer);
         }
@@ -1935,15 +1981,15 @@ public partial class Game1 : Game
                                     new Color(0xFF, 0x44, 0x44));
                 
                 // Multiplayer: Send hit to opponent (only for player strumline)
-                if (false /* multiplayer disabled in Game1 */ && _noteRenderers.Count > 0)
+                if (_isMultiplayerMatch && _noteRenderers.Count > 0)
                 {
                     var playerRenderer = _noteRenderers[0];
                     int noteId = playerRenderer.Combo;
-                    long timestamp = (long)(_songTime * 1000);  // Convert to ms
+                    long timestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
                     
                     Multiplayer.NetworkManager.Instance.SendNoteHit(
                         noteId,
-                        0,  // Use tracked lane
+                        0,  // Lane will be tracked from OnNoteHit callback
                         timestamp, 
                         j,  // rating string
                         playerRenderer.Combo

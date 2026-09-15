@@ -2697,26 +2697,21 @@ namespace FunkyMakerPlayer.Multiplayer
                 return;
             }
 
-            string opponentId = NetworkManager.Instance.OpponentName ?? "Unknown";
             string opponentName = NetworkManager.Instance.OpponentName ?? "Opponent";
+            int playerRole = NetworkManager.Instance.PlayerRole;
 
-            Console.WriteLine($"[MultiplayerMenu] Launching GameMultiplayer:");
+            Console.WriteLine($"[MultiplayerMenu] Launching Game1 in multiplayer mode:");
             Console.WriteLine($"  Level: {levelPath}");
             Console.WriteLine($"  Opponent: {opponentName}");
-            Console.WriteLine($"  Player Role: {NetworkManager.Instance.PlayerRole}");
+            Console.WriteLine($"  Player Role: {playerRole}");
 
             try
             {
-                // Create GameMultiplayer instance
-                var gameMultiplayer = new GameMultiplayer(
-                    levelPath,
-                    NetworkManager.Instance,
-                    opponentId,
-                    opponentName
-                );
+                // Create Game1 instance in multiplayer mode (uses full engine)
+                var game = new Game1(levelPath, opponentName, playerRole);
 
                 // Run the game (blocks until game ends)
-                gameMultiplayer.Run();
+                game.Run();
 
                 // After game ends, return to lobby
                 Console.WriteLine("[MultiplayerMenu] Game ended, returning to lobby");
@@ -2724,7 +2719,7 @@ namespace FunkyMakerPlayer.Multiplayer
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"[MultiplayerMenu] ERROR launching GameMultiplayer: {ex.Message}");
+                Console.WriteLine($"[MultiplayerMenu] ERROR launching Game1: {ex.Message}");
                 Console.WriteLine($"[MultiplayerMenu] Stack trace: {ex.StackTrace}");
                 ShowError($"Game launch failed: {ex.Message}");
                 _state = MenuState.Lobby;
