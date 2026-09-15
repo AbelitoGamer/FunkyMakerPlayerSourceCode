@@ -139,6 +139,7 @@ namespace FunkyMakerPlayer.Multiplayer
         private bool _isDownloading = false;
         private int _downloadProgress = 0;
         private string _levelsFolder = ""; // Will be set in constructor
+        private Game1? _game = null; // Reference to main game instance
 
         // Matchmaking
         private float _searchTimer = 0f;
@@ -231,6 +232,14 @@ namespace FunkyMakerPlayer.Multiplayer
                 _isDownloading = false;
                 Console.WriteLine($"[Multiplayer] Download error: {error}");
             };
+        }
+        
+        /// <summary>
+        /// Sets the Game1 instance reference (must be called from Game1.LoadContent)
+        /// </summary>
+        public void SetGame(Game1 game)
+        {
+            _game = game;
         }
 
         /// <summary>
@@ -2697,31 +2706,34 @@ namespace FunkyMakerPlayer.Multiplayer
                 return;
             }
 
+            if (_game == null)
+            {
+                Console.WriteLine($"[MultiplayerMenu] ERROR: Game instance not set!");
+                ShowError("Game instance not initialized");
+                _state = MenuState.Lobby;
+                return;
+            }
+
             string opponentName = NetworkManager.Instance.OpponentName ?? "Opponent";
             int playerRole = NetworkManager.Instance.PlayerRole;
 
-            Console.WriteLine($"[MultiplayerMenu] Launching Game1 in multiplayer mode:");
+            Console.WriteLine($"[MultiplayerMenu] Starting multiplayer match in existing Game1 instance");
             Console.WriteLine($"  Level: {levelPath}");
             Console.WriteLine($"  Opponent: {opponentName}");
             Console.WriteLine($"  Player Role: {playerRole}");
 
             try
             {
-                // Create Game1 instance in multiplayer mode (uses full engine)
-                var game = new Game1(levelPath, opponentName, playerRole);
-
-                // Run the game (blocks until game ends)
-                game.Run();
-
-                // After game ends, return to lobby
-                Console.WriteLine("[MultiplayerMenu] Game ended, returning to lobby");
-                ResetAfterMatch();
+                // Start multiplayer match in existing Game1 instance (no new window)
+                _game.StartMultiplayerMatch(levelPath, opponentName, playerRole);
+                
+                Console.WriteLine("[MultiplayerMenu] Match started successfully");
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"[MultiplayerMenu] ERROR launching Game1: {ex.Message}");
+                Console.WriteLine($"[MultiplayerMenu] ERROR starting match: {ex.Message}");
                 Console.WriteLine($"[MultiplayerMenu] Stack trace: {ex.StackTrace}");
-                ShowError($"Game launch failed: {ex.Message}");
+                ShowError($"Failed to start match: {ex.Message}");
                 _state = MenuState.Lobby;
             }
         }

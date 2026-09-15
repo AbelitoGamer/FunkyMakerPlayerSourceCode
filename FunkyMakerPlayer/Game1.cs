@@ -430,15 +430,25 @@ public partial class Game1 : Game
     }
     
     /// <summary>
-    /// Constructor for multiplayer PvP matches
+    /// Starts a multiplayer PvP match (called from MultiplayerMenu).
+    /// Does NOT create a new Game instance - changes current instance to multiplayer mode.
     /// </summary>
-    public Game1(string levelPath, string opponentName, int playerRole) : this()
+    public void StartMultiplayerMatch(string levelPath, string opponentName, int playerRole)
     {
+        Console.WriteLine($"[Game1] Starting multiplayer match:");
+        Console.WriteLine($"  Level: {levelPath}");
+        Console.WriteLine($"  Opponent: {opponentName}");
+        Console.WriteLine($"  Player Role: {playerRole}");
+        
         _isMultiplayerMatch = true;
-        FnmmPath = levelPath;
         _opponentName = opponentName;
-        _multiplayerPlayerRole = playerRole;  // 1 = Player 1 (chart 1), 2 = Player 2 (chart 0)
-        Console.WriteLine($"[Game1] Multiplayer constructor: opponent={opponentName}, role={playerRole}");
+        _multiplayerPlayerRole = playerRole;
+        
+        // Exit multiplayer menu
+        _inMultiplayer = false;
+        
+        // Load the level (same as single player)
+        StartLoadingLevel(levelPath);
     }
 
     /// <summary>
@@ -845,6 +855,7 @@ public partial class Game1 : Game
 
         // Init multiplayer menu (for accessing multiplayer lobby)
         _multiplayerMenu = new Multiplayer.MultiplayerMenu();
+        _multiplayerMenu.SetGame(this);  // Pass reference to this Game1 instance
         
 #if ANDROID
         // Initialize touch controls for Android
@@ -923,11 +934,16 @@ public partial class Game1 : Game
         base.OnDeactivated(sender, args);
         
         // Auto-pause if gameplay is active (not in menus)
-        if (_level != null && _started && !_paused && !_inPauseMenu && !_gameOver)
+        // Disabled in multiplayer - can't pause during PvP matches
+        if (!_isMultiplayerMatch && _level != null && _started && !_paused && !_inPauseMenu && !_gameOver)
         {
             Console.WriteLine("[Android] App deactivated, auto-pausing gameplay");
             _inPauseMenu = true;
             PauseSong();
+        }
+        else if (_isMultiplayerMatch)
+        {
+            Console.WriteLine("[Android] App deactivated during multiplayer - pause disabled");
         }
     }
     
@@ -2292,17 +2308,20 @@ public partial class Game1 : Game
             }
             else if (_settingsManager?.IsActive == true)
             {
-                // In settings - go back to pause menu
+                // In settings - go back to pause menu (disabled in multiplayer)
                 if (_settingsManager != null) _settingsManager.IsActive = false;
 #if ANDROID
                 // Hide Q and E buttons when leaving settings
                 _touchControls?.SetSettingsButtonsVisible(false);
 #endif
-                _inPauseMenu = true;
-                // Never auto-resume when going back to pause menu — user stays paused
-                _pausedByTimeskip = false;
+                if (!_isMultiplayerMatch)
+                {
+                    _inPauseMenu = true;
+                    // Never auto-resume when going back to pause menu — user stays paused
+                    _pausedByTimeskip = false;
+                }
             }
-            else
+            else if (!_isMultiplayerMatch)  // Pause only allowed in single player
             {
                 // Toggle pause menu
                 _inPauseMenu = !_inPauseMenu;
@@ -2522,7 +2541,8 @@ public partial class Game1 : Game
                     // Hide Q and E buttons when exiting settings menu
                     _touchControls?.SetSettingsButtonsVisible(false);
 #endif
-                    if (_level != null)
+                    // Return to pause menu only if not in multiplayer
+                    if (_level != null && !_isMultiplayerMatch)
                         _inPauseMenu = true;
                     if (_pausedByTimeskip && _paused && _started && _level != null)
                     {
@@ -5364,9 +5384,115 @@ public partial class Game1 : Game
         if (!levelHasOwnBar)
         {
             // ── MULTIPLAYER HUD ──────────────────────────────────────────────
-            if (false /* multiplayer disabled in Game1 */ && null /* multiplayer UI removed */ != null && _font != null && _pixel != null)
+            if (_isMultiplayerMatch && _font != null && _pixel != null && _noteRenderers.Count >= 2)
             {
-                // Multiplayer HUD removed - Game1 no longer handles multiplayer
+                // Multiplayer: 2 separate health bars + stats for both players
+                float statsScale = 0.75f;
+                
+                // Get renderers
+                var playerRend = _noteRenderers[0];
+                var opponentRend = _noteRenderers[1];
+                
+                // ── PLAYER HEALTH BAR (Right side) ───────────────────────────
+                int barWidth = 300;
+                int barHeight = 20;
+                int barY = sh - 120;
+                int playerBarX = sw - barWidth - 40; // Right side
+                
+                // Draw player bar
+                DrawRect(playerBarX - 2, barY - 2, barWidth + 4, barHeight + 4, Color.Black);
+                DrawRect(playerBarX, barY, barWidth, barHeight, new Color(30, 30, 30));
+                int playerFill = (int)(_health * barWidth);
+                for (int i = 0; i < playerFill; i++)
+                {
+                    float t = (float)i / barWidth;
+                    Color c = Color.Lerp(_playerBarColor * 0.8f, _playerBarColor, t);
+                    DrawRect(playerBarX + i, barY, 1, barHeight, c);
+                }
+                
+                // ── OPPONENT HEALTH BAR (Left side) ──────────────────────────
+                int opponentBarX = 40; // Left side
+                
+                // Draw opponent bar
+                DrawRect(opponentBarX - 2, barY - 2, barWidth + 4, barHeight + 4, Color.Black);
+                DrawRect(opponentBarX, barY, barWidth, barHeight, new Color(30, 30, 30));
+                int opponentFill = (int)(_opponentHealth * barWidth);
+                for (int i = 0; i < opponentFill; i++)
+                {
+                    float t = (float)i / barWidth;
+                    Color c = Color.Lerp(_opponentBarColor * 0.8f, _opponentBarColor, t);
+                    DrawRect(opponentBarX + i, barY, 1, barHeight, c);
+                }
+                
+                // ── PLAYER STATS (Right side, below bar) ─────────────────────
+                int statsY = barY + barHeight + 10;
+                
+                // Player stats
+                int totalPlayerNotes = playerRend.Sicks + playerRend.Goods + playerRend.Bads + 
+                                     playerRend.Shits + playerRend.Misses;
+                float playerAccuracy = 100f;
+                if (totalPlayerNotes > 0)
+                {
+                    float weightedHits = (playerRend.Sicks * 1.0f) + (playerRend.Goods * 0.75f) + 
+                                        (playerRend.Bads * 0.5f) + (playerRend.Shits * 0.25f);
+                    playerAccuracy = (weightedHits / totalPlayerNotes) * 100f;
+                }
+                
+                string playerScore = $"Score: {playerRend.Score}";
+                string playerAcc = $"Acc: {playerAccuracy:F1}%";
+                string playerCombo = $"Combo: {playerRend.Combo}";
+                
+                // Draw player stats (right-aligned)
+                Vector2 scoreSize = _font.MeasureString(playerScore) * statsScale;
+                _spriteBatch.DrawString(_font, playerScore,
+                    new Vector2(playerBarX + barWidth - scoreSize.X, statsY + 2), Color.Black * 0.7f, 
+                    0f, Vector2.Zero, statsScale, SpriteEffects.None, 0f);
+                _spriteBatch.DrawString(_font, playerScore,
+                    new Vector2(playerBarX + barWidth - scoreSize.X, statsY), Color.White, 
+                    0f, Vector2.Zero, statsScale, SpriteEffects.None, 0f);
+                
+                Vector2 accSize = _font.MeasureString(playerAcc) * statsScale;
+                _spriteBatch.DrawString(_font, playerAcc,
+                    new Vector2(playerBarX + barWidth - accSize.X, statsY + 22), Color.Black * 0.7f, 
+                    0f, Vector2.Zero, statsScale, SpriteEffects.None, 0f);
+                _spriteBatch.DrawString(_font, playerAcc,
+                    new Vector2(playerBarX + barWidth - accSize.X, statsY + 20), new Color(100, 255, 100), 
+                    0f, Vector2.Zero, statsScale, SpriteEffects.None, 0f);
+                
+                Vector2 comboSize = _font.MeasureString(playerCombo) * statsScale;
+                _spriteBatch.DrawString(_font, playerCombo,
+                    new Vector2(playerBarX + barWidth - comboSize.X, statsY + 42), Color.Black * 0.7f, 
+                    0f, Vector2.Zero, statsScale, SpriteEffects.None, 0f);
+                _spriteBatch.DrawString(_font, playerCombo,
+                    new Vector2(playerBarX + barWidth - comboSize.X, statsY + 40), Color.Cyan, 
+                    0f, Vector2.Zero, statsScale, SpriteEffects.None, 0f);
+                
+                // ── OPPONENT STATS (Left side, below bar) ────────────────────
+                string opponentScore = $"Score: {_opponentScore}";
+                string opponentHealth = $"HP: {(_opponentHealth * 100):F0}%";
+                string opponentName = _opponentName ?? "Opponent";
+                
+                // Draw opponent stats (left-aligned)
+                _spriteBatch.DrawString(_font, opponentName,
+                    new Vector2(opponentBarX + 2, statsY + 2), Color.Black * 0.7f, 
+                    0f, Vector2.Zero, statsScale, SpriteEffects.None, 0f);
+                _spriteBatch.DrawString(_font, opponentName,
+                    new Vector2(opponentBarX, statsY), new Color(255, 200, 100), 
+                    0f, Vector2.Zero, statsScale, SpriteEffects.None, 0f);
+                
+                _spriteBatch.DrawString(_font, opponentScore,
+                    new Vector2(opponentBarX + 2, statsY + 22), Color.Black * 0.7f, 
+                    0f, Vector2.Zero, statsScale, SpriteEffects.None, 0f);
+                _spriteBatch.DrawString(_font, opponentScore,
+                    new Vector2(opponentBarX, statsY + 20), Color.White, 
+                    0f, Vector2.Zero, statsScale, SpriteEffects.None, 0f);
+                
+                _spriteBatch.DrawString(_font, opponentHealth,
+                    new Vector2(opponentBarX + 2, statsY + 42), Color.Black * 0.7f, 
+                    0f, Vector2.Zero, statsScale, SpriteEffects.None, 0f);
+                _spriteBatch.DrawString(_font, opponentHealth,
+                    new Vector2(opponentBarX, statsY + 40), new Color(255, 100, 100), 
+                    0f, Vector2.Zero, statsScale, SpriteEffects.None, 0f);
             }
             // ── SINGLEPLAYER HUD ─────────────────────────────────────────────
             else
