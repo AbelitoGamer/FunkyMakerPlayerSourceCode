@@ -7,8 +7,10 @@
     <TieredCompilation>false</TieredCompilation>
     <Nullable>enable</Nullable>
     <ImplicitUsings>disable</ImplicitUsings>
-    <Version>0.4.3</Version>
-    <AssemblyVersion>0.4.3</AssemblyVersion>
+    <Version>0.4.4</Version>
+    <AssemblyVersion>0.4.4</AssemblyVersion>
+    <!-- Disable Mono runtime requirement to use CoreCLR instead -->
+    <UseMonoRuntime>false</UseMonoRuntime>
     <!-- Icon and manifest only apply on Windows builds -->
     <ApplicationManifest Condition="'$(RuntimeIdentifier)' != 'linux-x64' And !$(TargetFramework.Contains('android'))">app.manifest</ApplicationManifest>
     <ApplicationIcon Condition="'$(RuntimeIdentifier)' != 'linux-x64' And !$(TargetFramework.Contains('android'))">Icon.ico</ApplicationIcon>
@@ -22,8 +24,8 @@
     <ApplicationId>com.funkymakergame.player</ApplicationId>
     <ApplicationTitle>FunkyMaker Player</ApplicationTitle>
     <ApplicationVersion>1</ApplicationVersion>
-    <ApplicationDisplayVersion>0.4.3</ApplicationDisplayVersion>
-    <AndroidVersionCode>2</AndroidVersionCode>
+    <ApplicationDisplayVersion>0.4.4</ApplicationDisplayVersion>
+    <AndroidVersionCode>3</AndroidVersionCode>
     <AndroidManifest>Platforms\Android\AndroidManifest.xml</AndroidManifest>
     <!-- Disable AOT for now to avoid trimming issues -->
     <RunAOTCompilation>false</RunAOTCompilation>
@@ -152,11 +154,15 @@
   
   <ItemGroup>
     <PackageReference Include="Microsoft.AspNetCore.SignalR.Client" Version="10.0.8" />
-    <PackageReference Include="MonoGame.Extended" Version="4.0.3" />
+    <PackageReference Include="MonoGame.Extended" Version="6.1.1" />
     <PackageReference Include="MonoGame.Framework.DesktopGL" Version="3.8.*" Condition="!$(TargetFramework.Contains('android'))" />
     <PackageReference Include="MonoGame.Framework.Android" Version="3.8.*" Condition="$(TargetFramework.Contains('android'))" />
     <PackageReference Include="MonoGame.Content.Builder.Task" Version="3.8.*" />
     <PackageReference Include="NVorbis" Version="0.10.5" />
+    <PackageReference Include="Obfuscar" Version="2.2.50">
+      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+      <PrivateAssets>all</PrivateAssets>
+    </PackageReference>
     <PackageReference Include="SharpCompress" Version="0.39.0">
       <ExcludeAssets>none</ExcludeAssets>
     </PackageReference>
@@ -181,4 +187,13 @@
     </ItemGroup>
     <Copy SourceFiles="@(NativeLibs)" DestinationFolder="$(PublishDir)" SkipUnchangedFiles="true" />
   </Target>
+
+  <!-- Obfuscar: Solo en Release y solo para .NET (no Android) -->
+  <!-- DESHABILITADO TEMPORALMENTE - usar script manual -->
+  <!--
+  <Target Name="ObfuscateAssembly" AfterTargets="Build" Condition="'$(Configuration)' == 'Release' And !$(TargetFramework.Contains('android'))">
+    <Exec Command="dotnet tool restore" />
+    <Exec Command="dotnet tool run obfuscar obfuscar.xml" WorkingDirectory="$(ProjectDir)" />
+  </Target>
+  -->
 </Project>

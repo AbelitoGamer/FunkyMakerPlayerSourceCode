@@ -73,7 +73,11 @@ namespace FunkyMakerPlayer.Multiplayer
         public event Action<MatchHistoryResponsePacket>? OnMatchHistoryReceived; // v0.2.4 - Match history
         
         // ── PvP Character Events (v0.4.3+) ──────────────────────────────────────
+        #pragma warning disable CS0067 // Event never used
         public event Action<int, float, string>? OnOpponentNoteHit; // direction, time, rating
+        #pragma warning restore CS0067
+        public event Action<int>? OnOpponentKeyPress; // lane index (0-3)
+        public event Action<string>? OnOpponentDisconnected; // reason
         public event Action<string, string, int>? OnCharacterAnimation; // playerId, animState, direction
         public event Action<string, byte[]?>? OnCharacterSprite; // playerId, spriteData
 
@@ -84,7 +88,7 @@ namespace FunkyMakerPlayer.Multiplayer
         private List<int> _pingHistory = new List<int>();
         private const int PING_HISTORY_SIZE = 10;
         private float _lastPacketReceivedTime;
-        private const float CONNECTION_TIMEOUT = 15f; // Consider connection lost after 15s of no packets
+        private const float CONNECTION_TIMEOUT = 70f; // Match server ClientTimeoutInterval (60s) + 10s buffer
 
         // Reconnection with exponential backoff
         private bool _shouldReconnect = false;
@@ -98,6 +102,10 @@ namespace FunkyMakerPlayer.Multiplayer
         // Connection timeout
         private float _connectionTimeoutTimer = 0f;
         private const float CONNECTION_ATTEMPT_TIMEOUT = 10f; // Timeout for initial connection
+
+        // KeyPress throttling (prevent spam)
+        private Dictionary<int, long> _lastKeyPressSent = new Dictionary<int, long>();
+        private const long KEY_PRESS_THROTTLE_MS = 50; // Min 50ms between keypress packets per lane
 
         private NetworkManager()
         {
@@ -197,6 +205,10 @@ namespace FunkyMakerPlayer.Multiplayer
                 // PvP Character handlers (v0.4.3+)
                 _hubConnection.On<PlayerCharacterPacket>("CharacterInfo", OnCharacterInfoPacket);
                 _hubConnection.On<CharacterAnimationPacket>("CharacterAnimation", OnCharacterAnimationPacket);
+                _hubConnection.On<OpponentKeyPressPacket>("OpponentKeyPress", OnOpponentKeyPressPacket);
+                
+                // Opponent disconnection handler
+                _hubConnection.On<OpponentDisconnectedPacket>("OpponentDisconnected", OnOpponentDisconnectedPacket);
                 
                 Console.WriteLine($"[Multiplayer] Starting SignalR connection: {SignalRUrl}");
                 await _hubConnection.StartAsync();
@@ -495,7 +507,9 @@ namespace FunkyMakerPlayer.Multiplayer
                 return;
             }
 
-            Console.WriteLine($"[Multiplayer] Sending Ready signal: {isReady}");
+            Console.WriteLine($"[Multiplayer] ===== SENDING READY SIGNAL: {isReady} =====");
+            Console.WriteLine($"[Multiplayer] Connection State: {_hubConnection?.State}");
+            Console.WriteLine($"[Multiplayer] OpponentName: {OpponentName}");
 
             var packet = new ReadyPacket
             {
@@ -506,11 +520,12 @@ namespace FunkyMakerPlayer.Multiplayer
             try
             {
                 await _hubConnection?.SendAsync("Ready", packet)!;
-                Console.WriteLine("[Multiplayer] Ready packet sent to server");
+                Console.WriteLine("[Multiplayer] ===== Ready packet SENT to server =====");
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"[Multiplayer] SendReady error: {ex.Message}");
+                Console.WriteLine($"[Multiplayer] SendReady ERROR: {ex.Message}");
+                Console.WriteLine($"[Multiplayer] Stack trace: {ex.StackTrace}");
             }
         }
 
@@ -610,6 +625,47 @@ namespace FunkyMakerPlayer.Multiplayer
             catch (Exception ex)
             {
                 Console.WriteLine($"[Multiplayer] SendPing error: {ex.Message}");
+            }
+        }
+        
+        /// <summary>
+        /// Send key press event to opponent for real-time animation.
+        /// Called every time player presses an arrow key (not just on successful hits).
+        /// Throttled to prevent network spam (max 1 per 50ms per lane).
+        /// </summary>
+        public async void SendKeyPress(int lane)
+        {
+            if (!IsConnected || _hubConnection?.State != HubConnectionState.Connected)
+                return;
+
+            long now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+            
+            // Throttle: Only send if enough time has passed since last send for this lane
+            if (_lastKeyPressSent.TryGetValue(lane, out long lastSent))
+            {
+                if (now - lastSent < KEY_PRESS_THROTTLE_MS)
+                {
+                    // Too soon, skip this packet
+                    return;
+                }
+            }
+            
+            _lastKeyPressSent[lane] = now;
+
+            var packet = new KeyPressPacket
+            {
+                Lane = lane,
+                Timestamp = now
+            };
+
+            try
+            {
+                await _hubConnection.SendAsync("KeyPress", packet);
+            }
+            catch (Exception)
+            {
+                // Don't spam console - key presses happen frequently
+                // Console.WriteLine($"[Multiplayer] SendKeyPress error: {ex.Message}");
             }
         }
 
@@ -757,9 +813,14 @@ namespace FunkyMakerPlayer.Multiplayer
         {
             _lastPacketReceivedTime = 0f; // Reset timeout
             
-            Console.WriteLine($"[Multiplayer] Opponent ready state changed: {packet.IsReady}");
+            Console.WriteLine($"[Multiplayer] ===== RECEIVED OPPONENT READY =====");
+            Console.WriteLine($"[Multiplayer] Opponent ready state: {packet.IsReady}");
+            Console.WriteLine($"[Multiplayer] Timestamp: {packet.Timestamp}");
+            Console.WriteLine($"[Multiplayer] Firing OnOpponentReadyChanged event...");
             
             OnOpponentReadyChanged?.Invoke(packet.IsReady);
+            
+            Console.WriteLine($"[Multiplayer] ===== OnOpponentReadyChanged event fired =====");
         }
         
         private void OnOpponentProfilePacket(PlayerProfilePacket packet)
@@ -804,6 +865,20 @@ namespace FunkyMakerPlayer.Multiplayer
         {
             _lastPacketReceivedTime = 0f; // Reset timeout
             OnOpponentState?.Invoke(packet);
+        }
+
+        private void OnOpponentKeyPressPacket(OpponentKeyPressPacket packet)
+        {
+            _lastPacketReceivedTime = 0f; // Reset timeout
+            OnOpponentKeyPress?.Invoke(packet.Lane);
+        }
+
+        private void OnOpponentDisconnectedPacket(OpponentDisconnectedPacket packet)
+        {
+            _lastPacketReceivedTime = 0f; // Reset timeout
+            
+            Console.WriteLine($"[Multiplayer] Opponent disconnected: {packet.Reason}");
+            OnOpponentDisconnected?.Invoke(packet.Reason);
         }
 
         private void OnGameStartPacket(GameStartPacket packet)
@@ -1055,9 +1130,8 @@ namespace FunkyMakerPlayer.Multiplayer
             
             try
             {
-                // DISABLED: Server doesn't support SendCharacterInfo hub method yet
-                // await _hubConnection.InvokeAsync("SendCharacterInfo", packet);
-                Console.WriteLine($"[Multiplayer] SendCharacterInfo skipped (server doesn't support this method yet)");
+                await _hubConnection.InvokeAsync("SendCharacterInfo", packet);
+                Console.WriteLine($"[Multiplayer] Sent character info: {packet.CharacterName}");
             }
             catch (Exception ex)
             {

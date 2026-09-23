@@ -216,7 +216,18 @@ public class NoteSplashStyle
     /// </summary>
     public static List<string> GetAvailableStyles()
     {
-        var styles = new List<string> { "Default" };
+        var styles = new List<string> 
+        { 
+            "Default",
+            // Particle styles (procedural, no textures)
+            "Particles: CircleExpand",
+            "Particles: SplashDrops",
+            "Particles: StarBurst",
+            "Particles: Explosion",
+            "Particles: RingPulse",
+            "Particles: Randomizer"  // Random style on each hit
+        };
+        
         string splashesDir = PlatformPaths.GetNoteSplashesPath();
         
         if (Directory.Exists(splashesDir))
@@ -238,13 +249,16 @@ public class NoteSplashStyle
     }
 
     /// <summary>
-    /// Loads a notesplash style by name. "Default" returns null (programmatic fallback).
+    /// Loads a notesplash style by name. 
+    /// "Default" returns null (programmatic fallback).
+    /// "Particles: *" returns null (will use ParticleNoteSplash instead).
     /// Other names load from notesplashes/<name>/ folder.
     /// </summary>
     public static NoteSplashStyle? LoadByName(string name, GraphicsDevice gd)
     {
         // Default = programmatic fallback (no textures)
-        if (name == "Default" || string.IsNullOrEmpty(name))
+        // Particles: * = return null (will be handled by ParticleNoteSplash)
+        if (name == "Default" || name.StartsWith("Particles:") || string.IsNullOrEmpty(name))
             return null;
 
         string splashesDir = PlatformPaths.GetNoteSplashesPath();

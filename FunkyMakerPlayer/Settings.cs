@@ -7,13 +7,25 @@ namespace FunkyMakerPlayer;
 
 /// <summary>
 /// Persists all user settings to %AppData%/FunkyMakerPlayer/settings.json.
+/// On Android: uses app-specific storage.
 /// Call Load() at startup and Save() whenever a setting changes.
 /// </summary>
 public static class Settings
 {
-    private static readonly string _path = Path.Combine(
-        Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
-        "FunkyMakerPlayer", "settings.json");
+    private static readonly string _path = GetSettingsPath();
+    
+    private static string GetSettingsPath()
+    {
+        #if ANDROID
+        // Android: use app-specific internal storage
+        string appData = Environment.GetFolderPath(Environment.SpecialFolder.Personal);
+        return Path.Combine(appData, "settings.json");
+        #else
+        // PC: use AppData/Roaming
+        string appData = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
+        return Path.Combine(appData, "FunkyMakerPlayer", "settings.json");
+        #endif
+    }
 
     private class Data
     {
@@ -125,6 +137,14 @@ public static class Settings
         /// Default: "default"
         /// </summary>
         public string SelectedCountdown { get; set; } = "default";
+        
+        // ── Key Bindings ──────────────────────────────────────────────────────
+        /// <summary>
+        /// Custom key bindings for gameplay (4 lanes: Left, Down, Up, Right).
+        /// Stored as key names (e.g., "D", "F", "J", "K").
+        /// Default: D, F, J, K
+        /// </summary>
+        public string[] PlayerKeyBindings { get; set; } = { "D", "F", "J", "K" };
     }
 
     public static void Load(Game1 game)
@@ -175,6 +195,19 @@ public static class Settings
             ArrowEffectManager.SelectedEffect  = d.ArrowSelectedEffect;
             Game1.SelectedCountdown            = d.SelectedCountdown;
             Game1.HideTouchHitboxColors        = d.HideTouchHitboxColors;
+            
+            // Load key bindings
+            if (d.PlayerKeyBindings != null && d.PlayerKeyBindings.Length == 4)
+            {
+                for (int i = 0; i < 4; i++)
+                {
+                    if (Enum.TryParse<Microsoft.Xna.Framework.Input.Keys>(d.PlayerKeyBindings[i], out var key))
+                    {
+                        NoteRenderer.PlayerKeys[i] = key;
+                    }
+                }
+            }
+            
             // VSync is applied via GraphicsDeviceManager — handled in Game1.ApplySettings
             game.ApplyLoadedSettings(d.VSync);
         }
@@ -232,6 +265,13 @@ public static class Settings
                 ArrowSelectedEffect = ArrowEffectManager.SelectedEffect,
                 SelectedCountdown = Game1.SelectedCountdown,
                 HideTouchHitboxColors = Game1.HideTouchHitboxColors,
+                PlayerKeyBindings = new string[]
+                {
+                    NoteRenderer.PlayerKeys[0].ToString(),
+                    NoteRenderer.PlayerKeys[1].ToString(),
+                    NoteRenderer.PlayerKeys[2].ToString(),
+                    NoteRenderer.PlayerKeys[3].ToString()
+                }
             };
             File.WriteAllText(_path, JsonSerializer.Serialize(d,
                 new JsonSerializerOptions { WriteIndented = true }));

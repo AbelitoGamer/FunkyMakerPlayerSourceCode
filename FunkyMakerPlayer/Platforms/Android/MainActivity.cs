@@ -166,35 +166,72 @@ namespace FunkyMakerPlayer.Platforms.Android
         {
             _folderPickerCallback = callback;
             
-            try
+            // Show instruction dialog BEFORE opening folder picker
+            RunOnUiThread(() =>
             {
-                // Use ACTION_OPEN_DOCUMENT_TREE for folder selection
-                var intent = new Intent(Intent.ActionOpenDocumentTree);
-                intent.AddFlags(ActivityFlags.GrantReadUriPermission | ActivityFlags.GrantWriteUriPermission | ActivityFlags.GrantPersistableUriPermission);
-                
-                // Try to start from Documents/FunkyMakerPlayerPublicMods
-                if (Build.VERSION.SdkInt >= BuildVersionCodes.O)
+                var builder = new AlertDialog.Builder(this);
+                builder.SetTitle("Grant Folder Access");
+                builder.SetMessage(
+                    "In the next screen, please select the folder where your mods are stored.\n\n" +
+                    "Typical location:\n" +
+                    "Documents/FunkyMakerPlayerPublicMods\n\n" +
+                    "This will allow the app to read your custom levels, notestyles, and other mods.");
+                builder.SetPositiveButton("Continue", (sender, args) =>
                 {
                     try
                     {
-                        var initialUri = global::Android.Net.Uri.Parse("content://com.android.externalstorage.documents/document/primary:Documents/FunkyMakerPlayerPublicMods");
-                        intent.PutExtra(DocumentsContract.ExtraInitialUri, initialUri);
+                        // Use ACTION_OPEN_DOCUMENT_TREE for folder selection
+                        var intent = new Intent(Intent.ActionOpenDocumentTree);
+                        intent.AddFlags(ActivityFlags.GrantReadUriPermission | ActivityFlags.GrantWriteUriPermission | ActivityFlags.GrantPersistableUriPermission);
+                        
+                        // Try to start from Documents/FunkyMakerPlayerPublicMods
+                        if (Build.VERSION.SdkInt >= BuildVersionCodes.O)
+                        {
+                            try
+                            {
+                                var initialUri = global::Android.Net.Uri.Parse("content://com.android.externalstorage.documents/document/primary:Documents/FunkyMakerPlayerPublicMods");
+                                intent.PutExtra(DocumentsContract.ExtraInitialUri, initialUri);
+                            }
+                            catch (Exception ex)
+                            {
+                                Console.WriteLine($"[MainActivity] Could not set initial URI: {ex.Message}");
+                            }
+                        }
+                        
+                        StartActivityForResult(intent, FOLDER_PICKER_REQUEST_CODE);
+                        Console.WriteLine("[MainActivity] Launched folder picker");
                     }
                     catch (Exception ex)
                     {
-                        Console.WriteLine($"[MainActivity] Could not set initial URI: {ex.Message}");
+                        Console.WriteLine($"[MainActivity] Error launching folder picker: {ex.Message}");
+                        _folderPickerCallback?.Invoke(null);
+                        _folderPickerCallback = null;
                     }
+                });
+                builder.SetNegativeButton("Cancel", (sender, args) =>
+                {
+                    _folderPickerCallback?.Invoke(null);
+                    _folderPickerCallback = null;
+                });
+                
+                // Create and show dialog with larger text
+                var dialog = builder.Create();
+                dialog.Show();
+                
+                // INCREASE TEXT SIZE for better readability on Android
+                var messageView = dialog.FindViewById<global::Android.Widget.TextView>(global::Android.Resource.Id.Message);
+                if (messageView != null)
+                {
+                    messageView.SetTextSize(global::Android.Util.ComplexUnitType.Sp, 20); // 20sp (larger text)
+                    messageView.SetLineSpacing(8f, 1.2f); // Better line spacing
                 }
                 
-                StartActivityForResult(intent, FOLDER_PICKER_REQUEST_CODE);
-                Console.WriteLine("[MainActivity] Launched folder picker");
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"[MainActivity] Error launching folder picker: {ex.Message}");
-                _folderPickerCallback?.Invoke(null);
-                _folderPickerCallback = null;
-            }
+                var titleView = dialog.FindViewById<global::Android.Widget.TextView>(global::Android.Resource.Id.Title);
+                if (titleView != null)
+                {
+                    titleView.SetTextSize(global::Android.Util.ComplexUnitType.Sp, 24); // 24sp for title
+                }
+            });
         }
         
         /// <summary>

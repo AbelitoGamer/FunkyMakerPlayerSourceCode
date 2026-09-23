@@ -30,6 +30,11 @@ public class LoadingScreen
     private readonly Texture2D?  _catTex;
     private readonly bool        _isMultiplayer;  // Don't show "Press ENTER" in multiplayer
 
+    // Multiplayer ready states
+    public bool Player1Ready { get; set; } = false;
+    public bool Player2Ready { get; set; } = false;
+    public int MyPlayerRole { get; set; } = 0;  // 0=unknown, 1=Player1, 2=Player2
+
     // ── Cat grid ─────────────────────────────────────────────────────────────
     private struct CatCell
     {
@@ -107,7 +112,7 @@ public class LoadingScreen
     }
 
     // ── Update ───────────────────────────────────────────────────────────────
-    public void Update(float dt, bool loadComplete, bool enterPressed, int sw, int sh, bool autoStart = false)
+    public void Update(float dt, bool loadComplete, bool enterPressed, int sw, int sh, bool startCountdown = false)
     {
         EnsureGrid(sw, sh);
 
@@ -151,11 +156,30 @@ public class LoadingScreen
                     cell.Scale = Math.Min(1f, cell.Scale + dt * POP_SPEED);
                     cell.Alpha = Math.Min(1f, cell.Alpha + dt * POP_SPEED);
                 }
-                // In multiplayer, auto-start without waiting for ENTER
-                if (enterPressed || autoStart)
+                
+                // In multiplayer: wait for both players ready AND server countdown signal
+                // In single player: wait for ENTER key
+                if (_isMultiplayer)
                 {
-                    CurrentPhase = Phase.Clearing;
-                    _clearTimer  = 0f;
+                    // Debug log
+                    Console.WriteLine($"[LoadingScreen] Waiting: countdown={startCountdown}, P1={Player1Ready}, P2={Player2Ready}");
+                    
+                    // Only start clearing when server sends countdown signal
+                    if (startCountdown && Player1Ready && Player2Ready)
+                    {
+                        Console.WriteLine("[LoadingScreen] All conditions met! Starting clearing phase...");
+                        CurrentPhase = Phase.Clearing;
+                        _clearTimer  = 0f;
+                    }
+                }
+                else
+                {
+                    // Single player: start when ENTER is pressed
+                    if (enterPressed)
+                    {
+                        CurrentPhase = Phase.Clearing;
+                        _clearTimer  = 0f;
+                    }
                 }
                 break;
             }
@@ -254,7 +278,66 @@ public class LoadingScreen
         }
         else
         {
-            status = _isMultiplayer ? "Waiting for opponent..." : "Press ENTER to play";
+            if (_isMultiplayer)
+            {
+                // Show clear multiplayer status with player roles
+                if (MyPlayerRole == 1)
+                {
+                    // I am Player 1 (Boyfriend)
+                    if (Player1Ready && !Player2Ready)
+                    {
+                        status = "Waiting for Player 2 (Enemy)...";
+                    }
+                    else if (!Player1Ready)
+                    {
+                        status = "Loading level...";
+                    }
+                    else
+                    {
+                        status = "Both players ready! Starting...";
+                    }
+                }
+                else if (MyPlayerRole == 2)
+                {
+                    // I am Player 2 (Enemy)
+                    if (Player2Ready && !Player1Ready)
+                    {
+                        status = "Waiting for Player 1 (Boyfriend)...";
+                    }
+                    else if (!Player2Ready)
+                    {
+                        status = "Loading level...";
+                    }
+                    else
+                    {
+                        status = "Both players ready! Starting...";
+                    }
+                }
+                else
+                {
+                    // Role unknown (fallback)
+                    if (!Player1Ready && !Player2Ready)
+                    {
+                        status = "Waiting for both players...";
+                    }
+                    else if (!Player1Ready)
+                    {
+                        status = "Waiting for Player 1...";
+                    }
+                    else if (!Player2Ready)
+                    {
+                        status = "Waiting for Player 2...";
+                    }
+                    else
+                    {
+                        status = "Both players ready!";
+                    }
+                }
+            }
+            else
+            {
+                status = "Press ENTER to play";
+            }
         }
 
         Color statusColor = CurrentPhase == Phase.Ready
@@ -265,6 +348,60 @@ public class LoadingScreen
         var statusPos = new Vector2(scx - statusSz.X / 2f, scy + 30f);
         sb.DrawString(_font, status, statusPos + new Vector2(2, 2), Color.Black   * _uiAlpha);
         sb.DrawString(_font, status, statusPos,                      statusColor   * _uiAlpha);
+
+        // Multiplayer: Show ready indicators
+        if (_isMultiplayer && CurrentPhase == Phase.Ready)
+        {
+            int indicatorY = scy + 80;
+            
+            // Player 1 indicator
+            string p1Text = "Player 1 (Boyfriend)";
+            var p1Size = _font.MeasureString(p1Text);
+            var p1Pos = new Vector2(scx - 150 - p1Size.X / 2f, indicatorY);
+            Color p1Color = Player1Ready ? Color.LimeGreen : Color.Gray;
+            sb.DrawString(_font, p1Text, p1Pos + new Vector2(1, 1), Color.Black * _uiAlpha);
+            sb.DrawString(_font, p1Text, p1Pos, p1Color * _uiAlpha);
+            
+            // Player 1 checkmark/circle
+            int p1CircleX = (int)(scx - 150);
+            int p1CircleY = indicatorY + 30;
+            if (Player1Ready)
+            {
+                // Green checkmark
+                sb.Draw(_pixel, new Rectangle(p1CircleX - 15, p1CircleY - 15, 30, 30), Color.LimeGreen * _uiAlpha);
+                sb.DrawString(_font, "OK", new Vector2(p1CircleX - 10, p1CircleY - 18), Color.White * _uiAlpha);
+            }
+            else
+            {
+                // Gray waiting circle
+                sb.Draw(_pixel, new Rectangle(p1CircleX - 15, p1CircleY - 15, 30, 30), Color.Gray * 0.5f * _uiAlpha);
+                sb.DrawString(_font, "...", new Vector2(p1CircleX - 12, p1CircleY - 18), Color.White * _uiAlpha);
+            }
+            
+            // Player 2 indicator
+            string p2Text = "Player 2 (Enemy)";
+            var p2Size = _font.MeasureString(p2Text);
+            var p2Pos = new Vector2(scx + 150 - p2Size.X / 2f, indicatorY);
+            Color p2Color = Player2Ready ? Color.LimeGreen : Color.Gray;
+            sb.DrawString(_font, p2Text, p2Pos + new Vector2(1, 1), Color.Black * _uiAlpha);
+            sb.DrawString(_font, p2Text, p2Pos, p2Color * _uiAlpha);
+            
+            // Player 2 checkmark/circle
+            int p2CircleX = (int)(scx + 150);
+            int p2CircleY = indicatorY + 30;
+            if (Player2Ready)
+            {
+                // Green checkmark
+                sb.Draw(_pixel, new Rectangle(p2CircleX - 15, p2CircleY - 15, 30, 30), Color.LimeGreen * _uiAlpha);
+                sb.DrawString(_font, "OK", new Vector2(p2CircleX - 10, p2CircleY - 18), Color.White * _uiAlpha);
+            }
+            else
+            {
+                // Gray waiting circle
+                sb.Draw(_pixel, new Rectangle(p2CircleX - 15, p2CircleY - 15, 30, 30), Color.Gray * 0.5f * _uiAlpha);
+                sb.DrawString(_font, "...", new Vector2(p2CircleX - 12, p2CircleY - 18), Color.White * _uiAlpha);
+            }
+        }
 
         // Progress bar (only during loading)
         if (CurrentPhase == Phase.Loading && LoadingProgress > 0f)

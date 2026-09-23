@@ -24,6 +24,7 @@ public class TouchControls
     }
     
     private ControlMode _mode = ControlMode.Menu;
+    private bool _hidePauseButton = false;  // Hide pause button in multiplayer
     private readonly Hitbox[] _hitboxes = new Hitbox[4];
     private readonly List<VirtualButton> _menuButtons = new();
     private VirtualButton? _pauseButton;  // Separate pause button for gameplay only
@@ -256,6 +257,15 @@ public class TouchControls
     }
     
     /// <summary>
+    /// Hide pause button (for multiplayer mode)
+    /// </summary>
+    public void SetHidePauseButton(bool hide)
+    {
+        _hidePauseButton = hide;
+        Console.WriteLine($"[TouchControls] Pause button {(hide ? "hidden" : "visible")}");
+    }
+    
+    /// <summary>
     /// Show or hide ALL touch controls (for screens that don't need them like ModsHelpScreen)
     /// </summary>
     public void SetAllControlsVisible(bool visible)
@@ -448,7 +458,7 @@ public class TouchControls
     /// </summary>
     private void DrawPauseButton(SpriteBatch spriteBatch, SpriteFont? font)
     {
-        if (_pauseButton == null) return;
+        if (_pauseButton == null || _hidePauseButton) return;  // Don't draw if hidden
         
         var pauseButton = _pauseButton;
         bool isPressed = _keyStates.TryGetValue(Keys.P, out bool pressed) && pressed;

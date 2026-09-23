@@ -12,7 +12,9 @@ public static class CrashLogger
 {
     private static readonly StringBuilder _crashLog = new StringBuilder();
     private static Action<string>? _onCrashCallback;
+    #pragma warning disable CS0414 // Field assigned but never used
     private static bool _crashDialogShown = false;  // Prevenir múltiples diálogos
+    #pragma warning restore CS0414
     
     /// <summary>
     /// Initialize crash logger and hook into unhandled exception handlers

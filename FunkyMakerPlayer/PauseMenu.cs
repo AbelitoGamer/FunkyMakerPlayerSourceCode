@@ -1,5 +1,6 @@
 using Microsoft.Xna.Framework;
 using Microsoft.Xna.Framework.Graphics;
+using Microsoft.Xna.Framework.Input;
 using System;
 
 namespace FunkyMakerPlayer;
@@ -17,11 +18,53 @@ public class PauseMenu
     public int Selection { get; set; } = 0;
     public int ItemCount => 4;
     
+    /// <summary>
+    /// Actions that can be returned by HandleInput
+    /// </summary>
+    public enum PauseAction
+    {
+        None,
+        Resume,
+        RestartSong,
+        OpenSettings,
+        ExitToMenu
+    }
+    
     public PauseMenu(Texture2D pixel, SpriteFont font, FontRenderer? fontRenderer = null)
     {
         _pixel = pixel;
         _font = font;
         _fontRenderer = fontRenderer;
+    }
+    
+    /// <summary>
+    /// Handle input for pause menu navigation and selection.
+    /// Returns the action that should be executed.
+    /// </summary>
+    public PauseAction HandleInput(KeyboardState kb, KeyboardState prevKb)
+    {
+        // Navigation
+        if (kb.IsKeyDown(Keys.Up) && !prevKb.IsKeyDown(Keys.Up))
+            Selection = (Selection - 1 + ItemCount) % ItemCount;
+        
+        if (kb.IsKeyDown(Keys.Down) && !prevKb.IsKeyDown(Keys.Down))
+            Selection = (Selection + 1) % ItemCount;
+        
+        // Selection with Enter or Space
+        if ((kb.IsKeyDown(Keys.Enter) && !prevKb.IsKeyDown(Keys.Enter)) ||
+            (kb.IsKeyDown(Keys.Space) && !prevKb.IsKeyDown(Keys.Space)))
+        {
+            return Selection switch
+            {
+                0 => PauseAction.Resume,
+                1 => PauseAction.RestartSong,
+                2 => PauseAction.OpenSettings,
+                3 => PauseAction.ExitToMenu,
+                _ => PauseAction.None
+            };
+        }
+        
+        return PauseAction.None;
     }
     
     /// <summary>

@@ -329,8 +329,8 @@ namespace FunkyMakerPlayer
             var currentPageData = _pages[_currentPage];
             
             // Title bar
-            int titleFontSize = 28;
-            int bodyFontSize = 22;
+            int titleFontSize = 36;  // Aumentado de 28 a 36
+            int bodyFontSize = 28;   // Aumentado de 22 a 28
             int titleHeight = 80;
             
             sb.Draw(_pixel, new Rectangle(0, 0, screenWidth, titleHeight), currentPageData.TitleColor * 0.3f);
@@ -345,7 +345,7 @@ namespace FunkyMakerPlayer
             
             // Content area
             int contentY = titleHeight + 40;
-            int lineHeight = 32;
+            int lineHeight = 40;  // Aumentado de 32 a 40 para más espacio entre líneas
             
             foreach (var line in currentPageData.Lines)
             {
@@ -375,7 +375,7 @@ namespace FunkyMakerPlayer
                 sb.Draw(_pixel, new Rectangle(prevButtonX - 2, navButtonY - 2, navButtonWidth + 4, navButtonHeight + 4), new Color(30, 100, 150) * 0.7f);
                 
                 string prevText = "< ATRAS";
-                int prevFontSize = 22;
+                int prevFontSize = 26;  // Aumentado de 22 a 26
                 var prevTextSize = _fontRenderer.MeasureString(prevText, prevFontSize);
                 int prevTextX = (int)(prevButtonX + (navButtonWidth - prevTextSize.X) / 2);
                 int prevTextY = (int)(navButtonY + (navButtonHeight - prevTextSize.Y) / 2);
@@ -393,7 +393,7 @@ namespace FunkyMakerPlayer
                 sb.Draw(_pixel, new Rectangle(nextButtonX - 2, navButtonY - 2, navButtonWidth + 4, navButtonHeight + 4), new Color(30, 100, 150) * 0.7f);
                 
                 string nextText = "SIGUIENTE >";
-                int nextFontSize = 20;
+                int nextFontSize = 24;  // Aumentado de 20 a 24
                 var nextTextSize = _fontRenderer.MeasureString(nextText, nextFontSize);
                 int nextTextX = (int)(nextButtonX + (navButtonWidth - nextTextSize.X) / 2);
                 int nextTextY = (int)(navButtonY + (navButtonHeight - nextTextSize.Y) / 2);
@@ -432,7 +432,7 @@ namespace FunkyMakerPlayer
                 sb.Draw(_pixel, new Rectangle(buttonX, buttonY, buttonWidth, buttonHeight), new Color(100, 255, 100));
                 
                 // Button text
-                int buttonFontSize = 24;
+                int buttonFontSize = 28;  // Aumentado de 24 a 28
                 var buttonTextSize = _fontRenderer.MeasureString(currentPageData.ButtonText, buttonFontSize);
                 int buttonTextX = (int)((screenWidth - buttonTextSize.X) / 2);
                 int buttonTextY = (int)(buttonY + (buttonHeight - buttonTextSize.Y) / 2);

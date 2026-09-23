@@ -156,6 +156,7 @@ public partial class Game1 : Game
     // ── Note style (custom arrow sprites) ────────────────────────────────────
     private NoteStyle? _noteStyle;
     private NoteSplashStyle? _noteSplashStyle;  // null = use programmatic default
+    private ParticleNoteSplash? _particleNoteSplash;  // Particle-based notesplash (MonoGame.Extended)
 
     // ── Freeplay menu ─────────────────────────────────────────────────────────
     private FreeplayMenu? _freeplay;
@@ -179,19 +180,25 @@ public partial class Game1 : Game
     
     // ── Multiplayer match state ──────────────────────────────────────────────
     private bool _isMultiplayerMatch = false;  // true if this is a PvP match
-    private string? _opponentName = null;
     private int _multiplayerPlayerRole = 0;  // 1 = Player 1 (plays chart 1 - Boyfriend), 2 = Player 2 (plays chart 0 - Enemy)
+    private long _multiplayerStartTimestamp = 0;  // Server timestamp (milliseconds) for synchronized start
+    private bool _countdownSignalReceived = false;  // true when server sends CountdownStart
+    private string? _opponentName = null;
     private int _opponentScore = 0;
     private float _opponentHealth = 0.5f;
+    private bool _crashLogged = false;  // Prevent spam logging the same crash
+    private bool? _opponentReadyState = null;  // Store opponent ready state received before LoadingScreen exists
+    private float _stateUpdateTimer = 0f;  // Timer for sending state updates to opponent (every 200ms)
+    private MultiplayerResultsScreen? _resultsScreen = null;  // Results screen shown after match ends
     
-    // ── Health icons ─────────────────────────────────────────────────────────
-    // Icons are full SpriteAnimators: anim 0 = normal, anim 1 = losing
-    private SpriteAnimator? _iconPlayerAnim;
-    private SpriteAnimator? _iconOpponentAnim;
+    // ── Health Bar (UI component) ────────────────────────────────────────────
+    private UI.HealthBar? _healthBar;
     
-    // Icon beat bounce (FNF style)
-    private float _iconBounceScale = 1.0f;  // Current bounce scale
-    private int _lastIconBeat = -1;         // Last beat that triggered icon bounce
+    // ── Timer Bar (UI component) ─────────────────────────────────────────────
+    private UI.TimerBar? _timerBar;
+    
+    // ── Judgement Overlay (UI component) ─────────────────────────────────────
+    private UI.JudgementOverlay? _judgementOverlay;
 
     // ── Loading state ────────────────────────────────────────────────────────
     private enum LoadState { Idle, Loading, Finalizing, Done }
@@ -214,6 +221,7 @@ public partial class Game1 : Game
     private bool  _started   = false;
     private bool  _paused    = false;
     private float _discordUpdateTimer = 0f;  // throttle Discord RPC updates
+    private bool  _parallaxLoggedOnce = false;  // prevent parallax debug spam
     
     // High-precision timing to avoid desync when window is moved
     private Stopwatch _songStopwatch = new();
@@ -255,7 +263,11 @@ public partial class Game1 : Game
     public static bool  TimeskipEnabled = true;   // Tab to skip forward, Shift+Tab backward
     public static float TimeskipSeconds = 10f;    // seconds per timeskip step
     public static bool  ShowDebugInfo   = false;  // Level debug: BPM, cam, events (off by default)
-    public static bool  ShowFpsCounter  = false;  // FPS counter (separate toggle)
+#if ANDROID
+    public static bool  ShowFpsCounter  = true;   // FPS counter (enabled by default on Android)
+#else
+    public static bool  ShowFpsCounter  = false;  // FPS counter (off by default on PC)
+#endif
     
     // ── Timer Bar Options (V-Slice style with Legacy support) ─────────────────
     public static string TimerPreset    = "Custom HUD";  // Legacy, Custom HUD, Top, Left, Middle, Right, Strumline
@@ -301,26 +313,15 @@ public partial class Game1 : Game
     private float _notesAlpha = 1.0f;  // current alpha applied to all NoteRenderers
     private const float NOTES_FADE_SPEED = 4.0f;  // units/sec (reaches ~98% in ~1s)
 
-    // ── Health bar icon colors (sampled from icon textures at level load) ─────
-    private Color _playerBarColor   = new Color(0x66, 0xFF, 0x66);  // default green
-    private Color _opponentBarColor = new Color(0xFF, 0x00, 0x00);  // default red
-
     // ── Loading screen ───────────────────────────────────────────────────────
     private LoadingScreen? _loadingScreen;
     private bool           _loadingComplete = false;
 
-    // ── Health ───────────────────────────────────────────────────────────────
-    private float _health     = 0.5f;
-    private bool  _gameOver   = false;
-    private float _gameOverTimer = 0f;
-    private const float GAME_OVER_WAIT = 2.5f;
+    // ── Game state ────────────────────────────────────────────────────────────
+    private GameOverOverlay? _gameOverOverlay;
 
     // ── Countdown ────────────────────────────────────────────────────────────
-    private float _countdownTimer = 0f;
-    private int   _countdownStep  = 3;  // 3,2,1,0=Go
-    private bool  _countdownDone  = false;
-    // Countdown sprites: [0]=ready, [1]=set, [2]=go
-    private Texture2D?[] _countdownTextures = new Texture2D?[3];
+    private UI.CountdownOverlay? _countdownOverlay;
 
     // ── Hit judgement display ─────────────────────────────────────────────────
     private string? _judgementText  = null;
@@ -328,13 +329,13 @@ public partial class Game1 : Game
     private Color   _judgementColor = Color.White;
     private const float JUDGEMENT_SHOW = 0.6f;
     
-    // ── Combo display (FNF style) ─────────────────────────────────────────────
+    // ── Combo display (FNF style with falling numbers) ──────────────────────
     private int     _lastCombo      = 0;
     private float   _comboTimer     = 0f;
     private const float COMBO_SHOW  = 1.5f;  // Show for 1.5 seconds after combo increase
-    // TODO: Implement combo scale animation
-    // private float   _comboScale     = 1.0f;  // Scale animation for bounce effect
-    // private int     _displayedCombo = 0;     // The combo number currently being displayed
+    
+    // ── Falling combo digits system (extracted to UI/JudgementOverlay.cs) ────
+    // ── Judgement popups system (extracted to UI/JudgementOverlay.cs) ────────
 
     // ── FNMM path ────────────────────────────────────────────────────────────
     public static string FnmmPath = "";
@@ -359,6 +360,13 @@ public partial class Game1 : Game
     {
         try
         {
+            // Only log once to prevent spam
+            if (_crashLogged)
+            {
+                return;
+            }
+            _crashLogged = true;
+            
             // Log the crash
             string crashReport = CrashLogger.LogException(ex, $"Gameplay error in {context}");
             
@@ -433,16 +441,24 @@ public partial class Game1 : Game
     /// Starts a multiplayer PvP match (called from MultiplayerMenu).
     /// Does NOT create a new Game instance - changes current instance to multiplayer mode.
     /// </summary>
-    public void StartMultiplayerMatch(string levelPath, string opponentName, int playerRole)
+    public void StartMultiplayerMatch(string levelPath, string opponentName, int playerRole, long startTimestamp)
     {
         Console.WriteLine($"[Game1] Starting multiplayer match:");
         Console.WriteLine($"  Level: {levelPath}");
         Console.WriteLine($"  Opponent: {opponentName}");
         Console.WriteLine($"  Player Role: {playerRole}");
+        Console.WriteLine($"  Start Timestamp: {startTimestamp}");
         
         _isMultiplayerMatch = true;
         _opponentName = opponentName;
         _multiplayerPlayerRole = playerRole;
+        _multiplayerStartTimestamp = startTimestamp;
+        _countdownSignalReceived = false;  // Reset countdown signal for new match
+        _opponentReadyState = null;  // Reset stored opponent ready state
+        
+        // Disable autoplay in multiplayer - players must play manually
+        NoteRenderer.Autoplay = false;
+        Console.WriteLine("[Game1] Autoplay disabled for multiplayer match");
         
         // Exit multiplayer menu
         _inMultiplayer = false;
@@ -621,6 +637,8 @@ public partial class Game1 : Game
         _loadState    = LoadState.Loading;
         _pendingPath  = path;
         _inFreeplay   = false;
+        _parallaxLoggedOnce = false;  // Reset parallax debug log for new level
+        _crashLogged  = false;  // Reset crash log flag for new level
         // Reset all overlay states so they don't persist into the new level
         _keyBindOverlay.Reset();
         _settingsManager?.Reset();  // Resets IsActive and Selection
@@ -634,8 +652,25 @@ public partial class Game1 : Game
 
         // Show loading screen in main window
         _loadingScreen   = new LoadingScreen(levelName, _pixel!, _font,
-                               FindAssetsRoot(), GraphicsDevice, false /* multiplayer disabled in Game1 */);
+                               FindAssetsRoot(), GraphicsDevice, _isMultiplayerMatch);
         _loadingComplete = false;
+        
+        // Initialize multiplayer state in loading screen
+        if (_isMultiplayerMatch)
+        {
+            _loadingScreen.MyPlayerRole = _multiplayerPlayerRole;
+            // Initialize ready states: I'm not ready yet, opponent status unknown
+            if (_multiplayerPlayerRole == 1)
+            {
+                _loadingScreen.Player1Ready = false;  // Me
+                _loadingScreen.Player2Ready = false;  // Opponent
+            }
+            else if (_multiplayerPlayerRole == 2)
+            {
+                _loadingScreen.Player1Ready = false;  // Opponent
+                _loadingScreen.Player2Ready = false;  // Me
+            }
+        }
 
         // Load file on background thread (no GPU calls here)
         System.Threading.Tasks.Task.Run(() =>
@@ -722,47 +757,9 @@ public partial class Game1 : Game
             {
                 _catTex = LoadTextureViaImageSharp(GraphicsDevice, File.ReadAllBytes(catPath));
             }
-            // Load countdown sprites: ready, set, go
-            // Structure: mods/countdowns/[name]/ready.png, set.png, go.png
-            // Priority: selected countdown from mods > default (Assets)
-            string[] countdownFiles = { "ready.png", "set.png", "go.png" };
-            
-            string modsCountdownsDir = Path.Combine(AppContext.BaseDirectory, "mods", "countdowns");
-            string defaultCountdownDir = System.IO.Path.Combine(assetsRoot, "shared", "images", "ui", "countdown", "funkin2");
-            
-            for (int i = 0; i < 3; i++)
-            {
-                string? foundPath = null;
-                
-                // If not "default", check selected countdown in mods/countdowns/[name]/
-                if (SelectedCountdown != "default")
-                {
-                    string selectedCountdownDir = Path.Combine(modsCountdownsDir, SelectedCountdown);
-                    string modPath = System.IO.Path.Combine(selectedCountdownDir, countdownFiles[i]);
-                    if (File.Exists(modPath))
-                    {
-                        foundPath = modPath;
-                        Console.WriteLine($"[Countdown] Using '{SelectedCountdown}': {modPath}");
-                    }
-                }
-                
-                // Fallback to default (Assets)
-                if (foundPath == null)
-                {
-                    string defaultPath = System.IO.Path.Combine(defaultCountdownDir, countdownFiles[i]);
-                    if (File.Exists(defaultPath))
-                    {
-                        foundPath = defaultPath;
-                        if (SelectedCountdown != "default")
-                            Console.WriteLine($"[Countdown] '{SelectedCountdown}' missing, using default Assets");
-                    }
-                }
-                
-                if (foundPath != null)
-                {
-                    _countdownTextures[i] = LoadTextureViaImageSharp(GraphicsDevice, File.ReadAllBytes(foundPath));
-                }
-            }
+            // Load countdown sprites using CountdownOverlay
+            _countdownOverlay = new UI.CountdownOverlay(GraphicsDevice, _spriteBatch, _font);
+            _countdownOverlay.LoadCountdownAssets(SelectedCountdown, assetsRoot);
         }
 
         // Ensure levels folder exists
@@ -844,9 +841,15 @@ public partial class Game1 : Game
         
         // Init UI menus (arrows and note splash selectors)
         _arrowsMenu = new UI.ArrowsMenu(_pixel, _font, _fontRenderer);
-        _splashMenu = new UI.NoteSplashMenu(_pixel, _font, _fontRenderer);
+        _splashMenu = new UI.NoteSplashMenu(_pixel, _font, GraphicsDevice, _fontRenderer);
         _countdownMenu = new UI.CountdownMenu(_pixel, _font, _fontRenderer);
         _fontMenu = new UI.FontMenu(_pixel, _font, _fontRenderer);
+        
+        // Init UI components (health bar, game over overlay, timer bar, judgement overlay, etc.)
+        _healthBar = new UI.HealthBar(_pixel, _spriteBatch);
+        _gameOverOverlay = new UI.GameOverOverlay(_pixel, _spriteBatch, _font);
+        _timerBar = new UI.TimerBar(_pixel, _spriteBatch, _font);
+        _judgementOverlay = new UI.JudgementOverlay(_spriteBatch, _font);
         
         // Blazor only: Wire file picker callback
         #if BLAZORGL
@@ -881,34 +884,182 @@ public partial class Game1 : Game
         
         // Load notesplash style (null = programmatic default)
         _noteSplashStyle = NoteSplashStyle.LoadByName(NoteSplashStyleName, GraphicsDevice);
-
-        // Setup multiplayer event handlers if this is a PvP match
-        if (_isMultiplayerMatch)
+        
+        // If user selected "Particles: *", initialize MonoGame.Extended particle system with specific style
+        if (NoteSplashStyleName.StartsWith("Particles:"))
         {
-            Console.WriteLine("[Game1] Setting up multiplayer event handlers...");
+            _particleNoteSplash = new ParticleNoteSplash(GraphicsDevice);
             
-            // Receive opponent's note hits
-            Multiplayer.NetworkManager.Instance.OnOpponentNoteHit += (lane, time, rating) =>
-            {
-                // Trigger visual animation on opponent strumline (index 1)
-                if (_noteRenderers.Count > 1)
-                {
-                    bool isSick = rating == "Sick!";
-                    _noteRenderers[1].TriggerManualHit(lane, isSick);
-                    Console.WriteLine($"[Multiplayer] Opponent hit: lane={lane}, rating={rating}");
-                }
-            };
+            // Parse which style was selected
+            if (NoteSplashStyleName.Contains("CircleExpand"))
+                _particleNoteSplash.CurrentStyle = ParticleNoteSplash.SplashStyle.CircleExpand;
+            else if (NoteSplashStyleName.Contains("SplashDrops"))
+                _particleNoteSplash.CurrentStyle = ParticleNoteSplash.SplashStyle.SplashDrops;
+            else if (NoteSplashStyleName.Contains("StarBurst"))
+                _particleNoteSplash.CurrentStyle = ParticleNoteSplash.SplashStyle.StarBurst;
+            else if (NoteSplashStyleName.Contains("Explosion"))
+                _particleNoteSplash.CurrentStyle = ParticleNoteSplash.SplashStyle.Explosion;
+            else if (NoteSplashStyleName.Contains("RingPulse"))
+                _particleNoteSplash.CurrentStyle = ParticleNoteSplash.SplashStyle.RingPulse;
+            else if (NoteSplashStyleName.Contains("Randomizer"))
+                _particleNoteSplash.CurrentStyle = ParticleNoteSplash.SplashStyle.Randomizer;
             
-            // Receive opponent's state updates (score, health, combo)
-            Multiplayer.NetworkManager.Instance.OnOpponentState += (packet) =>
-            {
-                _opponentScore = packet.Score;
-                _opponentHealth = packet.Health;
-                // Could show this in UI later
-            };
-            
-            Console.WriteLine($"[Game1] Multiplayer mode initialized: opponent={_opponentName}, role={_multiplayerPlayerRole}");
+            Console.WriteLine($"[Game1] Loaded particle-based notesplash: {_particleNoteSplash.CurrentStyle}");
         }
+
+        // Setup multiplayer event handlers (ALWAYS subscribe, even if not in multiplayer yet)
+        // These handlers will be ready when StartMultiplayerMatch() is called
+        Console.WriteLine("[Game1] Setting up multiplayer event handlers...");
+        
+        // Receive opponent's note hits
+        Multiplayer.NetworkManager.Instance.OnOpponentNoteHit += (lane, time, rating) =>
+        {
+            if (!_isMultiplayerMatch) return; // Ignore if not in multiplayer
+            
+            // In multiplayer, BOTH players see opponent on strumline 1 (left side)
+            // Player strumline is always 0 (right side), opponent is always 1 (left side)
+            int opponentStrumlineIndex = 1;
+            
+            if (_noteRenderers.Count > opponentStrumlineIndex)
+            {
+                bool isSick = rating == "Sick!";
+                _noteRenderers[opponentStrumlineIndex].TriggerManualHit(lane, isSick);
+                Console.WriteLine($"[Multiplayer] Opponent hit: lane={lane}, rating={rating}, strumline={opponentStrumlineIndex}");
+            }
+        };
+        
+        // Receive opponent's state updates (score, health, combo)
+        Multiplayer.NetworkManager.Instance.OnOpponentState += (packet) =>
+        {
+            if (!_isMultiplayerMatch) return; // Ignore if not in multiplayer
+            
+            _opponentScore = packet.Score;
+            _opponentHealth = packet.Health;
+            // Could show this in UI later
+        };
+        
+        // Receive opponent's ready state changes (for loading screen)
+        Multiplayer.NetworkManager.Instance.OnOpponentReadyChanged += (isReady) =>
+        {
+            Console.WriteLine($"[Game1] OnOpponentReadyChanged fired: isReady={isReady}, _loadingScreen={((_loadingScreen != null) ? "exists" : "null")}");
+            
+            if (!_isMultiplayerMatch)
+            {
+                Console.WriteLine($"[Game1] Not in multiplayer match, ignoring OpponentReady event");
+                return; // Ignore if not in multiplayer
+            }
+            
+            // Store the opponent ready state
+            _opponentReadyState = isReady;
+            
+            if (_loadingScreen != null)
+            {
+                // Update loading screen with opponent ready state
+                // Player 1 sees Player 2's ready state, Player 2 sees Player 1's ready state
+                if (_multiplayerPlayerRole == 1)
+                {
+                    _loadingScreen.Player2Ready = isReady;
+                    Console.WriteLine($"[Game1] Updated Player2Ready={isReady} (I am Player 1)");
+                }
+                else if (_multiplayerPlayerRole == 2)
+                {
+                    _loadingScreen.Player1Ready = isReady;
+                    Console.WriteLine($"[Game1] Updated Player1Ready={isReady} (I am Player 2)");
+                }
+            }
+            else
+            {
+                Console.WriteLine($"[Game1] LoadingScreen doesn't exist yet, stored opponent ready state for later");
+            }
+        };
+        
+        // Receive countdown start signal from server
+        Multiplayer.NetworkManager.Instance.OnCountdownStart += (countdownStartTime) =>
+        {
+            if (!_isMultiplayerMatch) return; // Ignore if not in multiplayer
+            
+            _countdownSignalReceived = true;
+            Console.WriteLine($"[Game1] CountdownStart received from server! Time: {countdownStartTime}ms");
+        };
+        
+        // Receive opponent's key presses for real-time animation
+        Multiplayer.NetworkManager.Instance.OnOpponentKeyPress += (lane) =>
+        {
+            if (!_isMultiplayerMatch) return;
+            
+            Console.WriteLine($"[Game1] Received OpponentKeyPress: lane={lane}, time={_songTime:F2}");
+            
+            // Animate opponent's arrows (strumline 1)
+            int opponentStrumlineIndex = 1;
+            if (_noteRenderers != null && _noteRenderers.Count > opponentStrumlineIndex)
+            {
+                // Trigger arrow glow/animation on opponent's strumline
+                // This makes their arrows light up when they press keys
+                _noteRenderers[opponentStrumlineIndex].TriggerManualHit(lane, isSick: false);
+            }
+            
+            // Animate opponent's character sprite
+            if (_objAnimators == null || _level == null) return;
+            
+            var objs = _level.Scene?.Objects;
+            if (objs == null || objs.Count == 0) return;
+            
+            // Determine which character to animate based on opponent's chart
+            // Player 1's opponent plays chart 1 (Enemy) → animate strumLine 1
+            // Player 2's opponent plays chart 0 (BF) → animate strumLine 0
+            int opponentChartIndex = (_multiplayerPlayerRole == 1) ? 1 : 0;
+            
+            // Animate character with opponent's strumLine
+            for (int j = 0; j < objs.Count; j++)
+            {
+                if ((int)objs[j].StrumLine != opponentChartIndex) continue;
+                var anim = _objAnimators[j];
+                if (anim == null || !anim.Visible || anim.Opacity <= 0.01f) continue;
+                if (anim.IsSetByEvent) continue; // Don't override event-controlled animations
+                
+                // Animate based on lane: 0=left, 1=down, 2=up, 3=right
+                // singAnim: lane+1 maps to the sing animation (1=left,2=down,3=up,4=right)
+                int singAnim = Math.Clamp(lane + 1, 1, Math.Max(1, anim.AnimCount - 1));
+                anim.SetAnimation(singAnim, setByEvent: false);
+            }
+        };
+        
+        // Handle opponent disconnection
+        Multiplayer.NetworkManager.Instance.OnOpponentDisconnected += (reason) =>
+        {
+            if (!_isMultiplayerMatch) return;
+            
+            Console.WriteLine($"[Game1] Opponent disconnected: {reason}");
+            
+            // Stop the music
+            _musicInst?.Stop();
+            
+            // Get player's final stats from renderer
+            if (_noteRenderers != null && _noteRenderers.Count > 0)
+            {
+                var playerRend = _noteRenderers[0];
+                int totalNotes = playerRend.Sicks + playerRend.Goods + playerRend.Bads + playerRend.Shits + playerRend.Misses;
+                float acc = 100f;
+                if (totalNotes > 0)
+                {
+                    float weightedHits = (playerRend.Sicks * 1.0f) + (playerRend.Goods * 0.75f) + 
+                                        (playerRend.Bads * 0.5f) + (playerRend.Shits * 0.25f);
+                    acc = (weightedHits / totalNotes) * 100f;
+                }
+                
+                Console.WriteLine($"[Game1] Match ended due to disconnect");
+                Console.WriteLine($"  Your Score: {playerRend.Score} | Accuracy: {acc:F1}%");
+                Console.WriteLine($"  Sicks: {playerRend.Sicks} | Goods: {playerRend.Goods} | Bads: {playerRend.Bads} | Shits: {playerRend.Shits} | Misses: {playerRend.Misses}");
+            }
+            
+            // Set error message to show disconnect reason
+            _errorMsg = $"Opponent Disconnected\n{reason}\n\nPress ESC to return to menu";
+            
+            // Clear multiplayer state
+            _isMultiplayerMatch = false;
+        };
+        
+        Console.WriteLine($"[Game1] Multiplayer event handlers subscribed and ready");
 
         try
         {
@@ -935,7 +1086,7 @@ public partial class Game1 : Game
         
         // Auto-pause if gameplay is active (not in menus)
         // Disabled in multiplayer - can't pause during PvP matches
-        if (!_isMultiplayerMatch && _level != null && _started && !_paused && !_inPauseMenu && !_gameOver)
+        if (!_isMultiplayerMatch && _level != null && _started && !_paused && !_inPauseMenu && !(_gameOverOverlay?.IsActive ?? false))
         {
             Console.WriteLine("[Android] App deactivated, auto-pausing gameplay");
             _inPauseMenu = true;
@@ -965,6 +1116,13 @@ public partial class Game1 : Game
 
         try
         {
+            // Disable middlescroll in multiplayer (force side-by-side layout)
+            if (_isMultiplayerMatch && NoteRenderer.Midlescroll)
+            {
+                NoteRenderer.Midlescroll = false;
+                Console.WriteLine("[Multiplayer] Middlescroll disabled for PvP");
+            }
+            
             // Update loading screen progress during GPU texture creation
             if (_loadingScreen != null)
             {
@@ -1192,10 +1350,17 @@ public partial class Game1 : Game
 
                 // If header peek gives invalid dimensions, try to load anyway and let ImageSharp decide
                 bool headerInvalid = pngW <= 0 || pngH <= 0;
-                bool headerSuspicious = false;
                 if (headerInvalid)
                 {
                     Console.WriteLine($"[Texture] {name}[{fi}]: header invalid ({pngW}x{pngH}), attempting ImageSharp load...");
+                    
+                    // Update loading screen to show we're fixing invalid sprite
+                    if (_loadingScreen != null)
+                    {
+                        _loadingScreen.CurrentStep = $"Fixing invalid sprite: {name}";
+                        RenderLoadingScreen();
+                    }
+                    
                     try
                     {
                         using var msProbe = new MemoryStream(frames[fi]);
@@ -1219,7 +1384,6 @@ public partial class Game1 : Game
                                 // Assume height is correct but width is corrupt
                                 // Calculate real width as frameCount * reasonable_frame_width
                                 // We'll detect real frame width when we actually load the image data
-                                headerSuspicious = true;
                                 pngW = imgSharpW;  // Keep for now, will recalculate after loading
                                 pngH = imgSharpH;
                             }
@@ -1362,7 +1526,16 @@ public partial class Game1 : Game
                         int fh = pngH;
                         Console.WriteLine($"[Texture] {name}[{fi}]: {pngW}x{pngH} (character atlas packing → {actualFrameCount} frames, fw={fw})");
                         var packResults = AtlasPacker.PackHorizontalStrip(
-                            frames[fi], actualFrameCount, fw, fh, maxTexSize, GraphicsDevice);
+                            frames[fi], actualFrameCount, fw, fh, maxTexSize, GraphicsDevice,
+                            (currentFrame, totalFrames) =>
+                            {
+                                // Update loading screen during atlas packing
+                                if (_loadingScreen != null)
+                                {
+                                    _loadingScreen.CurrentStep = $"Packing atlas: {name} ({currentFrame}/{totalFrames} frames)";
+                                    RenderLoadingScreen();
+                                }
+                            });
                         
                         if (packResults.Count > 0)
                         {
@@ -1418,7 +1591,16 @@ public partial class Game1 : Game
                         // Use AtlasPacker to create 2D atlas instead of horizontal chunks
                         Console.WriteLine($"[Texture] {name}[{fi}]: {pngW}x{pngH} (atlas packing → {actualFrameCount} frames)");
                         var packResults = AtlasPacker.PackHorizontalStrip(
-                            frames[fi], actualFrameCount, fw, fh, maxTexSize, GraphicsDevice);
+                            frames[fi], actualFrameCount, fw, fh, maxTexSize, GraphicsDevice,
+                            (currentFrame, totalFrames) =>
+                            {
+                                // Update loading screen during atlas packing
+                                if (_loadingScreen != null)
+                                {
+                                    _loadingScreen.CurrentStep = $"Packing atlas: {name} ({currentFrame}/{totalFrames} frames)";
+                                    RenderLoadingScreen();
+                                }
+                            });
                         
                         if (packResults.Count > 0)
                         {
@@ -1469,7 +1651,16 @@ public partial class Game1 : Game
                         // Characters: use atlas packing instead of per-frame split to preserve quality
                         Console.WriteLine($"[Texture] {name}[{fi}]: {pngW}x{pngH} (character atlas packing → {actualFrameCount} frames)");
                         var packResults = AtlasPacker.PackHorizontalStrip(
-                            frames[fi], actualFrameCount, fw, fh, maxTexSize, GraphicsDevice);
+                            frames[fi], actualFrameCount, fw, fh, maxTexSize, GraphicsDevice,
+                            (currentFrame, totalFrames) =>
+                            {
+                                // Update loading screen during atlas packing
+                                if (_loadingScreen != null)
+                                {
+                                    _loadingScreen.CurrentStep = $"Packing atlas: {name} ({currentFrame}/{totalFrames} frames)";
+                                    RenderLoadingScreen();
+                                }
+                            });
                         
                         if (packResults.Count > 0)
                         {
@@ -1737,8 +1928,12 @@ public partial class Game1 : Game
                     // If anim 0 is a 1-frame placeholder, use anim 1 (proper idle)
                     // Otherwise use anim 0 (idle animation with multiple frames)
                     int idleAnim = (sprData.Def.Data.Count > 1 && sprData.Def.Data[0].FrameCount == 1) ? 1 : 0;
-                    _objAnimators[i]!.SetAnimation(idleAnim);
-                    Console.WriteLine($"[Scene] Character object {i} '{obj.Spr}' (strumLine={obj.StrumLine}) initialized with animation {idleAnim} ({sprData.Def.Data[idleAnim].FrameCount} frames, loop={sprData.Def.Data[idleAnim].Loop})");
+                    if (_objAnimators[i] != null && idleAnim < sprData.Def.Data.Count)
+                    {
+                        _objAnimators[i]!.SetAnimation(idleAnim);
+                        var animData = sprData.Def.Data[idleAnim]!;
+                        Console.WriteLine($"[Scene] Character object {i} '{obj.Spr}' (strumLine={obj.StrumLine}) initialized with animation {idleAnim} ({animData.FrameCount} frames, loop={animData.Loop})");
+                    }
                 }
             }
             catch (Exception exObj)
@@ -1763,25 +1958,41 @@ public partial class Game1 : Game
         // Multiplayer: Swap icons based on player role
         // Player 1 (BF chart): Normal assignment (opponent=0, player=1)
         // Player 2 (Enemy chart): Swapped (opponent=1, player=0)
-        if (false /* multiplayer disabled in Game1 */ && 0 /* multiplayer disabled */ == 2)
+        if (_isMultiplayerMatch && _multiplayerPlayerRole == 2)
         {
             // Player 2: I play Enemy chart, so I am the "opponent" character
-            _iconOpponentAnim = BuildIconAnimator(icons.Count > 1 ? icons[1] : null, texCache);  // BF is my opponent
-            _iconPlayerAnim   = BuildIconAnimator(icons.Count > 0 ? icons[0] : null, texCache);  // Enemy is me
+            var opponentIcon = BuildIconAnimator(icons.Count > 1 ? icons[1] : null, texCache);  // BF is my opponent
+            var playerIcon = BuildIconAnimator(icons.Count > 0 ? icons[0] : null, texCache);  // Enemy is me
+            
+            if (_healthBar != null)
+            {
+                _healthBar.OpponentIcon = opponentIcon;
+                _healthBar.PlayerIcon = playerIcon;
+                _healthBar.OpponentBarColor = SampleIconColor(opponentIcon) ?? new Color(0xFF, 0x00, 0x00);
+                _healthBar.PlayerBarColor = SampleIconColor(playerIcon) ?? new Color(0x66, 0xFF, 0x66);
+                _healthBar.IconMode = IconMode;
+            }
+            
             Console.WriteLine("[Game1] Multiplayer Role 2: Swapped icons (I am Enemy character)");
         }
         else
         {
             // Normal: Player 1 or single-player
-            _iconOpponentAnim = BuildIconAnimator(icons.Count > 0 ? icons[0] : null, texCache);
-            _iconPlayerAnim   = BuildIconAnimator(icons.Count > 1 ? icons[1] : null, texCache);
-            if (false /* multiplayer disabled in Game1 */)
+            var opponentIcon = BuildIconAnimator(icons.Count > 0 ? icons[0] : null, texCache);
+            var playerIcon = BuildIconAnimator(icons.Count > 1 ? icons[1] : null, texCache);
+            
+            if (_healthBar != null)
+            {
+                _healthBar.OpponentIcon = opponentIcon;
+                _healthBar.PlayerIcon = playerIcon;
+                _healthBar.OpponentBarColor = SampleIconColor(opponentIcon) ?? new Color(0xFF, 0x00, 0x00);
+                _healthBar.PlayerBarColor = SampleIconColor(playerIcon) ?? new Color(0x66, 0xFF, 0x66);
+                _healthBar.IconMode = IconMode;
+            }
+            
+            if (_isMultiplayerMatch)
                 Console.WriteLine("[Game1] Multiplayer Role 1: Normal icons (I am BF character)");
         }
-
-        // Sample dominant color from each icon for the health bar
-        _opponentBarColor = SampleIconColor(_iconOpponentAnim) ?? new Color(0xFF, 0x00, 0x00);
-        _playerBarColor   = SampleIconColor(_iconPlayerAnim)   ?? new Color(0x66, 0xFF, 0x66);
 
         // ── Note renderers ───────────────────────────────────────────────────
         // Support multiple strumlines (not just 2)
@@ -1798,28 +2009,28 @@ public partial class Game1 : Game
         int myChartIndex = 1;
         int opponentChartIndex = 1;
         
-        Console.WriteLine($"[Game1] SetupLevel: false /* multiplayer disabled in Game1 */={false /* multiplayer disabled in Game1 */}, 0 /* multiplayer disabled */={0 /* multiplayer disabled */}");
+        Console.WriteLine($"[Game1] SetupLevel: _isMultiplayerMatch={_isMultiplayerMatch}, _multiplayerPlayerRole={_multiplayerPlayerRole}");
         
-        if (false /* multiplayer disabled in Game1 */)
+        if (_isMultiplayerMatch)
         {
-            if (0 /* multiplayer disabled */ == 1)
+            if (_multiplayerPlayerRole == 1)
             {
-                // Player 1: I play chart 1 (BF/Player chart)
-                myChartIndex = 1;
-                opponentChartIndex = 0;  // I see opponent playing chart 0 (Enemy)
-                Console.WriteLine("[Game1] Multiplayer: Role 1 (Player 1) - MY chart=1 (BF), OPPONENT chart=0 (Enemy)");
+                // Player 1: I control Boyfriend (right side)
+                myChartIndex = 0;  // Chart 0 = Player/BF in standard FNF
+                opponentChartIndex = 1;  // Chart 1 = Enemy/Dad
+                Console.WriteLine("[Game1] Multiplayer: Role 1 (Player 1) - I control BOYFRIEND (chart 0), opponent is ENEMY (chart 1)");
             }
-            else if (0 /* multiplayer disabled */ == 2)
+            else if (_multiplayerPlayerRole == 2)
             {
-                // Player 2: I play chart 0 (Enemy/Opponent chart)
-                myChartIndex = 0;
-                opponentChartIndex = 1;  // I see opponent playing chart 1 (BF)
-                Console.WriteLine("[Game1] Multiplayer: Role 2 (Player 2) - MY chart=0 (Enemy), OPPONENT chart=1 (BF)");
+                // Player 2: I control Enemy (still shows on right side for me)
+                myChartIndex = 1;  // Chart 1 = Enemy/Dad
+                opponentChartIndex = 0;  // Chart 0 = Player/BF
+                Console.WriteLine("[Game1] Multiplayer: Role 2 (Player 2) - I control ENEMY (chart 1), opponent is BOYFRIEND (chart 0)");
             }
             else
             {
                 // Fallback: Role not set correctly!
-                Console.WriteLine($"[Game1] ERROR: Multiplayer role is {0 /* multiplayer disabled */} (should be 1 or 2)!");
+                Console.WriteLine($"[Game1] ERROR: Multiplayer role is {_multiplayerPlayerRole} (should be 1 or 2)!");
                 myChartIndex = 1;  // Default to BF chart
                 opponentChartIndex = 1;
             }
@@ -1848,37 +2059,57 @@ public partial class Game1 : Game
             }
             else
             {
-                // Always: strumline 0 = PLAYER (right), strumline 1 = OPPONENT (left)
-                // Strumlines 2+ start at same position as opponent — DrawNotes repositions them
+                // Standard FNF layout:
+                // Strumline 0 = PLAYER (right side) - this is what YOU control
+                // Strumline 1 = OPPONENT (left side) - visual only, shows opponent's hits
+                // In multiplayer: both players always play on the RIGHT side (strumline 0)
+                // but load different charts (Player 1 = chart 0/BF, Player 2 = chart 1/Enemy)
+                
                 if (i == 0)
                 {
-                    // Midlescroll: center the player strumline
+                    // Player strumline (right side) - YOU control this
                     xOffset = NoteRenderer.Midlescroll
                         ? sw / 2f - totalWidth / 2f
-                        : sw / 2f + gap / 2f;               // PLAYER (RIGHT)
+                        : sw / 2f + gap / 2f;  // RIGHT
                 }
-                else if (i == 1) xOffset = sw / 2f - totalWidth - gap / 2f;  // OPPONENT (LEFT)
-                else             xOffset = sw / 2f - totalWidth - gap / 2f;  // Extra: same as opponent, repositioned in DrawNotes
+                else if (i == 1)
+                {
+                    // Opponent strumline (left side) - visual only
+                    xOffset = sw / 2f - totalWidth - gap / 2f;  // LEFT
+                }
+                else
+                {
+                    // Extra strumlines: same as opponent, repositioned in DrawNotes
+                    xOffset = sw / 2f - totalWidth - gap / 2f;
+                }
             }
             
             // Determine which chart to load for this strumline
             int chartIndex = i;
-            if (false /* multiplayer disabled in Game1 */ && strumlineCount >= 2)
+            if (_isMultiplayerMatch && strumlineCount >= 2)
             {
                 if (i == 0)
                     chartIndex = myChartIndex;  // Player strumline uses MY chart
                 else if (i == 1)
                     chartIndex = opponentChartIndex;  // Opponent strumline uses THEIR chart
             }
-            else if (false /* multiplayer disabled in Game1 */ && strumlineCount < 2)
+            else if (_isMultiplayerMatch && strumlineCount < 2)
             {
                 chartIndex = 0;  // Fallback: use chart 0 if level only has 1
             }
             
             var renderer = new NoteRenderer(_level, chartIndex, xOffset, GraphicsDevice, _noteStyle);
             renderer.SetSplashStyle(_noteSplashStyle);  // Apply splash style (null = programmatic default)
-            // Set whether this strumline is controlled by local player (always strumline 0)
-            renderer.SetIsPlayer(i == 0);
+            renderer.SetParticleSplash(_particleNoteSplash);  // Apply particle splash (null if not using)
+            
+            // Set whether this strumline is controlled by local player
+            // In single player: always strumline 0 (player on right)
+            // In multiplayer: BOTH players always control strumline 0 (right side)
+            //   - Player 1 plays chart 0 (BF) on strumline 0 (right)
+            //   - Player 2 plays chart 1 (Enemy) on strumline 0 (right)
+            //   - Strumline 1 (left) shows OPPONENT's hits for both players
+            bool isMyStrumline = (i == 0);  // Always strumline 0 in multiplayer
+            renderer.SetIsPlayer(isMyStrumline);
             
 #if ANDROID
             // Set touch controls for Android input detection (player strumline only)
@@ -1919,13 +2150,27 @@ public partial class Game1 : Game
         for (int i = 0; i < _noteRenderers.Count; i++)
         {
             int strumlineIdx = i;
+            
+            // Determine which character strumLine this renderer should animate
+            // In single player: renderer i animates characters with strumLine i
+            // In multiplayer: renderer 0 animates based on myChartIndex (Player 1=0, Player 2=1)
+            //                 renderer 1 animates based on opponentChartIndex (for visual feedback)
+            int characterStrumLineToAnimate = strumlineIdx;  // Default: same as renderer index
+            if (_isMultiplayerMatch && strumlineCount >= 2)
+            {
+                if (i == 0)
+                    characterStrumLineToAnimate = myChartIndex;  // Player renderer animates their chart's character
+                else if (i == 1)
+                    characterStrumLineToAnimate = opponentChartIndex;  // Opponent renderer animates opponent's character
+            }
+            
             _noteRenderers[i].OnNoteHit = (lane, holdEnd) =>
             {
                 // Animate ALL visible characters on this strumline
                 // This allows multiple characters with the same strumline to sing together
                 for (int j = 0; j < objs.Count; j++)
                 {
-                    if ((int)objs[j].StrumLine != strumlineIdx) continue;
+                    if ((int)objs[j].StrumLine != characterStrumLineToAnimate) continue;
                     var anim = _objAnimators[j];
                     if (anim == null) continue;
                     if (!anim.Visible || anim.Opacity <= 0.01f) continue;
@@ -1954,22 +2199,43 @@ public partial class Game1 : Game
 
                 _events?.NotifyNoteHit(strumlineIdx);
 
-                // Only player (strumline 0) affects health
-                if (strumlineIdx == 0)
-                    _health = MathHelper.Clamp(_health + 0.023f, 0f, 1f);
+                // In multiplayer, only MY strumline affects health
+                // BOTH players always control strumline 0 (right side)
+                bool isMyStrumline = (strumlineIdx == 0);
+                    
+                if (isMyStrumline)
+                {
+                    if (_healthBar != null)
+                        _healthBar.Health = MathHelper.Clamp(_healthBar.Health + 0.023f, 0f, 1f);
+                }
             };
         }
 
-        // Wire miss penalty and judgement for player (strumline 0)
-        if (_noteRenderers.Count > 0)
+        // Wire miss penalty and judgement for player strumline
+        // In multiplayer, BOTH players control strumline 0 (right side)
+        int myStrumlineIndex = 0;  // Always 0 for both players
+        
+        if (_noteRenderers.Count > myStrumlineIndex)
         {
-            _noteRenderers[0].OnNoteMiss = () =>
+            _noteRenderers[myStrumlineIndex].OnNoteMiss = () =>
             {
-                _health = MathHelper.Clamp(_health - 0.0475f, 0f, 1f);
-                // Animate ALL visible player characters (strumLine 0)
+                if (_healthBar != null)
+                    _healthBar.Health = MathHelper.Clamp(_healthBar.Health - 0.0475f, 0f, 1f);
+                // Animate ALL visible characters on MY strumline
+                // In multiplayer:
+                //   Player 1 (plays chart 0/BF) animates characters with strumLine: 0
+                //   Player 2 (plays chart 1/Enemy) animates characters with strumLine: 1
+                int myAnimStrumline = 0;  // Default for single player
+                if (_isMultiplayerMatch)
+                {
+                    // In multiplayer, animate based on which chart I'm playing
+                    // Player 1 (role=1) plays chart 0 (BF) → strumLine 0
+                    // Player 2 (role=2) plays chart 1 (Enemy) → strumLine 1
+                    myAnimStrumline = myChartIndex;  // Use the chart we determined earlier
+                }
                 for (int j = 0; j < objs.Count; j++)
                 {
-                    if ((int)objs[j].StrumLine != 0) continue;
+                    if ((int)objs[j].StrumLine != myAnimStrumline) continue;
                     var anim = _objAnimators[j];
                     if (anim == null) continue;
                     if (!anim.Visible || anim.Opacity <= 0.01f) continue;
@@ -1987,19 +2253,20 @@ public partial class Game1 : Game
                 ShowJudgement("Miss", new Color(255, 80, 80));
             };
 
-            // Wire judgement display
-            _noteRenderers[0].OnJudgement = j => 
+            // Wire judgement display - FNF style stacked popups (max 3)
+            _noteRenderers[myStrumlineIndex].OnJudgement = j => 
             {
-                ShowJudgement(j,
-                    j == "Sick!"  ? new Color(0x00, 0xFF, 0xFF) :
-                    j == "Good"   ? new Color(0x00, 0xFF, 0x00) :
-                    j == "Bad"    ? new Color(0xFF, 0xAA, 0x00) :
-                                    new Color(0xFF, 0x44, 0x44));
+                // Add judgement popup using overlay
+                if (_judgementOverlay != null)
+                {
+                    var hud = HudSettings.Instance;
+                    _judgementOverlay.AddJudgement(j, new Point(hud.JudgementPosition.X, hud.JudgementPosition.Y));
+                }
                 
                 // Multiplayer: Send hit to opponent (only for player strumline)
-                if (_isMultiplayerMatch && _noteRenderers.Count > 0)
+                if (_isMultiplayerMatch && _noteRenderers.Count > myStrumlineIndex)
                 {
-                    var playerRenderer = _noteRenderers[0];
+                    var playerRenderer = _noteRenderers[myStrumlineIndex];
                     int noteId = playerRenderer.Combo;
                     long timestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
                     
@@ -2010,6 +2277,30 @@ public partial class Game1 : Game
                         j,  // rating string
                         playerRenderer.Combo
                     );
+                }
+            };
+            
+            // Wire combo changed event - spawn falling digits (FNF style)
+            _noteRenderers[myStrumlineIndex].OnComboChanged = newCombo =>
+            {
+                if (newCombo <= 0) return;  // Don't show combo = 0
+                if (_judgementOverlay == null) return;  // Safety check
+                
+                _lastCombo = newCombo;
+                _comboTimer = COMBO_SHOW;
+                
+                // Show combo using overlay
+                var hud = HudSettings.Instance;
+                _judgementOverlay.ShowCombo(newCombo, new Point(hud.ComboPosition.X, hud.ComboPosition.Y));
+            };
+            
+            // Wire key press callback for multiplayer real-time animation
+            _noteRenderers[myStrumlineIndex].OnKeyPress = lane =>
+            {
+                if (_isMultiplayerMatch)
+                {
+                    Console.WriteLine($"[Game1] Sending KeyPress: lane={lane}, time={_songTime:F2}");
+                    Multiplayer.NetworkManager.Instance.SendKeyPress(lane);
                 }
             };
             
@@ -2025,21 +2316,24 @@ public partial class Game1 : Game
             // Fallback mechanics for notes WITHOUT onPressEvent.
             // If the level defines onPressEvent, it handles health via action_packs.
             // These callbacks only fire when no event is defined (legacy levels).
-            _noteRenderers[0].OnDamageNoteHit = damage =>
+            _noteRenderers[myStrumlineIndex].OnDamageNoteHit = damage =>
             {
                 if (NoteRenderer.Autoplay) return;
-                _health = MathHelper.Clamp(_health - damage, 0f, 1f);
+                if (_healthBar != null)
+                    _healthBar.Health = MathHelper.Clamp(_healthBar.Health - damage, 0f, 1f);
                 ShowJudgement("Damage!", new Color(255, 60, 60));
             };
-            _noteRenderers[0].OnInstakillNoteHit = () =>
+            _noteRenderers[myStrumlineIndex].OnInstakillNoteHit = () =>
             {
                 if (NoteRenderer.Autoplay) return;
-                _health = 0f;
+                if (_healthBar != null)
+                    _healthBar.Health = 0f;
                 ShowJudgement("INSTAKILL", new Color(180, 0, 255));
             };
-            _noteRenderers[0].OnHealNoteHit = () =>
+            _noteRenderers[myStrumlineIndex].OnHealNoteHit = () =>
             {
-                _health = MathHelper.Clamp(_health + 0.15f, 0f, 1f);
+                if (_healthBar != null)
+                    _healthBar.Health = MathHelper.Clamp(_healthBar.Health + 0.15f, 0f, 1f);
                 ShowJudgement("Heal!", new Color(0, 230, 80));
             };
         }
@@ -2065,36 +2359,38 @@ public partial class Game1 : Game
         _events.OnBarIconChange = (target, spriteName) =>
         {
             var newAnim = BuildIconAnimator(spriteName, texCache);
-            if (newAnim == null) return;
+            if (newAnim == null || _healthBar == null) return;
             
             if (target == 0)
             {
                 // Opponent icon changed
-                _iconOpponentAnim = newAnim;
-                // Update opponent bar color to match new icon
-                _opponentBarColor = SampleIconColor(_iconOpponentAnim) ?? new Color(0xFF, 0x00, 0x00);
-                Console.WriteLine($"[BarIcon] Opponent icon changed to '{spriteName}' - Color: {_opponentBarColor}");
+                _healthBar.OpponentIcon = newAnim;
+                _healthBar.OpponentBarColor = SampleIconColor(newAnim) ?? new Color(0xFF, 0x00, 0x00);
+                Console.WriteLine($"[BarIcon] Opponent icon changed to '{spriteName}' - Color: {_healthBar.OpponentBarColor}");
             }
             else
             {
                 // Player icon changed
-                _iconPlayerAnim = newAnim;
-                // Update player bar color to match new icon
-                _playerBarColor = SampleIconColor(_iconPlayerAnim) ?? new Color(0x66, 0xFF, 0x66);
-                Console.WriteLine($"[BarIcon] Player icon changed to '{spriteName}' - Color: {_playerBarColor}");
+                _healthBar.PlayerIcon = newAnim;
+                _healthBar.PlayerBarColor = SampleIconColor(newAnim) ?? new Color(0x66, 0xFF, 0x66);
+                Console.WriteLine($"[BarIcon] Player icon changed to '{spriteName}' - Color: {_healthBar.PlayerBarColor}");
             }
         };
 
         // Wire PlayerHealth events
         _events.OnPlayerHealth = (delta, minHealth) =>
         {
-            float newHealth = MathHelper.Clamp(_health + delta, minHealth, 1f);
-            _health = newHealth;
+            if (_healthBar != null)
+            {
+                float newHealth = MathHelper.Clamp(_healthBar.Health + delta, minHealth, 1f);
+                _healthBar.Health = newHealth;
+            }
         };
         _events.OnPlayerHealthSet = (targetHealth, minHealth) =>
         {
             // op=set: set health to exact value, clamped to [minHealth, 1]
-            _health = MathHelper.Clamp(targetHealth, minHealth, 1f);
+            if (_healthBar != null)
+                _healthBar.Health = MathHelper.Clamp(targetHealth, minHealth, 1f);
         };
 
         // Apply only instantaneous events at time=0 so objects start in the correct
@@ -2262,6 +2558,12 @@ public partial class Game1 : Game
             {
                 _touchControls.SetMode(targetMode);
             }
+            
+            // Hide pause button in multiplayer
+            if (_isMultiplayerMatch)
+            {
+                _touchControls.SetHidePauseButton(true);
+            }
         }
         
         // Merge touch input into keyboard state for seamless integration
@@ -2296,7 +2598,7 @@ public partial class Game1 : Game
             }
 
             // Disable pause during multiplayer matches
-            if (false /* multiplayer disabled in Game1 */ && _level != null)
+            if (_isMultiplayerMatch && _level != null)
             {
                 Console.WriteLine("[Game1] Pause disabled during multiplayer match");
             }
@@ -2336,45 +2638,39 @@ public partial class Game1 : Game
         if (_inPauseMenu && _level != null)
         if (_pauseMenu != null)
         {
-            // Navigation
-            if (kb.IsKeyDown(Keys.Up) && !_prevKb.IsKeyDown(Keys.Up))
-                _pauseMenu.Selection = (_pauseMenu.Selection - 1 + _pauseMenu.ItemCount) % _pauseMenu.ItemCount;
+            // Handle input and get action
+            var action = _pauseMenu.HandleInput(kb, _prevKb);
             
-            if (kb.IsKeyDown(Keys.Down) && !_prevKb.IsKeyDown(Keys.Down))
-                _pauseMenu.Selection = (_pauseMenu.Selection + 1) % _pauseMenu.ItemCount;
-            
-            // Selection with Enter or Space
-            if ((kb.IsKeyDown(Keys.Enter) && !_prevKb.IsKeyDown(Keys.Enter)) ||
-                (kb.IsKeyDown(Keys.Space) && !_prevKb.IsKeyDown(Keys.Space)))
+            switch (action)
             {
-                switch (_pauseMenu.Selection)
-                {
-                    case 0: // Resume
-                        _inPauseMenu = false;
-                        ResumeSong();
-                        break;
-                    case 1: // Restart Song
-                        RestartSong();
-                        _inPauseMenu = false;
-                        break;
-                    case 2: // Settings
-                        _inPauseMenu = false;
-                        if (_settingsManager != null) _settingsManager.IsActive = true;
-                        break;
-                    case 3: // Exit to Menu
-                        _musicInst?.Stop();
-                        _started = false;
-                        
-                        // Clean up gameplay state before returning to menu
-                        _level = null;
-                        
-                        _inFreeplay = true;
-                        _inPauseMenu = false;
-                        ResetWindowTitle();  // Reset title when returning to menu
-                        _freeplay?.Refresh();
-                        _freeplay?.ResetInputCooldown();
-                        break;
-                }
+                case PauseMenu.PauseAction.Resume:
+                    _inPauseMenu = false;
+                    ResumeSong();
+                    break;
+                    
+                case PauseMenu.PauseAction.RestartSong:
+                    RestartSong();
+                    _inPauseMenu = false;
+                    break;
+                    
+                case PauseMenu.PauseAction.OpenSettings:
+                    _inPauseMenu = false;
+                    if (_settingsManager != null) _settingsManager.IsActive = true;
+                    break;
+                    
+                case PauseMenu.PauseAction.ExitToMenu:
+                    _musicInst?.Stop();
+                    _started = false;
+                    
+                    // Clean up gameplay state before returning to menu
+                    _level = null;
+                    
+                    _inFreeplay = true;
+                    _inPauseMenu = false;
+                    ResetWindowTitle();  // Reset title when returning to menu
+                    _freeplay?.Refresh();
+                    _freeplay?.ResetInputCooldown();
+                    break;
             }
             
             _prevKb = kb;
@@ -2584,7 +2880,7 @@ public partial class Game1 : Game
                 
                 if (result.NeedsOpponentAlphaUpdate && _noteRenderers.Count > 1)
                 {
-                    _noteRenderers[1].Alpha = (HideOpponentStrumline && !false /* multiplayer disabled in Game1 */) ? 0f : _notesAlpha;
+                    _noteRenderers[1].Alpha = (HideOpponentStrumline && !_isMultiplayerMatch) ? 0f : _notesAlpha;
                 }
                 
                 if (result.NeedsSave)
@@ -2819,7 +3115,7 @@ public partial class Game1 : Game
         // P toggles pause (disabled during multiplayer matches)
         if (kb.IsKeyDown(Keys.P) && !_prevKb.IsKeyDown(Keys.P))
         {
-            if (false /* multiplayer disabled in Game1 */)
+            if (_isMultiplayerMatch)
             {
                 Console.WriteLine("[Game1] Pause disabled during multiplayer match");
             }
@@ -2883,20 +3179,27 @@ public partial class Game1 : Game
                         _songBeats       = 0f;
                         _started         = false;
                         _paused          = false;
-                        _health          = 0.5f;
-                        _gameOver        = false;
-                        _gameOverTimer   = 0f;
-                        _countdownTimer  = 0f;
-                        _countdownStep   = 3;
-                        _countdownDone   = false;
+                        if (_healthBar != null)
+                            _healthBar.Health = 0.5f;
+                        _gameOverOverlay?.Hide();
+                        _countdownOverlay?.Reset();
                         _judgementText   = null;
+                        
+                        // Start FNF-style receptor intro animation (pop-in effect)
+                        // Only if HUD is visible (respects chart events that hide receptors)
+                        if (_events?.HudVisible != false)
+                        {
+                            foreach (var renderer in _noteRenderers)
+                            {
+                                renderer?.StartReceptorIntro(0.0f, 0.05f);
+                            }
+                        }
                         
                         // Reset camera manager
                         _cameraManager?.Reset();
                         
                         // Reset icon bounce
-                        _iconBounceScale = 1.0f;
-                        _lastIconBeat = -1;
+                        _healthBar?.ResetBounce();
                         
                         _songStopwatch.Reset();
                         _pausedTime      = 0.0;
@@ -2905,14 +3208,63 @@ public partial class Game1 : Game
                         // In multiplayer, show loading screen normally and send Ready when done
                         _loadingScreen = new LoadingScreen(
                             _level.LevelName, _pixel!, _font,
-                            FindAssetsRoot(), GraphicsDevice, false /* multiplayer disabled in Game1 */);
+                            FindAssetsRoot(), GraphicsDevice, _isMultiplayerMatch);
                         _loadingComplete = true;
                         
-                        // Multiplayer: Send Ready signal to server now that level is loaded
-                        if (false /* multiplayer disabled in Game1 */)
+                        // Initialize multiplayer state in loading screen
+                        if (_isMultiplayerMatch)
                         {
-                            Console.WriteLine("[Game1] 📤 Level loaded! Sending Ready to server...");
+                            _loadingScreen.MyPlayerRole = _multiplayerPlayerRole;
+                            // Initialize ready states: I'm not ready yet, opponent status unknown
+                            if (_multiplayerPlayerRole == 1)
+                            {
+                                _loadingScreen.Player1Ready = false;  // Me
+                                _loadingScreen.Player2Ready = false;  // Opponent
+                            }
+                            else if (_multiplayerPlayerRole == 2)
+                            {
+                                _loadingScreen.Player1Ready = false;  // Opponent
+                                _loadingScreen.Player2Ready = false;  // Me
+                            }
+                        }
+                        
+                        // Multiplayer: Send Ready signal to server now that level is loaded
+                        if (_isMultiplayerMatch)
+                        {
+                            Console.WriteLine("[Game1] Level loaded! Sending Ready to server...");
                             Multiplayer.NetworkManager.Instance.SendReady(true);
+                            
+                            // Update MY ready state in LoadingScreen
+                            if (_loadingScreen != null)
+                            {
+                                if (_multiplayerPlayerRole == 1)
+                                {
+                                    _loadingScreen.Player1Ready = true;  // I'm Player 1, so I'm ready
+                                    Console.WriteLine("[Game1] Set Player1Ready=true (I am Player 1)");
+                                }
+                                else if (_multiplayerPlayerRole == 2)
+                                {
+                                    _loadingScreen.Player2Ready = true;  // I'm Player 2, so I'm ready
+                                    Console.WriteLine("[Game1] Set Player2Ready=true (I am Player 2)");
+                                }
+                                
+                                // Apply stored opponent ready state if it was received before LoadingScreen existed
+                                if (_opponentReadyState.HasValue)
+                                {
+                                    Console.WriteLine($"[Game1] Applying stored opponent ready state: {_opponentReadyState.Value}");
+                                    if (_multiplayerPlayerRole == 1)
+                                    {
+                                        _loadingScreen.Player2Ready = _opponentReadyState.Value;
+                                        Console.WriteLine($"[Game1] Set Player2Ready={_opponentReadyState.Value} (from stored state)");
+                                    }
+                                    else if (_multiplayerPlayerRole == 2)
+                                    {
+                                        _loadingScreen.Player1Ready = _opponentReadyState.Value;
+                                        Console.WriteLine($"[Game1] Set Player1Ready={_opponentReadyState.Value} (from stored state)");
+                                    }
+                                }
+                            }
+                            
                             Console.WriteLine("[Game1] Waiting for opponent to be ready...");
                         }
                     }
@@ -2934,7 +3286,14 @@ public partial class Game1 : Game
             }
 
             bool enterPressed = kb.IsKeyDown(Keys.Enter) && !_prevKb.IsKeyDown(Keys.Enter);
-            _loadingScreen?.Update(dt, _loadingComplete && _loadState == LoadState.Done, enterPressed, _rtWidth, _rtHeight, false /* multiplayer disabled in Game1 */);
+            
+            // Debug log for countdown signal in multiplayer
+            if (_isMultiplayerMatch && _loadingScreen != null && _loadingScreen.CurrentPhase == LoadingScreen.Phase.Ready)
+            {
+                Console.WriteLine($"[Game1] LoadingScreen Phase=Ready: countdown={_countdownSignalReceived}, P1={_loadingScreen.Player1Ready}, P2={_loadingScreen.Player2Ready}");
+            }
+            
+            _loadingScreen?.Update(dt, _loadingComplete && _loadState == LoadState.Done, enterPressed, _rtWidth, _rtHeight, _countdownSignalReceived);
             if (_loadingScreen?.CurrentPhase == LoadingScreen.Phase.Done)
             {
                 _loadingScreen = null;
@@ -2945,60 +3304,93 @@ public partial class Game1 : Game
             return;
         }
 
+        // ── Results Screen (Multiplayer) ───────────────────────────────────
+        if (_resultsScreen != null)
+        {
+            _resultsScreen.Update(dt, kb, _prevKb);
+            
+            if (_resultsScreen.CurrentPhase == MultiplayerResultsScreen.Phase.Done)
+            {
+                // Results screen finished - clean up multiplayer state and return to menu
+                Console.WriteLine("[Game1] Results screen done - cleaning up multiplayer state");
+                
+                // Clear multiplayer state
+                _resultsScreen = null;
+                _isMultiplayerMatch = false;
+                _multiplayerPlayerRole = 0;
+                _multiplayerStartTimestamp = 0;
+                _countdownSignalReceived = false;
+                _opponentName = null;
+                _opponentScore = 0;
+                _opponentHealth = 0.5f;
+                _opponentReadyState = null;
+                _stateUpdateTimer = 0f;
+                
+                // Disconnect from match (but stay connected to server)
+                Console.WriteLine("[Game1] Player left match, returning to multiplayer menu");
+                
+                // Trigger transition back to multiplayer menu
+                _songTransition = new SongTransition(_catTex, _pixel!);
+                _songTransition.Start(_rtWidth, _rtHeight);
+                _transitionToFreeplay = false;  // Go to multiplayer menu, not freeplay
+            }
+            
+            _prevKb = kb;
+            base.Update(gameTime);
+            return;
+        }
+
         if (_level != null && _errorMsg == null)
         {
             // ── Game over ────────────────────────────────────────────────────
             // In multiplayer, skip game over entirely (continue until song ends)
-            if (_gameOver && !false /* multiplayer disabled in Game1 */)
+            if (_gameOverOverlay != null && _gameOverOverlay.IsActive && !_isMultiplayerMatch)
             {
-                _gameOverTimer += dt;
-                bool enterPressed = kb.IsKeyDown(Keys.Enter) && !_prevKb.IsKeyDown(Keys.Enter);
-                bool escPressed   = kb.IsKeyDown(Keys.Escape) && !_prevKb.IsKeyDown(Keys.Escape);
-
-                if (_gameOverTimer >= GAME_OVER_WAIT || enterPressed)
-                    RestartSong();
-                else if (escPressed)
+                var decision = _gameOverOverlay.Update(dt, kb, _prevKb);
+                
+                if (decision == true)  // Retry
                 {
-                    // ESC → go back to freeplay menu
-                    _gameOver    = false;
-                    _gameOverTimer = 0f;
+                    RestartSong();
+                }
+                else if (decision == false)  // Back to menu
+                {
                     _musicInst?.Stop();
-                    _started     = false;
+                    _started = false;
                     _freeplay?.ResetInputCooldown();
                     _songTransition = new SongTransition(_catTex, _pixel!);
                     _songTransition.Start(_rtWidth, _rtHeight);
                     _transitionToFreeplay = true;
                 }
+                
                 _prevKb = kb;
                 base.Update(gameTime);
                 return;
             }
             
-            // Safety: Reset game over flag if somehow triggered in multiplayer
-            if (_gameOver && false /* multiplayer disabled in Game1 */)
+            // Safety: Hide game over if somehow triggered in multiplayer
+            if (_gameOverOverlay != null && _gameOverOverlay.IsActive && _isMultiplayerMatch)
             {
-                _gameOver = false;
-                _gameOverTimer = 0f;
-                Console.WriteLine("[Game1] Game over flag reset (multiplayer mode)");
+                _gameOverOverlay.Hide();
+                Console.WriteLine("[Game1] Game over overlay hidden (multiplayer mode)");
             }
 
             // ── Countdown before music ───────────────────────────────────────
             if (!_started)
             {
                 // Multiplayer: Skip countdown, start immediately at synchronized timestamp
-                if (false /* multiplayer disabled in Game1 */ && 0 /* multiplayer disabled */ > 0)
+                if (_isMultiplayerMatch && _multiplayerStartTimestamp > 0)
                 {
                     // Use synchronized server time, NOT local client time
                     long now = Multiplayer.TimeSyncManager.Instance.GetServerTime();
                     
                     // Calculate time until start with microsecond precision
-                    long timeUntilStart = 0 /* multiplayer disabled */ - now;
+                    long timeUntilStart = _multiplayerStartTimestamp - now;
                     
                     if (timeUntilStart <= 0)
                     {
                         // Time has passed - start immediately
                         Console.WriteLine($"[Game1] 🚀 Multiplayer: Starting NOW! (delay: {-timeUntilStart}ms)");
-                        _countdownDone = true;
+                        _countdownOverlay?.MarkAsDone();
                         _started       = true;
                         _musicInst?.Play();
                         
@@ -3016,7 +3408,7 @@ public partial class Game1 : Game
                         // Within 50ms of start time - pre-start the music so it's ready
                         // This compensates for audio latency and frame timing
                         Console.WriteLine($"[Game1] [♪] Multiplayer: Pre-starting music ({timeUntilStart}ms early for sync)");
-                        _countdownDone = true;
+                        _countdownOverlay?.MarkAsDone();
                         _started       = true;
                         _musicInst?.Play();
                         
@@ -3044,29 +3436,28 @@ public partial class Game1 : Game
                 else
                 {
                     // Normal single-player countdown
-                    _countdownTimer += dt;
-                    float beatDur = 60f / _level.Data.EffectiveBpm;
-                    _countdownStep = 3 - (int)(_countdownTimer / beatDur);
-
-                    // songTime is negative during countdown, reaches 0 when music starts
-                    _songTime  = _countdownTimer - (beatDur * 4f);
-                    _songBeats = _songTime / 60f * _level.Data.EffectiveBpm;
-
-                    if (_countdownTimer >= beatDur * 4f && !_countdownDone)
+                    if (_countdownOverlay != null)
                     {
-                        _countdownDone = true;
-                        _started       = true;
-                        _musicInst?.Play();
+                        bool countdownComplete = _countdownOverlay.Update(dt, _level.Data.EffectiveBpm);
                         
-                        // Update Discord RPC
-                        string levelName = System.IO.Path.GetFileNameWithoutExtension(FnmmPath);
-                        if (false /* multiplayer disabled in Game1 */)
-                            DiscordRpc.SetPlayingMultiplayer(levelName);
-                        else
-                            DiscordRpc.SetPlaying(levelName);
-                        _songStopwatch.Restart();
-                        _pausedTime = 0.0;
+                        // songTime is negative during countdown, reaches 0 when music starts
+                        _songTime = _countdownOverlay.GetSongTime(_level.Data.EffectiveBpm);
+                        _songBeats = _songTime / 60f * _level.Data.EffectiveBpm;
 
+                        if (countdownComplete && !_started)
+                        {
+                            _started = true;
+                            _musicInst?.Play();
+                            
+                            // Update Discord RPC
+                            string levelName = System.IO.Path.GetFileNameWithoutExtension(FnmmPath);
+                            if (_isMultiplayerMatch)
+                                DiscordRpc.SetPlayingMultiplayer(levelName);
+                            else
+                                DiscordRpc.SetPlaying(levelName);
+                            _songStopwatch.Restart();
+                            _pausedTime = 0.0;
+                        }
                     }
                 }
             }
@@ -3142,23 +3533,19 @@ public partial class Game1 : Game
             if (_judgementTimer > 0f)
                 _judgementTimer -= dt;
             
-            // ── Combo timer (FNF style) ──────────────────────────────────────
-            if (_noteRenderers.Count > 0)
-            {
-                int currentCombo = _noteRenderers[0].Combo;
-                if (currentCombo > _lastCombo)
-                {
-                    _comboTimer = COMBO_SHOW;  // Reset timer on combo increase
-                }
-                _lastCombo = currentCombo;
-                
-                if (_comboTimer > 0f)
-                    _comboTimer -= dt;
-            }
+            // ── Combo timer ──────────────────────────────────────────────────
+            if (_noteRenderers.Count > 0 && _comboTimer > 0f)
+                _comboTimer -= dt;
+            
+            // ── Update judgement overlay (popups and combo digits) ───────────
+            _judgementOverlay?.Update(dt);
 
             // ── Note renderers (fires OnNoteHit → SetAnimation + NotifyNoteHit) ──
             foreach (var renderer in _noteRenderers)
                 renderer.Update(_songTime, dt, kb, _prevKb);
+            
+            // ── Update particle notesplash system (if active) ────────────────
+            _particleNoteSplash?.Update(gameTime);
 
             // ── Events and Animators: Only update AFTER countdown finishes ──
             // This prevents background animations and events from triggering during countdown
@@ -3171,57 +3558,27 @@ public partial class Game1 : Game
                 foreach (var anim in _objAnimators)
                     anim?.Update(dt, _songTime);
                 
-                // Update icon animators + switch pose based on health
-                bool opponentLosing = _health > 0.8f;
-                bool playerLosing   = _health < 0.2f;
-                if (_iconOpponentAnim != null)
-                {
-                    int targetAnim = opponentLosing ? 1 : 0;
-                    if (_iconOpponentAnim.CurrentAnimIndex != targetAnim)
-                        _iconOpponentAnim.SetAnimation(targetAnim);
-                    _iconOpponentAnim.Update(dt, _songTime);
-                }
-                if (_iconPlayerAnim != null)
-                {
-                    int targetAnim = playerLosing ? 1 : 0;
-                    if (_iconPlayerAnim.CurrentAnimIndex != targetAnim)
-                        _iconPlayerAnim.SetAnimation(targetAnim);
-                    _iconPlayerAnim.Update(dt, _songTime);
-                }
+                // Update health bar (icons, beat bounce, etc.)
+                _healthBar?.Update(dt, _songTime, _level.Data.EffectiveBpm);
             }
 
             // ── Notes alpha fade (GUI event HudVisible controls arrows visibility) ──
             float notesTarget = (_events?.HudVisible ?? true) ? 1.0f : 0.0f;
             _notesAlpha = MathHelper.Lerp(_notesAlpha, notesTarget,
                 1f - MathF.Exp(-NOTES_FADE_SPEED * dt));
-            
-            // ── Icon beat bounce (FNF style) ─────────────────────────────────
-            int currentIconBeat = (int)Math.Floor(_songBeats);
-            if (currentIconBeat != _lastIconBeat)
-            {
-                _lastIconBeat = currentIconBeat;
-                _iconBounceScale = 1.15f;  // Subtle bounce to 115% size
-            }
-            
-            // Smoothly return to normal size (slower lerp for smoother animation)
-            if (_iconBounceScale > 1.0f)
-            {
-                _iconBounceScale = Math.Max(1.0f, _iconBounceScale - dt * 2.0f);  // Slower return
-            }
 
             // ── Health checks ────────────────────────────────────────────────
             // Disable game over in multiplayer (continue until song ends)
-            if (_health <= 0f && !_gameOver && !false /* multiplayer disabled in Game1 */)
+            if (_healthBar != null && _healthBar.Health <= 0f && _gameOverOverlay != null && !_gameOverOverlay.IsActive && !_isMultiplayerMatch)
             {
-                _gameOver      = true;
-                _gameOverTimer = 0f;
+                _gameOverOverlay.Show();
                 _musicInst?.Stop();
                 Console.WriteLine("[Game1] Game over triggered: health <= 0");
             }
-            else if (_health <= 0f && false /* multiplayer disabled in Game1 */)
+            else if (_healthBar != null && _healthBar.Health <= 0f && _isMultiplayerMatch)
             {
                 // Debug: Log when health hits 0 in multiplayer but game over is blocked
-                Console.WriteLine($"[Game1] Health at 0 in multiplayer - game over BLOCKED (Match: {false /* multiplayer disabled in Game1 */}, Role: {0 /* multiplayer disabled */})");
+                Console.WriteLine($"[Game1] Health at 0 in multiplayer - game over BLOCKED (Match: {_isMultiplayerMatch}, Role: {_multiplayerPlayerRole})");
             }
 
             // ── Song end ─────────────────────────────────────────────────────
@@ -3241,19 +3598,65 @@ public partial class Game1 : Game
                     _songEndDelay = 0f;
                     // Stop music explicitly before transition (prevents ghost audio on menu)
                     _musicInst?.Stop();
-                    // Trigger AnkushCat transition
-                    _songTransition = new SongTransition(_catTex, _pixel!);
-                    _songTransition.Start(_rtWidth, _rtHeight);
                     
-                    // Multiplayer: Return to multiplayer menu, not freeplay
-                    if (false /* multiplayer disabled in Game1 */)
+                    // Multiplayer: Show results screen instead of going to menu
+                    if (_isMultiplayerMatch)
                     {
-                        _transitionToFreeplay = false;  // Don't go to freeplay
-                        Console.WriteLine("[Game1] Multiplayer match ended, returning to multiplayer menu");
+                        // Calculate player stats
+                        var playerRenderer = _noteRenderers.Count > 0 ? _noteRenderers[0] : null;
+                        if (playerRenderer != null)
+                        {
+                            int totalNotes = playerRenderer.Sicks + playerRenderer.Goods + 
+                                           playerRenderer.Bads + playerRenderer.Shits + playerRenderer.Misses;
+                            float playerAccuracy = 100f;
+                            if (totalNotes > 0)
+                            {
+                                float weightedHits = (playerRenderer.Sicks * 1.0f) + (playerRenderer.Goods * 0.75f) + 
+                                                    (playerRenderer.Bads * 0.5f) + (playerRenderer.Shits * 0.25f);
+                                playerAccuracy = (weightedHits / totalNotes) * 100f;
+                            }
+                            
+                            // Calculate opponent accuracy (estimate based on score differential)
+                            float opponentAccuracy = 100f;  // Default if no data
+                            if (_opponentScore > 0)
+                            {
+                                // Rough estimate: opponent accuracy based on score comparison
+                                // This is imperfect but works until we get full opponent stats from server
+                                float scoreRatio = (float)_opponentScore / Math.Max(1, playerRenderer.Score);
+                                opponentAccuracy = playerAccuracy * scoreRatio;
+                                opponentAccuracy = Math.Clamp(opponentAccuracy, 0f, 100f);
+                            }
+                            
+                            bool playerWon = playerRenderer.Score > _opponentScore;
+                            
+                            // Create results screen
+                            _resultsScreen = new MultiplayerResultsScreen(
+                                _pixel!,
+                                _catTex,
+                                "You",  // Player name
+                                _opponentName ?? "Opponent",
+                                playerRenderer.Score,
+                                _opponentScore,
+                                playerAccuracy,
+                                opponentAccuracy,
+                                playerRenderer.Sicks,
+                                playerRenderer.Goods,
+                                playerRenderer.Bads,
+                                playerRenderer.Shits,
+                                playerRenderer.Misses,
+                                playerWon
+                            );
+                            
+                            Console.WriteLine($"[Game1] Multiplayer match ended - showing results (Player: {playerRenderer.Score}, Opponent: {_opponentScore})");
+                        }
                     }
                     else
                     {
-                        _transitionToFreeplay = true;   // Normal: go to freeplay
+                        // Single player: Normal transition to freeplay
+                        // Trigger AnkushCat transition
+                        _songTransition = new SongTransition(_catTex, _pixel!);
+                        _songTransition.Start(_rtWidth, _rtHeight);
+                        _transitionToFreeplay = true;
                     }
                 }
             }
@@ -3326,27 +3729,32 @@ public partial class Game1 : Game
         Multiplayer.NetworkManager.Instance.Update(gameTime);
         
         // ── Update Multiplayer Components ────────────────────────────────────
-        if (false /* multiplayer disabled in Game1 */ && _started && !_paused)
+        if (_isMultiplayerMatch && _started && !_paused)
         {
             // Update interpolator with current server time
             long currentServerTime = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
             // Multiplayer UI removed: null?.Update(dt, currentServerTime);
             
-            // Update MultiplayerHUD with player stats
-            if (_noteRenderers.Count > 0)
+            // Send state updates to opponent every 200ms (5 times per second)
+            _stateUpdateTimer += dt;
+            if (_stateUpdateTimer >= 0.2f && _noteRenderers.Count > 0)
             {
-                var playerRenderer = _noteRenderers[0];
-                int totalNotes = playerRenderer.Sicks + playerRenderer.Goods + 
-                                playerRenderer.Bads + playerRenderer.Shits + playerRenderer.Misses;
-                float accuracy = 100f;
-                if (totalNotes > 0)
-                {
-                    float weightedHits = (playerRenderer.Sicks * 1.0f) + (playerRenderer.Goods * 0.75f) + 
-                                        (playerRenderer.Bads * 0.5f) + (playerRenderer.Shits * 0.25f);
-                    accuracy = (weightedHits / totalNotes) * 100f;
-                }
+                _stateUpdateTimer = 0f;
                 
-                // Multiplayer UI removed - stats no longer updated
+                var playerRenderer = _noteRenderers[0];
+                float health = _healthBar?.Health ?? 0.5f;
+                
+                // Send current state to opponent
+                Multiplayer.NetworkManager.Instance.SendStateUpdate(
+                    playerRenderer.Score,
+                    playerRenderer.Combo,
+                    health,
+                    playerRenderer.Sicks,
+                    playerRenderer.Goods,
+                    playerRenderer.Bads,
+                    playerRenderer.Shits,
+                    playerRenderer.Misses
+                );
             }
             
             // Update HUD animations
@@ -3432,13 +3840,21 @@ public partial class Game1 : Game
         _songBeats       = 0f;
         _started         = false;
         _paused          = false;
-        _health          = 0.5f;
-        _gameOver        = false;
-        _gameOverTimer   = 0f;
-        _countdownTimer  = 0f;
-        _countdownStep   = 3;
-        _countdownDone   = false;
+        if (_healthBar != null)
+            _healthBar.Health = 0.5f;
+        _gameOverOverlay?.Hide();
+        _countdownOverlay?.Reset();
         _judgementText   = null;
+        
+        // Start FNF-style receptor intro animation (pop-in effect)
+        // Only if HUD is visible (respects chart events that hide receptors)
+        if (_events?.HudVisible != false)
+        {
+            foreach (var renderer in _noteRenderers)
+            {
+                renderer?.StartReceptorIntro(0.0f, 0.05f);
+            }
+        }
         
         // Reset camera zoom
         _cameraManager?.Reset();
@@ -3657,6 +4073,7 @@ public partial class Game1 : Game
 
         GraphicsDevice.Clear(Color.Black);
 
+#nullable disable  // Disable nullability warnings for Draw() method - all null checks are in place
         // ── Freeplay menu (direct to screen - no render target) ──────────────
         if (_inFreeplay && _freeplay != null && _loadingScreen == null)
         {
@@ -3666,26 +4083,31 @@ public partial class Game1 : Game
             GraphicsDevice.Clear(Color.Black);
             
             _spriteBatch.Begin(samplerState: SamplerState.LinearClamp);
-            _freeplay.Draw(_spriteBatch, winBounds.Width, winBounds.Height, winBounds.Width, winBounds.Height);
+            if (_freeplay != null)
+                _freeplay.Draw(_spriteBatch, winBounds.Width, winBounds.Height, winBounds.Width, winBounds.Height);
             _spriteBatch.End();
             
             #if ANDROID
             // Draw mods help screen on top if visible
+#pragma warning disable CS8602 // Null check already done in if condition
             if (_modsHelpScreen != null && _modsHelpScreen.IsVisible)
             {
                 _spriteBatch.Begin(samplerState: SamplerState.LinearClamp);
-                _modsHelpScreen.Draw(_spriteBatch, winBounds.Width, winBounds.Height);
+                _modsHelpScreen!.Draw(_spriteBatch, winBounds.Width, winBounds.Height);
                 _spriteBatch.End();
             }
+#pragma warning restore CS8602
             #endif
             
             // If there's an active song transition, render it over the menu then return
+#pragma warning disable CS8602 // Null check already done in if condition
             if (_songTransition != null)
             {
                 _spriteBatch.Begin(samplerState: SamplerState.LinearClamp);
-                _songTransition.Draw(_spriteBatch, winBounds.Width, winBounds.Height);
+                _songTransition!.Draw(_spriteBatch, winBounds.Width, winBounds.Height);
                 _spriteBatch.End();
             }
+#pragma warning restore CS8602
             
             // Draw touch controls LAST before present
             DrawTouchControls();
@@ -3701,7 +4123,8 @@ public partial class Game1 : Game
             GraphicsDevice.Clear(Color.Black);
             
             _spriteBatch.Begin(samplerState: SamplerState.LinearClamp);
-            _mainSettingsMenu.Draw(_spriteBatch, winBounds.Width, winBounds.Height);
+            if (_mainSettingsMenu != null)
+                _mainSettingsMenu.Draw(_spriteBatch, winBounds.Width, winBounds.Height);
             _spriteBatch.End();
             
             // Draw touch controls LAST before present
@@ -3717,7 +4140,8 @@ public partial class Game1 : Game
             GraphicsDevice.Clear(Color.Black);
             
             _spriteBatch.Begin(samplerState: SamplerState.PointClamp);
-            _hudEditor.Draw(_spriteBatch, _rtWidth, _rtHeight);
+            if (_hudEditor != null)
+                _hudEditor.Draw(_spriteBatch, _rtWidth, _rtHeight);
             _spriteBatch.End();
             
             // Blit to screen with letterboxing
@@ -3737,17 +4161,21 @@ public partial class Game1 : Game
             GraphicsDevice.Clear(Color.Black);
             
             _spriteBatch.Begin(samplerState: SamplerState.LinearClamp);
+#pragma warning disable CS8602 // Null checks already done in if condition
             if (_pixel != null && _font != null)
-                _multiplayerMenu.Draw(_spriteBatch, _font, _pixel, winBounds.Width, winBounds.Height);
+                _multiplayerMenu!.Draw(_spriteBatch, _font, _pixel, winBounds.Width, winBounds.Height);
+#pragma warning restore CS8602
             _spriteBatch.End();
             
             // If there's an active song transition, render it over the menu then return
+#pragma warning disable CS8602 // Null check already done in if condition
             if (_songTransition != null)
             {
                 _spriteBatch.Begin(samplerState: SamplerState.LinearClamp);
-                _songTransition.Draw(_spriteBatch, winBounds.Width, winBounds.Height);
+                _songTransition!.Draw(_spriteBatch, winBounds.Width, winBounds.Height);
                 _spriteBatch.End();
             }
+#pragma warning restore CS8602
             
             // Draw touch controls LAST before present
             DrawTouchControls();
@@ -3764,7 +4192,8 @@ public partial class Game1 : Game
                 DrawSceneOrdered(sw, sh, loadCamMatrix);
             }
             _spriteBatch.Begin(samplerState: SamplerState.PointClamp);
-            _loadingScreen.Draw(_spriteBatch, sw, sh);
+            if (_loadingScreen != null)
+                _loadingScreen.Draw(_spriteBatch, sw, sh);
             _spriteBatch.End();
             BlitToScreen();
             
@@ -3773,12 +4202,28 @@ public partial class Game1 : Game
             return;
         }
 
+        // ── Results Screen (Multiplayer) ───────────────────────────────────
+        if (_resultsScreen != null)
+        {
+            GraphicsDevice.SetRenderTarget(_renderTarget);
+            GraphicsDevice.Clear(Color.Black);
+            
+            _spriteBatch.Begin(samplerState: SamplerState.PointClamp);
+            _resultsScreen.Draw(_spriteBatch, _font, sw, sh);
+            _spriteBatch.End();
+            
+            BlitToScreen();
+            return;
+        }
+
         // ── Error or no level ─────────────────────────────────────────────────
         if (_errorMsg != null || _level == null)
         {
             _spriteBatch.Begin();
-            if (_errorMsg != null) DrawError(_errorMsg);
-            else                   DrawDropHint();
+            if (_errorMsg != null) 
+                DrawError(_errorMsg);
+            else                   
+                DrawDropHint();
             _spriteBatch.End();
             BlitToScreen();
             
@@ -3801,6 +4246,10 @@ public partial class Game1 : Game
         // ── Notes: arrows and receptors (drawn on top of everything) ─────────
         _spriteBatch.Begin(SpriteSortMode.Deferred, BlendState.NonPremultiplied, SamplerState.LinearClamp);
         DrawNotes();
+        
+        // Draw particle notesplash effects (MonoGame.Extended particles)
+        _particleNoteSplash?.Draw(_spriteBatch);
+        
         _spriteBatch.End();
 
         // Menus use PointClamp for crisp text rendering (FontStashSharp)
@@ -3808,7 +4257,13 @@ public partial class Game1 : Game
         DrawScreenFlashes(sw, sh);
         DrawCountdown(sw, sh);
         DrawJudgement(sw, sh);
-        DrawGameOver(sw, sh);
+        
+        // Draw game over overlay using extracted UI component
+        if (_gameOverOverlay != null && _gameOverOverlay.IsActive && _noteRenderers.Count > 0)
+        {
+            _gameOverOverlay.Draw(sw, sh, _noteRenderers[0]);
+        }
+        
         _spriteBatch.End();
 
         // ── Song transition overlay (AnkushCat cascade) ───────────────────────
@@ -3924,6 +4379,7 @@ public partial class Game1 : Game
         DrawTouchControls();
 
         base.Draw(gameTime);
+#nullable restore  // Re-enable nullability warnings
     }
 
     /// <summary>
@@ -4860,7 +5316,7 @@ public partial class Game1 : Game
             }
 
             // Use bilinear from JSON if sprite specifies it, otherwise use global setting
-            bool wantBilinear = anim.CurrentBilinear;
+            bool wantBilinear = anim?.CurrentBilinear ?? false;
             int  wantMode;
 
             var pos = obj.GetPosition();
@@ -4869,7 +5325,7 @@ public partial class Game1 : Game
             // Check if object has Transform array (for scrollFactor)
             // scrollFactor applies to all objects with Transform array, regardless of count
             bool hasTransformArray = obj.Transform != null && obj.Transform.Count > 0;
-            bool hasPositionEvents = hasTransformArray && _events.HasPositionEvents(i);
+            bool hasPositionEvents = hasTransformArray && _events != null && _events.HasPositionEvents(i);
 
             // Log first 3 visible objects once at start
             // Removed spammy debug log
@@ -4906,7 +5362,7 @@ public partial class Game1 : Game
             }
 
             // Check for active tween
-            bool hasActiveTween = _events.HasActiveTween(i);
+            bool hasActiveTween = _events != null && _events.HasActiveTween(i);
             
             // Update position and scale if NOT controlled by active tween
             if (!hasActiveTween)
@@ -4922,45 +5378,55 @@ public partial class Game1 : Game
                     Vector2 finalPos = new Vector2(pos.X, pos.Y);
                     
                     // Apply scrollFactor for parallax depth effect (FNF/HaxeFlixel style)
-                    // HaxeFlixel formula: screenPos = worldPos - (camera.scroll * scrollFactor)
-                    // FunkyMaker creator formula: x = x + cam.x * scrollfactor.x
-                    // 
-                    // Our camera matrix already subtracts camera position (cam * 1.0)
-                    // So we need to adjust by: (scrollFactor - 1.0) to get net effect of (scrollFactor)
-                    // 
-                    // Result: Objects with scrollFactor < 1.0 move slower (background)
-                    //         Objects with scrollFactor = 1.0 move with camera (characters)
-                    //         Objects with scrollFactor > 1.0 move faster (foreground)
+                    // FunkyMaker behavior:
+                    //   - Objects with scrollFactor < 1.0 appear to move slower (parallax background)
+                    //   - BUT they must arrive at their final position when camera transition completes
+                    //   - The parallax effect is visual only - not a timing delay
+                    //
+                    // Formula: finalPos = objectWorldPos - (cameraCurrentPos * (scrollFactor - 1.0))
+                    // This ensures objects reach their final screen position in sync with camera,
+                    // but appear to move at different speeds during transition.
                     if (hasTransformArray)
                     {
                         Vec2 scrollFactor = obj.GetScrollFactor();
                         var cam = _events?.Camera;
                         
-                        if (cam != null && (Math.Abs(scrollFactor.X - 1f) > 0.001f || Math.Abs(scrollFactor.Y - 1f) > 0.001f))
+                        if (cam != null && anim != null && (Math.Abs(scrollFactor.X - 1f) > 0.001f || Math.Abs(scrollFactor.Y - 1f) > 0.001f))
                         {
                             // Clamp scrollFactor to valid range [0.01, 4.0]
                             float clampedFactorX = Math.Clamp(scrollFactor.X, 0.01f, 4.0f);
                             float clampedFactorY = Math.Clamp(scrollFactor.Y, 0.01f, 4.0f);
                             
-                            // Apply FNF/HaxeFlixel parallax formula adjusted for our camera system
-                            // Camera matrix will do: worldPos - cam*1.0
-                            // We subtract additional: cam * (scrollFactor - 1.0)
-                            // Net result: worldPos - cam*1.0 - cam*(scrollFactor-1.0) = worldPos - cam*scrollFactor ✓
-                            finalPos.X = pos.X - cam.X * (clampedFactorX - 1.0f);
-                            finalPos.Y = pos.Y - cam.Y * (clampedFactorY - 1.0f);
+                            // FunkyMaker scrollFactor formula:
+                            // scrollFactor determines what PERCENTAGE of camera movement affects the object
+                            // - scrollFactor = 1.0: object moves 100% with camera (normal, no parallax)
+                            // - scrollFactor = 0.7: object moves 70% with camera (slower background)
+                            // - scrollFactor = 0.5: object moves 50% with camera (much slower background)
+                            // 
+                            // Formula: finalPos = worldPos + (cameraPos * (1.0 - scrollFactor))
+                            // This makes the object appear to move slower by offsetting it based on camera movement
+                            finalPos.X = pos.X + cam.X * (1.0f - clampedFactorX);
+                            finalPos.Y = pos.Y + cam.Y * (1.0f - clampedFactorY);
                             
-                            // Debug log for first few objects
-                            if (i < 3)
+                            // Debug log once per level (prevent spam)
+                            if (!_parallaxLoggedOnce && i < 3)
                             {
-                                Console.WriteLine($"[FNF-Parallax] Obj{i}: world=({pos.X:F0},{pos.Y:F0}) cam=({cam.X:F0},{cam.Y:F0}) scroll=({clampedFactorX:F2},{clampedFactorY:F2}) → adjusted=({finalPos.X:F0},{finalPos.Y:F0})");
+                                Console.WriteLine($"[FunkyMaker-Parallax] Obj{i}: world=({pos.X:F0},{pos.Y:F0}) cam=({cam.X:F0},{cam.Y:F0}) scroll=({clampedFactorX:F2},{clampedFactorY:F2}) offset=({cam.X * (1.0f - clampedFactorX):F0},{cam.Y * (1.0f - clampedFactorY):F0}) → final=({finalPos.X:F0},{finalPos.Y:F0})");
+                                if (i == 2) _parallaxLoggedOnce = true;  // Mark as logged after 3rd object
                             }
                         }
                     }
                     
-                    anim.Position = finalPos;
-                    anim.Scale = new Vector2(scale.X, scale.Y);
+                    if (anim != null)
+                    {
+                        anim.Position = finalPos;
+                        anim.Scale = new Vector2(scale.X, scale.Y);
+                    }
                 }
             }
+            
+            // Ensure anim is not null before continuing
+            if (anim == null) continue;
             
             // Set FixedPixelScale for Fixed objects (using Blazor logic)
             if (obj.Fixed)
@@ -5172,7 +5638,7 @@ public partial class Game1 : Game
                 _noteRenderers[i].Alpha = 0f;
             }
             // Opponent strumline (1): ALWAYS show during multiplayer, respect setting otherwise
-            else if (i == 1 && HideOpponentStrumline && !false /* multiplayer disabled in Game1 */)
+            else if (i == 1 && HideOpponentStrumline && !_isMultiplayerMatch)
             {
                 _noteRenderers[i].Alpha = 0f;
             }
@@ -5242,136 +5708,9 @@ public partial class Game1 : Game
         bool levelHasOwnBar = _level != null &&
             _level.Scene.Objects.Exists(o => o.Spr == "barra" && o.Fixed);
 
-        if (!levelHasOwnBar)
+        if (!levelHasOwnBar && _healthBar != null)
         {
-            // FNF-style health bar: wider, thicker, with gradient and glow
-            // The size in HudSettings represents the TOTAL visual size (including borders)
-            // So we need to calculate the inner bar size by subtracting border thicknesses
-            int totalBarW = hudSettings.HealthBarSize.X;
-            int totalBarH = hudSettings.HealthBarSize.Y;
-            int barX = hudSettings.HealthBarPosition.X;
-            int barY = hudSettings.HealthBarPosition.Y;
-            
-            // Border thicknesses
-            const int outerShadow = 6;
-            const int thickBorder = 4;
-            const int innerBorder = 2;
-            
-            // Calculate inner bar size (subtract all borders from total size)
-            int barW = totalBarW - (innerBorder * 2);
-            int barH = totalBarH - (innerBorder * 2);
-            
-            // Adjust positions to account for borders
-            int innerBarX = barX + innerBorder;
-            int innerBarY = barY + innerBorder;
-
-            // Outer glow/shadow (subtle) - positioned relative to HudSettings position
-            DrawRect(barX - (outerShadow - innerBorder), barY - (outerShadow - innerBorder), 
-                     totalBarW + (outerShadow - innerBorder) * 2, totalBarH + (outerShadow - innerBorder) * 2, 
-                     Color.Black * 0.5f);
-            
-            // Black background with thicker border
-            DrawRect(barX - (thickBorder - innerBorder), barY - (thickBorder - innerBorder), 
-                     totalBarW + (thickBorder - innerBorder) * 2, totalBarH + (thickBorder - innerBorder) * 2, 
-                     Color.Black * 0.9f);
-            DrawRect(barX, barY, totalBarW, totalBarH, new Color(30, 30, 30));
-
-            // Calculate bar widths
-            int playerW = (int)(_health * barW);
-            int enemyW  = barW - playerW;
-            
-            // Draw opponent side (left) with smooth gradient
-            for (int i = 0; i < enemyW; i++)
-            {
-                float t = (float)i / barW;
-                // Smoother gradient from dark to bright
-                Color c = Color.Lerp(_opponentBarColor * 0.6f, _opponentBarColor * 1.1f, t * t);
-                DrawRect(innerBarX + i, innerBarY, 1, barH, c);
-            }
-            
-            // Draw player side (right) with smooth gradient
-            for (int i = 0; i < playerW; i++)
-            {
-                float t = (float)i / barW;
-                // Smoother gradient from bright to dark
-                Color c = Color.Lerp(_playerBarColor * 1.1f, _playerBarColor * 0.6f, t * t);
-                DrawRect(innerBarX + enemyW + i, innerBarY, 1, barH, c);
-            }
-            
-            // Add subtle highlights on top and bottom edges
-            DrawRect(innerBarX, innerBarY, enemyW, 1, Color.White * 0.2f); // Top highlight (opponent side)
-            DrawRect(innerBarX + enemyW, innerBarY, playerW, 1, Color.White * 0.2f); // Top highlight (player side)
-            
-            // Center divider (white line with glow)
-            DrawRect(innerBarX + enemyW - 3, innerBarY - 5, 6, barH + 10, Color.White * 0.3f); // Glow
-            DrawRect(innerBarX + enemyW - 2, innerBarY - 4, 4, barH + 8, Color.White); // Main divider
-
-            // ── Icons ────────────────────────────────────────────────────────
-            // In FNF, icons are 150x150 but often scaled down to ~100px for better visual balance
-            int iconSize = 100; // Smaller size like in Funky Maker
-            int iconOffsetY = -40; // Position icons above the health bar
-            
-            int opponentIconX, opponentIconY, playerIconX, playerIconY;
-            
-            if (Game1.IconMode == 0) // FNF Base mode
-            {
-                // FNF BASE MODE: Icons are centered together on the health bar and move with health percentage
-                // Icons are positioned side-by-side at the center divider that moves with health
-                int dividerX = innerBarX + enemyW; // Center point that moves with health
-                
-                // Get actual scaled icon widths
-                int opponentActualWidth = iconSize;
-                int playerActualWidth = iconSize;
-                
-                if (_iconOpponentAnim != null)
-                {
-                    var (tex, src) = _iconOpponentAnim.GetCurrentFrameTexture();
-                    if (tex != null && src.Width > 0 && src.Height > 0)
-                    {
-                        float scale = (float)iconSize / Math.Max(src.Width, src.Height);
-                        opponentActualWidth = (int)(src.Width * scale);
-                    }
-                }
-                
-                if (_iconPlayerAnim != null)
-                {
-                    var (tex, src) = _iconPlayerAnim.GetCurrentFrameTexture();
-                    if (tex != null && src.Width > 0 && src.Height > 0)
-                    {
-                        float scale = (float)iconSize / Math.Max(src.Width, src.Height);
-                        playerActualWidth = (int)(src.Width * scale);
-                    }
-                }
-                
-                // DrawIcon centers sprites within iconSize bounding box:
-                // Actual sprite position = destX + (iconSize - actualWidth) / 2
-                // Actual sprite end = destX + (iconSize + actualWidth) / 2
-                
-                // For opponent: we want right edge at dividerX
-                // dividerX = destX + (iconSize + opponentActualWidth) / 2
-                // destX = dividerX - (iconSize + opponentActualWidth) / 2
-                opponentIconX = dividerX - (iconSize + opponentActualWidth) / 2;
-                opponentIconY = barY + iconOffsetY;
-                
-                // For player: we want left edge at dividerX
-                // dividerX = destX + (iconSize - playerActualWidth) / 2
-                // destX = dividerX - (iconSize - playerActualWidth) / 2
-                playerIconX = dividerX - (iconSize - playerActualWidth) / 2;
-                playerIconY = barY + iconOffsetY;
-            }
-            else // IconMode == 1: Fixed at Ends
-            {
-                // FIXED AT ENDS MODE: Icons stay at fixed positions defined in HudSettings (user can customize)
-                // Use HudSettings positions for manual customization
-                opponentIconX = hudSettings.OpponentIconPosition.X;
-                opponentIconY = hudSettings.OpponentIconPosition.Y;
-                
-                playerIconX = hudSettings.PlayerIconPosition.X;
-                playerIconY = hudSettings.PlayerIconPosition.Y;
-            }
-            
-            DrawIcon(_iconOpponentAnim, opponentIconX, opponentIconY, iconSize, flipX: false, _iconBounceScale);
-            DrawIcon(_iconPlayerAnim,   playerIconX,   playerIconY,   iconSize, flipX: false, _iconBounceScale);
+            _healthBar.Draw(sh, NoteRenderer.Downscroll);
         }
         
         if (_font == null || _noteRenderers.Count == 0 || _level == null) return;
@@ -5386,48 +5725,99 @@ public partial class Game1 : Game
             // ── MULTIPLAYER HUD ──────────────────────────────────────────────
             if (_isMultiplayerMatch && _font != null && _pixel != null && _noteRenderers.Count >= 2)
             {
-                // Multiplayer: 2 separate health bars + stats for both players
                 float statsScale = 0.75f;
-                
-                // Get renderers
                 var playerRend = _noteRenderers[0];
-                var opponentRend = _noteRenderers[1];
                 
-                // ── PLAYER HEALTH BAR (Right side) ───────────────────────────
+                // ── SPLIT HEALTH BARS (Left: Opponent, Right: Player) ────────
                 int barWidth = 300;
                 int barHeight = 20;
-                int barY = sh - 120;
-                int playerBarX = sw - barWidth - 40; // Right side
+                int barY = sh - 100; // Position near bottom
                 
-                // Draw player bar
-                DrawRect(playerBarX - 2, barY - 2, barWidth + 4, barHeight + 4, Color.Black);
-                DrawRect(playerBarX, barY, barWidth, barHeight, new Color(30, 30, 30));
-                int playerFill = (int)(_health * barWidth);
-                for (int i = 0; i < playerFill; i++)
-                {
-                    float t = (float)i / barWidth;
-                    Color c = Color.Lerp(_playerBarColor * 0.8f, _playerBarColor, t);
-                    DrawRect(playerBarX + i, barY, 1, barHeight, c);
-                }
+                // Left side: Opponent health bar
+                int opponentBarX = sw / 4 - barWidth / 2; // Center of left quarter
                 
-                // ── OPPONENT HEALTH BAR (Left side) ──────────────────────────
-                int opponentBarX = 40; // Left side
-                
-                // Draw opponent bar
+                // Opponent bar background
+                DrawRect(opponentBarX - 3, barY - 3, barWidth + 6, barHeight + 6, Color.Black * 0.6f);
                 DrawRect(opponentBarX - 2, barY - 2, barWidth + 4, barHeight + 4, Color.Black);
                 DrawRect(opponentBarX, barY, barWidth, barHeight, new Color(30, 30, 30));
-                int opponentFill = (int)(_opponentHealth * barWidth);
-                for (int i = 0; i < opponentFill; i++)
+                
+                // Opponent health fill (full = 100%, empty = 0%)
+                int opponentHealthW = (int)(_opponentHealth * barWidth);
+                for (int i = 0; i < opponentHealthW; i++)
                 {
                     float t = (float)i / barWidth;
-                    Color c = Color.Lerp(_opponentBarColor * 0.8f, _opponentBarColor, t);
+                    Color opponentColor = _healthBar?.OpponentBarColor ?? new Color(0xFF, 0x00, 0x00);
+                    Color c = Color.Lerp(opponentColor * 0.7f, opponentColor * 1.1f, t);
                     DrawRect(opponentBarX + i, barY, 1, barHeight, c);
                 }
                 
-                // ── PLAYER STATS (Right side, below bar) ─────────────────────
-                int statsY = barY + barHeight + 10;
+                // Opponent icon above bar
+                int iconSize = 80;
+                int opponentIconX = opponentBarX + barWidth / 2 - iconSize / 2;
+                int opponentIconY = barY - iconSize - 10;
+                if (_healthBar?.OpponentIcon != null)
+                {
+                    var (tex, src) = _healthBar.OpponentIcon.GetCurrentFrameTexture();
+                    if (tex != null && src.Width > 0 && src.Height > 0)
+                    {
+                        float scale = (float)iconSize / Math.Max(src.Width, src.Height);
+                        int drawW = (int)(src.Width * scale);
+                        int drawH = (int)(src.Height * scale);
+                        int drawX = opponentIconX + (iconSize - drawW) / 2;
+                        int drawY = opponentIconY + (iconSize - drawH) / 2;
+                        _spriteBatch.Draw(tex, new Rectangle(drawX, drawY, drawW, drawH), src, Color.White);
+                    }
+                }
                 
-                // Player stats
+                // Opponent stats below bar
+                string opponentStats = $"{_opponentName ?? "Opponent"}\nScore: {_opponentScore}\nHealth: {(_opponentHealth * 100):F0}%";
+                Vector2 opponentStatsSize = _font.MeasureString(opponentStats) * statsScale;
+                Vector2 opponentStatsPos = new Vector2(opponentBarX + barWidth / 2 - opponentStatsSize.X / 2, barY + barHeight + 8);
+                
+                _spriteBatch.DrawString(_font, opponentStats,
+                    opponentStatsPos + new Vector2(2, 2), Color.Black * 0.7f, 
+                    0f, Vector2.Zero, statsScale, SpriteEffects.None, 0f);
+                _spriteBatch.DrawString(_font, opponentStats,
+                    opponentStatsPos, new Color(255, 100, 100), 
+                    0f, Vector2.Zero, statsScale, SpriteEffects.None, 0f);
+                
+                // Right side: Player health bar
+                int playerBarX = (sw * 3) / 4 - barWidth / 2; // Center of right quarter
+                
+                // Player bar background
+                DrawRect(playerBarX - 3, barY - 3, barWidth + 6, barHeight + 6, Color.Black * 0.6f);
+                DrawRect(playerBarX - 2, barY - 2, barWidth + 4, barHeight + 4, Color.Black);
+                DrawRect(playerBarX, barY, barWidth, barHeight, new Color(30, 30, 30));
+                
+                // Player health fill
+                float playerHealth = _healthBar?.Health ?? 0.5f;
+                int playerHealthW = (int)(playerHealth * barWidth);
+                for (int i = 0; i < playerHealthW; i++)
+                {
+                    float t = (float)i / barWidth;
+                    Color playerColor = _healthBar?.PlayerBarColor ?? new Color(0x66, 0xFF, 0x66);
+                    Color c = Color.Lerp(playerColor * 0.7f, playerColor * 1.1f, t);
+                    DrawRect(playerBarX + i, barY, 1, barHeight, c);
+                }
+                
+                // Player icon above bar
+                int playerIconX = playerBarX + barWidth / 2 - iconSize / 2;
+                int playerIconY = barY - iconSize - 10;
+                if (_healthBar?.PlayerIcon != null)
+                {
+                    var (tex, src) = _healthBar.PlayerIcon.GetCurrentFrameTexture();
+                    if (tex != null && src.Width > 0 && src.Height > 0)
+                    {
+                        float scale = (float)iconSize / Math.Max(src.Width, src.Height);
+                        int drawW = (int)(src.Width * scale);
+                        int drawH = (int)(src.Height * scale);
+                        int drawX = playerIconX + (iconSize - drawW) / 2;
+                        int drawY = playerIconY + (iconSize - drawH) / 2;
+                        _spriteBatch.Draw(tex, new Rectangle(drawX, drawY, drawW, drawH), src, Color.White);
+                    }
+                }
+                
+                // Player stats below bar
                 int totalPlayerNotes = playerRend.Sicks + playerRend.Goods + playerRend.Bads + 
                                      playerRend.Shits + playerRend.Misses;
                 float playerAccuracy = 100f;
@@ -5438,61 +5828,81 @@ public partial class Game1 : Game
                     playerAccuracy = (weightedHits / totalPlayerNotes) * 100f;
                 }
                 
-                string playerScore = $"Score: {playerRend.Score}";
-                string playerAcc = $"Acc: {playerAccuracy:F1}%";
-                string playerCombo = $"Combo: {playerRend.Combo}";
+                string playerStats = $"You\nScore: {playerRend.Score}\nAccuracy: {playerAccuracy:F0}%\nCombo: x{playerRend.Combo}";
+                Vector2 playerStatsSize = _font.MeasureString(playerStats) * statsScale;
+                Vector2 playerStatsPos = new Vector2(playerBarX + barWidth / 2 - playerStatsSize.X / 2, barY + barHeight + 8);
                 
-                // Draw player stats (right-aligned)
-                Vector2 scoreSize = _font.MeasureString(playerScore) * statsScale;
-                _spriteBatch.DrawString(_font, playerScore,
-                    new Vector2(playerBarX + barWidth - scoreSize.X, statsY + 2), Color.Black * 0.7f, 
+                _spriteBatch.DrawString(_font, playerStats,
+                    playerStatsPos + new Vector2(2, 2), Color.Black * 0.7f, 
                     0f, Vector2.Zero, statsScale, SpriteEffects.None, 0f);
-                _spriteBatch.DrawString(_font, playerScore,
-                    new Vector2(playerBarX + barWidth - scoreSize.X, statsY), Color.White, 
+                _spriteBatch.DrawString(_font, playerStats,
+                    playerStatsPos, new Color(100, 255, 100), 
                     0f, Vector2.Zero, statsScale, SpriteEffects.None, 0f);
                 
-                Vector2 accSize = _font.MeasureString(playerAcc) * statsScale;
-                _spriteBatch.DrawString(_font, playerAcc,
-                    new Vector2(playerBarX + barWidth - accSize.X, statsY + 22), Color.Black * 0.7f, 
-                    0f, Vector2.Zero, statsScale, SpriteEffects.None, 0f);
-                _spriteBatch.DrawString(_font, playerAcc,
-                    new Vector2(playerBarX + barWidth - accSize.X, statsY + 20), new Color(100, 255, 100), 
-                    0f, Vector2.Zero, statsScale, SpriteEffects.None, 0f);
+                // ── CENTER INFO (Accuracy & Score comparison) ─────────────────
+                float centerScale = 0.9f;
+                int centerY = sh - 180;
                 
-                Vector2 comboSize = _font.MeasureString(playerCombo) * statsScale;
-                _spriteBatch.DrawString(_font, playerCombo,
-                    new Vector2(playerBarX + barWidth - comboSize.X, statsY + 42), Color.Black * 0.7f, 
-                    0f, Vector2.Zero, statsScale, SpriteEffects.None, 0f);
-                _spriteBatch.DrawString(_font, playerCombo,
-                    new Vector2(playerBarX + barWidth - comboSize.X, statsY + 40), Color.Cyan, 
-                    0f, Vector2.Zero, statsScale, SpriteEffects.None, 0f);
+                // Accuracy comparison
+                string accuracyText = $"Accuracy: {playerAccuracy:F1}%";
+                Vector2 accuracySize = _font.MeasureString(accuracyText) * centerScale;
+                Vector2 accuracyPos = new Vector2(sw / 2 - accuracySize.X / 2, centerY);
                 
-                // ── OPPONENT STATS (Left side, below bar) ────────────────────
-                string opponentScore = $"Score: {_opponentScore}";
-                string opponentHealth = $"HP: {(_opponentHealth * 100):F0}%";
-                string opponentName = _opponentName ?? "Opponent";
+                _spriteBatch.DrawString(_font, accuracyText,
+                    accuracyPos + new Vector2(2, 2), Color.Black * 0.7f, 
+                    0f, Vector2.Zero, centerScale, SpriteEffects.None, 0f);
+                _spriteBatch.DrawString(_font, accuracyText,
+                    accuracyPos, Color.White, 
+                    0f, Vector2.Zero, centerScale, SpriteEffects.None, 0f);
                 
-                // Draw opponent stats (left-aligned)
-                _spriteBatch.DrawString(_font, opponentName,
-                    new Vector2(opponentBarX + 2, statsY + 2), Color.Black * 0.7f, 
-                    0f, Vector2.Zero, statsScale, SpriteEffects.None, 0f);
-                _spriteBatch.DrawString(_font, opponentName,
-                    new Vector2(opponentBarX, statsY), new Color(255, 200, 100), 
-                    0f, Vector2.Zero, statsScale, SpriteEffects.None, 0f);
+                // Score comparison
+                int scoreDiff = playerRend.Score - _opponentScore;
+                string scoreText = scoreDiff >= 0 ? $"+{scoreDiff}" : $"{scoreDiff}";
+                Color scoreColor = scoreDiff >= 0 ? new Color(100, 255, 100) : new Color(255, 100, 100);
                 
-                _spriteBatch.DrawString(_font, opponentScore,
-                    new Vector2(opponentBarX + 2, statsY + 22), Color.Black * 0.7f, 
-                    0f, Vector2.Zero, statsScale, SpriteEffects.None, 0f);
-                _spriteBatch.DrawString(_font, opponentScore,
-                    new Vector2(opponentBarX, statsY + 20), Color.White, 
-                    0f, Vector2.Zero, statsScale, SpriteEffects.None, 0f);
+                Vector2 scoreSize = _font.MeasureString(scoreText) * centerScale;
+                Vector2 scorePos = new Vector2(sw / 2 - scoreSize.X / 2, centerY + 30);
                 
-                _spriteBatch.DrawString(_font, opponentHealth,
-                    new Vector2(opponentBarX + 2, statsY + 42), Color.Black * 0.7f, 
-                    0f, Vector2.Zero, statsScale, SpriteEffects.None, 0f);
-                _spriteBatch.DrawString(_font, opponentHealth,
-                    new Vector2(opponentBarX, statsY + 40), new Color(255, 100, 100), 
-                    0f, Vector2.Zero, statsScale, SpriteEffects.None, 0f);
+                _spriteBatch.DrawString(_font, scoreText,
+                    scorePos + new Vector2(2, 2), Color.Black * 0.7f, 
+                    0f, Vector2.Zero, centerScale, SpriteEffects.None, 0f);
+                _spriteBatch.DrawString(_font, scoreText,
+                    scorePos, scoreColor, 
+                    0f, Vector2.Zero, centerScale, SpriteEffects.None, 0f);
+                
+                // ── PING INDICATOR ────────────────────────────────────────────
+                int ping = Multiplayer.NetworkManager.Instance.Ping;
+                var quality = Multiplayer.NetworkManager.Instance.Quality;
+                
+                // Determine color based on ping quality
+                Color pingColor = quality switch
+                {
+                    Multiplayer.ConnectionQuality.Excellent => new Color(100, 255, 100),  // Green
+                    Multiplayer.ConnectionQuality.Good => new Color(150, 255, 150),       // Light green
+                    Multiplayer.ConnectionQuality.Fair => Color.Yellow,                   // Yellow
+                    Multiplayer.ConnectionQuality.Poor => new Color(255, 150, 0),         // Orange
+                    Multiplayer.ConnectionQuality.Critical => new Color(255, 50, 50),     // Red
+                    _ => Color.Gray                                                        // Unknown
+                };
+                
+                string pingText = ping > 0 ? $"{ping}ms" : "...";
+                float pingScale = 0.7f;
+                Vector2 pingSize = _font.MeasureString(pingText) * pingScale;
+                Vector2 pingPos = new Vector2(sw / 2 - pingSize.X / 2, centerY + 65);
+                
+                // Ping background (subtle)
+                DrawRect((int)(pingPos.X - 5), (int)(pingPos.Y - 2), (int)(pingSize.X + 10), (int)(pingSize.Y + 4), 
+                         Color.Black * 0.5f);
+                
+                // Ping shadow
+                _spriteBatch.DrawString(_font, pingText,
+                    pingPos + new Vector2(1, 1), Color.Black * 0.7f, 
+                    0f, Vector2.Zero, pingScale, SpriteEffects.None, 0f);
+                
+                // Ping text
+                _spriteBatch.DrawString(_font, pingText,
+                    pingPos, pingColor, 
+                    0f, Vector2.Zero, pingScale, SpriteEffects.None, 0f);
             }
             // ── SINGLEPLAYER HUD ─────────────────────────────────────────────
             else
@@ -5549,91 +5959,20 @@ public partial class Game1 : Game
         }
 
         // ── Song timer bar ──────────────────────────────────────────────────────
-        if (ShowTimer && _started && _songEndTime > 0f && _songEndTime < float.MaxValue && _font != null)
+        if (_timerBar != null)
         {
-            if (TimerPreset == "Legacy" || TimerPreset == "Custom HUD")
-            {
-                // ── LEGACY / CUSTOM HUD TIMER (Original code) ────────────────────
-                float progress   = Math.Clamp(_songTime / _songEndTime, 0f, 1f);
-                float elapsed    = Math.Max(0f, _songTime);
-                string timeStr   = $"{(int)(elapsed / 60)}:{(int)(elapsed % 60):D2}";
-                float labelScale = 0.9f;
-                var labelSize    = _font.MeasureString(timeStr) * labelScale;
-
-                // Use HudSettings for timer bar position and size
-                int barW = hudSettings.TimerBarSize.X;
-                int barH = hudSettings.TimerBarSize.Y;
-                int barX = hudSettings.TimerBarPosition.X;
-                int barY = hudSettings.TimerBarPosition.Y;
-
-                // Fill color from preset
-            Color timerFill = TimerColorPreset switch {
-                1 => new Color(0x00, 0xFF, 0xFF),
-                2 => new Color(0xFF, 0x69, 0xB4),
-                3 => new Color(0xFF, 0xD7, 0x00),
-                4 => new Color(0x66, 0xFF, 0x66),
-                5 => _playerBarColor,
-                6 => _opponentBarColor,
-                _ => Color.White,
-            };
-
-            // Outer shadow/glow
-            DrawRect(barX - 3, barY - 3, barW + 6, barH + 6, Color.Black * 0.5f);
+            // Sync configuration from Game1 static fields
+            _timerBar.ShowTimer = ShowTimer;
+            _timerBar.Preset = TimerPreset;
+            _timerBar.TextMode = TimerTextMode;
+            _timerBar.ForceTop = TimerForceTop;
+            _timerBar.ColorPreset = TimerColorPreset;
+            _timerBar.Position = new Point(hudSettings.TimerBarPosition.X, hudSettings.TimerBarPosition.Y);
+            _timerBar.Size = new Point(hudSettings.TimerBarSize.X, hudSettings.TimerBarSize.Y);
             
-            // Dark background bar with border
-            DrawRect(barX, barY, barW, barH, new Color(20, 20, 20, 220));
-            
-            // Thin border (highlight)
-            DrawRect(barX, barY, barW, 2, Color.White * 0.3f); // Top
-            DrawRect(barX, barY + barH - 2, barW, 2, Color.Black * 0.5f); // Bottom
-            DrawRect(barX, barY, 2, barH, Color.White * 0.2f); // Left
-            DrawRect(barX + barW - 2, barY, 2, barH, Color.Black * 0.4f); // Right
-            
-            // Fill from left with gradient effect
-            int fillW = (int)(barW * progress);
-            if (fillW > 0)
-            {
-                // Draw fill in segments for gradient
-                int segments = Math.Min(fillW, 20);
-                int segmentWidth = Math.Max(1, fillW / segments);
-                
-                for (int i = 0; i < segments; i++)
-                {
-                    float t = i / (float)segments;
-                    float gradientFactor = 0.7f + (t * 0.3f); // Darker at start, brighter at end
-                    
-                    int x = barX + (i * segmentWidth);
-                    int w = (i == segments - 1) ? (fillW - (i * segmentWidth)) : segmentWidth;
-                    
-                    DrawRect(x, barY + 2, w, barH - 4, timerFill * gradientFactor);
-                }
-                
-                // Add a glow effect on the right edge of the fill
-                if (fillW < barW - 4)
-                {
-                    DrawRect(barX + fillW, barY + 2, 3, barH - 4, timerFill * 0.5f);
-                }
-            }
-
-            // Time text with shadow for readability
-            float textX = sw / 2f - labelSize.X / 2f;
-            float textY = barY + (barH - labelSize.Y) / 2f;
-            
-            // Text shadow
-            _spriteBatch.DrawString(_font, timeStr,
-                new Vector2(textX + 2, textY + 2),
-                Color.Black * 0.8f, 0f, Vector2.Zero, labelScale, SpriteEffects.None, 0f);
-            
-            // Main text
-            _spriteBatch.DrawString(_font, timeStr,
-                new Vector2(textX, textY),
-                Color.White, 0f, Vector2.Zero, labelScale, SpriteEffects.None, 0f);
-            }
-            else
-            {
-                // ── V-SLICE STYLE TIMER (Top/Left/Middle/Right/Strumline) ────────
-                DrawTimerBar_VSlice(sw, sh);
-            }
+            // Draw timer bar
+            _timerBar.Draw(sw, sh, _songTime, _songEndTime, NoteRenderer.Downscroll, 
+                         _level?.LevelName, _healthBar?.PlayerBarColor, _healthBar?.OpponentBarColor, _started);
         }
 
         // Song info (using HudSettings position) with shadow
@@ -5684,11 +6023,39 @@ public partial class Game1 : Game
             }
         }
         
-        // FPS Counter: Below song title (if enabled) with shadow
+        // FPS Counter: Platform-adaptive display (if enabled)
         if (ShowFpsCounter)
         {
             float fps = (float)(1.0 / Math.Max(0.0001, _lastDt));
-            Vector2 fpsPos = new Vector2(songInfoPos.X, songInfoPos.Y + 28); // 28px below song title
+            
+#if ANDROID
+            // Mobile: Top-right corner with background for better visibility
+            string fpsText = Safe($"FPS: {fps:F0}");
+            Vector2 textSize = _font.MeasureString(fpsText);
+            Vector2 fpsPos = new Vector2(sw - textSize.X - 20, 20);
+            
+            // Background box for contrast
+            Rectangle bgBox = new Rectangle(
+                (int)(fpsPos.X - 8),
+                (int)(fpsPos.Y - 4),
+                (int)(textSize.X + 16),
+                (int)(textSize.Y + 8)
+            );
+            _spriteBatch.Draw(_pixel, bgBox, Color.Black * 0.7f);
+            
+            // Color-coded FPS (green = good, yellow = ok, red = bad)
+            Color fpsColor = fps >= 55 ? Color.LimeGreen : (fps >= 30 ? Color.Yellow : Color.Red);
+            
+            // Shadow for mobile readability
+            _spriteBatch.DrawString(_font, fpsText,
+                fpsPos + new Vector2(2, 2), Color.Black * 0.8f);
+            
+            // Main text
+            _spriteBatch.DrawString(_font, fpsText,
+                fpsPos, fpsColor);
+#else
+            // PC: Below song title with VSYNC info
+            Vector2 fpsPos = new Vector2(songInfoPos.X, songInfoPos.Y + 28);
             string fpsText = Safe($"FPS: {fps:F0}  {(_graphics.SynchronizeWithVerticalRetrace ? "VSYNC" : "UNCAPPED")}");
             
             // Shadow
@@ -5698,6 +6065,7 @@ public partial class Game1 : Game
             // Main text
             _spriteBatch.DrawString(_font, fpsText,
                 fpsPos, Color.White * 0.7f);
+#endif
         }
 
         // Controls status (always visible — useful info for the player)
@@ -5731,153 +6099,6 @@ public partial class Game1 : Game
     // ── Helpers ──────────────────────────────────────────────────────────────
     private void DrawRect(int x, int y, int w, int h, Color color)
         => _spriteBatch.Draw(_pixel!, new Rectangle(x, y, w, h), color);
-
-    // ── V-Slice Timer Bar (Based on Haxe TimeBar mod) ────────────────────────
-    private void DrawTimerBar_VSlice(int sw, int sh)
-    {
-        float progress = Math.Clamp(_songTime / _songEndTime, 0f, 1f);
-        
-        // Get text based on TimerTextMode
-        string timeStr = TimerTextMode switch
-        {
-            "Time Elapsed" => $"{(int)(_songTime / 60)}:{(int)(_songTime % 60):D2}",
-            "Time Left" => $"{(int)((_songEndTime - _songTime) / 60)}:{(int)((_songEndTime - _songTime) % 60):D2}",
-            "Song Name" => _level?.LevelName ?? "Unknown",
-            "None" => "",
-            _ => $"{(int)((_songEndTime - _songTime) / 60)}:{(int)((_songEndTime - _songTime) % 60):D2}"
-        };
-        
-        Color timerFill = TimerColorPreset switch {
-            1 => new Color(0x00, 0xFF, 0xFF),
-            2 => new Color(0xFF, 0x69, 0xB4),
-            3 => new Color(0xFF, 0xD7, 0x00),
-            4 => new Color(0x66, 0xFF, 0x66),
-            5 => _playerBarColor,
-            6 => _opponentBarColor,
-            _ => Color.White,
-        };
-        
-        // Bar dimensions (matching V-Slice standard sizes)
-        // Normal: 400x20 content area, Wide would be ~600x20
-        int barW = 400;  // Content width (actual bar has +8px for borders)
-        int barH = 20;   // Content height (actual bar has +8px for borders)
-        int barX = sw / 2 - barW / 2;
-        int barY = 10;
-        
-        bool isVertical = TimerPreset == "Left" || TimerPreset == "Right";
-        
-        // Calculate position based on preset
-        switch (TimerPreset)
-        {
-            case "Top":
-                barY = (TimerForceTop || !NoteRenderer.Downscroll) ? 10 : sh - barH - 10;
-                break;
-            case "Middle":
-                barX = sw / 2 - barW / 2;
-                barY = sh / 2 - barH / 2;
-                break;
-            case "Right":
-                // Vertical bar on the right
-                barX = sw - barH * 2;
-                barY = sh / 2 - barW / 2;
-                break;
-            case "Left":
-                // Vertical bar on the left
-                barX = barH;
-                barY = sh / 2 - barW / 2;
-                break;
-            case "Strumline":
-                // Above player strumline
-                barX = sw / 2 - barW / 2;
-                barY = NoteRenderer.Downscroll ? 100 : sh - 200;
-                break;
-        }
-        
-        if (isVertical)
-        {
-            // For vertical bars, draw rotated
-            DrawTimerBar_Vertical(barX, barY, barW, barH, progress, timeStr, timerFill);
-        }
-        else
-        {
-            // Horizontal bar
-            DrawTimerBar_Horizontal(barX, barY, barW, barH, progress, timeStr, timerFill);
-        }
-    }
-    
-    private void DrawTimerBar_Horizontal(int barX, int barY, int barW, int barH, float progress, string timeStr, Color timerFill)
-    {
-        // Background (black border + dark gray fill) - matching Haxe with 4px padding on each side
-        int bgW = barW + 8;  // +4px on each side
-        int bgH = barH + 8;
-        
-        DrawRect(barX - 4, barY - 4, bgW, bgH, Color.Black * 0.8f);
-        DrawRect(barX, barY, barW, barH, new Color(20, 20, 20, 220));
-        
-        // Fill (left to right)
-        int fillW = (int)(barW * progress);
-        if (fillW > 0)
-            DrawRect(barX, barY, fillW, barH, timerFill);
-        
-        // Text (centered on bar)
-        if (!string.IsNullOrEmpty(timeStr))
-        {
-            float labelScale = 0.6f;
-            var labelSize = _font!.MeasureString(timeStr) * labelScale;
-            float textX = barX + (barW - labelSize.X) / 2f;
-            float textY = barY + (barH - labelSize.Y) / 2f;
-            
-            // Outline (2px border like Haxe)
-            _spriteBatch.DrawString(_font, timeStr, new Vector2(textX + 2, textY), Color.Black, 0f, Vector2.Zero, labelScale, SpriteEffects.None, 0f);
-            _spriteBatch.DrawString(_font, timeStr, new Vector2(textX - 2, textY), Color.Black, 0f, Vector2.Zero, labelScale, SpriteEffects.None, 0f);
-            _spriteBatch.DrawString(_font, timeStr, new Vector2(textX, textY + 2), Color.Black, 0f, Vector2.Zero, labelScale, SpriteEffects.None, 0f);
-            _spriteBatch.DrawString(_font, timeStr, new Vector2(textX, textY - 2), Color.Black, 0f, Vector2.Zero, labelScale, SpriteEffects.None, 0f);
-            
-            // Main text
-            _spriteBatch.DrawString(_font, timeStr, new Vector2(textX, textY), Color.White, 0f, Vector2.Zero, labelScale, SpriteEffects.None, 0f);
-        }
-    }
-    
-    private void DrawTimerBar_Vertical(int barX, int barY, int barW, int barH, float progress, string timeStr, Color timerFill)
-    {
-        // For vertical bars: swap W and H visually (rotate 90 degrees)
-        // The bar goes from bottom to top (matching Haxe BOTTOM_TO_TOP fill)
-        
-        // Background (with 4px padding like Haxe)
-        int bgW = barH + 8;  // Swapped because vertical
-        int bgH = barW + 8;
-        
-        DrawRect(barX - 4, barY - 4, bgW, bgH, Color.Black * 0.8f);
-        DrawRect(barX, barY, barH, barW, new Color(20, 20, 20, 220));
-        
-        // Fill (bottom to top)
-        int fillH = (int)(barW * progress);
-        if (fillH > 0)
-        {
-            int fillY = barY + barW - fillH;
-            DrawRect(barX, fillY, barH, fillH, timerFill);
-        }
-        
-        // Text (positioned next to the bar like Haxe does)
-        if (!string.IsNullOrEmpty(timeStr))
-        {
-            float labelScale = 0.6f;
-            var labelSize = _font!.MeasureString(timeStr) * labelScale;
-            
-            // Position text next to the bar based on preset
-            float textX = TimerPreset == "Left" ? barX + bgW + 5 : barX - labelSize.X - 5;
-            float textY = barY + (barW - labelSize.Y) / 2f;
-            
-            // Outline (2px border)
-            _spriteBatch.DrawString(_font, timeStr, new Vector2(textX + 2, textY), Color.Black, 0f, Vector2.Zero, labelScale, SpriteEffects.None, 0f);
-            _spriteBatch.DrawString(_font, timeStr, new Vector2(textX - 2, textY), Color.Black, 0f, Vector2.Zero, labelScale, SpriteEffects.None, 0f);
-            _spriteBatch.DrawString(_font, timeStr, new Vector2(textX, textY + 2), Color.Black, 0f, Vector2.Zero, labelScale, SpriteEffects.None, 0f);
-            _spriteBatch.DrawString(_font, timeStr, new Vector2(textX, textY - 2), Color.Black, 0f, Vector2.Zero, labelScale, SpriteEffects.None, 0f);
-            
-            // Main text
-            _spriteBatch.DrawString(_font, timeStr, new Vector2(textX, textY), Color.White, 0f, Vector2.Zero, labelScale, SpriteEffects.None, 0f);
-        }
-    }
 
     private void DrawDropHint()
     {
@@ -5955,196 +6176,18 @@ public partial class Game1 : Game
     // ── Countdown overlay ─────────────────────────────────────────────────────
     private void DrawCountdown(int sw, int sh)
     {
-        if (_started || _level == null) return;
-
-        // Map step to sprite: step 2=ready, step 1=set, step 0=go
-        int texIdx = _countdownStep switch { 2 => 0, 1 => 1, 0 => 2, _ => -1 };
-        float beatDur = 60f / _level.Data.EffectiveBpm;
-        float beatPos = _countdownTimer % beatDur;
-        // Fade in quickly, hold, then fade out at end of beat
-        float t     = beatPos / beatDur;
-        float alpha = t < 0.15f ? t / 0.15f : (t > 0.75f ? 1f - (t - 0.75f) / 0.25f : 1f);
-        alpha = MathHelper.Clamp(alpha, 0f, 1f);
-
-        if (texIdx >= 0 && _countdownTextures[texIdx] != null)
-        {
-            var tex = _countdownTextures[texIdx]!;
-            // Scale to fit ~40% of screen width, centered
-            float scale = (sw * 0.4f) / tex.Width;
-            int dw = (int)(tex.Width  * scale);
-            int dh = (int)(tex.Height * scale);
-            int dx = sw / 2 - dw / 2;
-            int dy = sh / 2 - dh / 2;
-            _spriteBatch.Draw(tex, new Rectangle(dx, dy, dw, dh), Color.White * alpha);
-        }
-        else if (_font != null && _countdownStep == 3)
-        {
-            // Step 3 has no sprite — draw "3" as text fallback
-            string text = "3";
-            float scale = 4f;
-            var sz = _font.MeasureString(text) * scale;
-            _spriteBatch.DrawString(_font, text,
-                new Vector2(sw / 2f - sz.X / 2f, sh / 2f - sz.Y / 2f),
-                Color.White * alpha, 0f, Vector2.Zero, scale, SpriteEffects.None, 0f);
-        }
+        if (_level == null) return;
+        _countdownOverlay?.Draw(sw, sh, _level.Data.EffectiveBpm, _started);
     }
 
     // ── Judgement overlay ─────────────────────────────────────────────────────
     private void DrawJudgement(int sw, int sh)
     {
-        if (_font == null) return;
-        
-        // Get HUD settings (adjust for downscroll if needed)
-        var hudSettings = NoteRenderer.Downscroll 
-            ? HudSettings.Instance.GetDownscrollAdjusted(sh) 
-            : HudSettings.Instance;
-        
-        // Draw judgement text (Sick!, Good!, etc.) using HudSettings position
-        if (_judgementTimer > 0f && _judgementText != null)
-        {
-            float t     = _judgementTimer / JUDGEMENT_SHOW;
-            float scale = 1.5f + (1f - t) * 0.5f;  // starts big, shrinks
-            float alpha = t;
-            float yOff  = (1f - t) * -30f;          // floats upward
-
-            Vector2 judgementPos = new Vector2(hudSettings.JudgementPosition.X, hudSettings.JudgementPosition.Y);
-            _spriteBatch.DrawString(_font, _judgementText,
-                new Vector2(judgementPos.X, judgementPos.Y + yOff),
-                _judgementColor * alpha, 0f, Vector2.Zero, scale, SpriteEffects.None, 0f);
-        }
-        
-        // Draw combo counter (FNF style - appears and fades with jump animation) using HudSettings position
-        if (ShowCombo && _noteRenderers.Count > 0 && _comboTimer > 0f)
-        {
-            var playerRenderer = _noteRenderers[0];
-            if (playerRenderer.Combo > 0)
-            {
-                float t = _comboTimer / COMBO_SHOW;
-                
-                // Jump animation: starts high, bounces down, then fades
-                float jumpHeight = 0f;
-                if (t > 0.8f)  // First 0.3 seconds (20% of 1.5s)
-                {
-                    float jumpT = (t - 0.8f) / 0.2f;  // 0 to 1
-                    jumpHeight = jumpT * jumpT * -40f;  // Parabolic jump down
-                }
-                
-                // Scale: starts big, settles to normal
-                float scale = t > 0.8f ? 1.5f - (1f - (t - 0.8f) / 0.2f) * 0.3f : 1.2f;
-                
-                // Fade out in last 0.5 seconds
-                float alpha = t < 0.33f ? t / 0.33f : 1f;
-                
-                string comboText = $"{playerRenderer.Combo}";
-                Vector2 comboPos = new Vector2(hudSettings.ComboPosition.X, hudSettings.ComboPosition.Y);
-                
-                _spriteBatch.DrawString(_font, Safe(comboText),
-                    new Vector2(comboPos.X, comboPos.Y + jumpHeight),
-                    Color.Yellow * alpha, 0f, Vector2.Zero, scale, SpriteEffects.None, 0f);
-            }
-        }
+        // Draw judgement popups and combo digits using overlay
+        _judgementOverlay?.Draw();
     }
 
-    // ── Game over overlay ─────────────────────────────────────────────────────
-    private void DrawGameOver(int sw, int sh)
-    {
-        // Never draw game over in multiplayer mode
-        if (!_gameOver || _font == null || false /* multiplayer disabled in Game1 */) return;
-
-        // Fade in over 0.6s
-        float fadeT  = Math.Min(_gameOverTimer / 0.6f, 1f);
-        // Text slides in from top over 0.8s
-        float slideT = Math.Min(_gameOverTimer / 0.8f, 1f);
-        float ease   = 1f - MathF.Pow(1f - slideT, 3f);  // cubic ease out
-
-        // Dark overlay
-        DrawRect(0, 0, sw, sh, Color.Black * (fadeT * 0.85f));
-
-        // Red accent bar at top
-        int barH = (int)(4 * fadeT);
-        DrawRect(0, 0, sw, barH, new Color(0xFF, 0x22, 0x22));
-
-        // "GAME OVER" — slides down from above
-        float titleScale = 2.2f;
-        string title = "GAME OVER";
-        var titleSz = _font.MeasureString(title) * titleScale;
-        float titleY = -titleSz.Y + (sh / 2f - 80f - (-titleSz.Y)) * ease;
-        _spriteBatch.DrawString(_font, title,
-            new Vector2(sw / 2f - titleSz.X / 2f, titleY),
-            new Color(0xFF, 0x33, 0x33) * fadeT, 0f, Vector2.Zero, titleScale, SpriteEffects.None, 0f);
-
-        // Stats panel — fades in after 0.4s
-        float statsT = Math.Max(0f, Math.Min((_gameOverTimer - 0.4f) / 0.5f, 1f));
-        if (statsT > 0f && _noteRenderers.Count > 0)
-        {
-            var r = _noteRenderers[0];
-            
-            // Calculate accuracy using FNF rating system
-            int totalNotes = r.Sicks + r.Goods + r.Bads + r.Shits + r.Misses;
-            float acc = 100f;
-            if (totalNotes > 0)
-            {
-                float weightedHits = (r.Sicks * 1.0f) + (r.Goods * 0.75f) + (r.Bads * 0.5f) + (r.Shits * 0.25f);
-                acc = (weightedHits / totalNotes) * 100f;
-            }
-
-            float panelW = 420f;  // Wider to fit more stats
-            float panelH = 130f;  // Taller for ratings breakdown
-            float panelX = sw / 2f - panelW / 2f;
-            float panelY = sh / 2f - 20f;
-
-            DrawRect((int)panelX, (int)panelY, (int)panelW, (int)panelH,
-                new Color(20, 10, 10) * (0.8f * statsT));
-            DrawRect((int)panelX, (int)panelY, (int)panelW, 2,
-                new Color(0xFF, 0x22, 0x22) * statsT);
-
-            float col1 = panelX + 20f;
-            float col2 = panelX + panelW / 2f + 10f;
-            float row1 = panelY + 14f;
-            float row2 = panelY + 50f;
-            float row3 = panelY + 86f;
-            float ss   = 0.75f;
-
-            // Score
-            _spriteBatch.DrawString(_font, "Score",
-                new Vector2(col1, row1), Color.White * 0.5f * statsT, 0f, Vector2.Zero, ss * 0.7f, SpriteEffects.None, 0f);
-            _spriteBatch.DrawString(_font, r.Score.ToString(),
-                new Vector2(col1, row1 + 14f), Color.White * statsT, 0f, Vector2.Zero, ss, SpriteEffects.None, 0f);
-
-            // Misses
-            _spriteBatch.DrawString(_font, "Misses",
-                new Vector2(col2, row1), Color.White * 0.5f * statsT, 0f, Vector2.Zero, ss * 0.7f, SpriteEffects.None, 0f);
-            _spriteBatch.DrawString(_font, r.Misses.ToString(),
-                new Vector2(col2, row1 + 14f), new Color(0xFF, 0x66, 0x66) * statsT, 0f, Vector2.Zero, ss, SpriteEffects.None, 0f);
-
-            // Accuracy
-            _spriteBatch.DrawString(_font, "Accuracy",
-                new Vector2(col1, row2), Color.White * 0.5f * statsT, 0f, Vector2.Zero, ss * 0.7f, SpriteEffects.None, 0f);
-            Color accColor = acc >= 95f ? new Color(0, 255, 100) : acc >= 80f ? new Color(255, 200, 0) : new Color(255, 100, 100);
-            _spriteBatch.DrawString(_font, $"{acc:F1}%",
-                new Vector2(col1, row2 + 14f), accColor * statsT, 0f, Vector2.Zero, ss, SpriteEffects.None, 0f);
-
-            // Ratings breakdown (compact)
-            _spriteBatch.DrawString(_font, "Ratings",
-                new Vector2(col2, row2), Color.White * 0.5f * statsT, 0f, Vector2.Zero, ss * 0.7f, SpriteEffects.None, 0f);
-            string ratings = $"S:{r.Sicks} G:{r.Goods} B:{r.Bads} Sh:{r.Shits}";
-            _spriteBatch.DrawString(_font, ratings,
-                new Vector2(col2, row2 + 14f), new Color(150, 200, 255) * statsT, 0f, Vector2.Zero, ss * 0.7f, SpriteEffects.None, 0f);
-        }
-
-        // Hint — fades in after 0.7s
-        float hintT = Math.Max(0f, Math.Min((_gameOverTimer - 0.7f) / 0.4f, 1f));
-        if (hintT > 0f)
-        {
-            // Pulsing effect
-            float pulse = 0.7f + 0.3f * MathF.Sin(_gameOverTimer * 4f);
-            string hint = "ENTER  Retry    ESC  Menu";
-            var hintSz = _font.MeasureString(hint) * 0.65f;
-            _spriteBatch.DrawString(_font, hint,
-                new Vector2(sw / 2f - hintSz.X / 2f, sh - 36f),
-                Color.White * (hintT * pulse * 0.6f), 0f, Vector2.Zero, 0.65f, SpriteEffects.None, 0f);
-        }
-    }
+    // Game over overlay has been extracted to UI/GameOverOverlay.cs
 
     
     /// <summary>

@@ -98,6 +98,11 @@ public class NoteRenderer
     private readonly List<FnmmNote>[] _notesBackup;  // original notes for seek restore
     private readonly float[]          _glowTimer   = new float[LANE_COUNT];
     private readonly float[]          _holdEndTime = new float[LANE_COUNT];
+    
+    // ── FNF-style receptor intro animation (countdown pop-in) ────────────────
+    private readonly float[]          _receptorIntroTime = new float[LANE_COUNT];  // Time since receptor appeared
+    private readonly bool[]           _receptorIntroActive = new bool[LANE_COUNT]; // Whether intro animation is active
+    private const float RECEPTOR_INTRO_DURATION = 0.25f;  // 250ms pop-in animation (like FNF)
     private readonly int[]            _recState    = new int[LANE_COUNT];
     private readonly float[]          _recAnimTime = new float[LANE_COUNT];
     
@@ -149,6 +154,22 @@ public class NoteRenderer
 #endif
     
     /// <summary>
+    /// Starts the FNF-style receptor intro animation (pop-in effect).
+    /// Call this when the countdown starts (3, 2, 1, GO!) to show receptors appearing.
+    /// Each receptor pops in with a stagger delay based on its lane.
+    /// </summary>
+    /// <param name="startDelay">Initial delay in seconds before first receptor appears (default: 0.5s)</param>
+    /// <param name="staggerDelay">Delay in seconds between each receptor (default: 0.05s)</param>
+    public void StartReceptorIntro(float startDelay = 0.5f, float staggerDelay = 0.05f)
+    {
+        for (int i = 0; i < LANE_COUNT; i++)
+        {
+            _receptorIntroActive[i] = true;
+            _receptorIntroTime[i] = -(startDelay + i * staggerDelay);  // Negative time = waiting to start
+        }
+    }
+    
+    /// <summary>
     /// Check if a hold note is currently active in the specified lane
     /// </summary>
     public bool IsHoldActive(int lane)
@@ -157,6 +178,11 @@ public class NoteRenderer
         return _holdEndTime[lane] > 0f;
     }
     private readonly float[]          _confirmHoldTimer = Enumerable.Repeat(-1f, LANE_COUNT).ToArray();  // FNF-style: -1 = inactive, >= 0 = counting (150ms)
+    
+    // ── Combo bounce animation (FNF-style) ────────────────────────────────────
+    public float ComboScale { get; private set; } = 1.0f;  // Current combo scale for bounce effect
+    private const float COMBO_BOUNCE_SCALE = 1.3f;         // Target scale when combo increases (30% larger)
+    private const float COMBO_BOUNCE_SPEED = 10f;          // How fast the scale returns to 1.0
     private const float CONFIRM_HOLD_TIME = 0.15f;  // 150ms like FNF official
     private readonly bool[]           _keyHeld     = new bool[LANE_COUNT];  // tracks if key is currently held
     private readonly float[]          _splashTimer = new float[LANE_COUNT];  // note splash effect timer
@@ -280,8 +306,12 @@ public class NoteRenderer
 
     public Action<int, float>? OnNoteHit;
     public Action?             OnNoteMiss;
+    /// <summary>Fired when player presses arrow key (for multiplayer animation sync). Args: lane index.</summary>
+    public Action<int>?        OnKeyPress;
     /// <summary>Fired with rating string ("Sick!", "Good", "Bad", "Shit") on manual hit.</summary>
     public Action<string>?     OnJudgement;
+    /// <summary>Fired when combo changes. Args: new combo value.</summary>
+    public Action<int>?        OnComboChanged;
     /// <summary>Fired when a note with onPressEvent is hit. Args: event ID.</summary>
     public Action<int>?        OnNotePressEvent;
     /// <summary>Fired when a note with onMissEvent is missed. Args: event ID.</summary>
@@ -368,6 +398,10 @@ public class NoteRenderer
 
     public void SetStyle(NoteStyle? style) => _style = style;
     public void SetSplashStyle(NoteSplashStyle? splashStyle) => _splashStyle = splashStyle;
+    
+    private ParticleNoteSplash? _particleSplash;
+    private int _pendingSplashLane = -1;  // -1 = no pending splash
+    public void SetParticleSplash(ParticleNoteSplash? particleSplash) => _particleSplash = particleSplash;
 
     /// <summary>
     /// Manually triggers a hit animation on a specific lane.
@@ -384,9 +418,12 @@ public class NoteRenderer
         _glowTimer[lane] = 0.15f;
         SetRecState(lane, 2);  // Confirm state (pressed)
         
-        // Trigger splash effect for Sick! hits
-        if (isSick)
+        // Trigger splash effect for Sick! hits (only default if no particles)
+        if (isSick && _particleSplash == null)
             _splashTimer[lane] = 0.3f;
+        
+        // Note: Particle splash for multiplayer opponent hits would need separate implementation
+        // since we can't trigger _pendingSplashLane from here (no Draw() call for opponent)
     }
 
     // ── Update ───────────────────────────────────────────────────────────────
@@ -402,6 +439,14 @@ public class NoteRenderer
             float songBeats = songTime / 60f * _level.Data.EffectiveBpm;
             _arrowEffects.Update(dt, songBeats);
         }
+        
+        // Update combo bounce animation (lerp scale back to 1.0)
+        if (ComboScale > 1.0f)
+        {
+            ComboScale = MathHelper.Lerp(ComboScale, 1.0f, COMBO_BOUNCE_SPEED * dt);
+            if (ComboScale <= 1.01f)
+                ComboScale = 1.0f;
+        }
             
         for (int i = 0; i < LANE_COUNT; i++)
         {
@@ -409,6 +454,16 @@ public class NoteRenderer
             _recAnimTime[i] += dt;
             _splashTimer[i] = Math.Max(0f, _splashTimer[i] - dt);
             _comboBreakTimer[i] = Math.Max(0f, _comboBreakTimer[i] - dt);
+            
+            // Update receptor intro animation
+            if (_receptorIntroActive[i])
+            {
+                _receptorIntroTime[i] += dt;
+                if (_receptorIntroTime[i] >= RECEPTOR_INTRO_DURATION)
+                {
+                    _receptorIntroActive[i] = false;  // Animation complete
+                }
+            }
             
             // Auto-return to idle after ghosttap press animation expires
             if (_glowTimer[i] <= 0f && _recState[i] == 1)  // State 1 = press
@@ -449,20 +504,58 @@ public class NoteRenderer
                 var note = _notes[lane][i];
                 if (songTime < note.Start) continue;
 
-                // Autoplay: analyze the onPressEvent action_pack to decide if pressing is beneficial.
-                // If pressing causes net negative health → dodge.
-                // If no event → use skin type as fallback (skin=1 = bad → dodge).
+                // Autoplay: analyze both onPressEvent and onMissEvent to decide the best action.
+                // Compare: damage from pressing vs damage from missing.
+                // Choose the option with LESS damage (or more benefit).
+                //
+                // Skin type fallback (when no events defined):
+                //   skin=0 (normal) → press
+                //   skin=1 (damage/X) → dodge
+                //   skin=2 (good/O) → press (must press to survive)
+                //   skin=3 (heal) → press (beneficial)
                 bool isDodge;
                 int pressIdx = (int)note.Props.OnPressEvent;
-                if (pressIdx > 0)
+                int missIdx = (int)note.Props.OnMissEvent;
+                
+                if (pressIdx >= 0 || missIdx >= 0)
                 {
-                    // Has event — analyze health effect
-                    isDodge = _isPlayer && AnalyzePackBenefit(pressIdx) < 0;
+                    // Has events — analyze and compare health effects
+                    float pressBenefit = pressIdx >= 0 ? AnalyzePackBenefit(pressIdx) : 0f;
+                    float missBenefit = missIdx >= 0 ? AnalyzePackBenefit(missIdx) : 0f;
+                    
+                    // Decision logic:
+                    // - If pressing is BETTER than missing → press (higher value = less damage)
+                    // - If missing is BETTER than pressing → dodge
+                    // - If both are equal → check if neutral or use skin type fallback
+                    if (pressBenefit > missBenefit)
+                    {
+                        isDodge = false;  // Pressing is better → press
+                    }
+                    else if (missBenefit > pressBenefit)
+                    {
+                        isDodge = true;  // Missing is better → dodge
+                    }
+                    else
+                    {
+                        // Both equal: check if both are neutral (no health impact)
+                        if (pressBenefit == 0f && missBenefit == 0f)
+                        {
+                            // No health consequences — use skin type fallback
+                            isDodge = _isPlayer && note.Props.IsDamage;
+                        }
+                        else
+                        {
+                            // Same damage — prefer pressing (assume player wants to hit notes)
+                            isDodge = false;
+                        }
+                    }
                 }
                 else
                 {
-                    // No event — use skin type fallback
-                    isDodge = _isPlayer && note.Props.IsDamage;  // skin=1 = bad
+                    // No events — use skin type fallback
+                    // Only dodge skin=1 (damage/bad notes marked with X)
+                    // Press everything else: skin=0 (normal), skin=2 (good/O), skin=3 (heal)
+                    isDodge = _isPlayer && note.Props.IsDamage;  // skin=1 = bad = dodge
                 }
                 if (isDodge)
                 {
@@ -473,7 +566,10 @@ public class NoteRenderer
 
                 // Normal/heal: press it
                 _notes[lane].RemoveAt(i);
-                Score += 350; Combo++;
+                Score += 350; 
+                Combo++;
+                ComboScale = COMBO_BOUNCE_SCALE;  // Trigger bounce animation
+                OnComboChanged?.Invoke(Combo);  // Fire combo changed event
                 float holdEnd = note.Duration > 0 ? note.Start + note.Duration : -1f;
                 OnNoteHit?.Invoke(lane, holdEnd);
                 if (note.Props.OnPressEvent > 0)
@@ -595,6 +691,10 @@ public class NoteRenderer
                 SetRecState(lane, 1);
 
             if (!justPressed) continue;
+            
+            // Fire key press callback for multiplayer animation sync
+            // This happens BEFORE hit detection so opponent sees animation even on misses
+            OnKeyPress?.Invoke(lane);
 
             // ── Find best note in hit window ──────────────────────────────────
             FnmmNote? best     = null;
@@ -622,6 +722,8 @@ public class NoteRenderer
                 int scoreGain = RateScore(bestDist);
                 Score += scoreGain;
                 Combo++;
+                ComboScale = COMBO_BOUNCE_SCALE;  // Trigger bounce animation
+                OnComboChanged?.Invoke(Combo);  // Fire combo changed event
                 
                 // Increment rating counters based on judgement
                 string judgement = GetJudgement(bestDist);
@@ -635,7 +737,21 @@ public class NoteRenderer
                 
                 // Trigger splash effect on Sick! rating (350 points)
                 if (scoreGain >= 350)
-                    _splashTimer[lane] = 0.3f;  // Splash lasts 300ms
+                {
+                    // If using particle splash, ONLY trigger particles (not default splash)
+                    if (_particleSplash != null)
+                    {
+                        // Calculate splash position (center of receptor)
+                        // NOTE: Position will be calculated during Draw() since strumY is only available there
+                        // Store pending splash trigger for this lane
+                        _pendingSplashLane = lane;
+                    }
+                    else
+                    {
+                        // No particle splash active, use default splash
+                        _splashTimer[lane] = 0.3f;  // Splash lasts 300ms
+                    }
+                }
                 
                 float holdEnd = best.Duration > 0 ? best.Start + best.Duration : -1f;
                 OnNoteHit?.Invoke(lane, holdEnd);
@@ -842,7 +958,24 @@ public class NoteRenderer
             }
         }
 
-        if (!Autoplay && _isPlayer && font != null)
+        // ── Trigger particle splash if pending (after we have strumY position) ──
+        if (_pendingSplashLane >= 0 && _particleSplash != null)
+        {
+            int lane = _pendingSplashLane;
+            
+            // Calculate splash position (center of receptor)
+            float laneX;
+            if (_xOffsetSplit >= 0f && lane >= 2)
+                laneX = _xOffsetSplit * sx + (lane - 2) * laneW;
+            else
+                laneX = _xOffset * sx + lane * laneW;
+            float cx = laneX + laneW / 2f;
+            
+            _particleSplash.Trigger(lane, new Vector2(cx, strumY));
+            _pendingSplashLane = -1;  // Reset
+        }
+
+        if (!Autoplay && _isPlayer && font != null && Alpha > 0.01f)
         {
             for (int lane = 0; lane < LANE_COUNT; lane++)
             {
@@ -851,7 +984,7 @@ public class NoteRenderer
                 var sz = font.MeasureString(label);
                 sb.DrawString(font, label,
                     new Vector2(lx - sz.X / 2f, strumY - sz.Y / 2f),
-                    Color.White * 0.5f);
+                    Color.White * 0.5f * alpha);  // Use alpha parameter (respects HUD visibility fade)
             }
         }
     }
@@ -1125,6 +1258,52 @@ public class NoteRenderer
     // ── Receptor ─────────────────────────────────────────────────────────────
     private void DrawReceptor(SpriteBatch sb, int lane, float cx, float cy, float sx, float alpha, float songTime)
     {
+        // ── FNF-style receptor intro animation (pop-in effect during countdown) ──
+        float introScale = 1f;
+        float introAlpha = 1f;
+        
+        if (_receptorIntroActive[lane])
+        {
+            float t = _receptorIntroTime[lane];
+            
+            if (t < 0f)
+            {
+                // Waiting to start - receptor is invisible
+                return;  // Don't draw receptor yet
+            }
+            else if (t < RECEPTOR_INTRO_DURATION)
+            {
+                // Animation in progress - elastic pop-in effect (FNF style)
+                float progress = t / RECEPTOR_INTRO_DURATION;
+                
+                // Elastic ease-out: overshoot then settle
+                // FNF receptors "bounce" in with an elastic feel
+                float elasticProgress;
+                if (progress < 0.6f)
+                {
+                    // Quick scale up with overshoot
+                    float p = progress / 0.6f;
+                    elasticProgress = MathF.Sin(p * MathF.PI * 0.5f);  // Fast ease out
+                    introScale = elasticProgress * 1.2f;  // Scale to 120% 
+                }
+                else
+                {
+                    // Settle back to normal size
+                    float p = (progress - 0.6f) / 0.4f;
+                    introScale = 1.2f - (p * 0.2f);  // From 120% back to 100%
+                }
+                
+                // Fade in quickly at the start
+                introAlpha = Math.Min(1f, progress * 3f);  // Fade in first 33% of animation
+            }
+        }
+        
+        // Apply intro animation to alpha
+        alpha *= introAlpha;
+        
+        // Don't draw if completely transparent
+        if (alpha <= 0.01f) return;
+        
         // Get random arrow effects
         float effectOffsetX = 0f, effectOffsetY = 0f, effectRotation = 0f;
         float effectScale = 1f, effectGlow = 0f;
@@ -1266,7 +1445,7 @@ public class NoteRenderer
                 
                 // Calculate origin for rotation (center of the frame)
                 Vector2 origin = new Vector2(f.FrameW / 2f + f.OffsetX, f.FrameH / 2f + f.OffsetY);
-                float finalScale = s * effectScale;
+                float finalScale = s * effectScale * introScale;  // Apply intro animation scale
                 
                 sb.Draw(f.Texture, new Vector2(drawX + origin.X * s, drawY + origin.Y * s), f.Source,
                     receptorColor, effectRotation, origin, finalScale, SpriteEffects.None, 0f);
@@ -1306,20 +1485,40 @@ public class NoteRenderer
         // If event exists → use event analysis to determine X or O.
         // If no event → use skin type as fallback.
         int pressPackIdx = (int)note.Props.OnPressEvent;
-        int benefit = pressPackIdx > 0 ? AnalyzePackBenefit(pressPackIdx) : 0;
+        int missPackIdx = (int)note.Props.OnMissEvent;
 
-        // Symbol: O = press (beneficial/neutral), X = avoid (harmful)
-        // With event: benefit>0 → O, benefit<0 → X, benefit=0 → use skin fallback
-        // Without event: skin=1 → X, skin=2 → O, skin=3 → O, skin=0 → none
+        // Symbol: O = should press, X = should avoid
+        // Compare actual damage values: higher value = better (less damage or more healing)
         string? symbol;
         if (skinType == 0)
         {
             symbol = null;  // normal note, never show symbol
         }
-        else if (pressPackIdx > 0)
+        else if (pressPackIdx >= 0 || missPackIdx >= 0)
         {
-            // Level defined an event — use health analysis
-            symbol = benefit >= 0 ? "O" : "X";  // neutral/positive = O, negative = X
+            // Level defined events — analyze and compare benefits
+            float pressBenefit = pressPackIdx >= 0 ? AnalyzePackBenefit(pressPackIdx) : 0f;
+            float missBenefit = missPackIdx >= 0 ? AnalyzePackBenefit(missPackIdx) : 0f;
+            
+            if (pressBenefit > missBenefit)
+                symbol = "O";  // Pressing is better → show O
+            else if (missBenefit > pressBenefit)
+                symbol = "X";  // Missing is better → show X
+            else
+            {
+                // Equal: both do same damage (or both neutral)
+                // Fall back to skin type if both are neutral (no health impact)
+                if (pressBenefit == 0f && missBenefit == 0f)
+                {
+                    // No health consequences — use skin type
+                    symbol = skinType switch { 1 => "X", 2 => "O", 3 => "O", _ => null };
+                }
+                else
+                {
+                    // Same damage — slightly prefer pressing (assume neutral action)
+                    symbol = "O";
+                }
+            }
         }
         else
         {
@@ -1464,16 +1663,16 @@ public class NoteRenderer
 
     // ── Action pack analysis ─────────────────────────────────────────────────
     /// <summary>
-    /// Analyzes an action_pack to determine if pressing the note is beneficial.
-    /// Returns: +1 = net positive (press), -1 = net negative (dodge), 0 = neutral/unknown.
-    /// Looks at PlayerHealth actions: "add" = positive, "remove" = negative.
+    /// Analyzes an action_pack to calculate net health change.
+    /// Returns the actual health value: positive = healing, negative = damage, 0 = neutral.
+    /// This allows comparing which option does less damage when both are harmful.
     /// </summary>
-    private int AnalyzePackBenefit(int packIndex)
+    private float AnalyzePackBenefit(int packIndex)
     {
-        if (packIndex <= 0) return 0;
+        if (packIndex < 0) return 0f;  // -1 means no event
         var packs = _level.Events.ActionPacks;
-        if (packIndex > packs.Count) return 0;
-        var pack = packs[packIndex - 1];
+        if (packIndex >= packs.Count) return 0f;
+        var pack = packs[packIndex];
         float netHealth = 0f;
         foreach (var action in pack.Actions)
         {
@@ -1482,9 +1681,7 @@ public class NoteRenderer
             string op = action.Props.Operation ?? "remove";
             netHealth += op == "add" ? val : -val;
         }
-        if (netHealth > 0f) return 1;   // net positive → press
-        if (netHealth < 0f) return -1;  // net negative → dodge
-        return 0;  // no health effect → neutral, press by default
+        return netHealth;  // Return actual value for comparison
     }
 
     // ── Note symbol overlay (X / O) ──────────────────────────────────────────    /// <summary>

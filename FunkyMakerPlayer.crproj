@@ -1,0 +1,34 @@
+<project baseDir="c:\Users\aleve\Downloads\FunkyMakerPlayer\FunkyMakerPlayer\bin\Debug\net10.0" outputDir="c:\Users\aleve\Downloads\FunkyMakerPlayer\Confused" xmlns="http://confuser.codeplex.com">
+  <rule pattern="true" inherit="false">
+    <!-- Protecciones principales -->
+    <protection id="anti ildasm" />
+    <protection id="anti debug" />
+    <protection id="anti dump" />
+    <protection id="anti tamper" />
+    <protection id="constants">
+      <argument name="mode" value="dynamic" />
+    </protection>
+    <protection id="ctrl flow">
+      <argument name="predicate" value="normal" />
+    </protection>
+    <protection id="ref proxy">
+      <argument name="mode" value="strong" />
+      <argument name="encoding" value="expression" />
+    </protection>
+    <protection id="resources">
+      <argument name="mode" value="dynamic" />
+    </protection>
+    <protection id="rename">
+      <argument name="mode" value="sequential" />
+      <argument name="renPublic" value="true" />
+    </protection>
+  </rule>
+  
+  <module path="FunkyMakerPlayer.exe">
+    <rule pattern="true" inherit="true" />
+  </module>
+  
+  <module path="FunkyMakerPlayer.dll">
+    <rule pattern="true" inherit="true" />
+  </module>
+</project>

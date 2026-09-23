@@ -14,10 +14,18 @@ public class SettingsManager
     // ── State ────────────────────────────────────────────────────────────────
     public bool IsActive { get; set; } = false;
     public int Selection { get; set; } = 0;
+    #if ANDROID
+    public int CurrentTab { get; set; } = 0;  // 0=Gameplay, 1=Graphics, 2=Audio, 3=Advanced
+    #else
     public int CurrentTab { get; set; } = 0;  // 0=Gameplay, 1=Controls, 2=Graphics, 3=Audio, 4=Advanced
+    #endif
     public float ScrollOffset { get; set; } = 0f;  // For scrolling when content is too tall
     
+    #if ANDROID
+    private static readonly string[] TabNames = { "GAMEPLAY", "GRAPHICS", "AUDIO", "ADVANCED" };
+    #else
     private static readonly string[] TabNames = { "GAMEPLAY", "CONTROLS", "GRAPHICS", "AUDIO", "ADVANCED" };
+    #endif
     
     // Available countdown packs (cached)
     private List<string> _availableCountdowns = new List<string> { "default" };
@@ -142,20 +150,35 @@ public class SettingsManager
     /// </summary>
     public int GetItemCount()
     {
+        #if ANDROID
         return CurrentTab switch
         {
-            0 => 12,  // GAMEPLAY: 12 items (added Camera Follow Player)
-            1 => 2,   // CONTROLS: 2 items (Rebind Keys, Back)
-            2 => GetGraphicsItemCount(),  // GRAPHICS: 13-19 items (dynamic based on ShowTimer and Color Grading)
-            3 => 2,   // AUDIO: 2 items (Volume, Back)
-            4 => ArrowEffectManager.Enabled ? 11 : 8,  // ADVANCED: 8-11 items (+ Extended Camera)
+            0 => 12,  // GAMEPLAY: 12 items
+            1 => GetGraphicsItemCount(),  // GRAPHICS (no CONTROLS tab on Android)
+            2 => 2,   // AUDIO: 2 items (Volume, Back)
+            3 => ArrowEffectManager.Enabled ? 11 : 8,  // ADVANCED: 8-11 items
             _ => 1
         };
+        #else
+        return CurrentTab switch
+        {
+            0 => 12,  // GAMEPLAY: 12 items
+            1 => 2,   // CONTROLS: 2 items (Rebind Keys, Back)
+            2 => GetGraphicsItemCount(),  // GRAPHICS
+            3 => 2,   // AUDIO: 2 items (Volume, Back)
+            4 => ArrowEffectManager.Enabled ? 11 : 8,  // ADVANCED: 8-11 items
+            _ => 1
+        };
+        #endif
     }
     
     private int GetGraphicsItemCount()
     {
+        #if ANDROID
+        int count = 12;  // Base items (Fullscreen disabled on Android)
+        #else
         int count = 13;  // Base items
+        #endif
         
         if (Game1.ShowTimer)
         {
@@ -195,6 +218,23 @@ public class SettingsManager
     {
         var result = new SettingsActionResult();
 
+        #if ANDROID
+        switch (CurrentTab)
+        {
+            case 0: // GAMEPLAY tab
+                result = HandleGameplayAction(game);
+                break;
+            case 1: // GRAPHICS tab (no CONTROLS on Android)
+                result = HandleGraphicsAction(game);
+                break;
+            case 2: // AUDIO tab
+                result = HandleAudioAction(game);
+                break;
+            case 3: // ADVANCED tab
+                result = HandleAdvancedAction(game);
+                break;
+        }
+        #else
         switch (CurrentTab)
         {
             case 0: // GAMEPLAY tab
@@ -213,6 +253,7 @@ public class SettingsManager
                 result = HandleAdvancedAction(game);
                 break;
         }
+        #endif
 
         return result;
     }
@@ -272,6 +313,7 @@ public class SettingsManager
     {
         var result = new SettingsActionResult { NeedsSave = false };
         
+        // PC only: Rebind Keys + Back
         switch (Selection)
         {
             case 0: // Rebind Keys
@@ -295,7 +337,9 @@ public class SettingsManager
         // Build index mapping based on visible items
         int idx = 0;
         int vSync = idx++;
-        int fullscreen = idx++;
+        #if !ANDROID
+        int fullscreen = idx++;  // Fullscreen makes no sense on Android (always fullscreen)
+        #endif
         int bilinear = idx++;
         int noteStyle = idx++;
         int noteSplash = idx++;
@@ -315,8 +359,10 @@ public class SettingsManager
         
         if (Selection == vSync)
             result.ToggleVSync = true;
+        #if !ANDROID
         else if (Selection == fullscreen)
             result.ToggleFullscreen = true;
+        #endif
         else if (Selection == bilinear)
             Game1.BilinearFiltering = !Game1.BilinearFiltering;
         else if (Selection == noteStyle)
@@ -448,7 +494,8 @@ public class SettingsManager
         else if (Selection == extendedCamera)
         {
             Game1.UseExtendedCamera = !Game1.UseExtendedCamera;
-            game._cameraManager.UseExtendedCamera = Game1.UseExtendedCamera;
+            if (game._cameraManager != null)
+                game._cameraManager.UseExtendedCamera = Game1.UseExtendedCamera;
             Console.WriteLine($"[Settings] Extended Camera (Beta): {(Game1.UseExtendedCamera ? "ON" : "OFF")}");
         }
         else if (Selection == brightness)
@@ -473,6 +520,23 @@ public class SettingsManager
         var result = new SettingsActionResult { NeedsSave = true };
         float delta = isLeft ? -1f : 1f;
 
+        #if ANDROID
+        switch (CurrentTab)
+        {
+            case 0: // GAMEPLAY
+                result = HandleGameplayAdjustment(game, isLeft, delta);
+                break;
+            case 1: // GRAPHICS (no CONTROLS on Android)
+                result = HandleGraphicsAdjustment(game, isLeft, delta);
+                break;
+            case 2: // AUDIO
+                result = HandleAudioAdjustment(game, isLeft, delta);
+                break;
+            case 3: // ADVANCED
+                result = HandleAdvancedAdjustment(game, isLeft, delta);
+                break;
+        }
+        #else
         switch (CurrentTab)
         {
             case 0: // GAMEPLAY
@@ -488,6 +552,7 @@ public class SettingsManager
                 result = HandleAdvancedAdjustment(game, isLeft, delta);
                 break;
         }
+        #endif
 
         return result;
     }
@@ -532,7 +597,9 @@ public class SettingsManager
         // Build index mapping
         int idx = 0;
         idx++; // vSync
+        #if !ANDROID
         idx++; // fullscreen
+        #endif
         idx++; // bilinear
         idx++; // noteStyle
         idx++; // noteSplash
@@ -816,6 +883,15 @@ public class SettingsManager
         float panelH = screenHeight - panelY - 20;
         
         // Draw content based on current tab
+        #if ANDROID
+        switch (CurrentTab)
+        {
+            case 0: DrawGameplayTab(spriteBatch, font, pixel, screenWidth, screenHeight, panelY, panelH, fontRenderer, scaleFactor); break;
+            case 1: DrawGraphicsTab(game, spriteBatch, font, pixel, screenWidth, screenHeight, panelY, panelH, fontRenderer, scaleFactor); break;
+            case 2: DrawAudioTab(spriteBatch, font, pixel, screenWidth, screenHeight, panelY, panelH, fontRenderer, scaleFactor); break;
+            case 3: DrawAdvancedTab(spriteBatch, font, pixel, screenWidth, screenHeight, panelY, panelH, fontRenderer, scaleFactor); break;
+        }
+        #else
         switch (CurrentTab)
         {
             case 0: DrawGameplayTab(spriteBatch, font, pixel, screenWidth, screenHeight, panelY, panelH, fontRenderer, scaleFactor); break;
@@ -824,6 +900,7 @@ public class SettingsManager
             case 3: DrawAudioTab(spriteBatch, font, pixel, screenWidth, screenHeight, panelY, panelH, fontRenderer, scaleFactor); break;
             case 4: DrawAdvancedTab(spriteBatch, font, pixel, screenWidth, screenHeight, panelY, panelH, fontRenderer, scaleFactor); break;
         }
+        #endif
 
         // ── Description box (centered at bottom, above hint bar) ──────────────
         int hintBarH = 36;  // Declare hint bar height first
@@ -987,6 +1064,7 @@ public class SettingsManager
 
     private void DrawControlsTab(SpriteBatch sb, SpriteFont font, Texture2D pixel, int sw, int sh, float panelY, float panelH, FontRenderer? fr, float scaleFactor)
     {
+        // PC only: Rebind Keys + Back
         var entries = new List<(string label, string value)>
         {
             ("Rebind Keys", ""),
@@ -1004,7 +1082,9 @@ public class SettingsManager
         var entries = new List<(string label, string value)>
         {
             ("VSync", game._graphics.SynchronizeWithVerticalRetrace ? "ON" : "OFF"),
+            #if !ANDROID
             ("Fullscreen", game._isFullscreen ? "ON" : "OFF"),
+            #endif
             ("Bilinear Filter", Game1.BilinearFiltering ? "ON" : "OFF"),
             ("Note Style", Game1.NoteStyleName),
             ("Note Splash", Game1.NoteSplashStyleName),
@@ -1227,6 +1307,75 @@ public class SettingsManager
         // Get entries from the current tab (without drawing)
         var entries = new List<(string label, string value)>();
         
+        #if ANDROID
+        switch (CurrentTab)
+        {
+            case 0: // GAMEPLAY
+                entries.Add(("Autoplay", ""));
+                entries.Add(("Downscroll", ""));
+                entries.Add(("Midlescroll", ""));
+                entries.Add(("Scroll Speed", ""));
+                entries.Add(("Ghost Tapping", ""));
+                entries.Add(("Input Buffer", ""));
+                entries.Add(("Safe Frames", ""));
+                entries.Add(("Countdown Style", ""));
+                entries.Add(("Font Style", ""));
+                entries.Add(("Show Combo", ""));
+                entries.Add(("Camera Follow Player", ""));
+                entries.Add(("Back", ""));
+                break;
+                
+            case 1: // GRAPHICS (no CONTROLS on Android)
+                entries.Add(("VSync", ""));
+                entries.Add(("Note Style", ""));
+                entries.Add(("Note Splash", ""));
+                entries.Add(("Song Timer", ""));
+                entries.Add(("Timer Color", ""));
+                if (Game1.ShowTimer)
+                {
+                    entries.Add(("  Preset", ""));
+                    if (Game1.TimerPreset != "Legacy" && Game1.TimerPreset != "Custom HUD")
+                    {
+                        entries.Add(("    Text Mode", ""));
+                        entries.Add(("    Force Top", ""));
+                    }
+                }
+                entries.Add(("Camera Zoom", ""));
+                entries.Add(("Hide Extra Strumlines", ""));
+                entries.Add(("Hide Opponent Strumline", ""));
+                entries.Add(("Icon Mode", ""));
+                entries.Add(("Color Grading", ""));
+                if (Game1.ColorGradeEnabled)
+                {
+                    entries.Add(("  Hue", ""));
+                    entries.Add(("  Saturation", ""));
+                }
+                entries.Add(("Back", ""));
+                break;
+                
+            case 2: // AUDIO
+                entries.Add(("Music Volume", ""));
+                entries.Add(("Back", ""));
+                break;
+                
+            case 3: // ADVANCED
+                entries.Add(("Debug Info", ""));
+                entries.Add(("FPS Counter", ""));
+                entries.Add(("Timeskip", ""));
+                entries.Add(("Timeskip Seconds", ""));
+                entries.Add(("Arrow Effects", ""));
+                if (ArrowEffectManager.Enabled)
+                {
+                    entries.Add(("  Effect Intensity", ""));
+                    entries.Add(("  Effect Type", ""));
+                    entries.Add(("  Effect Chance", ""));
+                }
+                entries.Add(("Extended Camera (Beta)", ""));
+                entries.Add(("Brightness", ""));
+                entries.Add(("Back", ""));
+                break;
+        }
+        #else
         switch (CurrentTab)
         {
             case 0: // GAMEPLAY
@@ -1253,6 +1402,8 @@ public class SettingsManager
                 entries.Add(("VSync", ""));
                 entries.Add(("Fullscreen", ""));
                 entries.Add(("Bilinear Filter", ""));
+                entries.Add(("Note Style", ""));
+                entries.Add(("Note Splash", ""));
                 entries.Add(("Note Style", ""));
                 entries.Add(("Note Splash", ""));
                 entries.Add(("Song Timer", ""));
@@ -1296,10 +1447,12 @@ public class SettingsManager
                     entries.Add(("  Effect Type", ""));
                     entries.Add(("  Effect Chance", ""));
                 }
+                entries.Add(("Extended Camera (Beta)", ""));
                 entries.Add(("Brightness", ""));
                 entries.Add(("Back", ""));
                 break;
         }
+        #endif
         
         if (Selection < 0 || Selection >= entries.Count) return "";
         

@@ -147,6 +147,7 @@ namespace FunkyMakerPlayer.Multiplayer
         private string? _roomId = null;
         private bool _isReady = false;
         private bool _opponentReady = false;
+        private long _gameStartTimestamp = 0; // Server timestamp for synchronized start
         
         // Countdown system
         private bool _isCountdownActive = false;
@@ -1346,6 +1347,7 @@ namespace FunkyMakerPlayer.Multiplayer
             NetworkManager.Instance.OnMatchFound += OnMatchFound;
             NetworkManager.Instance.OnOpponentReadyChanged += OnOpponentReadyChanged;
             NetworkManager.Instance.OnCountdownStart += OnCountdownStart;
+            NetworkManager.Instance.OnGameStart += OnGameStart;
             NetworkManager.Instance.OnLevelListReceived += OnLevelListReceived;
         }
         
@@ -1606,6 +1608,12 @@ namespace FunkyMakerPlayer.Multiplayer
             Console.WriteLine($"[Multiplayer] Countdown starting at: {countdownStartTime}");
             _isCountdownActive = true;
             _countdownStartTime = countdownStartTime;
+        }
+        
+        private void OnGameStart(long startTimestamp, int playerRole)
+        {
+            Console.WriteLine($"[Multiplayer] Game starting at timestamp: {startTimestamp}, role: {playerRole}");
+            _gameStartTimestamp = startTimestamp;
         }
 
         private void OnLevelListReceived(LevelListPacket packet)
@@ -2725,7 +2733,7 @@ namespace FunkyMakerPlayer.Multiplayer
             try
             {
                 // Start multiplayer match in existing Game1 instance (no new window)
-                _game.StartMultiplayerMatch(levelPath, opponentName, playerRole);
+                _game.StartMultiplayerMatch(levelPath, opponentName, playerRole, _gameStartTimestamp);
                 
                 Console.WriteLine("[MultiplayerMenu] Match started successfully");
             }

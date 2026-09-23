@@ -1,0 +1,20 @@
+<?xml version='1.0'?>
+<Obfuscator>
+  <Var name="InPath" value=".\bin\Release\net10.0" />
+  <Var name="OutPath" value=".\bin\Release\net10.0\Obfuscated" />
+  <Var name="HidePrivateApi" value="true" />
+  <Var name="KeepPublicApi" value="false" />
+  <Var name="ReuseNames" value="true" />
+  
+  <!-- Renombrar todo (clases, métodos, propiedades) -->
+  <Var name="RenameFields" value="true" />
+  <Var name="RenameProperties" value="true" />
+  <Var name="RenameEvents" value="true" />
+  
+  <!-- Módulo principal -->
+  <Module file="$(InPath)\FunkyMakerPlayer.dll">
+    <SkipType name="Program" /> <!-- No ofuscar Program.Main() -->
+  </Module>
+  
+  <Module file="$(InPath)\FunkyMakerPlayer.exe" />
+</Obfuscator>

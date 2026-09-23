@@ -14,19 +14,22 @@ public class NoteSplashMenu
     private readonly Texture2D _pixel;
     private readonly SpriteFont _font;
     private readonly FontRenderer? _fontRenderer;
+    private readonly GraphicsDevice _graphicsDevice;
     
     public bool IsActive { get; set; } = false;
     public int Selection { get; set; } = 0;
     
     private List<string> _styles = new();
     private NoteSplashStyle? _previewStyle = null;
+    private ParticleNoteSplash? _previewParticles = null;  // Preview for Extended particles
     private float _animTimer = 0f;
     private int _animLane = 0;
     
-    public NoteSplashMenu(Texture2D pixel, SpriteFont font, FontRenderer? fontRenderer = null)
+    public NoteSplashMenu(Texture2D pixel, SpriteFont font, GraphicsDevice graphicsDevice, FontRenderer? fontRenderer = null)
     {
         _pixel = pixel;
         _font = font;
+        _graphicsDevice = graphicsDevice;
         _fontRenderer = fontRenderer;
     }
     
@@ -52,6 +55,30 @@ public class NoteSplashMenu
     private void LoadPreview(string styleName, GraphicsDevice graphicsDevice)
     {
         _previewStyle = NoteSplashStyle.LoadByName(styleName, graphicsDevice);
+        
+        // If it's a particle style, create preview particle system
+        if (styleName.StartsWith("Particles:"))
+        {
+            _previewParticles = new ParticleNoteSplash(graphicsDevice);
+            
+            // Parse which style was selected
+            if (styleName.Contains("CircleExpand"))
+                _previewParticles.CurrentStyle = ParticleNoteSplash.SplashStyle.CircleExpand;
+            else if (styleName.Contains("SplashDrops"))
+                _previewParticles.CurrentStyle = ParticleNoteSplash.SplashStyle.SplashDrops;
+            else if (styleName.Contains("StarBurst"))
+                _previewParticles.CurrentStyle = ParticleNoteSplash.SplashStyle.StarBurst;
+            else if (styleName.Contains("Explosion"))
+                _previewParticles.CurrentStyle = ParticleNoteSplash.SplashStyle.Explosion;
+            else if (styleName.Contains("RingPulse"))
+                _previewParticles.CurrentStyle = ParticleNoteSplash.SplashStyle.RingPulse;
+            else if (styleName.Contains("Randomizer"))
+                _previewParticles.CurrentStyle = ParticleNoteSplash.SplashStyle.Randomizer;
+        }
+        else
+        {
+            _previewParticles = null;
+        }
     }
     
     public void Update(KeyboardState kb, KeyboardState prevKb, float deltaTime, GraphicsDevice graphicsDevice, List<NoteRenderer> noteRenderers)
@@ -60,11 +87,30 @@ public class NoteSplashMenu
         
         // Update animation timer (loops continuously)
         _animTimer += deltaTime;
-        float loopDuration = _previewStyle?.Duration ?? 0.3f;
+        float loopDuration = _previewStyle?.Duration ?? 0.5f;  // Use 0.5s for particles
         if (_animTimer >= loopDuration + 0.5f)  // Add 0.5s pause between loops
         {
             _animTimer = 0f;
             _animLane = (_animLane + 1) % 4;  // Cycle through lanes
+            
+            // Trigger particle preview splash
+            if (_previewParticles != null)
+            {
+                // Calculate preview position (center of preview area)
+                int sw = _graphicsDevice.Viewport.Width;
+                int sh = _graphicsDevice.Viewport.Height;
+                float previewX = sw * 0.42f;
+                float previewCx = previewX + (sw - previewX - 16f) / 2f;
+                float previewCy = sh / 2f;
+                
+                _previewParticles.Trigger(_animLane, new Vector2(previewCx, previewCy));
+            }
+        }
+        
+        // Update particle system
+        if (_previewParticles != null)
+        {
+            _previewParticles.Update(new GameTime(TimeSpan.Zero, TimeSpan.FromSeconds(deltaTime)));
         }
         
         // Navigation
@@ -90,8 +136,35 @@ public class NoteSplashMenu
             
             // Apply to all note renderers
             var splashStyle = NoteSplashStyle.LoadByName(Game1.NoteSplashStyleName, graphicsDevice);
+            
+            // If it's a particle style, recreate the particle splash system
+            ParticleNoteSplash? particleSplash = null;
+            if (Game1.NoteSplashStyleName.StartsWith("Particles:"))
+            {
+                particleSplash = new ParticleNoteSplash(graphicsDevice);
+                
+                // Parse which style was selected
+                if (Game1.NoteSplashStyleName.Contains("CircleExpand"))
+                    particleSplash.CurrentStyle = ParticleNoteSplash.SplashStyle.CircleExpand;
+                else if (Game1.NoteSplashStyleName.Contains("SplashDrops"))
+                    particleSplash.CurrentStyle = ParticleNoteSplash.SplashStyle.SplashDrops;
+                else if (Game1.NoteSplashStyleName.Contains("StarBurst"))
+                    particleSplash.CurrentStyle = ParticleNoteSplash.SplashStyle.StarBurst;
+                else if (Game1.NoteSplashStyleName.Contains("Explosion"))
+                    particleSplash.CurrentStyle = ParticleNoteSplash.SplashStyle.Explosion;
+                else if (Game1.NoteSplashStyleName.Contains("RingPulse"))
+                    particleSplash.CurrentStyle = ParticleNoteSplash.SplashStyle.RingPulse;
+                else if (Game1.NoteSplashStyleName.Contains("Randomizer"))
+                    particleSplash.CurrentStyle = ParticleNoteSplash.SplashStyle.Randomizer;
+                
+                Console.WriteLine($"[NoteSplashMenu] Applied particle style: {particleSplash.CurrentStyle}");
+            }
+            
             foreach (var r in noteRenderers)
+            {
                 r.SetSplashStyle(splashStyle);
+                r.SetParticleSplash(particleSplash);
+            }
             
             Settings.Save(true);  // Save settings
             Close();
@@ -208,12 +281,40 @@ public class NoteSplashMenu
         
         // Show info about current style
         var style = _previewStyle;
+        string selectedName = _styles[Selection];
         float infoY = 100f;
         Color infoColor = Color.White * 0.7f;
         int infoSize = (int)(sh * 0.030f);
         infoSize = Math.Clamp(infoSize, 16, 28);
         
-        if (style != null && style.HasTextures)
+        if (selectedName.StartsWith("Particles:"))
+        {
+            // Show info for particle-based splash
+            if (_fontRenderer != null)
+            {
+                _fontRenderer.DrawString(spriteBatch, "Type: Programmatic (Extended)",
+                    new Vector2(previewX + 8, infoY), infoColor, infoSize);
+                infoY += 24f;
+                int descSize = (int)(infoSize * 0.85f);
+                _fontRenderer.DrawString(spriteBatch, "Procedural visual effects",
+                    new Vector2(previewX + 8, infoY), infoColor * 0.6f, descSize);
+                infoY += 20f;
+                _fontRenderer.DrawString(spriteBatch, "No textures required",
+                    new Vector2(previewX + 8, infoY), infoColor * 0.6f, descSize);
+            }
+            else
+            {
+                spriteBatch.DrawString(_font, "Type: Programmatic (Extended)",
+                    new Vector2(previewX + 8, infoY), infoColor, 0f, Vector2.Zero, 0.7f, SpriteEffects.None, 0f);
+                infoY += 24f;
+                spriteBatch.DrawString(_font, "Procedural visual effects",
+                    new Vector2(previewX + 8, infoY), infoColor * 0.6f, 0f, Vector2.Zero, 0.65f, SpriteEffects.None, 0f);
+                infoY += 20f;
+                spriteBatch.DrawString(_font, "No textures required",
+                    new Vector2(previewX + 8, infoY), infoColor * 0.6f, 0f, Vector2.Zero, 0.65f, SpriteEffects.None, 0f);
+            }
+        }
+        else if (style != null && style.HasTextures)
         {
             if (_fontRenderer != null)
             {
@@ -301,8 +402,14 @@ public class NoteSplashMenu
         }
         
         // Draw splash animation
-        float loopDuration = style?.Duration ?? 0.3f;
-        if (_animTimer < loopDuration)  // Only draw during animation duration
+        float loopDuration = style?.Duration ?? 0.5f;
+        
+        // If using particle preview, draw it with Extended
+        if (_previewParticles != null)
+        {
+            _previewParticles.Draw(spriteBatch);
+        }
+        else if (_animTimer < loopDuration)  // Only draw during animation duration
         {
             if (style != null && style.HasTextures && style.SplashFrames[_animLane] != null)
             {

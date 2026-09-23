@@ -243,6 +243,25 @@ namespace FunkyMakerPlayer.Multiplayer
         public long Timestamp { get; set; }
     }
     
+    /// <summary>
+    /// Notify player that opponent's ready state changed.
+    /// </summary>
+    public class OpponentReadyPacket
+    {
+        public bool IsReady { get; set; }
+        public long Timestamp { get; set; }
+    }
+    
+    /// <summary>
+    /// Opponent key press event (received from server).
+    /// Used for real-time character animation synchronization.
+    /// </summary>
+    public class OpponentKeyPressPacket
+    {
+        public int Lane { get; set; }  // Lane index (0=left, 1=down, 2=up, 3=right)
+        public long Timestamp { get; set; }
+    }
+    
     // ══════════════════════════════════════════════════════════════════════════
     // ENHANCED MULTIPLAYER PACKETS (v0.2.4)
     // ══════════════════════════════════════════════════════════════════════════
@@ -313,6 +332,16 @@ namespace FunkyMakerPlayer.Multiplayer
         public int MaxCombo { get; set; } = 0;
         public int Misses { get; set; } = 0;
         public bool Disconnected { get; set; } = false;
+    }
+    
+    /// <summary>
+    /// Key press event (sent every time player presses arrow key, regardless of hit/miss).
+    /// Used for real-time character animation synchronization.
+    /// </summary>
+    public class KeyPressPacket
+    {
+        public int Lane { get; set; }  // Lane index (0=left, 1=down, 2=up, 3=right)
+        public long Timestamp { get; set; }
     }
     
     /// <summary>

@@ -458,12 +458,12 @@ public static class PlatformPaths
             string fonts = GetFontsPath();
             string countdowns = GetCountdownsPath();
             
-            Console.WriteLine($"[PlatformPaths] ✓ Mods base: {modsBase}");
-            Console.WriteLine($"[PlatformPaths] ✓ Levels: {levels}");
-            Console.WriteLine($"[PlatformPaths] ✓ NoteStyles: {noteStyles}");
-            Console.WriteLine($"[PlatformPaths] ✓ NoteSplashes: {noteSplashes}");
-            Console.WriteLine($"[PlatformPaths] ✓ Fonts: {fonts}");
-            Console.WriteLine($"[PlatformPaths] ✓ Countdowns: {countdowns}");
+            Console.WriteLine($"[PlatformPaths] [OK] Mods base: {modsBase}");
+            Console.WriteLine($"[PlatformPaths] [OK] Levels: {levels}");
+            Console.WriteLine($"[PlatformPaths] [OK] NoteStyles: {noteStyles}");
+            Console.WriteLine($"[PlatformPaths] [OK] NoteSplashes: {noteSplashes}");
+            Console.WriteLine($"[PlatformPaths] [OK] Fonts: {fonts}");
+            Console.WriteLine($"[PlatformPaths] [OK] Countdowns: {countdowns}");
             
             // Scan for content and count items
             int totalLevels = ScanModContent(levels, "levels", new[] { ".fnmm", ".rar" });

@@ -41,6 +41,8 @@ public class CameraState
 
     // ── Position transition state (X/Y only) ─────────────────────────────────
     private float _sx, _sy; // start position
+    public float StartX => _sx;  // Expose start position for scrollfactor calculations
+    public float StartY => _sy;
     public float TargetX  { get; set; }
     public float TargetY  { get; set; }
     public float PosTransTime { get; set; }
@@ -227,7 +229,7 @@ public class CameraState
             {
                 if (PosEasingType == "default")
                 {
-                    // FNF-style: fast exponential lerp that snaps quickly to target.
+                    // Use exponential lerp for smooth "default" easing
                     float lerpRate = duration > 0f ? 8.0f / duration : 60f;
                     float alpha = 1f - MathF.Exp(-lerpRate * dt);
                     X += (TargetX - X) * alpha;
@@ -235,6 +237,7 @@ public class CameraState
                 }
                 else
                 {
+                    // Use specified easing function
                     float e = Ease(elapsed / duration, PosEasingType);
                     X = MathHelper.Lerp(_sx, TargetX, e);
                     Y = MathHelper.Lerp(_sy, TargetY, e);
@@ -292,13 +295,13 @@ public class CameraState
 
     private static float Ease(float t, string type) => type switch
     {
-        "circ"  => MathF.Sqrt(1f - MathF.Pow(t - 1f, 2f)),
-        "quad"  => t * (2f - t),
-        "cubic" => 1f - MathF.Pow(1f - t, 3f),
-        "sine"  => MathF.Sin(t * MathF.PI / 2f),
-        "expo"  => t >= 1f ? 1f : 1f - MathF.Pow(2f, -10f * t),
-        "bounce"=> EaseBounce(t),
-        _       => t,
+        "circ"  => EaseOutCirc(t),  // Standard ease-out: starts fast, decelerates smoothly
+        "quad"  => 1f - (1f - t) * (1f - t),  // ease-out: starts fast, decelerates smoothly
+        "cubic" => 1f - MathF.Pow(1f - t, 3f),  // ease-out: starts fast, decelerates smoothly
+        "sine"  => MathF.Sin(t * MathF.PI / 2f),  // ease-out
+        "expo"  => t >= 1f ? 1f : 1f - MathF.Pow(2f, -10f * t),  // ease-out
+        "bounce"=> EaseBounce(t),  // ease-out
+        _       => t,  // linear
     };
 
     private static float EaseBounce(float t)
@@ -307,6 +310,31 @@ public class CameraState
         if (t < 2f / 2.75f) { t -= 1.5f / 2.75f;   return 7.5625f * t * t + 0.75f; }
         if (t < 2.5f / 2.75f) { t -= 2.25f / 2.75f; return 7.5625f * t * t + 0.9375f; }
         t -= 2.625f / 2.75f; return 7.5625f * t * t + 0.984375f;
+    }
+    
+    private static float EaseInOutCirc(float t)
+    {
+        // Ease-in-out circular: smooth acceleration and deceleration
+        // First half: ease-in (slow start), second half: ease-out (slow end)
+        if (t < 0.5f)
+        {
+            // Ease-in: 0.5 * (1 - sqrt(1 - (2t)^2))
+            return 0.5f * (1f - MathF.Sqrt(1f - 4f * t * t));
+        }
+        else
+        {
+            // Ease-out: 0.5 * (sqrt(1 - (2t-2)^2) + 1)
+            float x = 2f * t - 2f;
+            return 0.5f * (MathF.Sqrt(1f - x * x) + 1f);
+        }
+    }
+    
+    private static float EaseOutCirc(float t)
+    {
+        // Standard ease-out circular (like easings.net and GameMaker)
+        // Starts fast, decelerates smoothly at the end
+        // Formula: sqrt(1 - (t - 1)^2)
+        return MathF.Sqrt(1f - MathF.Pow(t - 1f, 2f));
     }
 }
 
@@ -1265,11 +1293,12 @@ public class EventProcessor
                             
                             // Restore animation state on the new sprite
                             if (_objAnimators[objIdx] != null)
+                            if (_objAnimators[objIdx] != null)
                             {
                                 // Set to the same animation index (clamped to new sprite's anim count)
-                                int safeAnim = Math.Clamp(currentAnim, 0, _objAnimators[objIdx].AnimCount - 1);
-                                _objAnimators[objIdx].SetAnimation(safeAnim, setByEvent: wasSetByEvent);
-                                _objAnimators[objIdx].HoldUntil = holdUntil;
+                                int safeAnim = Math.Clamp(currentAnim, 0, _objAnimators[objIdx]!.AnimCount - 1);
+                                _objAnimators[objIdx]!.SetAnimation(safeAnim, setByEvent: wasSetByEvent);
+                                _objAnimators[objIdx]!.HoldUntil = holdUntil;
                                 
                                 Console.WriteLine($"[ObjectSpriteSet] t={_currentSongTime:F2} Obj {objIdx} ({objs[objIdx]!.Spr}) → preserved anim={safeAnim} IsSetByEvent={wasSetByEvent}");
                             }
@@ -1535,26 +1564,10 @@ public class EventProcessor
                             
                             string easeName = action.Props.EasingType ?? "linear";
                             
-                            // SIMPLIFIED DELAY HANDLING:
-                            // - Always use full duration (no compensation)
-                            // - Beat-time system handles music sync automatically
-                            // - This prevents timing inconsistencies between Fixed and World objects
-                            float tweenStartTime = _currentSongTime;
+                            // Start tween at event time for proper synchronization
+                            // No artificial compensation - let events fire at correct times
+                            float tweenStartTime = eventTime;
                             float tweenDuration = duration;
-                            
-                            // Only log if there's a significant processing delay (>10ms)
-                            float eventDelay = _currentSongTime - eventTime;
-                            if (eventDelay > 0.01f && remainingTime < 0.01f)
-                            {
-                                string timeMode = !obj.Fixed && !isSeconds ? "beats" : "seconds";
-                                Console.WriteLine($"[TweenStart] Obj {objIdx} ({objName}): delay={eventDelay:F3}s, dur={duration:F2}s ({durationOriginal:F2}{(isSeconds ? "s" : "b")}) [mode={timeMode}] [Fixed={obj.Fixed}]");
-                            }
-                            
-                            if (remainingTime > 0.01f)
-                            {
-                                string timeMode = !obj.Fixed && !isSeconds ? "beats" : "seconds";
-                                Console.WriteLine($"[SmoothFuse] Obj {objIdx} ({objName}): Fused animation using full duration {duration:F2}s ({durationOriginal:F2}{(isSeconds ? "s" : "b")}) for smooth transition (skipTime={remainingTime:F3}s ignored) [mode={timeMode}]");
-                            }
                             
                             var tween = new ObjectTransformTween
                             {
@@ -1567,13 +1580,18 @@ public class EventProcessor
                                 StartScale   = startScale,
                                 EndScale     = endScale,
                                 Ease         = GetEaseFunction(easeName),
-                                NewTransformIndex = posIdx, // Update to new transform index when tween completes
-                                // Use beat-time for non-Fixed objects when duration is in beats
+                                NewTransformIndex = posIdx,
                                 UseBeatTime   = !obj.Fixed && !isSeconds,
                                 StartBeat     = _currentBeat,
                                 DurationBeats = durationOriginal,
                             };
                             _tweens.Add(tween);
+                            
+                            if (remainingTime > 0.01f)
+                            {
+                                string timeMode = !obj.Fixed && !isSeconds ? "beats" : "seconds";
+                                Console.WriteLine($"[SmoothFuse] Obj {objIdx} ({objName}): Fused animation using duration {duration:F2}s ({durationOriginal:F2}{(isSeconds ? "s" : "b")}) [mode={timeMode}]");
+                            }
                         }
                     }
                     break;
@@ -1957,11 +1975,11 @@ public class EventProcessor
     private static Func<float, float> GetEaseFunction(string name) => name.ToLower() switch
     {
         "linear"   => (t) => t,
-        "quad"     => (t) => t * t,
-        "cubic"    => (t) => t * t * t,
+        "quad"     => (t) => 1f - (1f - t) * (1f - t),  // ease-out: starts fast, decelerates smoothly
+        "cubic"    => (t) => 1f - MathF.Pow(1f - t, 3f),  // ease-out: starts fast, decelerates smoothly
         "sine"     => (t) => MathF.Sin(t * MathF.PI / 2f),
         "expo"     => (t) => t >= 1f ? 1f : 1f - MathF.Pow(2f, -10f * t),
-        "circ"     => (t) => 1f - MathF.Sqrt(1f - t * t),
+        "circ"     => EaseOutCirc,  // Standard ease-out: starts fast, decelerates smoothly
         "bounce"   => EaseBounce,
         "elastic"  => EaseElastic,
         _          => (t) => t,  // default to linear
@@ -1980,6 +1998,31 @@ public class EventProcessor
         if (t <= 0f) return 0f;
         if (t >= 1f) return 1f;
         return MathF.Pow(2f, -10f * t) * MathF.Sin((t - 0.075f) * (2f * MathF.PI) / 0.3f) + 1f;
+    }
+    
+    private static float EaseInOutCirc(float t)
+    {
+        // Ease-in-out circular: smooth acceleration and deceleration
+        // First half: ease-in (slow start), second half: ease-out (slow end)
+        if (t < 0.5f)
+        {
+            // Ease-in: 0.5 * (1 - sqrt(1 - (2t)^2))
+            return 0.5f * (1f - MathF.Sqrt(1f - 4f * t * t));
+        }
+        else
+        {
+            // Ease-out: 0.5 * (sqrt(1 - (2t-2)^2) + 1)
+            float x = 2f * t - 2f;
+            return 0.5f * (MathF.Sqrt(1f - x * x) + 1f);
+        }
+    }
+    
+    private static float EaseOutCirc(float t)
+    {
+        // Standard ease-out circular (like easings.net and GameMaker)
+        // Starts fast, decelerates smoothly at the end
+        // Formula: sqrt(1 - (t - 1)^2)
+        return MathF.Sqrt(1f - MathF.Pow(t - 1f, 2f));
     }
 
     /// <summary>

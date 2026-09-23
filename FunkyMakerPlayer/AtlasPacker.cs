@@ -55,6 +55,7 @@ public static class AtlasPacker
     /// <param name="frameHeight">Height of each frame</param>
     /// <param name="maxAtlasSize">Maximum atlas size (GPU limit, typically 16384)</param>
     /// <param name="graphicsDevice">MonoGame GraphicsDevice for creating textures</param>
+    /// <param name="onProgress">Optional callback for progress updates (current frame, total frames)</param>
     /// <returns>List of packed atlases (usually just 1)</returns>
     public static List<PackResult> PackHorizontalStrip(
         byte[] pngBytes,
@@ -62,7 +63,8 @@ public static class AtlasPacker
         int frameWidth,
         int frameHeight,
         int maxAtlasSize,
-        GraphicsDevice graphicsDevice)
+        GraphicsDevice graphicsDevice,
+        Action<int, int>? onProgress = null)
     {
         Console.WriteLine($"[AtlasPacker] Packing {frameCount} frames ({frameWidth}x{frameHeight}) into 2D atlas...");
         
@@ -153,6 +155,15 @@ public static class AtlasPacker
                     }
                     
                     frameCoords.Add(new FrameRect(dstX, dstY, effectiveFrameWidth, effectiveFrameHeight));
+                    
+                    // Report progress every 5 frames to allow UI updates (especially on Android)
+                    if (onProgress != null && (globalFrameIdx % 5 == 0 || globalFrameIdx == frameCount - 1))
+                    {
+                        onProgress(globalFrameIdx + 1, frameCount);
+                        
+                        // Yield to allow UI thread to update (prevents ANR on Android)
+                        System.Threading.Thread.Sleep(1);
+                    }
                 }
                 
                 // Convert atlas to MonoGame texture

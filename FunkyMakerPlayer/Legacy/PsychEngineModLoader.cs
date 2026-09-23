@@ -57,6 +57,12 @@ namespace FunkyMakerPlayer
         private int currentStep = 0;
         private int currentBeat = 0;
         
+        // Combo bounce animation (FNF style)
+        private int lastCombo = 0;
+        private float comboScale = 1.0f;
+        private const float COMBO_BOUNCE_SCALE = 1.2f;  // Scale when combo increases
+        private const float COMBO_LERP_SPEED = 12f;     // How fast it returns to normal
+        
         public PsychEngineModLoader(Game1 gameInstance, string psychModPath)
         {
             game = gameInstance;
@@ -280,9 +286,9 @@ namespace FunkyMakerPlayer
                     {
                         string jsonText = File.ReadAllText(fullPath);
                         CurrentChart = ParsePsychChart(jsonText);
-                        Console.WriteLine($"  ✓ Chart: {file}");
-                        Console.WriteLine($"  ✓ BPM: {CurrentChart.Bpm}");
-                        Console.WriteLine($"  ✓ Secciones: {CurrentChart.Notes?.Count ?? 0}");
+                        Console.WriteLine($"  [OK] Chart: {file}");
+                        Console.WriteLine($"  [OK] BPM: {CurrentChart.Bpm}");
+                        Console.WriteLine($"  [OK] Secciones: {CurrentChart.Notes?.Count ?? 0}");
                         return true;
                     }
                     catch (Exception ex)
@@ -758,6 +764,23 @@ namespace FunkyMakerPlayer
             {
                 currentBeat = newBeat;
                 OnBeatHit(currentBeat);
+            }
+            
+            // Combo bounce animation (FNF style)
+            float dt = (float)gameTime.ElapsedGameTime.TotalSeconds;
+            if (playerNoteRenderer != null)
+            {
+                int currentCombo = playerNoteRenderer.Combo;
+                
+                // Detectar cuando el combo aumenta
+                if (currentCombo > lastCombo)
+                {
+                    comboScale = COMBO_BOUNCE_SCALE;  // Salta a 1.2
+                }
+                lastCombo = currentCombo;
+                
+                // Lerp suave de vuelta a 1.0
+                comboScale = MathHelper.Lerp(comboScale, 1.0f, COMBO_LERP_SPEED * dt);
             }
             
             // NoteRenderer maneja las notas automáticamente
@@ -1491,7 +1514,7 @@ namespace FunkyMakerPlayer
             if (renderer.Combo > 0)
             {
                 var comboSize = font.MeasureString(comboText);
-                float comboScale = 1f + (renderer.Combo > 10 ? 0.2f : 0f);
+                // Usar la escala animada con bounce (FNF style)
                 spriteBatch.DrawString(font, comboText,
                     new Vector2(sw / 2f - comboSize.X * comboScale / 2f, 20),
                     Color.Yellow, 0f, Vector2.Zero, comboScale, SpriteEffects.None, 0f);
