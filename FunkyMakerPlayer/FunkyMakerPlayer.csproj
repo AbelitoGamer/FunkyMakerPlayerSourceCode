@@ -35,13 +35,21 @@
   </PropertyGroup>
   
   <!-- Android Release Signing Configuration -->
+  <!-- Passwords are read from environment variables so they never end up in the repo.
+       Set FUNKY_STORE_PASS and FUNKY_KEY_PASS before building a Release APK. -->
   <PropertyGroup Condition="$(TargetFramework.Contains('android')) And '$(Configuration)' == 'Release'">
     <AndroidKeyStore>true</AndroidKeyStore>
     <AndroidSigningKeyStore>$(MSBuildProjectDirectory)\..\funkymakergame.keystore</AndroidSigningKeyStore>
-    <AndroidSigningStorePass>FunkyMaker2024</AndroidSigningStorePass>
+    <AndroidSigningStorePass>$([System.Environment]::GetEnvironmentVariable('FUNKY_STORE_PASS'))</AndroidSigningStorePass>
     <AndroidSigningKeyAlias>funkymakergame</AndroidSigningKeyAlias>
-    <AndroidSigningKeyPass>FunkyMaker2024</AndroidSigningKeyPass>
+    <AndroidSigningKeyPass>$([System.Environment]::GetEnvironmentVariable('FUNKY_KEY_PASS'))</AndroidSigningKeyPass>
   </PropertyGroup>
+
+  <Target Name="CheckAndroidSigningSecrets" BeforeTargets="SignAndroidPackage"
+          Condition="$(TargetFramework.Contains('android')) And '$(Configuration)' == 'Release'">
+    <Error Condition="'$(AndroidSigningStorePass)' == '' Or '$(AndroidSigningKeyPass)' == ''"
+           Text="Android Release: set the FUNKY_STORE_PASS and FUNKY_KEY_PASS environment variables before building." />
+  </Target>
   
   <!-- Android Release configuration: support multiple ABIs (arm64-v8a, x86_64) -->
   <PropertyGroup Condition="$(TargetFramework.Contains('android')) And '$(Configuration)' == 'Release'">
