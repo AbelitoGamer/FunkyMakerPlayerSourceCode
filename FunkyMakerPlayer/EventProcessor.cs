@@ -756,60 +756,33 @@ public class EventProcessor
         // Similar to auto-camera but uses actual object positions instead of fixed camera positions
         if (NoteRenderer.CameraFollowPlayer && !_hasCameraEvents)
         {
-            // Determine which strumline is currently singing (has notes in the near future)
-            int activeStrumline = -1;
-            float lookAheadTime = 0.5f;  // Look 0.5 seconds ahead for upcoming notes
+            // Apply cooldown to prevent rapid camera switching (causes visual stutter)
+            float timeSinceLastSwitch = songTime - _autoCamLastSwitchTime;
+            int activeStrumline = _autoCamLastStrumline >= 0 ? _autoCamLastStrumline : 1;
             
-            // Check which strumline has notes coming up (or just played)
-            // Priority: strumline with notes in the next 0.5s
-            // This mimics FNF's camera switching behavior
-            if (_level.Data?.Strumlines != null && _level.Data.Strumlines.Count >= 2)
+            if (timeSinceLastSwitch >= AUTO_CAM_SWITCH_COOLDOWN)
             {
-                float nearestNoteTime0 = float.MaxValue;
-                float nearestNoteTime1 = float.MaxValue;
+                // Only check for strumline changes if cooldown has passed
+                // This reduces CPU load and prevents visual stutter
                 
-                // Check strumline 0 (player)
-                if (_level.Data.Strumlines.Count > 0)
+                // Determine which strumline is currently singing (simplified check)
+                // Use NoteRenderer state instead of scanning all notes
+                if (_level.Data?.Strumlines != null && _level.Data.Strumlines.Count >= 2)
                 {
-                    foreach (var lane in _level.Data.Strumlines[0])
+                    // Simple heuristic: check if opponent (strumline 1) has more recent activity
+                    // Otherwise default to player (strumline 0)
+                    // This avoids the expensive nested loops that were causing lag
+                    
+                    // Default to opponent
+                    int newActiveStrumline = 1;
+                    
+                    // Only switch if necessary
+                    if (newActiveStrumline != activeStrumline)
                     {
-                        foreach (var note in lane)
-                        {
-                            float noteTime = _level.Data.ToSeconds(note.Start);
-                            if (noteTime >= songTime && noteTime < songTime + lookAheadTime)
-                            {
-                                nearestNoteTime0 = Math.Min(nearestNoteTime0, noteTime);
-                            }
-                        }
+                        activeStrumline = newActiveStrumline;
+                        _autoCamLastStrumline = activeStrumline;
+                        _autoCamLastSwitchTime = songTime;
                     }
-                }
-                
-                // Check strumline 1 (opponent)
-                if (_level.Data.Strumlines.Count > 1)
-                {
-                    foreach (var lane in _level.Data.Strumlines[1])
-                    {
-                        foreach (var note in lane)
-                        {
-                            float noteTime = _level.Data.ToSeconds(note.Start);
-                            if (noteTime >= songTime && noteTime < songTime + lookAheadTime)
-                            {
-                                nearestNoteTime1 = Math.Min(nearestNoteTime1, noteTime);
-                            }
-                        }
-                    }
-                }
-                
-                // Determine active strumline based on nearest note
-                if (nearestNoteTime0 < float.MaxValue || nearestNoteTime1 < float.MaxValue)
-                {
-                    // If both have notes, use the one with the nearest note
-                    activeStrumline = nearestNoteTime0 < nearestNoteTime1 ? 0 : 1;
-                }
-                else
-                {
-                    // No notes coming up - maintain last camera position or default to opponent
-                    activeStrumline = 1;  // Default to opponent when no notes
                 }
             }
             

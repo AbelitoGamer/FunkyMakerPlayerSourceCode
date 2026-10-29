@@ -5,6 +5,7 @@ using System.IO;
 using System.Linq;
 using System.Runtime.InteropServices;
 using System.Threading;
+using System.Threading.Tasks;
 using Microsoft.Xna.Framework;
 using Microsoft.Xna.Framework.Audio;
 using Microsoft.Xna.Framework.Graphics;
@@ -128,6 +129,12 @@ public partial class Game1 : Game
     public FnmmLevel?      _level;  // Public for SettingsManager
     private List<NoteRenderer> _noteRenderers = new();  // Support multiple strumlines
     public EventProcessor? _events;  // Public for SettingsManager
+    private CorneredEventHandler? _corneredEvents;  // Exclusive event handler for Cornered level
+    
+    // Singleton accessor for NoteRenderer to access Cornered handler
+    public static Game1? Instance { get; private set; }
+    public CorneredEventHandler? CurrentCorneredHandler => _corneredEvents;
+    
     private Microsoft.Xna.Framework.Vector2 _initialCameraPos = Microsoft.Xna.Framework.Vector2.Zero;  // Initial camera position for scrollFactor
     
     // ── MonoGame.Extended Camera (Beta Feature) ──────────────────────────────
@@ -415,6 +422,8 @@ public partial class Game1 : Game
     // ────────────────────────────────────────────────────────────────────────
     public Game1()
     {
+        Instance = this;  // Set singleton instance for NoteRenderer access
+        
         _graphics = new GraphicsDeviceManager(this)
         {
 #if ANDROID
@@ -560,6 +569,41 @@ public partial class Game1 : Game
         // _stateManager = new GameStateManager();  // TODO: Implementar cuando esté listo
 
         base.Initialize();
+        
+        // Check for updates
+#if !DEBUG
+#if ANDROID
+        // Android: check for updates and open browser to GitHub releases
+        Task.Run(async () =>
+        {
+            var updateInfo = await Updater.CheckForUpdatesAsync();
+            if (updateInfo != null)
+            {
+                var activity = Microsoft.Xna.Framework.Game.Activity as Platforms.Android.MainActivity;
+                if (activity != null)
+                {
+                    activity.RunOnUiThread(() =>
+                    {
+                        var builder = new global::Android.App.AlertDialog.Builder(activity);
+                        builder.SetTitle("Update Available");
+                        builder.SetMessage($"Version {updateInfo.Value.tag} is available!\n\nCurrent: {Updater.GetLocalVersionString()}\nLatest: {updateInfo.Value.tag}\n\nWould you like to download it?");
+                        builder.SetPositiveButton("Download", (sender, args) =>
+                        {
+                            var intent = new global::Android.Content.Intent(global::Android.Content.Intent.ActionView);
+                            intent.SetData(global::Android.Net.Uri.Parse("https://github.com/Thisisfenix/thisisfenix.github.io/releases/latest"));
+                            activity.StartActivity(intent);
+                        });
+                        builder.SetNegativeButton("Later", (sender, args) => { });
+                        builder.Show();
+                    });
+                }
+            }
+        });
+#else
+        // Windows/Linux: full auto-update system
+        Task.Run(() => Updater.CheckAndUpdate());
+#endif
+#endif
     }
 
     // SDL2 P/Invoke — MonoGame DesktopGL ships SDL2.dll
@@ -880,7 +924,13 @@ public partial class Game1 : Game
         // Now load NoteStyle and NoteSplashStyle with the correct names from settings
         string? assetsRootForStyle = FindAssetsRoot();
         if (assetsRootForStyle != null)
+        {
             _noteStyle = NoteStyle.LoadByName(NoteStyleName, assetsRootForStyle, GraphicsDevice);
+            
+            // Set the style on all note renderers
+            foreach (var r in _noteRenderers)
+                r.SetStyle(_noteStyle);
+        }
         
         // Load notesplash style (null = programmatic default)
         _noteSplashStyle = NoteSplashStyle.LoadByName(NoteSplashStyleName, GraphicsDevice);
@@ -2348,6 +2398,19 @@ public partial class Game1 : Game
         
         _events = new EventProcessor(_level, _objAnimators, texCache);
         
+        // Initialize Cornered-specific event handler using UUID detection (more reliable than name)
+        // UUID: 01kd72pw682p6mrj4wg388zgz5 from Cornered/meta.json
+        // Chart was already replaced in SetupLevel before renderers were created
+        if ((_level.Meta?.UUID ?? "").Equals("01kd72pw682p6mrj4wg388zgz5", StringComparison.OrdinalIgnoreCase))
+        {
+            _corneredEvents = new CorneredEventHandler(_events, _level, "default");
+            Console.WriteLine($"[Cornered] Exclusive event handler activated");
+        }
+        else
+        {
+            _corneredEvents = null;
+        }
+        
         // Store initial camera position for scrollFactor calculations
         if (_events.Camera != null)
         {
@@ -3483,6 +3546,13 @@ public partial class Game1 : Game
                 {
                     var winBounds = Window.ClientBounds;
                     _cameraManager.UpdateExtendedCamera(_events.Camera, _rtWidth, _rtHeight, _events.HasCameraEvents);
+                }
+                
+                // ── Cornered Exclusive Events ────────────────────────────────
+                // Update Cornered-specific events (time-based triggers from hard.json)
+                if (_corneredEvents != null)
+                {
+                    _corneredEvents.Update(_songTime, currentBeat);
                 }
                 
                 // Audio recovery: if music stopped unexpectedly, try to restart

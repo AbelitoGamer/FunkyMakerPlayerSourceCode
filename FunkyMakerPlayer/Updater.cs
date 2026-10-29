@@ -274,7 +274,7 @@ public static class Updater
     }
 
     // ── Local version ─────────────────────────────────────────────────────────
-    private static string GetLocalVersion()
+    public static string GetLocalVersionString()
     {
         string v = Assembly.GetExecutingAssembly().GetName().Version?.ToString(3) ?? "0.0.0";
         if (v == "0.0.0" || v == "1.0.0" || v.StartsWith("0.0.0."))
@@ -287,6 +287,36 @@ public static class Updater
             }
         }
         return v;
+    }
+    
+    private static string GetLocalVersion()
+    {
+        return GetLocalVersionString();
+    }
+
+    // ── Public method for checking updates (for Android) ──────────────────────
+    public static async Task<(string tag, System.Version version, string downloadUrl, string changelog)?> CheckForUpdatesAsync()
+    {
+        try
+        {
+            var (latestTag, downloadUrl, latestVersion, changelog) = await FetchLatestRelease();
+
+            if (latestTag == null || latestVersion == null)
+                return null;
+
+            string localRaw = GetLocalVersion();
+            if (!System.Version.TryParse(localRaw, out var localVersion))
+                localVersion = new System.Version(0, 0, 0);
+
+            if (latestVersion <= localVersion)
+                return null;
+
+            return (latestTag, latestVersion, downloadUrl ?? "", changelog ?? "");
+        }
+        catch
+        {
+            return null;
+        }
     }
 
     // ── Linux user prompt ─────────────────────────────────────────────────────
@@ -346,6 +376,53 @@ public static class Updater
         _logWin?.SetProgress(0);
 #endif
 
+        string exeDir = AppContext.BaseDirectory;
+        string updaterPath = Path.Combine(exeDir, "Assets", "updater", "FunkyMakerUpdater.exe");
+
+        // Check if external updater exists
+        if (File.Exists(updaterPath))
+        {
+            Log($"[Updater] Launching external updater...");
+            try
+            {
+                // Launch updater with download URL, current process ID, and version
+                var startInfo = new ProcessStartInfo
+                {
+                    FileName = updaterPath,
+                    Arguments = $"\"{url}\" {Process.GetCurrentProcess().Id} \"{version}\"",
+                    UseShellExecute = true,
+                    WorkingDirectory = Path.Combine(exeDir, "Assets", "updater")
+                };
+
+#if !DEBUG
+                _logWin?.SetProgress(100);
+#endif
+                Log("[Updater] Starting external updater...");
+                Thread.Sleep(1000);
+
+                Process.Start(startInfo);
+
+#if !DEBUG
+                _logWin?.CloseAfterDelay(500);
+#endif
+
+                // Exit the game so updater can replace files
+                Environment.Exit(0);
+                return true;
+            }
+            catch (Exception ex)
+            {
+                Log($"[Updater] Failed to launch external updater: {ex.Message}");
+                Log("[Updater] Falling back to batch method...");
+            }
+        }
+        else
+        {
+            Log($"[Updater] External updater not found at: {updaterPath}");
+            Log("[Updater] Using fallback batch method...");
+        }
+
+        // Fallback to old batch method if updater doesn't exist or fails
         string tmpDir  = Path.Combine(Path.GetTempPath(), "FMPUpdate_" + Path.GetRandomFileName());
         string zipPath = tmpDir + ".zip";
         Directory.CreateDirectory(tmpDir);
@@ -361,7 +438,6 @@ public static class Updater
         File.Delete(zipPath);
         Log($"[Updater] Extracted to: {tmpDir}");
 
-        string exeDir  = AppContext.BaseDirectory;
         string exePath = Path.Combine(exeDir, "FunkyMakerPlayer.exe");
         string batPath = Path.Combine(Path.GetTempPath(), "fmp_update_" + Path.GetRandomFileName() + ".bat");
         string logPath = Path.Combine(exeDir, "update.log");

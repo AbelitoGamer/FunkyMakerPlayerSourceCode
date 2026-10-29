@@ -30,7 +30,7 @@ public class NoteRenderer
     private const float W_BAD   = 0.135f;
     // W_SHIT = HIT_WINDOW (0.166f)
 
-    private const float BASE_SPEED = 450f;
+    private const float BASE_SPEED = 600f;  // Increased from 450f for faster note movement
 
     private const float STRUM_Y_UP   = 0.15f;  // upscroll:   receptor near TOP
     private const float STRUM_Y_DOWN = 0.85f;  // downscroll: receptor near BOTTOM
@@ -91,6 +91,7 @@ public class NoteRenderer
     private readonly GraphicsDevice   _gd;
     private readonly float            _scrollSpeed;
     private readonly FnmmLevel        _level;     // kept for action_pack analysis
+    private NoteStyle?                _style;
     private SpriteFont?               _font;  // set each Draw call, used for note symbols
     private ArrowEffectManager?       _arrowEffects;  // Random visual effects for arrows
     private float                     _currentSongTime = 0f;  // Current song time for effects
@@ -188,8 +189,10 @@ public class NoteRenderer
     private readonly float[]          _splashTimer = new float[LANE_COUNT];  // note splash effect timer
     private readonly float[]          _comboBreakTimer = new float[LANE_COUNT];  // combo break effect timer
     private readonly Texture2D        _pixel;
-    private NoteStyle?                _style;
     private NoteSplashStyle?          _splashStyle;  // null = use programmatic default
+    
+    // Strategy Pattern: Delegate rendering to engine-specific implementations
+    private INoteStyleRenderer?       _renderer;  // Current active renderer
 
     // ── Hold note completion tracking (player only) ───────────────────────────
     // Stores the initial hit judgement distance for each active hold lane.
@@ -341,7 +344,6 @@ public class NoteRenderer
         _isPlayer       = false;  // Will be set correctly by SetIsPlayer() after construction
         _xOffset        = xOffset;
         _gd             = gd;
-        _style          = style;
         _level          = level;
 
         float bpm   = level.Data.EffectiveBpm;
@@ -385,6 +387,9 @@ public class NoteRenderer
                 }
             }
         }
+        
+        // Set style and create appropriate renderer
+        SetStyle(style);
     }
     
     /// <summary>
@@ -396,11 +401,45 @@ public class NoteRenderer
         _isPlayer = isPlayer;
     }
 
-    public void SetStyle(NoteStyle? style) => _style = style;
+    public void SetStyle(NoteStyle? style)
+    {
+        _style = style;
+        
+        Console.WriteLine($"[NoteRenderer] ═══════════════════════════════════════════");
+        Console.WriteLine($"[NoteRenderer] SetStyle called");
+        
+        if (style == null)
+        {
+            _renderer = null;
+            Console.WriteLine($"[NoteRenderer] Style is null, no renderer");
+            Console.WriteLine($"[NoteRenderer] ═══════════════════════════════════════════");
+            return;
+        }
+        
+        Console.WriteLine($"[NoteRenderer] IsCodenameEngine flag: {style.IsCodenameEngine}");
+        Console.WriteLine($"[NoteRenderer] HoldTexture exists: {style.HoldTexture != null}");
+        
+        // Choose renderer based on engine type
+        if (style.IsCodenameEngine)
+        {
+            _renderer = new CodenameNoteStyleRenderer(style, Downscroll);
+            Console.WriteLine($"[NoteRenderer] ✓✓✓ USING CODENAME ENGINE RENDERER ✓✓✓");
+        }
+        else
+        {
+            _renderer = new FMMNoteStyleRenderer(style, Downscroll);
+            Console.WriteLine($"[NoteRenderer] Using FunkyMaker native renderer");
+        }
+        
+        Console.WriteLine($"[NoteRenderer] Active renderer: {_renderer?.GetEngineName()}");
+        Console.WriteLine($"[NoteRenderer] ═══════════════════════════════════════════");
+    }
     public void SetSplashStyle(NoteSplashStyle? splashStyle) => _splashStyle = splashStyle;
     
     private ParticleNoteSplash? _particleSplash;
     private int _pendingSplashLane = -1;  // -1 = no pending splash
+    private int _drawHoldDebugCounter = 0;  // Debug: count DrawHold calls
+    
     public void SetParticleSplash(ParticleNoteSplash? particleSplash) => _particleSplash = particleSplash;
 
     /// <summary>
@@ -899,6 +938,7 @@ public class NoteRenderer
     public void Draw(SpriteBatch sb, float songTime, SpriteFont? font)
     {
         _font = font;
+        _currentSongTime = songTime; // Store for yellow arrow detection
         _currentSongTime = songTime;  // Store for effects
         // HideWhenIdle: opponent strumlines only show when a note is active
         if (HideWhenIdle && !_anyLaneActive) return;
@@ -921,8 +961,15 @@ public class NoteRenderer
             float cx = laneX + laneW / 2f;
 
             // Active hold tail (while pressing hold note)
+            // FNF holds are "consumed" visually faster than they scroll
+            // Apply a consumption multiplier to make the hold shrink faster (looks more responsive)
             if (_holdEndTime[lane] > 0f && songTime < _holdEndTime[lane])
-                DrawActiveHold(sb, lane, laneX, cx, strumY, (_holdEndTime[lane] - songTime) * spd, laneW);
+            {
+                float remainingTime = _holdEndTime[lane] - songTime;
+                // Multiply by 2.0x to make holds consume faster (FNF-style visual feedback)
+                float holdPx = remainingTime * spd * 2.0f;
+                DrawActiveHold(sb, lane, laneX, cx, strumY, holdPx, laneW);
+            }
 
             DrawReceptor(sb, lane, cx, strumY, sx, alpha, songTime);
 
@@ -952,7 +999,10 @@ public class NoteRenderer
                 }
 
                 if (note.Duration > 0)
-                    DrawHold(sb, lane, laneX, cx, noteY, note.Duration * spd, strumY, laneW, alpha, sx);
+                {
+                    // Apply same 2x multiplier as active holds for visual consistency
+                    DrawHold(sb, lane, laneX, cx, noteY, note.Duration * spd * 2.0f, strumY, laneW, alpha, sx);
+                }
 
                 DrawNoteHead(sb, lane, cx, noteY, note, sx, alpha, strumY);
             }
@@ -993,47 +1043,27 @@ public class NoteRenderer
     private void DrawActiveHold(SpriteBatch sb, int lane, float laneX, float cx,
                                  float strumY, float holdPx, float laneW)
     {
-        // Active holds start from the receptor (strumY)
-        // In upscroll: hold extends DOWN from receptor
-        // In downscroll: hold extends UP from receptor
-        float bodyTop, bodyBottom;
-        if (!Downscroll)
+        // Delegate to the appropriate renderer based on notestyle type
+        if (_renderer != null)
         {
-            bodyTop = strumY;
-            bodyBottom = strumY + holdPx;
+            _renderer.DrawActiveHold(sb, lane, cx, strumY, holdPx, laneW, Alpha);
+            return;
         }
-        else
-        {
-            bodyBottom = strumY;
-            bodyTop = strumY - holdPx;
-        }
-        DrawHoldBody(sb, lane, laneX, cx, bodyTop, bodyBottom, LaneColors[lane], isActive: true, laneW, Alpha);
     }
 
     // ── Upcoming hold note ────────────────────────────────────────────────────
     private void DrawHold(SpriteBatch sb, int lane, float laneX, float cx,
                           float noteY, float holdPx, float strumY, float laneW, float alpha, float sx)
     {
-        // Note head is ~40px tall (±20px from center) scaled by sx
-        // Additional offset needed to account for the note being drawn slightly offset
-        // In upscroll: hold extends DOWN from bottom edge
-        // In downscroll: hold extends UP from top edge
-        
-        // Base offset is 20px, but we add a small buffer (1px) to prevent visible gaps
-        float noteHeadHalfHeight = 20f * sx + 1f;
-        
-        float bodyTop, bodyBottom;
-        if (!Downscroll)
+        // Delegate to the appropriate renderer based on notestyle type
+        if (_renderer != null)
         {
-            bodyTop = noteY + noteHeadHalfHeight;  // Start from bottom of note
-            bodyBottom = bodyTop + holdPx;
+            _renderer.DrawUpcomingHold(sb, lane, cx, noteY, holdPx, strumY, laneW, alpha, sx, _level.Data.Bpm);
+            return;
         }
-        else
-        {
-            bodyBottom = noteY - noteHeadHalfHeight;  // Start from top of note
-            bodyTop = bodyBottom - holdPx;
-        }
-        DrawHoldBody(sb, lane, laneX, cx, bodyTop, bodyBottom, LaneColors[lane], isActive: false, laneW, alpha);
+        
+        // Fallback: no renderer available
+        Console.WriteLine($"[DrawHold] WARNING: No renderer available for lane {lane}, _renderer is NULL!");
     }
 
     // ── Shared hold body + cap renderer ──────────────────────────────────────
@@ -1043,216 +1073,91 @@ public class NoteRenderer
         float bodyH = Math.Max(0f, bodyBottom - bodyTop);
         if (bodyH <= 0f) return;
 
-        // Apply BPM-synchronized pulse effect to hold notes
+        // Apply BPM-synchronized pulse effect
         float pulseScale = 1f;
         if (_arrowEffects != null && ArrowEffectManager.Enabled)
         {
             float songBeats = _currentSongTime / 60f * _level.Data.EffectiveBpm;
             pulseScale = _arrowEffects.GetHoldNotePulse(songBeats);
         }
-        
-        // Apply pulse to lane width (subtle breathing effect)
         laneW *= pulseScale;
 
         Color bodyTint = Color.White * (isActive ? 0.7f : 0.85f) * alpha;
         Color capTint  = Color.White * (isActive ? 0.7f : 0.85f) * alpha;
+        float sx = laneW / LANE_WIDTH;
+        float s = (_style?.NoteScale ?? 0.7f) * sx;
 
-        // ── PRIORITY 1: HoldNoteCover (FMM v1.1 style: start/hold/end) ────────
-        if (_style?.HoldCoverStart[lane] != null || 
-            _style?.HoldCoverHold[lane] != null || 
-            _style?.HoldCoverEnd[lane] != null)
-        {
-            float sx = laneW / LANE_WIDTH;
-            float s = _style.NoteScale * sx;
-            
-            AtlasFrame? startFrame = _style.HoldCoverStart[lane];
-            AtlasFrame? holdFrame = _style.HoldCoverHold[lane];
-            AtlasFrame? endFrame = _style.HoldCoverEnd[lane];
-            
-            float startH = startFrame != null ? startFrame.FrameH * s : 0f;
-            float endH = endFrame != null ? endFrame.FrameH * s : 0f;
-            float holdH = holdFrame != null ? holdFrame.FrameH * s : 0f;
-            
-            // Clamp to body height
-            startH = Math.Min(startH, bodyH);
-            endH = Math.Min(endH, bodyH - startH);
-            float middleH = bodyH - startH - endH;
-            
-            float currentY = bodyTop;
-            
-            // Draw start (head)
-            if (startFrame != null && startH > 0f)
-            {
-                // Center the frame in the lane using cx (already calculated as lane center)
-                float scaledFrameW = startFrame.FrameW * s;
-                float drawX = cx - scaledFrameW / 2f + (-startFrame.OffsetX) * s;
-                float drawY = currentY + (-startFrame.OffsetY) * s;
-                
-                sb.Draw(startFrame.Texture, new Vector2(drawX, drawY), startFrame.Source, 
-                    bodyTint, 0f, Vector2.Zero, s, SpriteEffects.None, 0f);
-                
-                currentY += startH;
-            }
-            
-            // Draw middle (repeating hold)
-            if (holdFrame != null && middleH > 0f && holdH > 0f)
-            {
-                float scaledFrameW = holdFrame.FrameW * s;
-                float drawn = 0f;
-                
-                while (drawn < middleH)
-                {
-                    float seg = Math.Min(holdH, middleH - drawn);
-                    float drawX = cx - scaledFrameW / 2f + (-holdFrame.OffsetX) * s;
-                    float drawY = currentY + drawn + (-holdFrame.OffsetY) * s;
-                    
-                    Rectangle src = holdFrame.Source;
-                    if (seg < holdH - 0.5f)
-                    {
-                        int srcH = Math.Max(1, (int)Math.Ceiling(seg / s));
-                        src = new Rectangle(holdFrame.Source.X, holdFrame.Source.Y, 
-                            holdFrame.Source.Width, srcH);
-                    }
-                    
-                    sb.Draw(holdFrame.Texture, new Vector2(drawX, drawY), src, 
-                        bodyTint, 0f, Vector2.Zero, s, SpriteEffects.None, 0f);
-                    
-                    drawn += seg;
-                }
-                
-                currentY += middleH;
-            }
-            
-            // Draw end (tail)
-            if (endFrame != null && endH > 0f)
-            {
-                float scaledFrameW = endFrame.FrameW * s;
-                float drawX = cx - scaledFrameW / 2f + (-endFrame.OffsetX) * s;
-                float drawY = currentY + (-endFrame.OffsetY) * s;
-                
-                SpriteEffects flip = Downscroll ? SpriteEffects.FlipVertically : SpriteEffects.None;
-                sb.Draw(endFrame.Texture, new Vector2(drawX, drawY), endFrame.Source, 
-                    capTint, 0f, Vector2.Zero, s, flip, 0f);
-            }
-            
-            return;
-        }
-
-        // ── PRIORITY 2: Atlas-based holds (Codename Engine style) ─────────────
-        // If HoldPieceFrames are available, use them instead of column-based rendering
-        if (_style?.HoldPieceFrames[lane] is AtlasFrame pieceFrame)
-        {
-            float sx = laneW / LANE_WIDTH;
-            float s = _style.NoteScale * sx;
-            
-            // Calculate dimensions - center in lane using cx
-            float scaledPieceW = pieceFrame.FrameW * s;
-            float scaledPieceH = pieceFrame.FrameH * s;
-            
-            // Get end cap frame if available
-            AtlasFrame? endFrame = _style.HoldEndFrames[lane];
-            float capH = endFrame != null ? endFrame.FrameH * s : 0f;
-            capH = Math.Min(capH, bodyH);  // Don't exceed total height
-            float bodyOnlyH = bodyH - capH;
-            
-            // Tile the piece frame for the body
-            if (bodyOnlyH > 0f && scaledPieceH > 0f)
-            {
-                float drawn = 0f;
-                while (drawn < bodyOnlyH)
-                {
-                    float seg = Math.Min(scaledPieceH, bodyOnlyH - drawn);
-                    // Center the piece in the lane
-                    float drawX = cx - scaledPieceW / 2f + (-pieceFrame.OffsetX) * s;
-                    float drawY = bodyTop + drawn + (-pieceFrame.OffsetY) * s;
-                    
-                    // If partial segment, adjust source rect
-                    Rectangle src = pieceFrame.Source;
-                    if (seg < scaledPieceH - 0.5f)
-                    {
-                        int srcH = Math.Max(1, (int)Math.Ceiling(seg / s));
-                        src = new Rectangle(pieceFrame.Source.X, pieceFrame.Source.Y, pieceFrame.Source.Width, srcH);
-                    }
-                    
-                    sb.Draw(pieceFrame.Texture, new Vector2(drawX, drawY), src, bodyTint, 0f, Vector2.Zero, s, SpriteEffects.None, 0f);
-                    drawn += seg;
-                }
-            }
-            
-            // Draw end cap
-            if (endFrame != null && capH > 0f)
-            {
-                float scaledCapW = endFrame.FrameW * s;
-                float drawX = cx - scaledCapW / 2f + (-endFrame.OffsetX) * s;
-                float drawY = !Downscroll ? (bodyTop + bodyOnlyH + (-endFrame.OffsetY) * s) : (bodyTop - capH + (-endFrame.OffsetY) * s);
-                SpriteEffects flip = Downscroll ? SpriteEffects.FlipVertically : SpriteEffects.None;
-                sb.Draw(endFrame.Texture, new Vector2(drawX, drawY), endFrame.Source, capTint, 0f, Vector2.Zero, s, flip, 0f);
-            }
-            return;
-        }
-
-        // ── Column-based holds (FMM/traditional style) ────────────────────────
+        // ── Column-based holds (FMM/converted Codename format) ────────────────
         if (_style?.HoldTexture is Texture2D holdTex)
         {
-            int   colW    = holdTex.Width / 8;
-            int   texH    = holdTex.Height;
-            float sx      = laneW / LANE_WIDTH;
-            float s       = _style.NoteScale * sx;
-            float bw      = colW * s;
-            float bx      = cx - bw / 2f;
-            int   bodyCol = lane * 2;
-            int   capCol  = lane * 2 + 1;
-            // Inset source rects by 1px on each side to prevent LinearClamp bleeding
-            // between adjacent columns and tile edges.
-            var   bodySrc = new Rectangle(bodyCol * colW + 1, 1, colW - 2, texH - 2);
-            var   capSrc  = new Rectangle(capCol  * colW + 1, 1, colW - 2, texH - 2);
-
-            // Cap height at current scale — clamp so it never exceeds the total body height
-            float capH    = Math.Min(texH * s, bodyH);
-            float bodyOnlyH = bodyH - capH;  // space for tiled body above the cap
-
-            // Tile the body section (above the cap)
-            if (bodyOnlyH > 0f)
-            {
-                float tileH = texH * s;
-                float drawn = 0f;
-                while (drawn < bodyOnlyH)
-                {
-                    float seg = Math.Min(tileH, bodyOnlyH - drawn);
-                    Rectangle src;
-                    if (seg >= tileH - 0.5f)
-                        src = bodySrc;
-                    else
-                        src = new Rectangle(bodyCol * colW, 0, colW, Math.Max(1, (int)Math.Ceiling(seg / s)));
-                    sb.Draw(holdTex,
-                        new Rectangle((int)bx, (int)(bodyTop + drawn), (int)bw, (int)Math.Ceiling(seg)),
-                        src, bodyTint);
-                    drawn += seg;
-                }
-            }
-
-            // Draw cap at the end of the hold, scaled to fit
+            int colW = holdTex.Width / 8;
+            int texH = holdTex.Height;
+            float bw = colW * s;
+            float bx = cx - bw / 2f;
+            int bodyCol = lane * 2;
+            int capCol = lane * 2 + 1;
+            
+            var bodySrc = new Rectangle(bodyCol * colW, 0, colW, texH);
+            var capSrc = new Rectangle(capCol * colW, 0, colW, texH);
+            
+            float fixedCapH = texH * s;
+            float actualCapH = Math.Min(fixedCapH, bodyH);
+            float bodyStretchH = bodyH - actualCapH;
+            
+            // Integer positioning to prevent sub-pixel gaps
+            int intBx = (int)bx;
+            int intBw = (int)Math.Ceiling(bw);
+            int currentY = (int)bodyTop;
+            
             if (!Downscroll)
             {
-                float capY = bodyTop + bodyOnlyH;
-                sb.Draw(holdTex, new Rectangle((int)bx, (int)capY, (int)bw, (int)capH), capSrc, capTint);
+                // Upscroll: body first, then cap
+                if (bodyStretchH > 1f)
+                {
+                    // Add 2px overlap to eliminate gaps completely
+                    float stretchH = (float)Math.Ceiling(bodyStretchH) + 2f;
+                    sb.Draw(holdTex, new Rectangle(intBx, currentY, intBw, (int)stretchH),
+                        bodySrc, bodyTint);
+                    currentY += (int)bodyStretchH;
+                }
+                
+                if (actualCapH > 0f)
+                {
+                    int capH = (int)Math.Ceiling(actualCapH);
+                    sb.Draw(holdTex, new Rectangle(intBx, currentY, intBw, capH),
+                        capSrc, capTint);
+                }
             }
             else
             {
-                float capY = bodyTop - capH;
-                sb.Draw(holdTex, new Rectangle((int)bx, (int)capY, (int)bw, (int)capH),
-                    capSrc, capTint, 0f, Vector2.Zero, SpriteEffects.FlipVertically, 0f);
+                // Downscroll: cap first (flipped), then body (flipped)
+                if (actualCapH > 0f)
+                {
+                    // Add 2px overlap to eliminate gaps completely
+                    float capH = (float)Math.Ceiling(actualCapH) + 2f;
+                    sb.Draw(holdTex, new Rectangle(intBx, currentY, intBw, (int)capH),
+                        capSrc, capTint, 0f, Vector2.Zero, SpriteEffects.FlipVertically, 0f);
+                    currentY += (int)actualCapH;
+                }
+                
+                if (bodyStretchH > 1f)
+                {
+                    int stretchH = (int)Math.Ceiling(bodyStretchH);
+                    sb.Draw(holdTex, new Rectangle(intBx, currentY, intBw, stretchH),
+                        bodySrc, bodyTint, 0f, Vector2.Zero, SpriteEffects.FlipVertically, 0f);
+                }
             }
             return;
         }
 
-        // Fallback rectangles
+        // ── FALLBACK: Simple rectangles ───────────────────────────────────────
         float fw = laneW * 0.3f;
         float fx = laneX + laneW * 0.35f;
         DrawRect(sb, fx, bodyTop, fw, bodyH, laneCol * 0.6f);
-        float capSz  = 8f;
-        float capFbY = !Downscroll ? bodyBottom : bodyTop - capSz;
-        DrawRect(sb, fx, capFbY, fw, capSz, capTint);
+        
+        float capSz = 8f;
+        float capY = Downscroll ? bodyTop : bodyBottom - capSz;
+        DrawRect(sb, fx, capY, fw, capSz, capTint);
     }
 
     // ── Receptor ─────────────────────────────────────────────────────────────
@@ -1423,7 +1328,7 @@ public class NoteRenderer
                 {
                     float glowAlpha = (_glowTimer[lane] > 0f ? 0.4f : effectGlow * 0.6f) * alpha;
                     if (holdActive && _glowTimer[lane] <= 0f) glowAlpha = Math.Max(glowAlpha, 0.2f * alpha);
-                    float glowScale = s * 1.15f * effectScale;  // Slightly larger than receptor
+                    float glowScale = s * 1.15f;  // Slightly larger than receptor (no effectScale)
                     
                     // Apply same offset logic for glow (negate the offsets)
                     float glowX = baseCenterX - (f.FrameW * glowScale) / 2f + (-f.OffsetX) * glowScale;
@@ -1435,8 +1340,20 @@ public class NoteRenderer
                     // Calculate origin for rotation
                     Vector2 glowOrigin = new Vector2(f.FrameW / 2f + f.OffsetX, f.FrameH / 2f + f.OffsetY);
                     
-                    sb.Draw(f.Texture, new Vector2(glowX + glowOrigin.X * glowScale, glowY + glowOrigin.Y * glowScale), f.Source,
-                        glowColor, effectRotation, glowOrigin, glowScale, SpriteEffects.None, 0f);
+                    // Handle rotated frames
+                    if (f.Rotated)
+                    {
+                        // For rotated frames, use center pivot
+                        Vector2 centerPivot = new Vector2(f.FrameW / 2f, f.FrameH / 2f);
+                        float totalRotation = effectRotation - MathF.PI / 2f;
+                        sb.Draw(f.Texture, new Vector2(baseCenterX, baseCenterY), f.Source,
+                            glowColor, totalRotation, centerPivot, glowScale, SpriteEffects.None, 0f);
+                    }
+                    else
+                    {
+                        sb.Draw(f.Texture, new Vector2(glowX + glowOrigin.X * glowScale, glowY + glowOrigin.Y * glowScale), f.Source,
+                            glowColor, effectRotation, glowOrigin, glowScale, SpriteEffects.None, 0f);
+                    }
                 }
                 
                 // Receptors are NOT colorized by lane (they stay grayscale/original)
@@ -1445,10 +1362,24 @@ public class NoteRenderer
                 
                 // Calculate origin for rotation (center of the frame)
                 Vector2 origin = new Vector2(f.FrameW / 2f + f.OffsetX, f.FrameH / 2f + f.OffsetY);
-                float finalScale = s * effectScale * introScale;  // Apply intro animation scale
+                // Don't scale receptors when pressing - keep original size
+                float finalScale = s * introScale;  // Only apply intro animation scale
                 
-                sb.Draw(f.Texture, new Vector2(drawX + origin.X * s, drawY + origin.Y * s), f.Source,
-                    receptorColor, effectRotation, origin, finalScale, SpriteEffects.None, 0f);
+                // Handle rotated frames (Starling atlas format)
+                if (f.Rotated)
+                {
+                    // For rotated sprites in atlas, apply -90° rotation when drawing
+                    // Use center pivot and position at center
+                    Vector2 centerPivot = new Vector2(f.FrameW / 2f, f.FrameH / 2f);
+                    float totalRotation = effectRotation - MathF.PI / 2f;  // Base rotation + frame rotation (-90°)
+                    sb.Draw(f.Texture, new Vector2(baseCenterX, baseCenterY), f.Source,
+                        receptorColor, totalRotation, centerPivot, finalScale, SpriteEffects.None, 0f);
+                }
+                else
+                {
+                    sb.Draw(f.Texture, new Vector2(drawX + origin.X * s, drawY + origin.Y * s), f.Source,
+                        receptorColor, effectRotation, origin, finalScale, SpriteEffects.None, 0f);
+                }
                 
                 // Draw note splash effect on Sick! hits
                 if (_splashTimer[lane] > 0f)
@@ -1551,7 +1482,8 @@ public class NoteRenderer
                 Color tint = _style.ColorizeByLane && skinType == 0
                     ? LaneColors[lane] * alpha
                     : baseTint * alpha;
-
+                
+                // CHECK: Cornered-exclusive yellow arrows (NOTE_undyne - scrambled notes)
                 float s     = _style.NoteScale * sx;
                 
                 // ── FNF-STYLE NOTE ENHANCEMENTS ───────────────────────────────
@@ -1592,11 +1524,12 @@ public class NoteRenderer
                     float glowX = cx - f.FrameW * glowScale / 2f + (-f.OffsetX) * glowScale;
                     float glowY = cy - f.FrameH * glowScale / 2f + (-f.OffsetY) * glowScale;
                     
+                    // All frames are unrotated during atlas loading
                     sb.Draw(f.Texture, new Vector2(glowX, glowY), f.Source,
                         glowColor, 0f, Vector2.Zero, glowScale, SpriteEffects.None, 0f);
                 }
                 
-                // 3. Main note sprite (always static - frame 0 only for flying notes)
+                // 3. Main note sprite (all frames are unrotated during atlas loading)
                 sb.Draw(f.Texture, new Vector2(drawX, drawY), f.Source,
                     tint, 0f, Vector2.Zero, s, SpriteEffects.None, 0f);
                 
@@ -1606,8 +1539,19 @@ public class NoteRenderer
                 {
                     float highlightAlpha = (0.12f + proximityFactor * 0.08f) * alpha;  // Brighter near receptor
                     Color highlightColor = Color.White * highlightAlpha;
-                    sb.Draw(f.Texture, new Vector2(drawX, drawY), f.Source,
-                        highlightColor, 0f, Vector2.Zero, s * 1.03f, SpriteEffects.None, 0f);
+                    float highlightScale = s * 1.03f;
+                    
+                    if (f.Rotated)
+                    {
+                        Vector2 centerPivot = new Vector2(f.FrameW / 2f, f.FrameH / 2f);
+                        sb.Draw(f.Texture, new Vector2(cx, cy), f.Source,
+                            highlightColor, -MathF.PI / 2f, centerPivot, highlightScale, SpriteEffects.None, 0f);
+                    }
+                    else
+                    {
+                        sb.Draw(f.Texture, new Vector2(drawX, drawY), f.Source,
+                            highlightColor, 0f, Vector2.Zero, highlightScale, SpriteEffects.None, 0f);
+                    }
                 }
 
                 // Draw symbol overlay if no dedicated frame and font available
@@ -1622,6 +1566,7 @@ public class NoteRenderer
 
         // Fallback: no style loaded — draw colored rectangle
         Color c  = skinType == 0 ? LaneColors[lane] : fallbackTint;
+        
         float hw = (LANE_WIDTH - 10f) * sx;
         
         // Calculate proximity for fallback rendering too

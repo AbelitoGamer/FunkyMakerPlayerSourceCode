@@ -82,7 +82,10 @@ public partial class FreeplayMenu
     private List<ClickableLink> _creditLinks = new();
 
     private const int ITEM_H    = 48;
-    private const int PANEL_W   = 650;  // Aumentado de 480 a 650 para más espacio
+    private const float PANEL_W_RATIO = 0.35f;  // Panel ocupa 35% del ancho de pantalla
+    
+    // Helper para obtener el ancho del panel según el tamaño de ventana
+    private int GetPanelWidth(int screenWidth) => Math.Clamp((int)(screenWidth * PANEL_W_RATIO), 450, 700);
 
     // Input cooldown — ignores inputs for a short time after opening to prevent accidental selections
     private float _inputCooldown = 0f;
@@ -428,13 +431,13 @@ public partial class FreeplayMenu
         }
 
         // ── Left area — title + menu ──────────────────────────────────────────
-        int leftW = sw - (int)((1f - _panelX) * PANEL_W);
+        int panelW = GetPanelWidth(sw);
+        int leftW = sw - (int)((1f - _panelX) * panelW);
 
         if (_font != null || _fontRenderer != null)
         {
-            // Title with glow effect - RESPONSIVE SIZE
-            int titleSize = (int)(sh * 0.065f);  // Reducido de 0.10f a 0.065f
-            titleSize = Math.Clamp(titleSize, 40, 80);  // Ajustado rango
+            // Title with glow effect - BALANCED RESPONSIVE
+            int titleSize = Math.Clamp((int)(sh * 0.065f), 32, 72);
             string title = "FUNKY MAKER";
             var titleSz = MeasureText(title, titleSize);
             float titleX = leftW / 2f - titleSz.X / 2f;
@@ -449,42 +452,41 @@ public partial class FreeplayMenu
             
             // "PLAYER" subtitle with different color
             string player = "PLAYER";
-            int playerSize = (int)(sh * 0.050f);  // Reducido de 0.078f a 0.050f
-            playerSize = Math.Clamp(playerSize, 32, 64);  // Ajustado rango
+            int playerSize = Math.Clamp((int)(sh * 0.050f), 24, 56);
             var playerSz = MeasureText(player, playerSize);
-            float playerY = titleY + titleSz.Y - 5;
+            float playerY = titleY + titleSz.Y - sh * 0.007f;
             DrawText(sb, player, new Vector2(leftW / 2f - playerSz.X / 2f, playerY),
                 new Color(255, 68, 136), playerSize);
 
-            // Decorative line under title
-            int lineY = (int)(playerY + playerSz.Y + 15);
-            int lineW = 300;
-            DrawRect(sb, leftW / 2 - lineW / 2, lineY, lineW, 3, new Color(255, 68, 136) * 0.6f);
-            // Accent dots
-            DrawRect(sb, leftW / 2 - lineW / 2 - 15, lineY, 8, 3, new Color(255, 215, 0));
-            DrawRect(sb, leftW / 2 + lineW / 2 + 7, lineY, 8, 3, new Color(255, 215, 0));
+            // Decorative line under title - fully responsive to leftW
+            int lineY = (int)(playerY + playerSz.Y + sh * 0.021f);
+            int lineW = Math.Clamp((int)(leftW * 0.45f), 150, 400);  // Más rango
+            int lineThickness = Math.Clamp((int)(sh * 0.004f), 2, 4);
+            DrawRect(sb, leftW / 2 - lineW / 2, lineY, lineW, lineThickness, new Color(255, 68, 136) * 0.6f);
+            // Accent dots - fully responsive
+            int dotSize = Math.Clamp((int)(leftW * 0.015f), 5, 12);
+            int dotOffset = Math.Clamp((int)(leftW * 0.025f), 10, 20);
+            DrawRect(sb, leftW / 2 - lineW / 2 - dotOffset, lineY, dotSize, lineThickness, new Color(255, 215, 0));
+            DrawRect(sb, leftW / 2 + lineW / 2 + dotOffset - dotSize, lineY, dotSize, lineThickness, new Color(255, 215, 0));
 
-            // Subtitle - RESPONSIVE
+            // Subtitle - BALANCED RESPONSIVE
             string sub = "Fan-made PC player for Funky Maker Mobile";
-            int subSize = (int)(sh * 0.025f);  // Reducido de 0.039f a 0.025f
-            subSize = Math.Clamp(subSize, 16, 32);  // Ajustado rango
+            int subSize = Math.Clamp((int)(sh * 0.025f), 14, 26);
             var subSz = MeasureText(sub, subSize);
-            DrawText(sb, sub, new Vector2(leftW / 2f - subSz.X / 2f, lineY + 25),
+            DrawText(sb, sub, new Vector2(leftW / 2f - subSz.X / 2f, lineY + sh * 0.035f),
                 Color.White * 0.4f, subSize);
 
-            // Menu items — Modern card-style buttons - RESPONSIVE
+            // Menu items — Modern card-style buttons - FULLY RESPONSIVE TO LEFTW
             #if ANDROID
             string[] items = { "FREEPLAY", "OPEN MODS", "IMPORT FILE", "MULTIPLAYER", "CREDITS", "GRANT FOLDER ACCESS" };
             #else
             string[] items = { "FREEPLAY", "HUD EDITOR", "MULTIPLAYER", "CREDITS" };
             #endif
             float menuY = sh * 0.56f;
-            int menuSize = (int)(sh * 0.038f);  // Reducido de 0.058f a 0.038f
-            menuSize = Math.Clamp(menuSize, 24, 48);  // Ajustado rango
-            int cardWidth = (int)(leftW * 0.45f);  // 45% del ancho izquierdo
-            cardWidth = Math.Clamp(cardWidth, 280, 400);
-            int cardHeight = (int)(sh * 0.065f);  // Reducido de 0.078f a 0.065f
-            cardHeight = Math.Clamp(cardHeight, 42, 68);  // Ajustado rango
+            int menuSize = Math.Clamp((int)(sh * 0.038f), 20, 42);
+            int cardWidth = Math.Clamp((int)(leftW * 0.65f), 250, 500);  // Más adaptable
+            int cardHeight = Math.Clamp((int)(sh * 0.068f), 45, 80);
+            int cardSpacing = Math.Clamp((int)(sh * 0.017f), 8, 20);
             
             for (int i = 0; i < items.Length; i++)
             {
@@ -498,7 +500,7 @@ public partial class FreeplayMenu
                 var sz = MeasureText(items[i], itemSize);
                 
                 int cardX = leftW / 2 - cardWidth / 2;
-                int cardY = (int)(menuY - cardHeight / 2 + 8);
+                int cardY = (int)(menuY - cardHeight / 2 + sh * 0.011f);
                 
                 // Card background
                 if (enabled)
@@ -509,8 +511,9 @@ public partial class FreeplayMenu
                         Color cardTop = new Color(255, 68, 136) * 0.25f;
                         Color cardBottom = new Color(255, 68, 136) * 0.15f;
                         
-                        // Glow border
-                        DrawRect(sb, cardX - 3, cardY - 3, cardWidth + 6, cardHeight + 6, 
+                        // Glow border - scaled
+                        int glowSize = Math.Max(2, (int)(sh * 0.004f));
+                        DrawRect(sb, cardX - glowSize, cardY - glowSize, cardWidth + glowSize * 2, cardHeight + glowSize * 2, 
                             new Color(255, 68, 136) * 0.4f);
                         
                         // Gradient fill
@@ -521,8 +524,9 @@ public partial class FreeplayMenu
                                 Color.Lerp(cardTop, cardBottom, gt));
                         }
                         
-                        // Accent line on left
-                        DrawRect(sb, cardX, cardY, 4, cardHeight, new Color(255, 215, 0));
+                        // Accent line on left - scaled
+                        int accentWidth = Math.Max(3, (int)(cardWidth * 0.015f));
+                        DrawRect(sb, cardX, cardY, accentWidth, cardHeight, new Color(255, 215, 0));
                     }
                     else
                     {
@@ -534,9 +538,11 @@ public partial class FreeplayMenu
                 }
                 else
                 {
-                    // Disabled: dark with strikethrough
+                    // Disabled: dark with strikethrough - scaled
                     DrawRect(sb, cardX, cardY, cardWidth, cardHeight, new Color(25, 15, 20) * 0.5f);
-                    DrawRect(sb, cardX + 30, cardY + cardHeight / 2, cardWidth - 60, 2, new Color(255, 0, 0) * 0.3f);
+                    int strikeMargin = (int)(cardWidth * 0.10f);
+                    int strikeThickness = Math.Max(2, (int)(sh * 0.003f));
+                    DrawRect(sb, cardX + strikeMargin, cardY + cardHeight / 2, cardWidth - strikeMargin * 2, strikeThickness, new Color(255, 0, 0) * 0.3f);
                 }
                 
                 // Text centered in card (both horizontally and vertically)
@@ -545,28 +551,30 @@ public partial class FreeplayMenu
                 
                 DrawText(sb, items[i], new Vector2(textX, textY), textCol, itemSize);
                 
-                menuY += cardHeight + 12;
+                menuY += cardHeight + cardSpacing;
             }
 
-            // Bottom hint - clean design without bar - RESPONSIVE
+            // Bottom hint - clean design without bar - BALANCED RESPONSIVE
             string hint = _inPanel 
                 ? "< ESC Back  |  R Refresh" 
                 : "UP/DOWN Navigate  |  ENTER Select  |  ESC Settings";
-            int hintSize = (int)(sh * 0.023f);  // Reducido de 0.036f a 0.023f
-            hintSize = Math.Clamp(hintSize, 14, 28);  // Ajustado rango
+            int hintSize = Math.Clamp((int)(sh * 0.023f), 13, 24);
             var hintSz = MeasureText(hint, hintSize);
+            float hintY = Math.Max(sh - sh * 0.049f, sh - 40);
             
-            DrawText(sb, hint, new Vector2(leftW / 2f - hintSz.X / 2f, sh - 35),
+            DrawText(sb, hint, new Vector2(leftW / 2f - hintSz.X / 2f, hintY),
                 Color.White * 0.35f, hintSize);
         }
 
         // ── Right panel — level list ──────────────────────────────────────────
         if (_panelX < 0.99f)
         {
-            int panelLeft = (int)(sw - PANEL_W * (1f - _panelX));
+            int panelMaxWidth = GetPanelWidth(sw);
+            int panelLeft = (int)(sw - panelMaxWidth * (1f - _panelX));
+            int panelVisibleWidth = sw - panelLeft;  // Ancho visible actual del panel
 
             // Modern panel background - solid
-            DrawRect(sb, panelLeft, 0, sw - panelLeft, sh, new Color(22, 22, 38));
+            DrawRect(sb, panelLeft, 0, panelVisibleWidth, sh, new Color(22, 22, 38));
             
             // Glowing accent border
             DrawRect(sb, panelLeft, 0, 3, sh, new Color(255, 68, 136) * 0.8f);
@@ -575,38 +583,35 @@ public partial class FreeplayMenu
             if (_font != null || _fontRenderer != null)
             {
                 // Modern panel header
-                DrawRect(sb, panelLeft, 0, sw - panelLeft, 80, new Color(30, 20, 40) * 0.9f);
-                DrawRect(sb, panelLeft, 78, sw - panelLeft, 2, new Color(255, 68, 136) * 0.5f);
+                DrawRect(sb, panelLeft, 0, panelVisibleWidth, 80, new Color(30, 20, 40) * 0.9f);
+                DrawRect(sb, panelLeft, 78, panelVisibleWidth, 2, new Color(255, 68, 136) * 0.5f);
                 
-                // "LEVELS" title with icon - RESPONSIVE
+                // "LEVELS" title with icon - FULLY RESPONSIVE
                 string levelsTitle = "LEVELS";
-                int levelsTitleSize = (int)(sh * 0.045f);  // Reducido de 0.067f a 0.045f
-                levelsTitleSize = Math.Clamp(levelsTitleSize, 28, 56);  // Ajustado rango
-                DrawText(sb, levelsTitle, new Vector2(panelLeft + 20, 16),
+                int levelsTitleSize = Math.Clamp((int)(panelVisibleWidth * 0.08f), 24, 48);
+                int headerPadding = Math.Clamp((int)(panelVisibleWidth * 0.03f), 12, 24);
+                DrawText(sb, levelsTitle, new Vector2(panelLeft + headerPadding, 16),
                     new Color(255, 215, 0), levelsTitleSize);
                 
-                // Count badge - RESPONSIVE
+                // Count badge - FULLY RESPONSIVE
                 string countStr = $"{_paths.Count} SONGS";
-                int countSize = (int)(sh * 0.026f);  // Reducido de 0.039f a 0.026f
-                countSize = Math.Clamp(countSize, 16, 34);  // Ajustado rango
+                int countSize = Math.Clamp((int)(panelVisibleWidth * 0.045f), 14, 26);
                 var countSz = MeasureText(countStr, countSize);
-                int headerBadgeX = panelLeft + 20;
+                int headerBadgeX = panelLeft + headerPadding;
                 int headerBadgeY = 50;
                 int headerBadgeW = (int)countSz.X + 16;
-                int headerBadgeH = (int)(sh * 0.030f);  // Reducido de 0.036f a 0.030f
-                headerBadgeH = Math.Clamp(headerBadgeH, 18, 28);  // Ajustado rango
+                int headerBadgeH = Math.Clamp((int)(panelVisibleWidth * 0.040f), 20, 32);
                 
                 DrawRect(sb, headerBadgeX, headerBadgeY, headerBadgeW, headerBadgeH, new Color(255, 68, 136) * 0.3f);
                 DrawRect(sb, headerBadgeX, headerBadgeY, 2, headerBadgeH, new Color(255, 68, 136));
-                DrawText(sb, countStr, new Vector2(headerBadgeX + 8, headerBadgeY + 2),
+                DrawText(sb, countStr, new Vector2(headerBadgeX + 8, headerBadgeY + 3),
                     Color.White * 0.8f, countSize);
                 
-                // "R to refresh" hint - RESPONSIVE
+                // "R to refresh" hint - FULLY RESPONSIVE
                 string refreshHint = "[R] REFRESH";
-                int refreshSize = (int)(sh * 0.022f);  // Reducido de 0.033f a 0.022f
-                refreshSize = Math.Clamp(refreshSize, 14, 28);  // Ajustado rango
+                int refreshSize = Math.Clamp((int)(panelVisibleWidth * 0.035f), 12, 24);
                 var refreshSz = MeasureText(refreshHint, refreshSize);
-                DrawText(sb, refreshHint, new Vector2(panelLeft + (sw - panelLeft) - refreshSz.X - 20, 54),
+                DrawText(sb, refreshHint, new Vector2(panelLeft + panelVisibleWidth - refreshSz.X - headerPadding, 54),
                     new Color(255, 215, 0) * 0.5f, refreshSize);
 
                 int listTop = 85;
@@ -790,31 +795,37 @@ public partial class FreeplayMenu
                         bool sel = _inPanel && i == _selected;
                         
                         // Card background with subtle gradient
+                        int itemPadding = Math.Clamp((int)(panelVisibleWidth * 0.015f), 8, 16);
+                        int cardWidth = panelVisibleWidth - (itemPadding * 2);
+                        
                         if (sel)
                         {
                             // Selected: vibrant gradient
                             Color cardTop = new Color(255, 68, 136) * 0.35f;
                             Color cardBottom = new Color(255, 68, 136) * 0.2f;
-                            DrawRect(sb, panelLeft + 8, (int)itemY + 2, sw - panelLeft - 16, ITEM_H - 5, cardTop);
+                            DrawRect(sb, panelLeft + itemPadding, (int)itemY + 2, cardWidth, ITEM_H - 5, cardTop);
                             
                             // Glow effect
-                            DrawRect(sb, panelLeft + 6, (int)itemY, sw - panelLeft - 12, 1, new Color(255, 215, 0) * 0.7f);
-                            DrawRect(sb, panelLeft + 6, (int)itemY + ITEM_H - 4, sw - panelLeft - 12, 1, new Color(255, 68, 136) * 0.5f);
+                            int glowMargin = Math.Max(2, itemPadding - 2);
+                            DrawRect(sb, panelLeft + glowMargin, (int)itemY, cardWidth + (itemPadding - glowMargin) * 2, 1, new Color(255, 215, 0) * 0.7f);
+                            DrawRect(sb, panelLeft + glowMargin, (int)itemY + ITEM_H - 4, cardWidth + (itemPadding - glowMargin) * 2, 1, new Color(255, 68, 136) * 0.5f);
                             
                             // Left accent bar
-                            DrawRect(sb, panelLeft + 8, (int)itemY + 2, 4, ITEM_H - 5, new Color(255, 215, 0));
+                            DrawRect(sb, panelLeft + itemPadding, (int)itemY + 2, 4, ITEM_H - 5, new Color(255, 215, 0));
                         }
                         else
                         {
                             // Not selected: subtle card
                             Color cardBg = (i % 2 == 0) ? new Color(28, 28, 45) * 0.5f : new Color(22, 22, 38) * 0.5f;
-                            DrawRect(sb, panelLeft + 10, (int)itemY + 3, sw - panelLeft - 20, ITEM_H - 7, cardBg);
-                            DrawRect(sb, panelLeft + 10, (int)itemY + 3, sw - panelLeft - 20, 1, Color.White * 0.05f);
+                            int unselPad = itemPadding + 2;
+                            DrawRect(sb, panelLeft + unselPad, (int)itemY + 3, cardWidth - 4, ITEM_H - 7, cardBg);
+                            DrawRect(sb, panelLeft + unselPad, (int)itemY + 3, cardWidth - 4, 1, Color.White * 0.05f);
                         }
 
-                        // Track number badge - RESPONSIVE
+                        // Track number badge - FULLY RESPONSIVE TO PANEL
                         string idx = $"{i + 1:D2}";
-                        int badgeX = panelLeft + (sel ? 18 : 16);
+                        int badgeMargin = Math.Clamp((int)(panelVisibleWidth * 0.02f), 10, 20);
+                        int badgeX = panelLeft + (sel ? badgeMargin + 8 : badgeMargin + 6);
                         int badgeY = (int)(itemY + ITEM_H / 2f - 12);
                         int badgeSize = 24;
                         
@@ -822,29 +833,34 @@ public partial class FreeplayMenu
                         DrawRect(sb, badgeX, badgeY, badgeSize, badgeSize, new Color(255, 68, 136) * (sel ? 0.4f : 0.2f));
                         DrawRect(sb, badgeX, badgeY, 2, badgeSize, new Color(255, 215, 0) * (sel ? 0.8f : 0.3f));
                         
-                        int badgeNumSize = (int)(sh * 0.026f);  // Reducido de 0.039f a 0.026f
-                        badgeNumSize = Math.Clamp(badgeNumSize, 16, 34);  // Ajustado rango
+                        int badgeNumSize = Math.Clamp((int)(panelVisibleWidth * 0.040f), 12, 22);
                         DrawText(sb, idx, new Vector2(badgeX + 6, badgeY + 4),
                             sel ? new Color(255, 215, 0) : Color.White * 0.5f, badgeNumSize);
 
-                        // Song name - RESPONSIVE
-                        float nameX = panelLeft + (sel ? 52 : 50);
+                        // Song name - FULLY RESPONSIVE WITH PANEL-BASED TRUNCATION
+                        float nameX = panelLeft + badgeMargin + (sel ? 42 : 40);
                         float nameY = itemY + ITEM_H / 2f - 10;
                         Color nameColor = sel ? Color.White : new Color(200, 200, 220) * 0.8f;
-                        int nameSize = (int)(sh * 0.032f);  // Reducido de 0.047f a 0.032f
-                        nameSize = Math.Clamp(nameSize, 20, 42);  // Ajustado rango
-                        if (sel) nameSize += 2;  // Un poco más grande si está seleccionado
+                        int nameSize = Math.Clamp((int)(panelVisibleWidth * 0.050f), 14, 28);
+                        if (sel) nameSize += 2;
                         
-                        DrawText(sb, Safe(_names[i]), new Vector2(nameX, nameY), nameColor, nameSize);
+                        // Calculate available width: from text start to panel right edge minus play icon and margin
+                        float textStartX = nameX;
+                        float panelRightEdge = panelLeft + panelVisibleWidth - Math.Clamp((int)(panelVisibleWidth * 0.08f), 30, 50);
+                        float availableWidth = panelRightEdge - textStartX;
                         
-                        // Play icon on hover/selected - RESPONSIVE
+                        string displayName = TruncateText(Safe(_names[i]), nameSize, availableWidth);
+                        
+                        DrawText(sb, displayName, new Vector2(nameX, nameY), nameColor, nameSize);
+                        
+                        // Play icon on hover/selected - FULLY RESPONSIVE
                         if (sel)
                         {
-                            string playIcon = ">";
-                            int playIconSize = (int)(sh * 0.036f);  // Reducido de 0.053f a 0.036f
-                            playIconSize = Math.Clamp(playIconSize, 22, 46);  // Ajustado rango
-                            DrawText(sb, playIcon, new Vector2(sw - 35, nameY - 2),
-                                new Color(255, 215, 0) * 0.8f, playIconSize);
+                            string playIcon = "►";
+                            int playIconSize = Math.Clamp((int)(panelVisibleWidth * 0.055f), 16, 32);
+                            int playIconMargin = Math.Clamp((int)(panelVisibleWidth * 0.05f), 20, 35);
+                            DrawText(sb, playIcon, new Vector2(panelLeft + panelVisibleWidth - playIconMargin, nameY - 1),
+                                new Color(255, 215, 0) * 0.9f, playIconSize);
                         }
                     }
 
@@ -875,24 +891,26 @@ public partial class FreeplayMenu
                         float barH = Math.Max(32f, listH * listH / totalH);
                         float barY = listTop + (_scrollY / (totalH - listH)) * (listH - barH);
                         
+                        int scrollbarWidth = 8;
+                        int scrollbarMargin = 4;
+                        
                         // Scrollbar track
-                        DrawRect(sb, sw - 12, listTop, 8, listH, new Color(20, 20, 30) * 0.5f);
+                        DrawRect(sb, panelLeft + panelVisibleWidth - scrollbarWidth - scrollbarMargin, listTop, scrollbarWidth, listH, new Color(20, 20, 30) * 0.5f);
                         
                         // Scrollbar thumb with gradient
-                        DrawRect(sb, sw - 11, (int)barY, 6, (int)barH, new Color(255, 68, 136) * 0.6f);
-                        DrawRect(sb, sw - 11, (int)barY, 2, (int)barH, new Color(255, 215, 0) * 0.4f);
+                        DrawRect(sb, panelLeft + panelVisibleWidth - scrollbarWidth - scrollbarMargin + 1, (int)barY, 6, (int)barH, new Color(255, 68, 136) * 0.6f);
+                        DrawRect(sb, panelLeft + panelVisibleWidth - scrollbarWidth - scrollbarMargin + 1, (int)barY, 2, (int)barH, new Color(255, 215, 0) * 0.4f);
                     }
                 }
 
-                // Modern footer at bottom of panel - RESPONSIVE
-                DrawRect(sb, panelLeft, sh - 50, sw - panelLeft, 50, new Color(20, 15, 25) * 0.9f);
-                DrawRect(sb, panelLeft, sh - 50, sw - panelLeft, 2, new Color(255, 68, 136) * 0.4f);
+                // Modern footer at bottom of panel - FULLY RESPONSIVE
+                DrawRect(sb, panelLeft, sh - 50, panelVisibleWidth, 50, new Color(20, 15, 25) * 0.9f);
+                DrawRect(sb, panelLeft, sh - 50, panelVisibleWidth, 2, new Color(255, 68, 136) * 0.4f);
                 string drop = GetPanelBottomHintTextInternal();
-                int dropSize = (int)(sh * 0.023f);  // Reducido de 0.036f a 0.023f
-                dropSize = Math.Clamp(dropSize, 14, 28);  // Ajustado rango
+                int dropSize = Math.Clamp((int)(panelVisibleWidth * 0.040f), 14, 24);
                 var dsz = MeasureText(drop, dropSize);
                 DrawText(sb, drop,
-                    new Vector2(panelLeft + (sw - panelLeft) / 2f - dsz.X / 2f, sh - 32),
+                    new Vector2(panelLeft + panelVisibleWidth / 2f - dsz.X / 2f, sh - 32),
                     new Color(255, 215, 0) * 0.5f, dropSize);
             }
         }
@@ -1160,7 +1178,8 @@ public partial class FreeplayMenu
     {
         if (_folderIcon == null) return Rectangle.Empty;
         
-        int panelLeft = (int)(screenWidth - PANEL_W * (1f - _panelX));
+        int panelW = GetPanelWidth(screenWidth);
+        int panelLeft = (int)(screenWidth - panelW * (1f - _panelX));
         
         // Icon size and position (centered in drop zone)
         int iconSize = 128;  // Scale icon to 128x128
@@ -1276,4 +1295,37 @@ public partial class FreeplayMenu
         }
     }
 #endif
+
+    // ── Text truncation helper ──────────────────────────────────────────────
+    private string TruncateText(string text, int fontSize, float maxWidth)
+    {
+        if (string.IsNullOrEmpty(text)) return text;
+        
+        var measured = MeasureText(text, fontSize);
+        if (measured.X <= maxWidth) return text;
+        
+        // Binary search for the right length
+        int left = 1;
+        int right = text.Length;
+        string truncated = text;
+        
+        while (left < right)
+        {
+            int mid = (left + right + 1) / 2;
+            string candidate = text.Substring(0, mid) + "...";
+            var candidateSz = MeasureText(candidate, fontSize);
+            
+            if (candidateSz.X <= maxWidth)
+            {
+                truncated = candidate;
+                left = mid;
+            }
+            else
+            {
+                right = mid - 1;
+            }
+        }
+        
+        return truncated;
+    }
 }

@@ -98,3 +98,4 @@ desktop.ini
 *.keystore
 *.jks
 keystore.properties
+events/
