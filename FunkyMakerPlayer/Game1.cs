@@ -170,6 +170,12 @@ public partial class Game1 : Game
     private bool          _inFreeplay = false;
     private Texture2D?    _folderIcon = null;  // Folder icon for empty state
     
+    // ── Editor system ─────────────────────────────────────────────────────────
+    private Editors.EditorPicker? _editorPicker;
+    private bool _inEditorPicker = false;
+    private Editors.IEditor? _activeEditor;
+    private bool _inEditor = false;
+    
     #if ANDROID
     private ModsHelpScreen? _modsHelpScreen;  // Help screen for Android mods setup
     #endif
@@ -493,6 +499,80 @@ public partial class Game1 : Game
         DiscordRpc.SetBrowsingMusic();
         ResetWindowTitle();
         _freeplay?.Refresh();
+    }
+    
+    /// <summary>
+    /// Opens the Editor Picker menu
+    /// </summary>
+    private void EnterEditorPicker()
+    {
+        _inEditorPicker = true;
+        _inFreeplay = false;
+        _editorPicker = new Editors.EditorPicker(_pixel!, _font, _fontRenderer);
+        _editorPicker.ResetInputCooldown();
+        Console.WriteLine("[Game1] Entered Editor Picker");
+    }
+    
+    /// <summary>
+    /// Exits the Editor Picker and returns to main menu
+    /// </summary>
+    private void ExitEditorPicker()
+    {
+        _inEditorPicker = false;
+        _inFreeplay = true;
+        _editorPicker = null;
+        _freeplay?.ResetInputCooldown();
+        Console.WriteLine("[Game1] Exited Editor Picker");
+    }
+    
+    /// <summary>
+    /// Opens a specific editor tool
+    /// </summary>
+    private void OpenEditor(Editors.EditorType type)
+    {
+        Console.WriteLine($"[Game1] Opening editor: {type}");
+        
+        if (type == Editors.EditorType.Chart)
+        {
+            // Chart Editor: show level picker
+            string levelsFolder = FreeplayMenu.GetDefaultLevelsFolder();
+            var levels = System.IO.Directory.GetFiles(levelsFolder, "*.fnmm", System.IO.SearchOption.AllDirectories);
+            
+            if (levels.Length == 0)
+            {
+                Console.WriteLine("[Game1] No levels found for Chart Editor");
+                // TODO: Show error message to user
+                ExitEditorPicker();
+                return;
+            }
+            
+            // For now, open the first level (TODO: add level picker UI)
+            string firstLevel = levels[0];
+            Console.WriteLine($"[Game1] Opening Chart Editor with level: {firstLevel}");
+            
+            _activeEditor = new Editors.Chart.ChartEditor(firstLevel, _pixel!, _font, _fontRenderer);
+            _inEditor = true;
+            _inEditorPicker = false;
+        }
+        else
+        {
+            // WIP editors
+            Console.WriteLine($"[Game1] {type} editor is WIP");
+            // Stay in editor picker
+        }
+    }
+    
+    /// <summary>
+    /// Exits the active editor and returns to Editor Picker
+    /// </summary>
+    private void ExitEditor()
+    {
+        _inEditor = false;
+        _inEditorPicker = true;
+        _activeEditor = null;
+        _editorPicker = new Editors.EditorPicker(_pixel!, _font, _fontRenderer);
+        _editorPicker.ResetInputCooldown();
+        Console.WriteLine("[Game1] Exited editor, returned to Editor Picker");
     }
 
     protected override void Initialize()
@@ -2614,7 +2694,8 @@ public partial class Game1 : Game
                              !_inFreeplay && !(_settingsManager?.IsActive ?? false) &&
                              !(_arrowsMenu?.IsActive ?? false) && !(_splashMenu?.IsActive ?? false) &&
                              !(_countdownMenu?.IsActive ?? false) && !(_fontMenu?.IsActive ?? false) &&
-                             !_inMultiplayer && !_inMainSettings && !_inHudEditor;
+                             !_inMultiplayer && !_inMainSettings && !_inHudEditor &&
+                             !_inEditorPicker && !_inEditor;
             
             var targetMode = inGameplay ? TouchControls.ControlMode.Gameplay : TouchControls.ControlMode.Menu;
             if (_touchControls.GetMode() != targetMode)
@@ -3022,6 +3103,14 @@ public partial class Game1 : Game
             
             var winBounds = _graphics.GraphicsDevice.Viewport.Bounds;
             _freeplay.Update(dt, kb, _rtWidth, _rtHeight, winBounds.Width, winBounds.Height);
+            
+            // Check if user pressed "7" to open Editor Picker
+            if (_freeplay.EditorPickerRequested)
+            {
+                _freeplay.ConsumeEditorPickerRequest();
+                EnterEditorPicker();
+            }
+            
             if (_freeplay.LevelChosen)
             {
                 _inFreeplay = false;
@@ -3080,6 +3169,40 @@ public partial class Game1 : Game
                 {
                     _songTransition = null;
                 }
+            }
+            
+            _prevKb = kb;
+            base.Update(gameTime);
+            return;
+        }
+        
+        // ── Editor Picker ─────────────────────────────────────────────────────
+        if (_inEditorPicker && _editorPicker != null)
+        {
+            _editorPicker.Update(dt, kb, _rtWidth, _rtHeight);
+            
+            if (_editorPicker.BackPressed)
+            {
+                ExitEditorPicker();
+            }
+            else if (_editorPicker.EditorChosen)
+            {
+                OpenEditor(_editorPicker.ChosenEditor);
+            }
+            
+            _prevKb = kb;
+            base.Update(gameTime);
+            return;
+        }
+        
+        // ── Active Editor (Chart Editor, etc.) ───────────────────────────────
+        if (_inEditor && _activeEditor != null)
+        {
+            _activeEditor.Update(dt, kb);
+            
+            if (_activeEditor.BackPressed)
+            {
+                ExitEditor();
             }
             
             _prevKb = kb;
@@ -4178,6 +4301,40 @@ public partial class Game1 : Game
                 _spriteBatch.End();
             }
 #pragma warning restore CS8602
+            
+            // Draw touch controls LAST before present
+            DrawTouchControls();
+            return;
+        }
+        
+        // ── Editor Picker (direct to screen - no render target) ──────────────
+        if (_inEditorPicker && _editorPicker != null)
+        {
+            // Draw directly to window for crisp UI
+            var winBounds = Window.ClientBounds;
+            GraphicsDevice.SetRenderTarget(null);
+            GraphicsDevice.Clear(Color.Black);
+            
+            _spriteBatch.Begin(samplerState: SamplerState.LinearClamp);
+            _editorPicker.Draw(_spriteBatch, winBounds.Width, winBounds.Height);
+            _spriteBatch.End();
+            
+            // Draw touch controls LAST before present
+            DrawTouchControls();
+            return;
+        }
+        
+        // ── Active Editor (direct to screen - no render target) ──────────────
+        if (_inEditor && _activeEditor != null)
+        {
+            // Draw directly to window for crisp UI
+            var winBounds = Window.ClientBounds;
+            GraphicsDevice.SetRenderTarget(null);
+            GraphicsDevice.Clear(Color.Black);
+            
+            _spriteBatch.Begin(samplerState: SamplerState.LinearClamp);
+            _activeEditor.Draw(_spriteBatch, winBounds.Width, winBounds.Height);
+            _spriteBatch.End();
             
             // Draw touch controls LAST before present
             DrawTouchControls();

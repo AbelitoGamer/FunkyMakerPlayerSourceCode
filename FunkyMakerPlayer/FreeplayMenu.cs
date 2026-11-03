@@ -21,6 +21,12 @@ public partial class FreeplayMenu
     /// <summary>-1=none, 1=HUD Editor, 2=Credits, 3=Multiplayer, 4=Import File (Android), 5=Open Mods Folder (Android), 6=Grant Folder Access (Android) — consumed once read</summary>
     public int    MenuAction   { get; internal set; } = -1;
     
+    /// <summary>True when user presses "7" key in main menu to open Editor Picker</summary>
+    public bool EditorPickerRequested { get; private set; }
+    
+    /// <summary>Consumes the editor picker request flag</summary>
+    public void ConsumeEditorPickerRequest() => EditorPickerRequested = false;
+    
     /// <summary>Action to call when file picker should be opened (Blazor only)</summary>
     public Action? OnFilePickerRequested { get; set; }
 
@@ -266,6 +272,14 @@ public partial class FreeplayMenu
         bool enter = kb.IsKeyDown(Keys.Enter) && !_prevKb.IsKeyDown(Keys.Enter);
         bool esc   = kb.IsKeyDown(Keys.Escape) && !_prevKb.IsKeyDown(Keys.Escape);
         bool r     = kb.IsKeyDown(Keys.R)     && !_prevKb.IsKeyDown(Keys.R);
+        bool seven = kb.IsKeyDown(Keys.D7)    && !_prevKb.IsKeyDown(Keys.D7);
+
+        // Check for "7" key press to open Editor Picker (ONLY in main menu, NOT in panel)
+        if (!_inPanel && seven)
+        {
+            EditorPickerRequested = true;
+            Console.WriteLine("[FreeplayMenu] Editor Picker requested (7 key pressed)");
+        }
 
         // Close credits with ESC or Enter
         if (_creditsOpen)
