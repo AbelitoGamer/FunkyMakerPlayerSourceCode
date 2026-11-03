@@ -54,6 +54,8 @@ public class ChartEditor : IEditor
     public void Update(float dt, KeyboardState kb)
     {
         bool esc = kb.IsKeyDown(Keys.Escape) && !_prevKb.IsKeyDown(Keys.Escape);
+        bool ctrlS = (kb.IsKeyDown(Keys.LeftControl) || kb.IsKeyDown(Keys.RightControl)) &&
+                     kb.IsKeyDown(Keys.S) && !_prevKb.IsKeyDown(Keys.S);
         
         if (esc)
         {
@@ -61,7 +63,41 @@ public class ChartEditor : IEditor
             Console.WriteLine($"[ChartEditor] Back pressed");
         }
         
+        if (ctrlS)
+        {
+            Save();
+        }
+        
         _prevKb = kb;
+    }
+    
+    private void Save()
+    {
+        if (_level == null)
+        {
+            Console.WriteLine($"[ChartEditor] Cannot save: no level loaded");
+            return;
+        }
+        
+        try
+        {
+            Console.WriteLine($"[ChartEditor] Saving level...");
+            
+            // 1. Create backup ONLY if this is the first save (never overwrite original backup)
+            BackupManager.CreateBackupIfNeeded(_levelPath);
+            
+            // 2. Save the level to .FNMM format
+            FnmmSaver.Save(_level, _levelPath);
+            
+            // 3. Mark as not modified
+            _isModified = false;
+            
+            Console.WriteLine($"[ChartEditor] ✅ Level saved successfully");
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[ChartEditor] ❌ Save failed: {ex.Message}");
+        }
     }
     
     public void Draw(SpriteBatch sb, int screenWidth, int screenHeight)
@@ -151,12 +187,20 @@ public class ChartEditor : IEditor
         DrawText(sb, wipMsg, new Vector2(cardX + cardW / 2f - wipSz.X / 2f, infoY),
             new Color(255, 200, 0), wipSize);
         
-        // Bottom hint
-        string bottomHint = "ESC Return to Editor Hub";
+        // Bottom hints
+        string saveHint = "Ctrl+S Save";
+        string escHint = "ESC Return to Editor Hub";
         int bottomHintSize = Math.Clamp((int)(screenHeight * 0.023f), 13, 24);
-        var bottomHintSz = MeasureText(bottomHint, bottomHintSize);
         float bottomHintY = Math.Max(screenHeight - screenHeight * 0.049f, screenHeight - 40);
-        DrawText(sb, bottomHint, new Vector2(screenWidth / 2f - bottomHintSz.X / 2f, bottomHintY),
+        
+        // Save hint (left side)
+        var saveHintSz = MeasureText(saveHint, bottomHintSize);
+        DrawText(sb, saveHint, new Vector2(30, bottomHintY),
+            new Color(0, 200, 255) * 0.6f, bottomHintSize);
+        
+        // ESC hint (right side)
+        var escHintSz = MeasureText(escHint, bottomHintSize);
+        DrawText(sb, escHint, new Vector2(screenWidth - escHintSz.X - 30, bottomHintY),
             Color.White * 0.35f, bottomHintSize);
     }
     
