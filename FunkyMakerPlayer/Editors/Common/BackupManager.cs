@@ -72,18 +72,35 @@ public static class BackupManager
     
     /// <summary>
     /// Returns the path where the backup should be stored.
-    /// Pattern: Levels/Backups/LevelName/original.fnmm
+    /// Pattern: {levelsRootFolder}/Backups/LevelName/original.fnmm
+    /// Example: mods/levels/Backups/MyLevel/original.fnmm
     /// </summary>
     public static string GetBackupPath(string levelPath)
     {
         string levelName = Path.GetFileNameWithoutExtension(levelPath);
-        string levelsFolder = Path.GetDirectoryName(levelPath)!;
         
-        // Navigate to parent folder (assuming levelPath is in Levels/)
-        string parentFolder = Path.GetDirectoryName(levelsFolder)!;
+        // Find the root "levels" folder by walking up the directory tree
+        string? currentDir = Path.GetDirectoryName(levelPath);
+        string? levelsRoot = null;
         
-        // Create backup path: Levels/Backups/LevelName/original.fnmm
-        string backupDir = Path.Combine(parentFolder, "Backups", levelName);
+        while (currentDir != null)
+        {
+            if (Path.GetFileName(currentDir).Equals("levels", StringComparison.OrdinalIgnoreCase))
+            {
+                levelsRoot = currentDir;
+                break;
+            }
+            currentDir = Path.GetDirectoryName(currentDir);
+        }
+        
+        // If we couldn't find "levels" folder, fall back to immediate parent
+        if (levelsRoot == null)
+        {
+            levelsRoot = Path.GetDirectoryName(levelPath)!;
+        }
+        
+        // Create backup path: {levelsRoot}/Backups/LevelName/original.fnmm
+        string backupDir = Path.Combine(levelsRoot, "Backups", levelName);
         string backupPath = Path.Combine(backupDir, "original.fnmm");
         
         return backupPath;
