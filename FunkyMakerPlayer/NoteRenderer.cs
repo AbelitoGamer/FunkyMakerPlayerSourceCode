@@ -17,7 +17,7 @@ namespace FunkyMakerPlayer;
 public class NoteRenderer
 {
     public const int   LANE_COUNT  = 4;
-    public const float LANE_WIDTH  = 112f;
+    public const float LANE_WIDTH  = 110f;  // Balanced spacing - not too close, not too far
 
     // ── Hit windows (seconds) — matching FNF base game ───────────────────────
     // Sick:  ±45ms   → 350 pts
@@ -952,13 +952,23 @@ public class NoteRenderer
 
         for (int lane = 0; lane < LANE_COUNT; lane++)
         {
+            // Calculate lane position
+            // _xOffset is in unscaled pixels, so we need to scale it
+            // Then add lane spacing (which is already scaled via laneW)
+            float baseX = _xOffset * sx;
+            
             // Midlescroll split: lanes 0-1 use _xOffset, lanes 2-3 use _xOffsetSplit
-            float laneX;
             if (_xOffsetSplit >= 0f && lane >= 2)
-                laneX = _xOffsetSplit * sx + (lane - 2) * laneW;
+            {
+                baseX = _xOffsetSplit * sx;
+                baseX += (lane - 2) * laneW;  // Lanes 2-3 count from 0
+            }
             else
-                laneX = _xOffset * sx + lane * laneW;
-            float cx = laneX + laneW / 2f;
+            {
+                baseX += lane * laneW;  // Normal spacing
+            }
+            
+            float cx = baseX + laneW / 2f;  // Center X of the lane
 
             // Active hold tail (while pressing hold note)
             // FNF holds are "consumed" visually faster than they scroll
@@ -968,7 +978,7 @@ public class NoteRenderer
                 float remainingTime = _holdEndTime[lane] - songTime;
                 // Multiply by 2.0x to make holds consume faster (FNF-style visual feedback)
                 float holdPx = remainingTime * spd * 2.0f;
-                DrawActiveHold(sb, lane, laneX, cx, strumY, holdPx, laneW);
+                DrawActiveHold(sb, lane, baseX, cx, strumY, holdPx, laneW);
             }
 
             DrawReceptor(sb, lane, cx, strumY, sx, alpha, songTime);
@@ -1001,7 +1011,7 @@ public class NoteRenderer
                 if (note.Duration > 0)
                 {
                     // Apply same 2x multiplier as active holds for visual consistency
-                    DrawHold(sb, lane, laneX, cx, noteY, note.Duration * spd * 2.0f, strumY, laneW, alpha, sx);
+                    DrawHold(sb, lane, baseX, cx, noteY, note.Duration * spd * 2.0f, strumY, laneW, alpha, sx);
                 }
 
                 DrawNoteHead(sb, lane, cx, noteY, note, sx, alpha, strumY);
@@ -1013,13 +1023,18 @@ public class NoteRenderer
         {
             int lane = _pendingSplashLane;
             
-            // Calculate splash position (center of receptor)
-            float laneX;
+            // Calculate splash position (center of receptor) - same logic as main loop
+            float baseX = _xOffset * sx;
             if (_xOffsetSplit >= 0f && lane >= 2)
-                laneX = _xOffsetSplit * sx + (lane - 2) * laneW;
+            {
+                baseX = _xOffsetSplit * sx;
+                baseX += (lane - 2) * laneW;
+            }
             else
-                laneX = _xOffset * sx + lane * laneW;
-            float cx = laneX + laneW / 2f;
+            {
+                baseX += lane * laneW;
+            }
+            float cx = baseX + laneW / 2f;
             
             _particleSplash.Trigger(lane, new Vector2(cx, strumY));
             _pendingSplashLane = -1;  // Reset
@@ -1029,7 +1044,9 @@ public class NoteRenderer
         {
             for (int lane = 0; lane < LANE_COUNT; lane++)
             {
-                float lx = _xOffset * sx + lane * laneW + laneW / 2f;
+                // Calculate position - same logic as main loop
+                float baseX = _xOffset * sx + lane * laneW;
+                float lx = baseX + laneW / 2f;
                 string label = PlayerKeys[lane].ToString();
                 var sz = font.MeasureString(label);
                 sb.DrawString(font, label,
@@ -1317,7 +1334,7 @@ public class NoteRenderer
                 // Enhanced glow for active states with subtle outer glow
                 float baseAlpha = holdActive
                     ? 0.75f + 0.25f * MathF.Sin(_recAnimTime[lane] * MathF.PI * 8f)
-                    : (state == 0 ? 0.6f : 1.0f);
+                    : (state == 0 ? 1.0f : 1.0f);  // Always full brightness for receptors
                 
                 // Extra glow when glowTimer is active (just hit a note) OR from random effects
                 float glowBoost = _glowTimer[lane] > 0f ? 0.3f : effectGlow * 0.5f;

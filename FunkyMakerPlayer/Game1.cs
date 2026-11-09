@@ -173,6 +173,8 @@ public partial class Game1 : Game
     // ── Editor system ─────────────────────────────────────────────────────────
     private Editors.EditorPicker? _editorPicker;
     private bool _inEditorPicker = false;
+    private Editors.Chart.LevelSelector? _levelSelector;
+    private bool _inLevelSelector = false;
     private Editors.IEditor? _activeEditor;
     private bool _inEditor = false;
     
@@ -534,25 +536,11 @@ public partial class Game1 : Game
         
         if (type == Editors.EditorType.Chart)
         {
-            // Chart Editor: show level picker
-            string levelsFolder = FreeplayMenu.GetDefaultLevelsFolder();
-            var levels = System.IO.Directory.GetFiles(levelsFolder, "*.fnmm", System.IO.SearchOption.AllDirectories);
-            
-            if (levels.Length == 0)
-            {
-                Console.WriteLine("[Game1] No levels found for Chart Editor");
-                // TODO: Show error message to user
-                ExitEditorPicker();
-                return;
-            }
-            
-            // For now, open the first level (TODO: add level picker UI)
-            string firstLevel = levels[0];
-            Console.WriteLine($"[Game1] Opening Chart Editor with level: {firstLevel}");
-            
-            _activeEditor = new Editors.Chart.ChartEditor(firstLevel, _pixel!, _font, _fontRenderer);
-            _inEditor = true;
+            // Chart Editor: show level selector
             _inEditorPicker = false;
+            _inLevelSelector = true;
+            _levelSelector = new Editors.Chart.LevelSelector(_pixel!, _font!, _fontRenderer);
+            Console.WriteLine("[Game1] Opened Level Selector for Chart Editor");
         }
         else
         {
@@ -573,6 +561,32 @@ public partial class Game1 : Game
         _editorPicker = new Editors.EditorPicker(_pixel!, _font, _fontRenderer);
         _editorPicker.ResetInputCooldown();
         Console.WriteLine("[Game1] Exited editor, returned to Editor Picker");
+    }
+    
+    /// <summary>
+    /// Exits level selector and returns to Editor Picker
+    /// </summary>
+    private void ExitLevelSelector()
+    {
+        _inLevelSelector = false;
+        _inEditorPicker = true;
+        _levelSelector = null;
+        _editorPicker = new Editors.EditorPicker(_pixel!, _font, _fontRenderer);
+        _editorPicker.ResetInputCooldown();
+        Console.WriteLine("[Game1] Exited Level Selector");
+    }
+    
+    /// <summary>
+    /// Opens Chart Editor with selected level
+    /// </summary>
+    private void OpenChartEditor(string levelPath)
+    {
+        Console.WriteLine($"[Game1] Opening Chart Editor with level: {levelPath}");
+        
+        _inLevelSelector = false;
+        _inEditor = true;
+        _levelSelector = null;
+        _activeEditor = new Editors.Chart.ChartEditor(levelPath, _pixel!, _font, _fontRenderer, _noteStyle);
     }
 
     protected override void Initialize()
@@ -2695,7 +2709,7 @@ public partial class Game1 : Game
                              !(_arrowsMenu?.IsActive ?? false) && !(_splashMenu?.IsActive ?? false) &&
                              !(_countdownMenu?.IsActive ?? false) && !(_fontMenu?.IsActive ?? false) &&
                              !_inMultiplayer && !_inMainSettings && !_inHudEditor &&
-                             !_inEditorPicker && !_inEditor;
+                             !_inEditorPicker && !_inLevelSelector && !_inEditor;
             
             var targetMode = inGameplay ? TouchControls.ControlMode.Gameplay : TouchControls.ControlMode.Menu;
             if (_touchControls.GetMode() != targetMode)
@@ -3111,6 +3125,17 @@ public partial class Game1 : Game
                 EnterEditorPicker();
             }
             
+            // Check if user pressed "7" while viewing level list to open Chart Editor directly
+            if (_freeplay.ChartEditorRequested)
+            {
+                _freeplay.ConsumeChartEditorRequest();
+                string levelPath = _freeplay.LevelPath;
+                Console.WriteLine($"[Game1] Opening Chart Editor directly for: {levelPath}");
+                _activeEditor = new Editors.Chart.ChartEditor(levelPath, _pixel!, _font, _fontRenderer, _noteStyle);
+                _inEditor = true;
+                _inFreeplay = false;
+            }
+            
             if (_freeplay.LevelChosen)
             {
                 _inFreeplay = false;
@@ -3188,6 +3213,25 @@ public partial class Game1 : Game
             else if (_editorPicker.EditorChosen)
             {
                 OpenEditor(_editorPicker.ChosenEditor);
+            }
+            
+            _prevKb = kb;
+            base.Update(gameTime);
+            return;
+        }
+        
+        // ── Level Selector (for Chart Editor) ────────────────────────────────
+        if (_inLevelSelector && _levelSelector != null)
+        {
+            _levelSelector.Update(dt, kb);
+            
+            if (_levelSelector.BackPressed)
+            {
+                ExitLevelSelector();
+            }
+            else if (_levelSelector.LevelSelected && _levelSelector.SelectedLevelPath != null)
+            {
+                OpenChartEditor(_levelSelector.SelectedLevelPath);
             }
             
             _prevKb = kb;
@@ -3296,6 +3340,18 @@ public partial class Game1 : Game
             _prevKb = kb;
             base.Update(gameTime);
             return;
+        }
+
+        // "7" opens Chart Editor with current level (only if not in multiplayer and level is loaded)
+        if (kb.IsKeyDown(Keys.D7) && !_prevKb.IsKeyDown(Keys.D7))
+        {
+            if (!_isMultiplayerMatch && _level != null && !string.IsNullOrEmpty(FnmmPath))
+            {
+                Console.WriteLine($"[Game1] Opening Chart Editor from gameplay with level: {FnmmPath}");
+                _activeEditor = new Editors.Chart.ChartEditor(FnmmPath, _pixel!, _font, _fontRenderer, _noteStyle);
+                _inEditor = true;
+                PauseSong(); // Pause the song while in editor
+            }
         }
 
         // P toggles pause (disabled during multiplayer matches)
@@ -3679,9 +3735,11 @@ public partial class Game1 : Game
                 }
                 
                 // Audio recovery: if music stopped unexpectedly, try to restart
-                if (_musicInst?.State == SoundState.Stopped && _songTime > 0.5f)
+                // BUT NOT if the song has naturally ended (past song end time)
+                bool songHasEnded = _songTime >= _songEndTime;
+                if (_musicInst?.State == SoundState.Stopped && _songTime > 0.5f && !songHasEnded)
                 {
-                    Console.WriteLine($"[Audio Recovery] Music stopped at {_songTime:F2}s, restarting...");
+                    Console.WriteLine($"[Audio Recovery] Music stopped unexpectedly at {_songTime:F2}s, restarting...");
                     if (_audioDeviceReset)
                     {
                         // Device changed → fully reload
@@ -3719,6 +3777,10 @@ public partial class Game1 : Game
                             if (!_paused) _musicInst.Play();
                         }
                     }
+                }
+                else if (songHasEnded && _musicInst?.State == SoundState.Stopped)
+                {
+                    Console.WriteLine($"[Audio] Song ended naturally at {_songTime:F2}s (end time: {_songEndTime:F2}s)");
                 }
             }
 
@@ -4317,6 +4379,23 @@ public partial class Game1 : Game
             
             _spriteBatch.Begin(samplerState: SamplerState.LinearClamp);
             _editorPicker.Draw(_spriteBatch, winBounds.Width, winBounds.Height);
+            _spriteBatch.End();
+            
+            // Draw touch controls LAST before present
+            DrawTouchControls();
+            return;
+        }
+        
+        // ── Level Selector (direct to screen - no render target) ─────────────
+        if (_inLevelSelector && _levelSelector != null)
+        {
+            // Draw directly to window for crisp UI
+            var winBounds = Window.ClientBounds;
+            GraphicsDevice.SetRenderTarget(null);
+            GraphicsDevice.Clear(Color.Black);
+            
+            _spriteBatch.Begin(samplerState: SamplerState.LinearClamp);
+            _levelSelector.Draw(_spriteBatch, winBounds.Width, winBounds.Height);
             _spriteBatch.End();
             
             // Draw touch controls LAST before present

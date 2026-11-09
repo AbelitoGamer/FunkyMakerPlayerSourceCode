@@ -1072,8 +1072,20 @@ public class NoteStyle
             {
                 string p = Path.Combine(folderPath, c);
                 if (!File.Exists(p)) p = Path.Combine(folderPath, "shared", "images", c);
+                
+                // FALLBACK: If not found in level folder, try global Assets folder
+                if (!File.Exists(p))
+                {
+                    string assetsPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "Assets", "images", c);
+                    if (!File.Exists(assetsPath))
+                        assetsPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "Assets", "shared", "images", c);
+                    if (File.Exists(assetsPath))
+                        p = assetsPath;
+                }
+                
                 if (File.Exists(p))
                 {
+                    Console.WriteLine($"[NoteStyle] Loading hold texture from: {p}");
                     using var fs = File.OpenRead(p);
                     style.HoldTexture = Texture2D.FromStream(gd, fs);
                     break;

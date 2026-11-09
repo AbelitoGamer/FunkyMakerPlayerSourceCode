@@ -80,8 +80,46 @@ public static class OggLoader
         var slice     = new byte[remaining];
         Array.Copy(pcmData, byteOffset, slice, 0, remaining);
 
-        return new SoundEffect(slice, sampleRate,
+        // Validate and clamp sample rate to supported values
+        int validatedSampleRate = ValidateSampleRate(sampleRate);
+
+        return new SoundEffect(slice, validatedSampleRate,
             channels == 2 ? AudioChannels.Stereo : AudioChannels.Mono);
+    }
+    
+    private static int ValidateSampleRate(int sampleRate)
+    {
+        // MonoGame supports: 8000, 11025, 16000, 22050, 32000, 44100, 48000
+        if (sampleRate < 8000)
+            return 8000;
+        if (sampleRate > 48000)
+            return 48000;
+        
+        int[] validRates = { 8000, 11025, 16000, 22050, 32000, 44100, 48000 };
+        
+        // Check if already valid
+        foreach (int rate in validRates)
+        {
+            if (sampleRate == rate)
+                return sampleRate;
+        }
+        
+        // Find closest valid sample rate
+        int closest = validRates[0];
+        int minDiff = Math.Abs(sampleRate - closest);
+        
+        foreach (int rate in validRates)
+        {
+            int diff = Math.Abs(sampleRate - rate);
+            if (diff < minDiff)
+            {
+                minDiff = diff;
+                closest = rate;
+            }
+        }
+        
+        Console.WriteLine($"[OggLoader] Invalid sample rate {sampleRate}Hz, using closest valid: {closest}Hz");
+        return closest;
     }
 
     private static bool IsNonVorbisStreamError(Exception ex)
@@ -208,7 +246,54 @@ public static class OggLoader
             pcmData[i * 2 + 1] = (byte)((s >> 8) & 0xFF);
         }
 
-        return new SoundEffect(pcmData, sampleRate,
+        // Validate sample rate and resample if needed
+        int validatedSampleRate = ValidateSampleRate(sampleRate);
+        
+        if (validatedSampleRate != sampleRate)
+        {
+            // Need to resample
+            pcmData = ResamplePcm(pcmData, sampleRate, validatedSampleRate, channels);
+        }
+
+        return new SoundEffect(pcmData, validatedSampleRate,
             channels == 2 ? AudioChannels.Stereo : AudioChannels.Mono);
+    }
+    
+    private static byte[] ResamplePcm(byte[] pcmData, int originalRate, int targetRate, int channels)
+    {
+        // Simple linear interpolation resampling
+        int originalSamples = pcmData.Length / (2 * channels); // 16-bit = 2 bytes
+        double ratio = (double)targetRate / originalRate;
+        int targetSamples = (int)(originalSamples * ratio);
+        byte[] resampled = new byte[targetSamples * 2 * channels];
+        
+        for (int i = 0; i < targetSamples; i++)
+        {
+            double sourcePos = i / ratio;
+            int sourceIndex = (int)sourcePos;
+            double fraction = sourcePos - sourceIndex;
+            
+            if (sourceIndex >= originalSamples - 1)
+                sourceIndex = originalSamples - 2;
+            
+            for (int ch = 0; ch < channels; ch++)
+            {
+                int offset1 = (sourceIndex * channels + ch) * 2;
+                int offset2 = ((sourceIndex + 1) * channels + ch) * 2;
+                
+                short sample1 = (short)(pcmData[offset1] | (pcmData[offset1 + 1] << 8));
+                short sample2 = (short)(pcmData[offset2] | (pcmData[offset2 + 1] << 8));
+                
+                // Linear interpolation
+                short interpolated = (short)(sample1 + (sample2 - sample1) * fraction);
+                
+                int targetOffset = (i * channels + ch) * 2;
+                resampled[targetOffset] = (byte)(interpolated & 0xFF);
+                resampled[targetOffset + 1] = (byte)((interpolated >> 8) & 0xFF);
+            }
+        }
+        
+        Console.WriteLine($"[OggLoader] Resampled audio from {originalRate}Hz to {targetRate}Hz");
+        return resampled;
     }
 }

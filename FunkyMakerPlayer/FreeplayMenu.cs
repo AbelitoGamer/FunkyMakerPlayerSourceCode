@@ -24,8 +24,14 @@ public partial class FreeplayMenu
     /// <summary>True when user presses "7" key in main menu to open Editor Picker</summary>
     public bool EditorPickerRequested { get; private set; }
     
+    /// <summary>True when user presses "7" while viewing level list to open Chart Editor directly</summary>
+    public bool ChartEditorRequested { get; private set; }
+    
     /// <summary>Consumes the editor picker request flag</summary>
     public void ConsumeEditorPickerRequest() => EditorPickerRequested = false;
+    
+    /// <summary>Consumes the chart editor request flag</summary>
+    public void ConsumeChartEditorRequest() => ChartEditorRequested = false;
     
     /// <summary>Action to call when file picker should be opened (Blazor only)</summary>
     public Action? OnFilePickerRequested { get; set; }
@@ -302,6 +308,14 @@ public partial class FreeplayMenu
 
         if (_inPanel)
         {
+            // Check for "7" key press to open Chart Editor directly with selected level
+            if (seven && _paths.Count > 0)
+            {
+                LevelPath = _paths[_selected];
+                ChartEditorRequested = true;
+                Console.WriteLine($"[FreeplayMenu] Chart Editor requested for level: {_names[_selected]}");
+            }
+            
             if (up)   _selected = (_selected - 1 + Math.Max(1, _paths.Count)) % Math.Max(1, _paths.Count);
             if (down) _selected = (_selected + 1) % Math.Max(1, _paths.Count);
             if (r)    Refresh();
