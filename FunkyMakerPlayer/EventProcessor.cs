@@ -1237,43 +1237,66 @@ public class EventProcessor
                         if (_level.Sprites.TryGetValue(newSpr, out var sprData) &&
                             _texCache.TryGetValue(newSpr, out var textures))
                         {
-                            // Preserve position/scale/color/opacity from the old animator
-                            // Use GetPosition()/GetScale() to respect transform arrays
+                            // Preserve position/scale/color/opacity/fixed state from the old animator
+                            // Use GetPosition()/GetScale() to respect transform arrays when old animator is absent
+                            var oldAnim  = _objAnimators[objIdx];
                             var objPos   = objIdx < objs.Count ? objs[objIdx]!.GetPosition() : new Vec2 { X = 0, Y = 0 };
                             var objScale = objIdx < objs.Count ? objs[objIdx]!.GetScale() : new Vec2 { X = 1, Y = 1 };
-                            var pos   = new Vector2(objPos.X, objPos.Y);
-                            var scale = new Vector2(objScale.X, objScale.Y);
-                            // Use object's current visibility state, not the old animator's
-                            bool vis      = objIdx < objs.Count ? objs[objIdx]!.Visible : true;
-                            Color tint    = _objAnimators[objIdx]?.TintColor ?? Color.White;
-                            float opacity = _objAnimators[objIdx]?.Opacity ?? 1.0f;
-                            bool isChar   = objIdx < objs.Count && objs[objIdx]!.StrumLine >= 0f;
-                            
-                            // Preserve event control state and animation info
-                            bool wasSetByEvent = _objAnimators[objIdx]?.IsSetByEvent ?? false;
-                            int currentAnim = _objAnimators[objIdx]?.CurrentAnimIndex ?? 0;
-                            float holdUntil = _objAnimators[objIdx]?.HoldUntil ?? -1f;
+                            bool vis     = objIdx < objs.Count ? objs[objIdx]!.Visible : true;
+                            Color tint   = oldAnim?.TintColor ?? Color.White;
+                            float opacity = oldAnim?.Opacity ?? 1.0f;
+                            bool isChar  = objIdx < objs.Count && objs[objIdx]!.StrumLine >= 0f;
+                            bool isFixed = oldAnim?.IsFixed ?? (objIdx < objs.Count && objs[objIdx]!.Fixed);
+                            int renderW  = oldAnim?.RenderWidth ?? 1280;
+                            int renderH  = oldAnim?.RenderHeight ?? 720;
 
-                            _objAnimators[objIdx] = new SpriteAnimator(
+                            Vector2 pos;
+                            if (oldAnim != null)
+                            {
+                                pos = oldAnim.Position;
+                            }
+                            else if (isFixed && objIdx < objs.Count && objs[objIdx]!.Transform is { Count: > 0 } &&
+                                     objPos.X >= 0f && objPos.X <= 1f && objPos.Y >= 0f && objPos.Y <= 1f)
+                            {
+                                pos = new Vector2(objPos.X * renderW, objPos.Y * renderH);
+                            }
+                            else
+                            {
+                                pos = new Vector2(objPos.X, objPos.Y);
+                            }
+
+                            var scale = oldAnim?.Scale ?? new Vector2(objScale.X, objScale.Y);
+
+                            // Preserve event control state and animation info
+                            bool wasSetByEvent = oldAnim?.IsSetByEvent ?? false;
+                            int currentAnim = oldAnim?.CurrentAnimIndex ?? 0;
+                            float holdUntil = oldAnim?.HoldUntil ?? -1f;
+
+                            var newAnimator = new SpriteAnimator(
                                 newSpr, sprData.Def, textures, pos, scale)
                             {
-                                Bpm         = _level.Data!.Bpm,
-                                Visible     = vis,
-                                TintColor   = tint,
-                                Opacity     = opacity,
-                                IsCharacter = isChar,
+                                Bpm             = _level.Data!.EffectiveBpm,
+                                Visible         = vis,
+                                TintColor       = tint,
+                                Opacity         = opacity,
+                                IsCharacter     = isChar,
+                                IsBG            = sprData.Def.Type == 2.0f,
+                                LevelVersion    = _level.Data.Version,
+                                IsFixed         = isFixed,
+                                FixedPixelScale = oldAnim?.FixedPixelScale ?? 0f,
+                                RenderWidth     = renderW,
+                                RenderHeight    = renderH,
                             };
-                            
+                            _objAnimators[objIdx] = newAnimator;
+
                             // Restore animation state on the new sprite
-                            if (_objAnimators[objIdx] != null)
-                            if (_objAnimators[objIdx] != null)
+                            if (newAnimator.AnimCount > 0)
                             {
-                                // Set to the same animation index (clamped to new sprite's anim count)
-                                int safeAnim = Math.Clamp(currentAnim, 0, _objAnimators[objIdx]!.AnimCount - 1);
-                                _objAnimators[objIdx]!.SetAnimation(safeAnim, setByEvent: wasSetByEvent);
-                                _objAnimators[objIdx]!.HoldUntil = holdUntil;
-                                
-                                Console.WriteLine($"[ObjectSpriteSet] t={_currentSongTime:F2} Obj {objIdx} ({objs[objIdx]!.Spr}) → preserved anim={safeAnim} IsSetByEvent={wasSetByEvent}");
+                                int safeAnim = Math.Clamp(currentAnim, 0, newAnimator.AnimCount - 1);
+                                newAnimator.SetAnimation(safeAnim, setByEvent: wasSetByEvent);
+                                newAnimator.HoldUntil = holdUntil;
+
+                                Console.WriteLine($"[ObjectSpriteSet] t={_currentSongTime:F2} Obj {objIdx} ({objs[objIdx]!.Spr}) → preserved anim={safeAnim} IsSetByEvent={wasSetByEvent} IsFixed={isFixed}");
                             }
                         }
                     }

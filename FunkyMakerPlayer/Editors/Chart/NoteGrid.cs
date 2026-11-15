@@ -288,6 +288,13 @@ public class NoteGrid
     
     public void Update(float dt, MouseState ms, Rectangle gridBounds)
     {
+        if (!Game1.CanAcceptInput)
+        {
+            _prevKb = default;
+            _lastWheelValue = ms.ScrollWheelValue;
+            return;
+        }
+
         _hoverNote = GetNoteAt(ms.Position, gridBounds);
         
         // Keyboard scrolling

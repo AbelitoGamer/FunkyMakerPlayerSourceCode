@@ -16,8 +16,8 @@ public class FnmmMeta
 public class NoteProps
 {
     [JsonPropertyName("skin")]         public float Skin         { get; set; }
-    [JsonPropertyName("onPressEvent")] public float OnPressEvent { get; set; }
-    [JsonPropertyName("onMissEvent")]  public float OnMissEvent  { get; set; }
+    [JsonPropertyName("onPressEvent")] public float OnPressEvent { get; set; } = -1f;
+    [JsonPropertyName("onMissEvent")]  public float OnMissEvent  { get; set; } = -1f;
     
     // Skin values:
     //   0 = normal note

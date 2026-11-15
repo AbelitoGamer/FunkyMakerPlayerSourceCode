@@ -235,6 +235,7 @@ namespace FunkyMakerPlayer
         public void Update(GameTime gameTime)
         {
             if (!IsVisible) return;
+            if (!Game1.CanAcceptInput) return;
             
             float deltaTime = (float)gameTime.ElapsedGameTime.TotalSeconds;
             

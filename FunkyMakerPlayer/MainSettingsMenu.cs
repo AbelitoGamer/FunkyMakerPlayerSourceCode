@@ -38,9 +38,18 @@ public class MainSettingsMenu : UI.IDirectScreen
 
     public void SetFontRenderer(FontRenderer? fontRenderer) => _fontRenderer = fontRenderer;
 
+    public void SyncInputState()
+    {
+        _syncPointerOnEnter = true;
+        _enterHovered = false;
+        _backHovered = false;
+        _prevKb = Keyboard.GetState();
+        _prevMs = Mouse.GetState();
+    }
+
     public void Update(float dt, int screenWidth, int screenHeight)
     {
-        Update(dt, Keyboard.GetState(), screenWidth, screenHeight);
+        Update(dt, Game1.CanAcceptInput ? Keyboard.GetState() : default, screenWidth, screenHeight);
     }
 
     public void Update(float dt, KeyboardState kb, int screenWidth, int screenHeight)
@@ -50,6 +59,16 @@ public class MainSettingsMenu : UI.IDirectScreen
         _pulseTimer += dt;
         BackPressed = false;
         OpenHudEditor = false;
+
+        if (!Game1.CanAcceptInput)
+        {
+            _enterHovered = false;
+            _backHovered = false;
+            _syncPointerOnEnter = true;
+            _prevKb = default;
+            _prevMs = Game1.NeutralMouseState(ms);
+            return;
+        }
 
         if (_syncPointerOnEnter)
         {

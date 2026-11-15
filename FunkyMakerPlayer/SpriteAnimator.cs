@@ -42,12 +42,24 @@ public class SpriteAnimator
         get
         {
             if (_def.Data.Count == 0 || _textures.Count == 0) return new Vector2(64, 64);
+            var anim = _def.Data[_currentAnim];
+            float dc = anim.DownscaleCompensation > 0f ? anim.DownscaleCompensation : 1f;
+            if (anim.UsesPackedAtlas && anim.AtlasFrameRects != null && anim.AtlasFrameRects.Count > 0)
+            {
+                var r = anim.AtlasFrameRects[0];
+                return new Vector2(r.Width * dc, r.Height * dc);
+            }
+            if (anim.IsSplit && anim.SplitOffset >= 0 && anim.SplitOffset < _textures.Count)
+            {
+                int w = anim.FrameWidth > 0 ? anim.FrameWidth : _textures[anim.SplitOffset].Width;
+                return new Vector2(w * dc, _textures[anim.SplitOffset].Height * dc);
+            }
             int sprType = (int)_def.Type;
-            int texIdx  = sprType == 2 ? 0 : _currentAnim;
+            int texIdx  = sprType == 2 ? 0 : (anim.TextureIndex >= 0 ? anim.TextureIndex : _currentAnim);
             if (texIdx >= _textures.Count) return new Vector2(64, 64);
             var tex = _textures[texIdx];
             int fc  = GetFrameCount(_currentAnim);
-            return new Vector2(fc > 0 ? tex.Width / fc : tex.Width, tex.Height);
+            return new Vector2((fc > 0 ? tex.Width / fc : tex.Width) * dc, tex.Height * dc);
         }
     }
     public float   Bpm         = 120f;
@@ -108,13 +120,38 @@ public class SpriteAnimator
         int frame   = (int)Math.Max(0, _currentFrame);
         var anim    = _def.Data[_currentAnim];
 
-        // Split strip: each frame is its own texture
+        // Packed 2D atlas (single or multi-atlas)
+        if (anim.UsesPackedAtlas && anim.AtlasFrameRects != null && anim.AtlasFrameRects.Count > 0)
+        {
+            int clamped = Math.Clamp(frame, 0, anim.AtlasFrameRects.Count - 1);
+            var rect    = anim.AtlasFrameRects[clamped];
+            int texIdx  = anim.SplitOffset + rect.AtlasIndex;
+            if (texIdx < 0 || texIdx >= _textures.Count) return (null, Rectangle.Empty);
+            return (_textures[texIdx], AtlasPacker.GetFrameSourceRect(rect));
+        }
+
+        // Split strip: chunk mode or per-frame mode
         if (anim.IsSplit)
         {
-            int texIdx = anim.SplitOffset + Math.Clamp(frame, 0, anim.FrameCount - 1);
-            if (texIdx >= _textures.Count) return (null, Rectangle.Empty);
-            var t = _textures[texIdx];
-            return (t, new Rectangle(0, 0, t.Width, t.Height));
+            if (anim.ChunkFrames > 0)
+            {
+                int chunk   = frame / anim.ChunkFrames;
+                int inChunk = frame % anim.ChunkFrames;
+                int texIdx  = anim.SplitOffset + chunk;
+                if (texIdx < 0 || texIdx >= _textures.Count) return (null, Rectangle.Empty);
+                var t = _textures[texIdx];
+                int fw = anim.FrameWidth > 0 ? anim.FrameWidth : t.Width;
+                int framesInChunk = fw > 0 ? Math.Max(1, t.Width / fw) : 1;
+                inChunk = Math.Clamp(inChunk, 0, framesInChunk - 1);
+                return (t, new Rectangle(inChunk * fw, 0, fw, t.Height));
+            }
+            else
+            {
+                int texIdx = anim.SplitOffset + Math.Clamp(frame, 0, Math.Max(0, anim.FrameCount - 1));
+                if (texIdx < 0 || texIdx >= _textures.Count) return (null, Rectangle.Empty);
+                var t = _textures[texIdx];
+                return (t, new Rectangle(0, 0, t.Width, t.Height));
+            }
         }
 
         switch (sprType)
@@ -195,14 +232,13 @@ public class SpriteAnimator
 
     // ── Public API ───────────────────────────────────────────────────────────
 
+    private int GetIdleAnimIndex() => (_def.Data.Count > 1 && _def.Data[0].FrameCount == 1) ? 1 : 0;
+
     public void SetAnimation(int animIndex, bool setByEvent = false)
     {
         if (animIndex < 0 || animIndex >= _def.Data.Count) return;
 
-        int prevAnim = _currentAnim;
-        float prevFrame = _currentFrame;
-        
-        // ALWAYS restart the animation for instant feedback.
+        // Always start the target animation at frame 0 (including sequential video/cutscene clips).
         // Hold notes are handled separately via HoldUntil — when a hold is active,
         // Update() will keep the pose locked regardless of frame advancement.
         _currentAnim  = animIndex;
@@ -211,42 +247,23 @@ public class SpriteAnimator
         _completingHold = false;  // Reset hold completion flag
         _setByEvent = setByEvent;  // Mark if this was set by an event
 
-        // For non-character objects: if previous animation was still playing and didn't loop,
-        // preserve frame progress to allow smooth multi-animation transitions
-        // (e.g., Lord X transform: anim1→anim2→anim3→anim4 in quick succession)
-        if (!IsCharacter && prevAnim != animIndex && prevAnim >= 0 && prevAnim < _def.Data.Count)
-        {
-            var prevAnimData = _def.Data[prevAnim];
-            int prevFrameCount = GetFrameCount(prevAnim);
-            
-            // If previous animation was non-looping and still mid-play, continue frame progress
-            if (!prevAnimData.Loop && prevFrame < prevFrameCount - 1)
-            {
-                // Map progress from prev anim to new anim (normalize by frame count)
-                int newFrameCount = GetFrameCount(animIndex);
-                float progress = prevFrame / Math.Max(1, prevFrameCount);
-                _currentFrame = progress * newFrameCount;
-                
-                // Debug log
-                Console.WriteLine($"[SetAnim] {SpriteName} {prevAnim}→{animIndex}: preserved frame {prevFrame:F1}/{prevFrameCount} → {_currentFrame:F1}/{newFrameCount} (progress={progress:F2})");
-            }
-        }
-
         if (IsCharacter)
         {
-            // Characters: always set sing timer for non-idle animations
-            if (animIndex != 0)
+            int idleAnim = GetIdleAnimIndex();
+            var anim = _def.Data[animIndex];
+            // Characters: set sing timer for non-idle animations:
+            // - Loop=true: hold pose for minimum SingHold/animDuration before returning to idle.
+            // - Loop=false + setByEvent: hold event protection while the animation plays, without auto-returning to idle.
+            // - Loop=false + !setByEvent: stops on its last frame per FMM behavior instead of returning to idle.
+            if (animIndex != 0 && animIndex != idleAnim && (anim.Loop || setByEvent))
             {
-                // Sing animation - hold pose for minimum duration
-                var anim = _def.Data[animIndex];
                 float fps = AnimFps(anim);
                 float animDuration = fps > 0f ? GetFrameCount(animIndex) / fps : 0f;
-                float needed = Math.Max(SingHold, animDuration);
+                float needed = anim.Loop ? Math.Max(SingHold, animDuration) : animDuration;
                 _singTimer = needed;
             }
             else
             {
-                // Returning to idle - clear timer
                 _singTimer = 0f;
             }
         }
@@ -309,45 +326,50 @@ public class SpriteAnimator
             // This happens when animation completes OR is already finished (!_playing)
             // If animation was set by an event, we now clear that flag to allow
             // the character to be controlled by notes again
-            if (_singTimer <= 0f && _currentAnim != 0 && IsCharacter)
+            int idleAnim = GetIdleAnimIndex();
+            if (_singTimer <= 0f && _currentAnim != 0 && _currentAnim != idleAnim && IsCharacter && _currentAnim < _def.Data.Count)
             {
-                // Clear event control when timer expires - the event's animation has "finished"
-                if (_setByEvent)
+                var currentAnim = _def.Data[_currentAnim];
+
+                // Clear event control once timer/animation expires so future notes aren't blocked
+                if (_setByEvent && (currentAnim.Loop || !_playing))
                 {
                     _setByEvent = false;
                     Console.WriteLine($"[SpriteAnimator] {SpriteName} cleared IsSetByEvent (timer expired)");
                 }
-                
-                var currentAnim = _def.Data[_currentAnim];
-                int frameCount = GetFrameCount(_currentAnim);
-                bool animationCompleted = _currentFrame >= (frameCount - 1);
-                
-                // Return to idle if animation is done or can be interrupted:
-                // - Animation finished playing (!_playing)
-                // - OR animation completed (reached last frame)
-                // - OR animation is looping (can interrupt loop)
-                // - OR animation is single-frame (instant return)
-                if (!_playing || animationCompleted || currentAnim.Loop || frameCount <= 1)
+
+                // Only auto-return to idle when anim.Loop == true.
+                // In FMM, anim.Loop == false stops on the last frame instead of returning to idle.
+                if (currentAnim.Loop)
                 {
-                    int idleAnim = (_def.Data.Count > 1 && _def.Data[0].FrameCount == 1) ? 1 : 0;
-                    SetAnimation(idleAnim);
-                    return;  // Early return after switching to idle
+                    int frameCount = GetFrameCount(_currentAnim);
+                    bool animationCompleted = _currentFrame >= (frameCount - 1);
+
+                    if (!_playing || animationCompleted || frameCount <= 1)
+                    {
+                        SetAnimation(idleAnim);
+                        return;  // Early return after switching to idle
+                    }
                 }
             }
         }
         else
         {
-            // Reset the timer so we don't snap to idle mid-hold
-            _singTimer = SingHold;
+            // Reset the timer so we don't snap to idle mid-hold (only for Loop=true animations)
+            _singTimer = (_currentAnim < _def.Data.Count && _def.Data[_currentAnim].Loop) ? SingHold : 0f;
         }
 
         // Allow update even if !_playing for non-looping animations that need to complete
         if (_def.Data.Count == 0) return;
 
         var anim = _def.Data[_currentAnim];
-        
-        // If animation finished and not looping, stay on last frame (don't update)
-        if (!_playing && !anim.Loop)
+        int activeIdleAnim = GetIdleAnimIndex();
+        // Only ignore anim.Loop when anim.Loop == true on normal character poses (so poses play once before returning to idle);
+        // when anim.Loop == false, honor it so the animation stops on its last frame as in FMM.
+        bool ignorePoseLoop = IsCharacter && !_setByEvent && _currentAnim != 0 && _currentAnim != activeIdleAnim && anim.Loop;
+
+        // If animation finished and not looping (or ignoring Loop=true on a normal character pose), stay on last frame
+        if (!_playing && (!anim.Loop || ignorePoseLoop))
             return;
 
         float fps  = AnimFps(anim);
@@ -393,28 +415,26 @@ public class SpriteAnimator
                 _completingHold = false;  // Reset flag
                 
                 // CRITICAL: After hold completion animation finishes, return to idle
-                if (_currentAnim != 0 && IsCharacter)
+                if (_currentAnim != 0 && _currentAnim != activeIdleAnim && IsCharacter)
                 {
-                    int idleAnim = (_def.Data.Count > 1 && _def.Data[0].FrameCount == 1) ? 1 : 0;
-                    SetAnimation(idleAnim);
+                    SetAnimation(activeIdleAnim);
                 }
             }
-            else if (anim.Loop)
+            else if (anim.Loop && !ignorePoseLoop)
             {
-                // Normal loop behavior
+                // Normal loop behavior (idle, props/backgrounds, or looping event animations)
                 _currentFrame %= Math.Max(1, fc);
             }
             else
             {
-                // Animation finished and Loop=false
+                // Animation finished: either Loop=false (stops on last frame without returning to idle)
+                // or normal character pose ignoring Loop=true (waits on last frame until _singTimer -> idle)
                 _currentFrame = fc - 1;
                 _playing      = false;
-                
-                // Only disable sing timer for NON-CHARACTER objects
-                // Characters should return to idle via their sing timer
-                if (!IsCharacter)
+
+                if (!IsCharacter || !anim.Loop)
                 {
-                    _singTimer = 0f;  // Objects stay on last frame indefinitely
+                    _singTimer = 0f;
                 }
             }
         }
@@ -431,13 +451,18 @@ public class SpriteAnimator
         int   frame    = (int)Math.Max(0, _currentFrame);
 
         // ── Packed Atlas Mode ────────────────────────────────────────────────
-        // New: If sprite uses packed 2D atlas, draw from atlas coordinates
+        // Draw from 2D atlas coordinates (supports single and multi-atlas strips)
         if (anim.UsesPackedAtlas && anim.AtlasFrameRects != null)
         {
-            int texIdx = anim.SplitOffset;
-            if (texIdx >= 0 && texIdx < _textures.Count && frame < anim.AtlasFrameRects.Count)
+            if (anim.AtlasFrameRects.Count > 0)
             {
-                DrawAtlasFrame(sb, texIdx, frame, anim.AtlasFrameRects[frame], offset, sprScale);
+                int clamped = Math.Clamp(frame, 0, anim.AtlasFrameRects.Count - 1);
+                var rect    = anim.AtlasFrameRects[clamped];
+                int texIdx  = anim.SplitOffset + rect.AtlasIndex;
+                if (texIdx >= 0 && texIdx < _textures.Count)
+                {
+                    DrawAtlasFrame(sb, texIdx, clamped, rect, offset, sprScale);
+                }
             }
             return;
         }
@@ -744,8 +769,14 @@ public class SpriteAnimator
         int fw = frameRect.Width;
         int fh = frameRect.Height;
 
-        var finalScale = Scale * sprScale;
+        float dc = _def.Data.Count > _currentAnim && _def.Data[_currentAnim].DownscaleCompensation > 0f
+            ? _def.Data[_currentAnim].DownscaleCompensation
+            : 1.0f;
+        var finalScale = Scale * sprScale * dc;
         var effects = BuildEffects(ref finalScale);
+
+        float scaledOX = offset.X / dc;
+        float scaledOY = offset.Y / dc;
 
         if (IsFixed)
         {
@@ -753,41 +784,33 @@ public class SpriteAnimator
             float absScaleX = Math.Abs(Scale.X);
             float absScaleY = Math.Abs(Scale.Y);
             
-            // When FixedPixelScale is 0, use the same scale as non-fixed objects (Scale * sprScale)
+            // When FixedPixelScale is 0, use the same scale as non-fixed objects (Scale * sprScale * dc)
             // Otherwise use FixedPixelScale for camera-independent scaling
             float ps = FixedPixelScale > 0f ? FixedPixelScale : 1f;
             bool useNormalScale = FixedPixelScale == 0f;
             
-            float ox = Scale.X < 0 ? (fw - offset.X) : offset.X;
-            float oy = Scale.Y < 0 ? (fh - offset.Y) : offset.Y;
+            float ox = Scale.X < 0 ? (fw - scaledOX) : scaledOX;
+            float oy = Scale.Y < 0 ? (fh - scaledOY) : scaledOY;
             var origin = new Vector2(ox, oy);
             
-            Vector2 fixedScale;
-            if (useNormalScale)
-            {
-                // Same as non-fixed objects: just Scale * sprScale
-                fixedScale = new Vector2(absScaleX * sprScale, absScaleY * sprScale);
-            }
-            else
-            {
-                // Use FixedPixelScale for camera-independent rendering
-                fixedScale = new Vector2(absScaleX * sprScale * ps, absScaleY * sprScale * ps);
-            }
+            Vector2 fixedScale = useNormalScale
+                ? new Vector2(absScaleX * sprScale * dc, absScaleY * sprScale * dc)
+                : new Vector2(absScaleX * sprScale * dc * ps, absScaleY * sprScale * dc * ps);
             
             sb.Draw(tex, Position, src, BlendColor, 0f, origin, fixedScale, effects, 0f);
         }
         else
         {
-            // Non-fixed: standard positioning with offset applied
+            // Non-fixed: standard positioning with offset applied in compensated space
             var absObjScale = new Vector2(Math.Abs(Scale.X), Math.Abs(Scale.Y));
-            float effOX = Scale.X < 0 ? (fw - offset.X) : offset.X;
-            float effOY = Scale.Y < 0 ? (fh - offset.Y) : offset.Y;
-            var drawPos = Position - new Vector2(effOX, effOY) * absObjScale * sprScale;
+            float effOX = Scale.X < 0 ? (fw - scaledOX) : scaledOX;
+            float effOY = Scale.Y < 0 ? (fh - scaledOY) : scaledOY;
+            var drawPos = Position - new Vector2(effOX, effOY) * absObjScale * sprScale * dc;
             
             // Debug log for offset application (only log first few frames)
             if (_currentFrame < 1 && !_offsetLogged)
             {
-                Console.WriteLine($"[SpriteOffset] Atlas Draw: offset=({offset.X},{offset.Y}), effOffset=({effOX},{effOY}), Position=({Position.X},{Position.Y}), drawPos=({drawPos.X},{drawPos.Y})");
+                Console.WriteLine($"[SpriteOffset] Atlas Draw: offset=({offset.X},{offset.Y}), effOffset=({effOX},{effOY}), dc={dc:0.###}, Position=({Position.X},{Position.Y}), drawPos=({drawPos.X},{drawPos.Y})");
                 _offsetLogged = true;
             }
             

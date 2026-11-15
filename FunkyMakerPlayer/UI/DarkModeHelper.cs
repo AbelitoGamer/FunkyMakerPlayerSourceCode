@@ -38,6 +38,34 @@ internal static class DarkMode
     private const int DWMWA_USE_IMMERSIVE_DARK_MODE = 20;
 
     /// <summary>
+    /// Returns the native Win32 HWND for an SDL window handle on Windows, or IntPtr.Zero otherwise.
+    /// </summary>
+    public static IntPtr TryGetWindowsHandle(IntPtr sdlWindowHandle)
+    {
+        if (!OperatingSystem.IsWindows() || sdlWindowHandle == IntPtr.Zero)
+            return IntPtr.Zero;
+
+        try
+        {
+            var wmInfo = new SDL_SysWMinfo();
+            wmInfo.version.major = 2;
+            wmInfo.version.minor = 0;
+            wmInfo.version.patch = 0;
+
+            SDL_GetWindowWMInfo(sdlWindowHandle, ref wmInfo);
+
+            if (wmInfo.subsystem == SDL_SYSWM_TYPE.SDL_SYSWM_WINDOWS)
+                return wmInfo.win_window;
+        }
+        catch
+        {
+            // Ignore SDL WMInfo failures on non-Windows or headless platforms
+        }
+
+        return IntPtr.Zero;
+    }
+
+    /// <summary>
     /// Enables Windows 10/11 dark mode for the window title bar.
     /// </summary>
     public static void EnableDarkMode(IntPtr sdlWindowHandle)
@@ -48,21 +76,16 @@ internal static class DarkMode
         try
         {
             // Get native Windows HWND from SDL window
-            var wmInfo = new SDL_SysWMinfo();
-            wmInfo.version.major = 2;
-            wmInfo.version.minor = 0;
-            wmInfo.version.patch = 0;
+            IntPtr hwnd = TryGetWindowsHandle(sdlWindowHandle);
 
-            SDL_GetWindowWMInfo(sdlWindowHandle, ref wmInfo);
-
-            if (wmInfo.subsystem == SDL_SYSWM_TYPE.SDL_SYSWM_WINDOWS && wmInfo.win_window != IntPtr.Zero)
+            if (hwnd != IntPtr.Zero)
             {
                 int darkMode = 1;
                 // Try Windows 11/10 20H1+ attribute first
-                int result = DwmSetWindowAttribute(wmInfo.win_window, DWMWA_USE_IMMERSIVE_DARK_MODE, ref darkMode, sizeof(int));
+                int result = DwmSetWindowAttribute(hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE, ref darkMode, sizeof(int));
                 // Fallback to older Windows 10 builds
                 if (result != 0)
-                    DwmSetWindowAttribute(wmInfo.win_window, DWMWA_USE_IMMERSIVE_DARK_MODE_BEFORE_20H1, ref darkMode, sizeof(int));
+                    DwmSetWindowAttribute(hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE_BEFORE_20H1, ref darkMode, sizeof(int));
 
                 Console.WriteLine($"[DarkMode] Applied dark mode to window (result={result})");
             }

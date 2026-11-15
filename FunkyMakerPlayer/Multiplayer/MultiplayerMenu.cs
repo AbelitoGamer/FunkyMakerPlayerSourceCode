@@ -287,6 +287,7 @@ namespace FunkyMakerPlayer.Multiplayer
         {
             if (packet?.Entries == null) return;
             LeaderboardManager.Instance.ApplyServerLeaderboard(packet.Entries);
+            UserDirectoryClient.Instance.SeedFromLeaderboardEntries(packet.Entries);
             _leaderboardSyncedOnline = true;
         }
 
@@ -294,6 +295,7 @@ namespace FunkyMakerPlayer.Multiplayer
         {
             if (packet?.Matches == null) return;
             LeaderboardManager.Instance.ApplyServerMatchHistory(packet.Matches);
+            UserDirectoryClient.Instance.SeedFromMatchHistory(packet.Matches);
             _leaderboardSyncedOnline = true;
         }
 
@@ -433,9 +435,15 @@ namespace FunkyMakerPlayer.Multiplayer
             if (pendingLeaderboard != null)
             {
                 if (pendingLeaderboard.Entries != null)
+                {
                     LeaderboardManager.Instance.ApplyServerLeaderboard(pendingLeaderboard.Entries);
+                    UserDirectoryClient.Instance.SeedFromLeaderboardEntries(pendingLeaderboard.Entries);
+                }
                 if (pendingLeaderboard.Matches != null)
+                {
                     LeaderboardManager.Instance.ApplyServerMatchHistory(pendingLeaderboard.Matches);
+                    UserDirectoryClient.Instance.SeedFromMatchHistory(pendingLeaderboard.Matches);
+                }
                 _leaderboardSyncedOnline = true;
             }
 
@@ -503,9 +511,30 @@ namespace FunkyMakerPlayer.Multiplayer
                 CompleteServerConnection();
             }
 
+            if (_state == MenuState.MatchFound)
+            {
+                string? resolvedOpp = UserDirectoryClient.Instance.ResolveUsername(
+                    NetworkManager.Instance.OpponentPlayerId,
+                    _opponentName);
+                if (!string.IsNullOrWhiteSpace(resolvedOpp) && !UserDirectoryClient.IsGenericUsername(resolvedOpp))
+                    _opponentName = resolvedOpp;
+
+                if (AdvanceMatchCountdown())
+                    return;
+            }
+
             // Input cooldown
             if (_inputCooldown > 0f)
                 _inputCooldown -= dt;
+
+            if (!Game1.CanAcceptInput)
+            {
+                _hoveredButton = -1;
+                _mouseMovedThisFrame = false;
+                _prevKb = default;
+                _prevMouse = Game1.NeutralMouseState(Mouse.GetState());
+                return;
+            }
 
             var kb = Keyboard.GetState();
             var mouse = Mouse.GetState();
@@ -1108,37 +1137,37 @@ namespace FunkyMakerPlayer.Multiplayer
             }
         }
 
+        private bool AdvanceMatchCountdown()
+        {
+            if (!_isCountdownActive)
+                return false;
+
+            long now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+            long timeSinceStart = now - _countdownStartTime;
+
+            if (timeSinceStart < 1000)
+                _countdownValue = 3;
+            else if (timeSinceStart < 2000)
+                _countdownValue = 2;
+            else if (timeSinceStart < 3000)
+                _countdownValue = 1;
+            else
+            {
+                _countdownValue = 0;
+                _isCountdownActive = false;
+                Console.WriteLine("[MultiplayerMenu] Countdown complete! Launching GameMultiplayer...");
+                LaunchGameMultiplayer();
+                return true;
+            }
+            return false;
+        }
+
         private void UpdateMatchFound(KeyboardState kb, MouseState mouse, float dt)
         {
             if (_inputCooldown > 0f) return;
-            
-            // Update countdown if active
+
             if (_isCountdownActive)
-            {
-                long now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
-                long timeSinceStart = now - _countdownStartTime;
-                
-                if (timeSinceStart < 1000)
-                {
-                    _countdownValue = 3;
-                }
-                else if (timeSinceStart < 2000)
-                {
-                    _countdownValue = 2;
-                }
-                else if (timeSinceStart < 3000)
-                {
-                    _countdownValue = 1;
-                }
-                else
-                {
-                    _countdownValue = 0;
-                    _isCountdownActive = false;
-                    Console.WriteLine("[MultiplayerMenu] Countdown complete! Launching GameMultiplayer...");
-                    LaunchGameMultiplayer();
-                    return;
-                }
-            }
+                return;
 
             // Toggle ready with ENTER, SPACE, or clicking READY button/card (only when countdown is not active)
             if (!_isCountdownActive &&
@@ -1971,6 +2000,7 @@ namespace FunkyMakerPlayer.Multiplayer
             NetworkManager.Instance.RequestOfficialLevels();
             NetworkManager.Instance.RequestGlobalLeaderboard(0, 50);
             NetworkManager.Instance.RequestMatchHistory(null, 0, 50);
+            _ = UserDirectoryClient.Instance.WarmFromServerAsync(NetworkManager.Instance.ServerUrl);
         }
 
         private void OnConnected()
@@ -1992,7 +2022,14 @@ namespace FunkyMakerPlayer.Multiplayer
         private void OnMatchFound(string opponentName, string roomId, int playerRole)
         {
             Console.WriteLine($"[Multiplayer] Match found! Opponent: {opponentName}, Role: Player {playerRole}");
-            _opponentName = string.IsNullOrWhiteSpace(NetworkManager.Instance.OpponentName) ? opponentName : NetworkManager.Instance.OpponentName;
+            string rawName = string.IsNullOrWhiteSpace(NetworkManager.Instance.OpponentName) ? opponentName : NetworkManager.Instance.OpponentName;
+            string? oppId = NetworkManager.Instance.OpponentPlayerId;
+            _opponentName = UserDirectoryClient.Instance.ResolveUsername(oppId, rawName);
+            if (!string.IsNullOrWhiteSpace(oppId))
+            {
+                UserDirectoryClient.Instance.RegisterKnownUser(oppId, _opponentName);
+                _ = UserDirectoryClient.Instance.FetchUserByIdAsync(NetworkManager.Instance.ServerUrl, oppId);
+            }
             _roomId = roomId;
             TransitionToState(MenuState.MatchFound);
             _isReady = false;
@@ -2002,8 +2039,12 @@ namespace FunkyMakerPlayer.Multiplayer
 
         private void OnMenuOpponentProfile(PlayerProfilePacket packet)
         {
-            if (!string.IsNullOrWhiteSpace(packet.Username))
-                _opponentName = packet.Username;
+            UserDirectoryClient.Instance.RegisterKnownUser(packet.PlayerId, packet.Username, packet.ColorHue);
+            string resolved = UserDirectoryClient.Instance.ResolveUsername(packet.PlayerId, packet.Username);
+            if (!string.IsNullOrWhiteSpace(resolved))
+                _opponentName = resolved;
+            if (!string.IsNullOrWhiteSpace(packet.PlayerId) && UserDirectoryClient.IsGenericUsername(resolved))
+                _ = UserDirectoryClient.Instance.FetchUserByIdAsync(NetworkManager.Instance.ServerUrl, packet.PlayerId);
         }
 
         private void OnMenuOpponentDisconnected(string reason)
@@ -3512,8 +3553,82 @@ namespace FunkyMakerPlayer.Multiplayer
         {
             _inputCooldown = INPUT_COOLDOWN_TIME;
             _prevKb = Keyboard.GetState();
-            _prevMouse = Mouse.GetState();
+            _prevMouse = Game1.NeutralMouseState(Mouse.GetState());
             _hoveredButton = -1;
+            _mouseMovedThisFrame = false;
+        }
+
+        /// <summary>
+        /// Syncs input snapshots when window regains focus without clearing state.
+        /// </summary>
+        public void SyncInputState()
+        {
+            _inputCooldown = Math.Max(_inputCooldown, INPUT_COOLDOWN_TIME);
+            _prevKb = Keyboard.GetState();
+            _prevMouse = Game1.NeutralMouseState(Mouse.GetState());
+            _lastMousePos = _prevMouse.Position;
+            _hoveredButton = -1;
+            _mouseMovedThisFrame = false;
+        }
+
+        /// <summary>
+        /// Builds the current Discord Rich Presence payload for the active Multiplayer Menu state.
+        /// </summary>
+        public (string Details, string? State, string? PartyId, int PartySize, int PartyMax) GetDiscordPresenceInfo()
+        {
+            string? songName = SelectedLevelName;
+            if (!string.IsNullOrWhiteSpace(songName))
+                songName = System.IO.Path.GetFileNameWithoutExtension(songName);
+
+            switch (_state)
+            {
+                case MenuState.Connecting:
+                    return ("Multiplayer", "Connecting to server", null, 0, 2);
+
+                case MenuState.Lobby:
+                    return (
+                        "Multiplayer Lobby",
+                        !string.IsNullOrWhiteSpace(songName)
+                            ? $"Song: {songName}"
+                            : (_isPrivateRoom ? "Private Room" : "Picking a song"),
+                        _isPrivateRoom && !string.IsNullOrWhiteSpace(_roomCode) ? $"room_{_roomCode}" : null,
+                        _isPrivateRoom && !string.IsNullOrWhiteSpace(_roomCode) ? 1 : 0,
+                        2);
+
+                case MenuState.CreateRoom:
+                case MenuState.JoinRoom:
+                    return ("Multiplayer Lobby", "Private Room setup", null, 0, 2);
+
+                case MenuState.Searching:
+                    return (
+                        !string.IsNullOrWhiteSpace(songName) ? $"Searching: {songName}" : "Searching for match",
+                        _isPrivateRoom ? "Waiting in Private Room" : "Matchmaking",
+                        _isPrivateRoom && !string.IsNullOrWhiteSpace(_roomCode) ? $"room_{_roomCode}" : "queue_search",
+                        1,
+                        2);
+
+                case MenuState.MatchFound:
+                    string resolvedOpp = UserDirectoryClient.Instance.ResolveUsername(
+                        NetworkManager.Instance.OpponentPlayerId,
+                        !string.IsNullOrWhiteSpace(NetworkManager.Instance.OpponentName)
+                            ? NetworkManager.Instance.OpponentName
+                            : _opponentName);
+                    return (
+                        !string.IsNullOrWhiteSpace(songName) ? $"Match Found: {songName}" : "Multiplayer Match Found",
+                        $"vs {resolvedOpp}",
+                        !string.IsNullOrWhiteSpace(_roomId) ? _roomId : "mp_match",
+                        2,
+                        2);
+
+                case MenuState.Leaderboard:
+                    return ("Multiplayer", "Viewing Leaderboard", null, 0, 2);
+
+                case MenuState.Settings:
+                    return ("Multiplayer", "Multiplayer Settings", null, 0, 2);
+
+                default:
+                    return ("Multiplayer", "In Multiplayer Menu", null, 0, 2);
+            }
         }
 
         /// <summary>
@@ -3583,7 +3698,7 @@ namespace FunkyMakerPlayer.Multiplayer
             try
             {
                 // Start multiplayer match in existing Game1 instance (no new window)
-                _game.StartMultiplayerMatch(levelPath, opponentName, playerRole, _gameStartTimestamp, _roomId);
+                _game.StartMultiplayerMatch(levelPath, opponentName, playerRole, _gameStartTimestamp, _roomId, SelectedLevelName);
                 
                 Console.WriteLine("[MultiplayerMenu] Match started successfully");
             }

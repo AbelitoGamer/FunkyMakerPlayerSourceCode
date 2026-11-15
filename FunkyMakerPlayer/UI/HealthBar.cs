@@ -21,6 +21,8 @@ public class HealthBar
     // Icon animators
     public SpriteAnimator? OpponentIcon { get; set; }
     public SpriteAnimator? PlayerIcon { get; set; }
+    public bool FlipOpponentIcon { get; set; }
+    public bool FlipPlayerIcon { get; set; }
     
     // Beat bounce animation
     private float _iconBounceScale = 1.0f;
@@ -202,9 +204,9 @@ public class HealthBar
         }
         
         if (hudSettings.OpponentIconVisible)
-            DrawIcon(OpponentIcon, opponentIconX, opponentIconY, iconSize, flipX: false, _iconBounceScale);
+            DrawIcon(OpponentIcon, opponentIconX, opponentIconY, iconSize, flipX: FlipOpponentIcon, _iconBounceScale);
         if (hudSettings.PlayerIconVisible)
-            DrawIcon(PlayerIcon, playerIconX, playerIconY, iconSize, flipX: false, _iconBounceScale);
+            DrawIcon(PlayerIcon, playerIconX, playerIconY, iconSize, flipX: FlipPlayerIcon, _iconBounceScale);
     }
     
     /// <summary>

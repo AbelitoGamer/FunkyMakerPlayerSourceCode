@@ -112,6 +112,10 @@ namespace FunkyMakerPlayer.Editors.Chart
         public bool PlaytestRequested { get; private set; }
         public float PlaytestStartSeconds { get; private set; }
         public string LevelPath => _levelPath;
+        public string LevelDisplayName => !string.IsNullOrWhiteSpace(_level?.LevelName)
+            ? _level.LevelName
+            : Path.GetFileNameWithoutExtension(_levelPath);
+        public bool IsPlayingAudio => _isPlaying;
         public FnmmLevel? GetEditedLevel() => _level;
         public Dictionary<string, Dictionary<int, SpriteTextureCacheEntry>> PreviewSpriteTextureCache => _previewSpriteTextureCache;
         public bool OwnsPreviewTextures => _ownsPreviewTextures;
@@ -148,6 +152,22 @@ namespace FunkyMakerPlayer.Editors.Chart
             BackPressed = false;
             PlaytestRequested = false;
             _dragMode = DragMode.None;
+            _prevKeyboard = Keyboard.GetState();
+            _prevMouse = Mouse.GetState();
+        }
+
+        public void SyncInputState()
+        {
+            _inputCooldown = Math.Max(_inputCooldown, 0.08f);
+            _dragMode = DragMode.None;
+            _prevKeyboard = Keyboard.GetState();
+            _prevMouse = Mouse.GetState();
+        }
+
+        public void PausePlaybackFromFocusLoss()
+        {
+            if (_isPlaying)
+                PausePlayback();
         }
 
         // ── Grid & Scroll ────────────────────────────────────────────────────
@@ -376,6 +396,20 @@ namespace FunkyMakerPlayer.Editors.Chart
                     _characterSingTime[sl] = Math.Max(0f, _characterSingTime[sl] - dt);
                 else
                     _characterSingLane[sl] = -1;
+            }
+
+            if (!Game1.CanAcceptInput)
+            {
+                PausePlaybackFromFocusLoss();
+                _dragMode = DragMode.None;
+                if (_phase == EditorPhase.Loading && _loadingTask != null && _loadingTask.IsCompleted)
+                {
+                    _phase = _errorMessage != null ? EditorPhase.Error : (_level != null ? EditorPhase.Ready : EditorPhase.Error);
+                    _loadingTask = null;
+                }
+                _prevKeyboard = default;
+                _prevMouse = Game1.NeutralMouseState(ms);
+                return;
             }
 
             if (_phase == EditorPhase.Loading)

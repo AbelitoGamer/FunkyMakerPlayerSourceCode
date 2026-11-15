@@ -60,6 +60,72 @@ public partial class Game1 : Game
     
     // Singleton accessor for NoteRenderer to access Cornered handler
     public static Game1? Instance { get; private set; }
+    internal static bool IsWindowActive => Instance?.ComputeWindowActive() ?? true;
+    internal static bool CanAcceptInput =>
+        Instance == null ||
+        (Instance.ComputeWindowActive() && Instance._focusRegainGrace <= 0f && !Instance._waitMouseReleaseAfterFocus);
+
+    internal static MouseState NeutralMouseState(MouseState ms, bool offscreen = false) =>
+        new(offscreen ? -9999 : ms.X, offscreen ? -9999 : ms.Y, ms.ScrollWheelValue,
+            ButtonState.Released, ButtonState.Released, ButtonState.Released,
+            ButtonState.Released, ButtonState.Released);
+
+    private static bool HasAnyMouseButtonPressed(MouseState ms) =>
+        ms.LeftButton == ButtonState.Pressed ||
+        ms.RightButton == ButtonState.Pressed ||
+        ms.MiddleButton == ButtonState.Pressed ||
+        ms.XButton1 == ButtonState.Pressed ||
+        ms.XButton2 == ButtonState.Pressed;
+
+    [DllImport("user32.dll")]
+    private static extern IntPtr GetForegroundWindow();
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool IsIconic(IntPtr hWnd);
+
+    internal static bool EvaluateWindowFocus(
+        bool monoGameActive,
+        bool isWindows,
+        IntPtr ownHwnd,
+        IntPtr foregroundHwnd,
+        bool isMinimized)
+    {
+        if (!monoGameActive)
+            return false;
+
+        if (isWindows && ownHwnd != IntPtr.Zero)
+            return foregroundHwnd == ownHwnd && !isMinimized;
+
+        return true;
+    }
+
+    private IntPtr GetNativeWindowHandle()
+    {
+        if (_winHwnd == IntPtr.Zero && !_winHwndLookupAttempted && OperatingSystem.IsWindows())
+        {
+            _winHwndLookupAttempted = true;
+            IntPtr sdlHandle = Window?.Handle ?? IntPtr.Zero;
+            if (sdlHandle != IntPtr.Zero)
+                _winHwnd = DarkMode.TryGetWindowsHandle(sdlHandle);
+        }
+        return _winHwnd;
+    }
+
+    private bool ComputeWindowActive()
+    {
+        if (!IsActive)
+            return false;
+
+        if (OperatingSystem.IsWindows())
+        {
+            IntPtr ownHwnd = GetNativeWindowHandle();
+            if (ownHwnd != IntPtr.Zero)
+                return EvaluateWindowFocus(IsActive, true, ownHwnd, GetForegroundWindow(), IsIconic(ownHwnd));
+        }
+
+        return true;
+    }
     public CorneredEventHandler? CurrentCorneredHandler => _corneredEvents;
     
     private Microsoft.Xna.Framework.Vector2 _initialCameraPos = Microsoft.Xna.Framework.Vector2.Zero;  // Initial camera position for scrollFactor
@@ -139,6 +205,7 @@ public partial class Game1 : Game
     private int _opponentBads = 0;
     private int _opponentShits = 0;
     private string _multiplayerMatchId = "";
+    private string? _multiplayerLevelName = null;
     private bool _multiplayerMatchRecorded = false;
     private bool _crashLogged = false;  // Prevent spam logging the same crash
     private bool? _opponentReadyState = null;  // Store opponent ready state received before LoadingScreen exists
@@ -174,7 +241,16 @@ public partial class Game1 : Game
     private float _songBeats = 0f;
     private bool  _started   = false;
     private bool  _paused    = false;
-    private float _discordUpdateTimer = 0f;  // throttle Discord RPC updates
+    private DateTimeOffset? _editorSessionStartUtc = null;
+    private DateTimeOffset? _gameplayPresenceStartUtc = null;
+    private DateTimeOffset? _multiplayerMatchStartUtc = null;
+    private volatile bool _pendingDiscordMpRefresh = false;
+    private bool _wasWindowActive = true;
+    private bool _pendingFocusInputSync = false;
+    private float _focusRegainGrace = 0f;
+    private bool _waitMouseReleaseAfterFocus = false;
+    private IntPtr _winHwnd = IntPtr.Zero;
+    private bool _winHwndLookupAttempted = false;
     
     // High-precision timing to avoid desync when window is moved
     private Stopwatch _songStopwatch = new();
@@ -390,11 +466,42 @@ public partial class Game1 : Game
         Window.Title    = "Funky Maker Player v" + System.Reflection.Assembly.GetExecutingAssembly().GetName().Version?.ToString(3);
     }
     
+    public static string SanitizeLevelDisplayName(string? raw)
+    {
+        if (string.IsNullOrWhiteSpace(raw))
+            return "Unknown Level";
+
+        string name = raw.Trim();
+        string lowerExt = Path.GetExtension(name);
+        if (lowerExt.Equals(".fnmm", StringComparison.OrdinalIgnoreCase) ||
+            lowerExt.Equals(".zip", StringComparison.OrdinalIgnoreCase) ||
+            lowerExt.Equals(".rar", StringComparison.OrdinalIgnoreCase))
+        {
+            name = Path.GetFileNameWithoutExtension(name);
+        }
+
+        const string tempPrefix = "funkymaker_temp_";
+        if (name.StartsWith(tempPrefix, StringComparison.OrdinalIgnoreCase))
+        {
+            name = name[tempPrefix.Length..];
+            int lastUnderscore = name.LastIndexOf('_');
+            if (lastUnderscore > 0 && name[(lastUnderscore + 1)..].All(char.IsDigit))
+                name = name[..lastUnderscore];
+            name = name.Replace('_', ' ').Trim();
+            if (name.Length > 0 && name == name.ToLowerInvariant())
+            {
+                name = System.Globalization.CultureInfo.CurrentCulture.TextInfo.ToTitleCase(name);
+            }
+        }
+
+        return string.IsNullOrWhiteSpace(name) ? "Unknown Level" : name;
+    }
+
     /// <summary>
     /// Starts a multiplayer PvP match (called from MultiplayerMenu).
     /// Does NOT create a new Game instance - changes current instance to multiplayer mode.
     /// </summary>
-    public void StartMultiplayerMatch(string levelPath, string opponentName, int playerRole, long startTimestamp, string? roomId = null)
+    public void StartMultiplayerMatch(string levelPath, string opponentName, int playerRole, long startTimestamp, string? roomId = null, string? levelDisplayName = null)
     {
         Console.WriteLine($"[Game1] Starting multiplayer match:");
         Console.WriteLine($"  Level: {levelPath}");
@@ -403,12 +510,23 @@ public partial class Game1 : Game
         Console.WriteLine($"  Start Timestamp: {startTimestamp}");
         
         _isMultiplayerMatch = true;
+        _multiplayerLevelName = SanitizeLevelDisplayName(!string.IsNullOrWhiteSpace(levelDisplayName)
+            ? levelDisplayName
+            : Path.GetFileNameWithoutExtension(levelPath));
         var netMgr = Multiplayer.NetworkManager.Instance;
-        _opponentName = !string.IsNullOrWhiteSpace(netMgr.OpponentName) ? netMgr.OpponentName : opponentName;
+        string? rawOpponentName = !string.IsNullOrWhiteSpace(netMgr.OpponentName) ? netMgr.OpponentName : opponentName;
         _opponentPlayerId = netMgr.OpponentPlayerId;
         _opponentColorHue = netMgr.OpponentColorHue;
+        var userDir = Multiplayer.UserDirectoryClient.Instance;
+        if (!string.IsNullOrWhiteSpace(_opponentPlayerId) && !string.IsNullOrWhiteSpace(rawOpponentName))
+            userDir.RegisterKnownUser(_opponentPlayerId, rawOpponentName, _opponentColorHue);
+        _opponentName = userDir.ResolveUsername(_opponentPlayerId, rawOpponentName);
+        _ = userDir.WarmFromServerAsync(netMgr.ServerUrl);
+        if (!string.IsNullOrWhiteSpace(_opponentPlayerId) && Multiplayer.UserDirectoryClient.IsGenericUsername(_opponentName))
+            _ = userDir.FetchUserByIdAsync(netMgr.ServerUrl, _opponentPlayerId);
         _multiplayerPlayerRole = playerRole;
         _multiplayerStartTimestamp = startTimestamp;
+        _multiplayerMatchStartUtc = null;
         _countdownSignalReceived = false;  // Reset countdown signal for new match
         _opponentReadyState = null;  // Reset stored opponent ready state
         _opponentScore = 0;
@@ -423,6 +541,7 @@ public partial class Game1 : Game
         _opponentShits = 0;
         _multiplayerMatchId = !string.IsNullOrWhiteSpace(roomId) ? roomId : Guid.NewGuid().ToString("N");
         _multiplayerMatchRecorded = false;
+        DiscordRpc.SetParty(_multiplayerMatchId, 2, 2);
         
         // Disable autoplay in multiplayer - players must play manually
         NoteRenderer.Autoplay = false;
@@ -449,9 +568,9 @@ public partial class Game1 : Game
     private void EnterFreeplay()
     {
         _inFreeplay = true;
-        DiscordRpc.SetBrowsingMusic();
         ResetWindowTitle();
         _freeplay?.Refresh();
+        RefreshActiveDiscordPresence(immediate: true);
     }
     
     /// <summary>
@@ -463,6 +582,7 @@ public partial class Game1 : Game
         _inFreeplay = false;
         _editorPicker = new Editors.EditorPicker(_pixel!, _font, _fontRenderer);
         _editorPicker.ResetInputCooldown();
+        RefreshActiveDiscordPresence(immediate: true);
         Console.WriteLine("[Game1] Entered Editor Picker");
     }
     
@@ -475,6 +595,7 @@ public partial class Game1 : Game
         _inFreeplay = true;
         _editorPicker = null;
         _freeplay?.ResetInputCooldown();
+        RefreshActiveDiscordPresence(immediate: true);
         Console.WriteLine("[Game1] Exited Editor Picker");
     }
     
@@ -493,6 +614,7 @@ public partial class Game1 : Game
             _levelSelector = new Editors.Chart.LevelSelector(
                 _pixel!, _font!, _fontRenderer,
                 startCreateModal: type == Editors.EditorType.NewChart);
+            RefreshActiveDiscordPresence(immediate: true);
             Console.WriteLine($"[Game1] Opened Level Selector (startCreateModal={type == Editors.EditorType.NewChart})");
         }
         else if (type == Editors.EditorType.Hud)
@@ -502,6 +624,7 @@ public partial class Game1 : Game
             _hudEditorReturnTarget = HudEditorReturnTarget.EditorPicker;
             _inMainSettings = true;
             _mainSettingsMenu?.ResetInputCooldown();
+            RefreshActiveDiscordPresence(immediate: true);
             Console.WriteLine("[Game1] Opened HUD Editor from Editor Hub");
         }
         else
@@ -534,6 +657,7 @@ public partial class Game1 : Game
         _chartEditorReturnTarget = ChartEditorReturnTarget.EditorPicker;
         _inEditor = false;
         _activeEditor = null;
+        _editorSessionStartUtc = null;
 
         switch (target)
         {
@@ -572,6 +696,7 @@ public partial class Game1 : Game
                 ResetWindowTitle();
                 break;
         }
+        RefreshActiveDiscordPresence(immediate: true);
         Console.WriteLine($"[Game1] Exited editor -> {target}");
     }
     
@@ -600,6 +725,7 @@ public partial class Game1 : Game
             _editorPicker.ResetInputCooldown();
             ResetWindowTitle();
         }
+        RefreshActiveDiscordPresence(immediate: true);
         Console.WriteLine($"[Game1] Exited Level Selector -> {target}");
     }
     
@@ -629,7 +755,9 @@ public partial class Game1 : Game
         var ce = new Editors.Chart.ChartEditor(levelPath, _pixel!, _font, _fontRenderer, _noteStyle, sharedSpriteCache);
         ce.ResetInputCooldown();
         _activeEditor = ce;
+        _editorSessionStartUtc = DateTimeOffset.UtcNow;
         Window.Title = $"Funky Maker Chart Editor — {Path.GetFileName(levelPath)}";
+        RefreshActiveDiscordPresence(immediate: true);
     }
 
     private void BeginEditorPlaytest(Editors.Chart.ChartEditor ce)
@@ -693,6 +821,7 @@ public partial class Game1 : Game
             _loadingComplete = true;
             _loadState = LoadState.Finalizing;
         }
+        RefreshActiveDiscordPresence(immediate: true);
     }
 
     private void ReturnFromPlaytest()
@@ -706,6 +835,7 @@ public partial class Game1 : Game
         _preloadedPlaytestPcm = null;
         _started = false;
         _paused = false;
+        _gameplayPresenceStartUtc = null;
         _inPauseMenu = false;
         _gameOverOverlay?.Hide();
         _songTransition = null;
@@ -723,6 +853,8 @@ public partial class Game1 : Game
         {
             _healthBar.OpponentIcon = null;
             _healthBar.PlayerIcon = null;
+            _healthBar.FlipOpponentIcon = false;
+            _healthBar.FlipPlayerIcon = false;
         }
         if (_spriteCacheOwnedByEditor)
             _spriteTextureCache = null;
@@ -748,17 +880,34 @@ public partial class Game1 : Game
         else
         {
             _suspendedChartEditor = null;
+            _editorSessionStartUtc = null;
             _inFreeplay = true;
             _freeplay?.Refresh();
             _freeplay?.ResetInputCooldown();
             ResetWindowTitle();
         }
+        RefreshActiveDiscordPresence(immediate: true);
         Console.WriteLine("[Game1] Returned from Playtest to Chart Editor");
     }
 
     private void FinalizeLoadedLevelForGameplay(bool showReadyScreen)
     {
         if (_level == null) return;
+
+        if (_isMultiplayerMatch)
+        {
+            if (string.IsNullOrWhiteSpace(_level.LevelName) ||
+                _level.LevelName.StartsWith("funkymaker_temp_", StringComparison.OrdinalIgnoreCase))
+            {
+                _level.LevelName = !string.IsNullOrWhiteSpace(_multiplayerLevelName)
+                    ? _multiplayerLevelName!
+                    : SanitizeLevelDisplayName(_level.LevelName);
+            }
+            else if (string.IsNullOrWhiteSpace(_multiplayerLevelName))
+            {
+                _multiplayerLevelName = _level.LevelName;
+            }
+        }
 
         SetupLevel();
         _songTime        = 0f;
@@ -790,12 +939,22 @@ public partial class Game1 : Game
             if (_playtestingFromEditor && _level != null)
             {
                 _started = true;
+                _gameplayPresenceStartUtc = DateTimeOffset.UtcNow;
                 _songStopwatch.Restart();
                 _pausedTime = 0.0;
-                if (_playtestStartSeconds > 0.1f)
-                    SeekSong(_playtestStartSeconds);
+                if (!IsWindowActive)
+                {
+                    _inPauseMenu = true;
+                    PauseSong();
+                }
                 else
-                    _musicInst?.Play();
+                {
+                    if (_playtestStartSeconds > 0.1f)
+                        SeekSong(_playtestStartSeconds);
+                    else
+                        _musicInst?.Play();
+                }
+                RefreshActiveDiscordPresence(immediate: true);
             }
             return;
         }
@@ -1126,6 +1285,7 @@ public partial class Game1 : Game
         _musicInst?.Stop();
         _started      = false;
         _paused       = false;
+        _gameplayPresenceStartUtc = null;
         _errorMsg     = null;
         _songTransition = null;
         _songEndDelay = 0f;
@@ -1140,9 +1300,15 @@ public partial class Game1 : Game
         if (_arrowsMenu != null) _arrowsMenu.IsActive = false;
         if (_splashMenu != null) _splashMenu.IsActive = false;
 
-        string levelName = System.IO.Path.GetFileNameWithoutExtension(path);
-        DiscordRpc.SetLoading(levelName);
+        string rawLevelName = System.IO.Path.GetFileNameWithoutExtension(path);
+        string levelName = _isMultiplayerMatch
+            ? (!string.IsNullOrWhiteSpace(_multiplayerLevelName) ? _multiplayerLevelName! : SanitizeLevelDisplayName(rawLevelName))
+            : rawLevelName;
         FnmmPath = path;
+        if (_isMultiplayerMatch)
+            DiscordRpc.SetLoadingMultiplayer(levelName, GetResolvedOpponentDisplayName());
+        else
+            DiscordRpc.SetLoading(levelName);
         return levelName;
     }
 
@@ -1213,6 +1379,8 @@ public partial class Game1 : Game
     {
         // Enable dark mode for window title bar (Windows 10/11)
         DarkMode.EnableDarkMode(Window.Handle);
+        _winHwnd = DarkMode.TryGetWindowsHandle(Window.Handle);
+        _winHwndLookupAttempted = _winHwnd != IntPtr.Zero;
 
         _spriteBatch = new SpriteBatch(GraphicsDevice);
 
@@ -1448,14 +1616,35 @@ public partial class Game1 : Game
             }
         };
         
+        // Refresh Discord presence on the main thread when database user lookups resolve usernames
+        Multiplayer.UserDirectoryClient.Instance.OnUsersUpdated += () =>
+        {
+            _pendingDiscordMpRefresh = true;
+        };
+
         // Receive opponent's profile updates (real username, ID, color)
         Multiplayer.NetworkManager.Instance.OnOpponentProfileReceived += (packet) =>
         {
-            if (!string.IsNullOrWhiteSpace(packet.Username))
-                _opponentName = packet.Username;
             if (!string.IsNullOrWhiteSpace(packet.PlayerId))
                 _opponentPlayerId = packet.PlayerId;
             _opponentColorHue = packet.ColorHue;
+
+            var userDir = Multiplayer.UserDirectoryClient.Instance;
+            if (!string.IsNullOrWhiteSpace(packet.PlayerId) && !string.IsNullOrWhiteSpace(packet.Username))
+                userDir.RegisterKnownUser(packet.PlayerId, packet.Username, packet.ColorHue);
+
+            if (!Multiplayer.UserDirectoryClient.IsGenericUsername(packet.Username))
+                _opponentName = packet.Username.Trim();
+            else
+            {
+                string resolved = userDir.ResolveUsername(_opponentPlayerId, _opponentName);
+                if (!Multiplayer.UserDirectoryClient.IsGenericUsername(resolved))
+                    _opponentName = resolved;
+                else if (!string.IsNullOrWhiteSpace(_opponentPlayerId))
+                    _ = userDir.FetchUserByIdAsync(Multiplayer.NetworkManager.Instance.ServerUrl, _opponentPlayerId);
+            }
+
+            _pendingDiscordMpRefresh = true;
         };
 
         // Receive opponent's state updates (score, health, combo, ratings)
@@ -1584,38 +1773,45 @@ public partial class Game1 : Game
         }
     }
 
-#if ANDROID
     /// <summary>
-    /// Called when the app loses focus (minimized, switched away, etc.)
-    /// Auto-pause to prevent music/gameplay desync on Android
+    /// Called when the window/app loses focus (alt-tab, minimized, another app clicked, etc.)
+    /// Auto-pauses solo gameplay and Chart Editor preview playback across PC and Android so the engine never runs away unfocused.
     /// </summary>
     protected override void OnDeactivated(object sender, EventArgs args)
     {
         base.OnDeactivated(sender, args);
-        
-        // Auto-pause if gameplay is active (not in menus)
+        _wasWindowActive = false;
+
+        if (_activeEditor is Editors.Chart.ChartEditor ce)
+        {
+            ce.PausePlaybackFromFocusLoss();
+            ce.SyncInputState();
+        }
+
+        // Auto-pause if solo gameplay is active (not in menus or multiplayer)
         // Disabled in multiplayer - can't pause during PvP matches
         if (!_isMultiplayerMatch && _level != null && _started && !_paused && !_inPauseMenu && !(_gameOverOverlay?.IsActive ?? false))
         {
-            Console.WriteLine("[Android] App deactivated, auto-pausing gameplay");
+            Console.WriteLine("[Focus] Window deactivated, auto-pausing solo gameplay");
             _inPauseMenu = true;
             PauseSong();
         }
         else if (_isMultiplayerMatch)
         {
-            Console.WriteLine("[Android] App deactivated during multiplayer - pause disabled");
+            Console.WriteLine("[Focus] Window deactivated during multiplayer - pause disabled");
         }
     }
-    
+
     /// <summary>
-    /// Called when the app regains focus
+    /// Called when the window/app regains focus.
+    /// Defers input polling cleanly so the focus click / Alt+Tab chord never triggers menus or notes.
     /// </summary>
     protected override void OnActivated(object sender, EventArgs args)
     {
         base.OnActivated(sender, args);
-        Console.WriteLine("[Android] App reactivated");
+        _pendingFocusInputSync = true;
+        _focusRegainGrace = 0.08f;
     }
-#endif
 
     
     // ── SetupLevel ───────────────────────────────────────────────────────────
@@ -1718,43 +1914,27 @@ public partial class Game1 : Game
         // Icons are SpriteAnimators: anim 0 = normal, anim 1 = losing
         var icons = _level.Scene.Icons;
         
-        // Multiplayer: Swap icons based on player role
-        // Player 1 (BF chart): Normal assignment (opponent=0, player=1)
-        // Player 2 (Enemy chart): Swapped (opponent=1, player=0)
-        if (_isMultiplayerMatch && _multiplayerPlayerRole == 2)
+        // Multiplayer: Swap icons AND mirror them horizontally when Player 2 plays Enemy
+        // Player 1 (BF chart): Normal assignment (opponent=0, player=1), no mirror
+        // Player 2 (Enemy chart): Swapped (opponent=1, player=0) + horizontal mirror so both face inward
+        bool flipIconsForEnemyRole = _isMultiplayerMatch && _multiplayerPlayerRole == 2;
+        var opponentIcon = BuildIconAnimator(
+            flipIconsForEnemyRole ? (icons.Count > 1 ? icons[1] : null) : (icons.Count > 0 ? icons[0] : null),
+            texCache);
+        var playerIcon = BuildIconAnimator(
+            flipIconsForEnemyRole ? (icons.Count > 0 ? icons[0] : null) : (icons.Count > 1 ? icons[1] : null),
+            texCache);
+
+        ApplyHealthBarIcon(isPlayerSlot: false, opponentIcon, flipIconsForEnemyRole);
+        ApplyHealthBarIcon(isPlayerSlot: true, playerIcon, flipIconsForEnemyRole);
+        if (_healthBar != null)
+            _healthBar.IconMode = IconMode;
+
+        if (_isMultiplayerMatch)
         {
-            // Player 2: I play Enemy chart, so I am the "opponent" character
-            var opponentIcon = BuildIconAnimator(icons.Count > 1 ? icons[1] : null, texCache);  // BF is my opponent
-            var playerIcon = BuildIconAnimator(icons.Count > 0 ? icons[0] : null, texCache);  // Enemy is me
-            
-            if (_healthBar != null)
-            {
-                _healthBar.OpponentIcon = opponentIcon;
-                _healthBar.PlayerIcon = playerIcon;
-                _healthBar.OpponentBarColor = SampleIconColor(opponentIcon) ?? new Color(0xFF, 0x00, 0x00);
-                _healthBar.PlayerBarColor = SampleIconColor(playerIcon) ?? new Color(0x66, 0xFF, 0x66);
-                _healthBar.IconMode = IconMode;
-            }
-            
-            Console.WriteLine("[Game1] Multiplayer Role 2: Swapped icons (I am Enemy character)");
-        }
-        else
-        {
-            // Normal: Player 1 or single-player
-            var opponentIcon = BuildIconAnimator(icons.Count > 0 ? icons[0] : null, texCache);
-            var playerIcon = BuildIconAnimator(icons.Count > 1 ? icons[1] : null, texCache);
-            
-            if (_healthBar != null)
-            {
-                _healthBar.OpponentIcon = opponentIcon;
-                _healthBar.PlayerIcon = playerIcon;
-                _healthBar.OpponentBarColor = SampleIconColor(opponentIcon) ?? new Color(0xFF, 0x00, 0x00);
-                _healthBar.PlayerBarColor = SampleIconColor(playerIcon) ?? new Color(0x66, 0xFF, 0x66);
-                _healthBar.IconMode = IconMode;
-            }
-            
-            if (_isMultiplayerMatch)
-                Console.WriteLine("[Game1] Multiplayer Role 1: Normal icons (I am BF character)");
+            Console.WriteLine(flipIconsForEnemyRole
+                ? "[Game1] Multiplayer Role 2: Swapped & mirrored icons (I am Enemy character)"
+                : "[Game1] Multiplayer Role 1: Normal icons (I am BF character)");
         }
 
         // ── Note renderers ───────────────────────────────────────────────────
@@ -2143,26 +2323,17 @@ public partial class Game1 : Game
             Console.WriteLine($"[ScrollFactor] Initial camera position: ({_initialCameraPos.X}, {_initialCameraPos.Y})");
         }
 
-        // Wire BarIconChange — swap health bar icons mid-song
+        // Wire BarIconChange — swap health bar icons mid-song (respects Multiplayer Role 2 swap & mirror)
         _events.OnBarIconChange = (target, spriteName) =>
         {
             var newAnim = BuildIconAnimator(spriteName, texCache);
             if (newAnim == null || _healthBar == null) return;
-            
-            if (target == 0)
-            {
-                // Opponent icon changed
-                _healthBar.OpponentIcon = newAnim;
-                _healthBar.OpponentBarColor = SampleIconColor(newAnim) ?? new Color(0xFF, 0x00, 0x00);
-                Console.WriteLine($"[BarIcon] Opponent icon changed to '{spriteName}' - Color: {_healthBar.OpponentBarColor}");
-            }
-            else
-            {
-                // Player icon changed
-                _healthBar.PlayerIcon = newAnim;
-                _healthBar.PlayerBarColor = SampleIconColor(newAnim) ?? new Color(0x66, 0xFF, 0x66);
-                Console.WriteLine($"[BarIcon] Player icon changed to '{spriteName}' - Color: {_healthBar.PlayerBarColor}");
-            }
+
+            bool isRole2Mp = _isMultiplayerMatch && _multiplayerPlayerRole == 2;
+            bool isPlayerSlot = isRole2Mp ? (target == 0) : (target != 0);
+            ApplyHealthBarIcon(isPlayerSlot, newAnim, isRole2Mp);
+            Color slotColor = isPlayerSlot ? _healthBar.PlayerBarColor : _healthBar.OpponentBarColor;
+            Console.WriteLine($"[BarIcon] {(isPlayerSlot ? "Player" : "Opponent")} icon changed to '{spriteName}' (flip={isRole2Mp}) - Color: {slotColor}");
         };
 
         // Wire PlayerHealth events
@@ -2270,6 +2441,26 @@ public partial class Game1 : Game
     }
 
     /// <summary>
+    /// Assigns a health bar icon slot with its mirror flag and sampled bar color.
+    /// </summary>
+    private void ApplyHealthBarIcon(bool isPlayerSlot, SpriteAnimator? icon, bool flipX)
+    {
+        if (_healthBar == null) return;
+        if (isPlayerSlot)
+        {
+            _healthBar.PlayerIcon = icon;
+            _healthBar.FlipPlayerIcon = flipX;
+            _healthBar.PlayerBarColor = SampleIconColor(icon) ?? new Color(0x66, 0xFF, 0x66);
+        }
+        else
+        {
+            _healthBar.OpponentIcon = icon;
+            _healthBar.FlipOpponentIcon = flipX;
+            _healthBar.OpponentBarColor = SampleIconColor(icon) ?? new Color(0xFF, 0x00, 0x00);
+        }
+    }
+
+    /// <summary>
     /// Builds a SpriteAnimator for a health bar icon.
     /// anim 0 = normal/win pose, anim 1 = losing pose.
     /// Position is set to zero — DrawHUD positions it manually.
@@ -2345,8 +2536,9 @@ public partial class Game1 : Game
 
     private void UpdateInternal(GameTime gameTime)
     {
-        var kb  = Keyboard.GetState();
-        
+        var rawKb  = Keyboard.GetState();
+        bool windowActive = ComputeWindowActive();
+
 #if ANDROID
         // Update touch controls before merging virtual keys with physical keyboard state
         _touchControls?.Update();
@@ -2372,20 +2564,81 @@ public partial class Game1 : Game
         }
         
         // Merge touch input into keyboard state for seamless integration
-        kb = MergeTouchWithKeyboard(kb);
+        rawKb = MergeTouchWithKeyboard(rawKb);
 #endif
         
         float dt = Math.Min((float)gameTime.ElapsedGameTime.TotalSeconds, 0.1f);  // clamp to 100ms max to prevent camera jumps on first frame
         _lastDt  = gameTime.ElapsedGameTime.TotalSeconds;
 
+        var rawMs = Mouse.GetState();
+        bool wasWaitingMouseRelease = _waitMouseReleaseAfterFocus;
+        bool wasInGrace = _focusRegainGrace > 0f || wasWaitingMouseRelease;
+
+        if (_wasWindowActive && !windowActive)
+        {
+            _waitMouseReleaseAfterFocus = false;
+            if (_activeEditor is Editors.Chart.ChartEditor inactiveCe)
+            {
+                inactiveCe.PausePlaybackFromFocusLoss();
+                inactiveCe.SyncInputState();
+            }
+
+            if (!_isMultiplayerMatch && _level != null && _started && !_paused && !_inPauseMenu && !(_gameOverOverlay?.IsActive ?? false))
+            {
+                _inPauseMenu = true;
+                PauseSong();
+            }
+        }
+        else if ((!_wasWindowActive && windowActive) || _pendingFocusInputSync)
+        {
+            _pendingFocusInputSync = false;
+            if (HasAnyMouseButtonPressed(rawMs))
+                _waitMouseReleaseAfterFocus = true;
+            SyncFocusInputsAfterReactivation(rawKb, rawMs);
+            _focusRegainGrace = Math.Max(_focusRegainGrace, 0.08f);
+            wasInGrace = true;
+        }
+        _wasWindowActive = windowActive;
+
+        if (windowActive && (_focusRegainGrace > 0f || _waitMouseReleaseAfterFocus))
+        {
+            if (_focusRegainGrace > 0f)
+                _focusRegainGrace = Math.Max(0f, _focusRegainGrace - dt);
+
+            _waitMouseReleaseAfterFocus = HasAnyMouseButtonPressed(rawMs);
+
+            if (_focusRegainGrace <= 0f && !_waitMouseReleaseAfterFocus)
+                SyncFocusInputsAfterReactivation(rawKb, rawMs);
+        }
+
+        bool suppressUserInput = !windowActive || _focusRegainGrace > 0f || _waitMouseReleaseAfterFocus;
+        var kb = suppressUserInput ? default : rawKb;
+
+        var prevMs = _prevMouse;
+        _prevMouse = rawMs;
+        var ms = suppressUserInput
+            ? NeutralMouseState(rawMs, offscreen: true)
+            : rawMs;
+        if (suppressUserInput)
+            prevMs = ms;
+        else if (wasInGrace && _focusRegainGrace <= 0f && !_waitMouseReleaseAfterFocus)
+            prevMs = ms;
+
         // Keep SignalR ping, time-sync, and auto-reconnect active across all states (menus, pause, gameplay)
         Multiplayer.NetworkManager.Instance.Update(gameTime);
 
-        var ms = Mouse.GetState();
-        var prevMs = _prevMouse;
-        _prevMouse = ms;
-
         HandlePendingOpponentDisconnect();
+
+        if (_pendingDiscordMpRefresh)
+        {
+            _pendingDiscordMpRefresh = false;
+            RefreshActiveDiscordPresence(immediate: true);
+        }
+        else
+        {
+            RefreshActiveDiscordPresence(immediate: false);
+        }
+        DiscordRpc.Update();
 
         // Always handle active error / disconnect overlay before menus, pause, or gameplay so the player is never trapped
         if (_errorMsg != null)
@@ -2397,7 +2650,7 @@ public partial class Game1 : Game
             bool pErrPressed    = kb.IsKeyDown(Keys.P)      && !_prevKb.IsKeyDown(Keys.P);
             bool confirmPressed = (kb.IsKeyDown(Keys.Enter) && !_prevKb.IsKeyDown(Keys.Enter)) ||
                                   (kb.IsKeyDown(Keys.Space) && !_prevKb.IsKeyDown(Keys.Space));
-            bool clicked        = IsActive && ms.LeftButton == ButtonState.Pressed && prevMs.LeftButton == ButtonState.Released;
+            bool clicked        = !suppressUserInput && ms.LeftButton == ButtonState.Pressed && prevMs.LeftButton == ButtonState.Released;
 
             if (escPressed || pErrPressed || (_errorDismissGrace <= 0f && (confirmPressed || clicked)))
                 DismissErrorToMenu();
@@ -2411,7 +2664,7 @@ public partial class Game1 : Game
             _volumeToastTimer = Math.Max(0f, _volumeToastTimer - dt);
 
         // Global FNF-style volume hotkeys (- / +) everywhere except text-entry or keybinding capture
-        bool allowVolumeHotkeys = !_keyBindOverlay.IsActive && !_inEditor && !_inLevelSelector && !_inMultiplayer;
+        bool allowVolumeHotkeys = !suppressUserInput && !_keyBindOverlay.IsActive && !_inEditor && !_inLevelSelector && !_inMultiplayer;
         if (allowVolumeHotkeys)
         {
             bool volUp = (kb.IsKeyDown(Keys.OemPlus) && !_prevKb.IsKeyDown(Keys.OemPlus)) ||
@@ -2545,6 +2798,7 @@ public partial class Game1 : Game
                     _musicInst?.Stop();
                     _started = false;
                     _paused = false;
+                    _gameplayPresenceStartUtc = null;
                     _inPauseMenu = false;
                     _pauseMenu.Selection = 0;
                     _level = null;
@@ -2566,7 +2820,7 @@ public partial class Game1 : Game
                         _freeplay?.ResetInputCooldown();
                     }
                     ResetWindowTitle();
-                    DiscordRpc.SetMenu();
+                    RefreshActiveDiscordPresence(immediate: true);
                     break;
             }
 
@@ -2834,6 +3088,7 @@ public partial class Game1 : Game
                 _inMainSettings = true;
                 _mainSettingsMenu?.ResetInputCooldown(); // Prevent immediate ENTER detection
                 _freeplay.MenuAction = -1;
+                RefreshActiveDiscordPresence(immediate: true);
             }
             // Check if user selected Multiplayer
             if (_freeplay.MenuAction == 3)
@@ -2842,6 +3097,7 @@ public partial class Game1 : Game
                 _inMultiplayer = true;
                 _multiplayerMenu?.ResetInputCooldown();
                 _freeplay.MenuAction = -1;
+                RefreshActiveDiscordPresence(immediate: true);
             }
             #if ANDROID
             // Check if user selected IMPORT FILE (Android only)
@@ -2994,6 +3250,7 @@ public partial class Game1 : Game
                         _freeplay?.ResetInputCooldown();
                         break;
                 }
+                RefreshActiveDiscordPresence(immediate: true);
             }
             
             if (_mainSettingsMenu.OpenHudEditor)
@@ -3004,6 +3261,7 @@ public partial class Game1 : Game
                 _hudEditor = new HudEditor(_pixel!, _font!, _rtWidth, _rtHeight, GraphicsDevice);
                 _inHudEditor = true;
                 _inMainSettings = false;
+                RefreshActiveDiscordPresence(immediate: true);
             }
             
             _prevKb = kb;
@@ -3031,6 +3289,7 @@ public partial class Game1 : Game
                     _inMainSettings = true;
                     _mainSettingsMenu?.ResetInputCooldown(); // Prevent immediate ENTER detection when returning
                 }
+                RefreshActiveDiscordPresence(immediate: true);
             }
             
             // Don't update _prevKb here - let HudEditor handle it
@@ -3055,10 +3314,12 @@ public partial class Game1 : Game
             {
                 _inMultiplayer = false;
                 _musicInst?.Stop();  // Stop any background music
+                DiscordRpc.ClearParty();
                 _inFreeplay = true;
                 ResetWindowTitle();  // Reset title when returning to menu
                 _freeplay?.ResetInputCooldown();
                 _multiplayerMenu.ResetExitFlag();
+                RefreshActiveDiscordPresence(immediate: true);
             }
             
             // NOTE: GameMultiplayer is now launched directly by MultiplayerMenu after countdown
@@ -3215,12 +3476,22 @@ public partial class Game1 : Game
                 if (_playtestingFromEditor && _level != null)
                 {
                     _started = true;
-                    _musicInst?.Play();
+                    _gameplayPresenceStartUtc = DateTimeOffset.UtcNow;
                     _songStopwatch.Restart();
                     _pausedTime = 0.0;
-                    if (_playtestStartSeconds > 0.1f)
-                        SeekSong(_playtestStartSeconds);
+                    if (!IsWindowActive)
+                    {
+                        _inPauseMenu = true;
+                        PauseSong();
+                    }
+                    else
+                    {
+                        _musicInst?.Play();
+                        if (_playtestStartSeconds > 0.1f)
+                            SeekSong(_playtestStartSeconds);
+                    }
                 }
+                RefreshActiveDiscordPresence(immediate: true);
             }
             _prevKb = kb;
             base.Update(gameTime);
@@ -3322,23 +3593,25 @@ public partial class Game1 : Game
                 {
                     _transitionToFreeplay = false;
                     _musicInst?.Stop();
+                    _gameplayPresenceStartUtc = null;
                     _inFreeplay = true;
                     ResetWindowTitle();
                     _freeplay?.Refresh();
                     _freeplay?.ResetInputCooldown();
-                    DiscordRpc.SetMenu();
                     _level = null;
+                    RefreshActiveDiscordPresence(immediate: true);
                 }
                 else
                 {
                     _musicInst?.Stop();
+                    _gameplayPresenceStartUtc = null;
                     _inMultiplayer = true;
                     ResetWindowTitle();
                     _multiplayerMenu?.ResetAfterMatch();
                     _multiplayerMenu?.ResetInputCooldown();
                     Console.WriteLine("[Game1] Returned to multiplayer menu after match");
-                    DiscordRpc.SetMenu();
                     _level = null;
+                    RefreshActiveDiscordPresence(immediate: true);
                 }
                 // Don't clear _songTransition yet - let it continue to Clearing phase
             }
@@ -3351,18 +3624,7 @@ public partial class Game1 : Game
         }
 
         _prevKb = kb;
-        DiscordRpc.Update();
 
-        // Update Discord RPC score every second during play
-        if (_started && !_paused && _level != null && _noteRenderers.Count > 0)
-        {
-            _discordUpdateTimer += (float)gameTime.ElapsedGameTime.TotalSeconds;
-            if (_discordUpdateTimer >= 1f)
-            {
-                _discordUpdateTimer = 0f;
-            }
-        }
-        
         UpdateLiveMultiplayerSync(dt);
         
         base.Update(gameTime);
@@ -3386,6 +3648,7 @@ public partial class Game1 : Game
         _isMultiplayerMatch = false;
         _multiplayerPlayerRole = 0;
         _multiplayerStartTimestamp = 0;
+        _multiplayerMatchStartUtc = null;
         _countdownSignalReceived = false;
         _opponentName = null;
         _opponentPlayerId = null;
@@ -3395,7 +3658,155 @@ public partial class Game1 : Game
         _opponentTargetHealth = 0.5f;
         _opponentReadyState = null;
         _multiplayerMatchId = "";
+        _multiplayerLevelName = null;
         _stateUpdateTimer = 0f;
+        DiscordRpc.ClearParty();
+    }
+
+    private void SyncFocusInputsAfterReactivation(KeyboardState kb, MouseState ms)
+    {
+        _prevKb = kb;
+        _prevMouse = NeutralMouseState(ms);
+
+        if (_activeEditor is Editors.Chart.ChartEditor ce)
+            ce.SyncInputState();
+        _editorPicker?.SyncInputState();
+        _levelSelector?.SyncInputState();
+        _mainSettingsMenu?.SyncInputState();
+        _hudEditor?.SyncInputState();
+        _freeplay?.SyncInputState();
+        _multiplayerMenu?.SyncInputState();
+    }
+
+    private string GetCurrentSongDisplayName(string? fallbackPath = null)
+    {
+        if (_isMultiplayerMatch)
+        {
+            if (_level != null && !string.IsNullOrWhiteSpace(_level.LevelName) &&
+                !_level.LevelName.StartsWith("funkymaker_temp_", StringComparison.OrdinalIgnoreCase))
+                return _level.LevelName;
+            if (!string.IsNullOrWhiteSpace(_multiplayerLevelName))
+                return _multiplayerLevelName!;
+        }
+        if (_level != null && !string.IsNullOrWhiteSpace(_level.LevelName))
+            return SanitizeLevelDisplayName(_level.LevelName);
+        string? path = !string.IsNullOrWhiteSpace(fallbackPath) ? fallbackPath : FnmmPath;
+        if (!string.IsNullOrWhiteSpace(path))
+        {
+            string fromPath = SanitizeLevelDisplayName(Path.GetFileNameWithoutExtension(path));
+            if (!string.IsNullOrWhiteSpace(fromPath))
+                return fromPath;
+        }
+        return "Unknown Level";
+    }
+
+    private string? GetResolvedOpponentDisplayName()
+    {
+        string? candidate = !string.IsNullOrWhiteSpace(_opponentName)
+            ? _opponentName
+            : Multiplayer.NetworkManager.Instance.OpponentName;
+        string resolved = Multiplayer.UserDirectoryClient.Instance.ResolveUsername(_opponentPlayerId, candidate);
+        if (!Multiplayer.UserDirectoryClient.IsGenericUsername(resolved))
+        {
+            if (Multiplayer.UserDirectoryClient.IsGenericUsername(_opponentName) ||
+                !string.Equals(_opponentName, resolved, StringComparison.Ordinal))
+            {
+                _opponentName = resolved;
+            }
+            return resolved;
+        }
+        return null;
+    }
+
+    private void RefreshActiveDiscordPresence(bool immediate = false)
+    {
+        if (_isMultiplayerMatch && (_level != null || _loadingScreen != null || _loadState == LoadState.Loading || _loadState == LoadState.Finalizing))
+        {
+            string? resolvedOpponent = GetResolvedOpponentDisplayName();
+            string levelName = GetCurrentSongDisplayName();
+            if (!string.IsNullOrEmpty(_multiplayerMatchId))
+                DiscordRpc.SetParty(_multiplayerMatchId, 2, 2);
+
+            if (_loadingScreen != null || _loadState == LoadState.Loading || _loadState == LoadState.Finalizing)
+            {
+                DiscordRpc.SetLoadingMultiplayer(levelName, resolvedOpponent);
+            }
+            else
+            {
+                _multiplayerMatchStartUtc ??= DateTimeOffset.UtcNow;
+                DiscordRpc.SetPlayingMultiplayer(levelName, resolvedOpponent, _multiplayerMatchStartUtc, immediate: immediate);
+            }
+            return;
+        }
+
+        if (_inMultiplayer && _multiplayerMenu != null)
+        {
+            var mpInfo = _multiplayerMenu.GetDiscordPresenceInfo();
+            if (!string.IsNullOrEmpty(mpInfo.PartyId) && mpInfo.PartySize > 0)
+                DiscordRpc.SetParty(mpInfo.PartyId, mpInfo.PartySize, Math.Max(mpInfo.PartyMax, mpInfo.PartySize));
+            else
+                DiscordRpc.ClearParty();
+
+            DiscordRpc.SetMultiplayerLobby(mpInfo.Details, mpInfo.State, immediate: immediate);
+            return;
+        }
+
+        if (_inEditor && _activeEditor is Editors.Chart.ChartEditor ce)
+        {
+            _editorSessionStartUtc ??= DateTimeOffset.UtcNow;
+            DiscordRpc.SetChartEditor(ce.LevelDisplayName, ce.IsPlayingAudio, _editorSessionStartUtc, immediate: immediate);
+            return;
+        }
+
+        if (_inEditorPicker)
+        {
+            DiscordRpc.SetEditorHub("Choosing an editor");
+            return;
+        }
+
+        if (_inLevelSelector)
+        {
+            DiscordRpc.SetEditorHub("Selecting a chart");
+            return;
+        }
+
+        if (_inHudEditor)
+        {
+            DiscordRpc.SetEditorHub("HUD Editor");
+            return;
+        }
+
+        if (_inMainSettings)
+        {
+            DiscordRpc.SetEditorHub(_hudEditorReturnTarget == HudEditorReturnTarget.EditorPicker ? "HUD Editor" : "Settings");
+            return;
+        }
+
+        if (_level != null || _loadingScreen != null || _loadState == LoadState.Loading || _loadState == LoadState.Finalizing)
+        {
+            string levelName = GetCurrentSongDisplayName();
+            if (_loadingScreen != null || _loadState == LoadState.Loading || _loadState == LoadState.Finalizing)
+            {
+                DiscordRpc.SetLoading(levelName);
+            }
+            else
+            {
+                _gameplayPresenceStartUtc ??= DateTimeOffset.UtcNow;
+                DiscordRpc.SetPlaying(levelName, isPlaytest: _playtestingFromEditor, startTime: _gameplayPresenceStartUtc);
+            }
+            return;
+        }
+
+        if (_inFreeplay && _freeplay != null)
+        {
+            if (_freeplay.IsPanelOpen)
+                DiscordRpc.SetBrowsingMusic(_freeplay.SelectedLevelName);
+            else
+                DiscordRpc.SetMenu();
+            return;
+        }
+
+        DiscordRpc.SetMenu();
     }
 
     private void HandlePendingOpponentDisconnect()
@@ -3475,6 +3886,7 @@ public partial class Game1 : Game
         _pendingLevel = null;
         _started = false;
         _paused = false;
+        _gameplayPresenceStartUtc = null;
         _loadState = LoadState.Done;
         _loadingComplete = false;
         ResetMultiplayerMatchState();
@@ -3495,7 +3907,7 @@ public partial class Game1 : Game
         }
 
         ResetWindowTitle();
-        DiscordRpc.SetMenu();
+        RefreshActiveDiscordPresence(immediate: true);
     }
 
     private void AdvanceLiveMultiplayerIfActive(GameTime gameTime, float dt)
@@ -3551,6 +3963,17 @@ public partial class Game1 : Game
     {
         if (_level == null) return;
 
+        // Keep solo gameplay & countdown paused while the window is unfocused
+        if (!_isMultiplayerMatch && !IsWindowActive)
+        {
+            if (_started && !_paused)
+            {
+                _inPauseMenu = true;
+                PauseSong();
+            }
+            return;
+        }
+
         // ── Countdown before music ───────────────────────────────────────
         if (!_started)
         {
@@ -3565,10 +3988,10 @@ public partial class Game1 : Game
                     Console.WriteLine($"[Game1] 🚀 Multiplayer: Starting NOW! (delay: {-timeUntilStart}ms)");
                     _countdownOverlay?.MarkAsDone();
                     _started       = true;
+                    _multiplayerMatchStartUtc = DateTimeOffset.UtcNow;
                     _musicInst?.Play();
 
-                    string levelName = System.IO.Path.GetFileNameWithoutExtension(FnmmPath);
-                    DiscordRpc.SetPlayingMultiplayer(levelName);
+                    RefreshActiveDiscordPresence(immediate: true);
                     _songStopwatch.Restart();
                     _pausedTime = 0.0;
                     _songTime = 0f;
@@ -3579,10 +4002,10 @@ public partial class Game1 : Game
                     Console.WriteLine($"[Game1] [♪] Multiplayer: Pre-starting music ({timeUntilStart}ms early for sync)");
                     _countdownOverlay?.MarkAsDone();
                     _started       = true;
+                    _multiplayerMatchStartUtc = DateTimeOffset.UtcNow;
                     _musicInst?.Play();
 
-                    string levelName = System.IO.Path.GetFileNameWithoutExtension(FnmmPath);
-                    DiscordRpc.SetPlayingMultiplayer(levelName);
+                    RefreshActiveDiscordPresence(immediate: true);
                     _songStopwatch.Restart();
                     _pausedTime = 0.0;
                     _songTime = 0f;
@@ -3604,13 +4027,12 @@ public partial class Game1 : Game
                 if (countdownComplete && !_started)
                 {
                     _started = true;
+                    _gameplayPresenceStartUtc = DateTimeOffset.UtcNow;
+                    if (_isMultiplayerMatch)
+                        _multiplayerMatchStartUtc ??= DateTimeOffset.UtcNow;
                     _musicInst?.Play();
 
-                    string levelName = System.IO.Path.GetFileNameWithoutExtension(FnmmPath);
-                    if (_isMultiplayerMatch)
-                        DiscordRpc.SetPlayingMultiplayer(levelName);
-                    else
-                        DiscordRpc.SetPlaying(levelName);
+                    RefreshActiveDiscordPresence(immediate: true);
                     _songStopwatch.Restart();
                     _pausedTime = 0.0;
                 }
@@ -3710,6 +4132,13 @@ public partial class Game1 : Game
                 anim?.Update(dt, _songTime);
 
             _healthBar?.Update(dt, _songTime, _level.Data.EffectiveBpm);
+            if (_isMultiplayerMatch && _healthBar != null && _healthBar.OpponentIcon != null)
+            {
+                int oppTargetAnim = _opponentHealth < 0.20f ? 1 : 0;
+                if (oppTargetAnim >= _healthBar.OpponentIcon.AnimCount) oppTargetAnim = 0;
+                if (_healthBar.OpponentIcon.CurrentAnimIndex != oppTargetAnim)
+                    _healthBar.OpponentIcon.SetAnimation(oppTargetAnim);
+            }
         }
 
         // ── Notes alpha fade ─────────────────────────────────────────────
@@ -3753,7 +4182,8 @@ public partial class Game1 : Game
                         RecordMultiplayerMatchResult(playerRenderer, opponentDisconnected: false);
 
                         string playerDisplayName = string.IsNullOrWhiteSpace(mp.Username) ? "Player" : mp.Username.Trim();
-                        string opponentDisplayName = string.IsNullOrWhiteSpace(_opponentName) ? "Opponent" : _opponentName;
+                        string opponentDisplayName = GetResolvedOpponentDisplayName()
+                            ?? (string.IsNullOrWhiteSpace(_opponentName) ? "Opponent" : _opponentName);
                         bool isDraw = playerRenderer.Score == _opponentScore;
                         bool playerWon = playerRenderer.Score > _opponentScore;
 
@@ -3999,6 +4429,7 @@ public partial class Game1 : Game
         _songBeats       = 0f;
         _started         = false;
         _paused          = false;
+        _gameplayPresenceStartUtc = null;
         if (_healthBar != null)
             _healthBar.Health = 0.5f;
         _gameOverOverlay?.Hide();
@@ -4595,13 +5026,17 @@ public partial class Game1 : Game
 
         // ── HUD: health bar, icons, stats (drawn before notes) ───────────────
         _spriteBatch.Begin(SpriteSortMode.Deferred, BlendState.NonPremultiplied, SamplerState.LinearClamp);
+        float mpOpponentAccuracy = _isMultiplayerMatch
+            ? ComputeAccuracy(_opponentSicks, _opponentGoods, _opponentBads, _opponentShits, _opponentMisses)
+            : 100f;
         GameplayHudOverlay.DrawHUD(
             _spriteBatch, _font, _pixel, sw, sh, _rtWidth, _rtHeight,
             _level, _events, _cameraManager, _healthBar, _timerBar,
             _keyBindOverlay, _noteStyle, _noteRenderers,
             _isMultiplayerMatch, _opponentName, _opponentScore, _opponentHealth,
             _songTime, _songEndTime, _songBeats, _started, _paused, _lastDt,
-            _graphics.SynchronizeWithVerticalRetrace);
+            _graphics.SynchronizeWithVerticalRetrace,
+            _opponentMisses, mpOpponentAccuracy, _opponentColorHue);
         _spriteBatch.End();
 
         // ── Notes: arrows and receptors (drawn on top of everything) ─────────

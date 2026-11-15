@@ -30,7 +30,7 @@ public class NoteRenderer
     private const float W_BAD   = 0.135f;
     // W_SHIT = HIT_WINDOW (0.166f)
 
-    private const float BASE_SPEED = 600f;  // Increased from 450f for faster note movement
+    private const float BASE_SPEED = 450f;  // Standard FNF scroll speed (1.0x)
 
     private const float STRUM_Y_UP   = 0.15f;  // upscroll:   receptor near TOP
     private const float STRUM_Y_DOWN = 0.85f;  // downscroll: receptor near BOTTOM
@@ -619,7 +619,7 @@ public class NoteRenderer
                 OnComboChanged?.Invoke(Combo);  // Fire combo changed event
                 float holdEnd = note.Duration > 0 ? note.Start + note.Duration : -1f;
                 OnNoteHit?.Invoke(lane, holdEnd);
-                if (note.Props.OnPressEvent > 0)
+                if (note.Props.OnPressEvent >= 0)
                     OnNotePressEvent?.Invoke((int)note.Props.OnPressEvent);
                 // Fallback: if no onPressEvent and skin=3 (heal), fire heal callback
                 else if (note.Props.IsHeal)
@@ -808,7 +808,7 @@ public class NoteRenderer
                 OnNoteHit?.Invoke(lane, holdEnd);
                 OnJudgement?.Invoke(judgement);
 
-                if (best.Props.OnPressEvent > 0)
+                if (best.Props.OnPressEvent >= 0)
                 {
                     // Level defines the mechanic
                     OnNotePressEvent?.Invoke((int)best.Props.OnPressEvent);
@@ -878,7 +878,7 @@ public class NoteRenderer
                 Misses++; Combo = 0;
                 _comboBreakTimer[lane] = 0.5f;  // Combo break effect
                 OnNoteMiss?.Invoke();
-                if (note.Props.OnMissEvent > 0)
+                if (note.Props.OnMissEvent >= 0)
                     OnNoteMissEvent?.Invoke((int)note.Props.OnMissEvent);
             }
         }

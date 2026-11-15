@@ -235,14 +235,15 @@ public class HudEditor
         return new Point(rtX, rtY);
     }
 
+    public void SyncInputState()
+    {
+        _isDragging = false;
+        _prevKb = Keyboard.GetState();
+        _prevMouse = Mouse.GetState();
+    }
+
     public void Update(float dt, int screenWidth, int screenHeight)
     {
-        var kb = Keyboard.GetState();
-        var mouse = Mouse.GetState();
-        
-        // Convert mouse position from window coordinates to render target coordinates
-        Point mousePos = ConvertMousePosition(mouse.X, mouse.Y, screenWidth, screenHeight);
-        
         // Update feedback timer
         if (_feedbackTimer > 0f)
         {
@@ -252,9 +253,23 @@ public class HudEditor
                 _feedbackMessage = null;
             }
         }
-        
+
         BackPressed = false;
         SavePressed = false;
+
+        var mouse = Mouse.GetState();
+        if (!Game1.CanAcceptInput)
+        {
+            _isDragging = false;
+            _prevKb = default;
+            _prevMouse = Game1.NeutralMouseState(mouse);
+            return;
+        }
+
+        var kb = Keyboard.GetState();
+        
+        // Convert mouse position from window coordinates to render target coordinates
+        Point mousePos = ConvertMousePosition(mouse.X, mouse.Y, screenWidth, screenHeight);
         
         // ESC to go back (auto-save layout so changes take effect immediately)
         if (kb.IsKeyDown(Keys.Escape) && !_prevKb.IsKeyDown(Keys.Escape))

@@ -95,9 +95,28 @@ public class EditorPicker : FunkyMakerPlayer.UI.IDirectScreen
         _lastMousePos = _prevMouse.Position;
     }
 
+    public void SyncInputState()
+    {
+        _inputCooldown = Math.Max(_inputCooldown, 0.08f);
+        _hoveredCard = -1;
+        _backHovered = false;
+        _prevKb = Keyboard.GetState();
+        _prevMouse = Mouse.GetState();
+        _lastMousePos = _prevMouse.Position;
+    }
+
     public void Update(float dt, KeyboardState kb, int screenWidth, int screenHeight)
     {
         var ms = Mouse.GetState();
+        if (!Game1.CanAcceptInput)
+        {
+            _hoveredCard = -1;
+            _backHovered = false;
+            _prevKb = default;
+            _prevMouse = Game1.NeutralMouseState(ms);
+            _lastMousePos = ms.Position;
+            return;
+        }
         bool mouseMoved = Math.Abs(ms.X - _lastMousePos.X) > 2 || Math.Abs(ms.Y - _lastMousePos.Y) > 2;
         if (mouseMoved) _lastMousePos = ms.Position;
 

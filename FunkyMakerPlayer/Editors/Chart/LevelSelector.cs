@@ -96,6 +96,14 @@ public class LevelSelector : FunkyMakerPlayer.UI.IDirectScreen
         _lastMousePos = _prevMs.Position;
     }
 
+    public void SyncInputState()
+    {
+        _inputCooldown = Math.Max(_inputCooldown, 0.08f);
+        _prevKb = Keyboard.GetState();
+        _prevMs = Mouse.GetState();
+        _lastMousePos = _prevMs.Position;
+    }
+
     private void LoadLevelList()
     {
         try
@@ -148,6 +156,13 @@ public class LevelSelector : FunkyMakerPlayer.UI.IDirectScreen
         _caretBlink += dt * 2.5f;
 
         var ms = Mouse.GetState();
+        if (!Game1.CanAcceptInput)
+        {
+            _prevKb = default;
+            _prevMs = Game1.NeutralMouseState(ms);
+            _lastMousePos = ms.Position;
+            return;
+        }
         bool mouseMoved = Math.Abs(ms.X - _lastMousePos.X) > 2 || Math.Abs(ms.Y - _lastMousePos.Y) > 2;
         if (mouseMoved) _lastMousePos = ms.Position;
         bool clicked = ms.LeftButton == ButtonState.Pressed && _prevMs.LeftButton == ButtonState.Released;

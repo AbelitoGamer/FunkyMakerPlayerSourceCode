@@ -55,6 +55,11 @@ public partial class FreeplayMenu
         _menuSel = 0;
         ResetInputCooldown();
     }
+
+    public bool IsPanelOpen => _panelOpen;
+    public string? SelectedLevelName => (_panelOpen && _selected >= 0 && _selected < _names.Count)
+        ? _names[_selected]
+        : null;
     
     /// <summary>Updates the TrueType font renderer when font is changed in Settings</summary>
     public void SetFontRenderer(FontRenderer? fontRenderer) => _fontRenderer = fontRenderer;
@@ -220,6 +225,24 @@ public partial class FreeplayMenu
         _hoveredLevelIndex = -1;
         _hoveredEditIndex = -1;
         _hoveredMainCard = -1;
+    }
+
+    /// <summary>Syncs previous input snapshots after window focus changes without resetting scroll or selection.</summary>
+    public void SyncInputState()
+    {
+        _inputCooldown = Math.Max(_inputCooldown, 0.08f);
+        _syncPointerNextUpdate = true;
+        _prevKb = Keyboard.GetState();
+        _prevMs = Mouse.GetState();
+        _hoveredLevelIndex = -1;
+        _hoveredEditIndex = -1;
+        _hoveredMainCard = -1;
+        _folderIconHover = false;
+        _importBtnHover = false;
+        _newBtnHover = false;
+        _refreshBtnHover = false;
+        _closePanelBtnHover = false;
+        _footerBarHover = false;
     }
 
     /// <summary>Notifies the main menu that a newer GitHub release is available without blocking launch.</summary>
@@ -486,6 +509,25 @@ public partial class FreeplayMenu
             mouseClicked = true;
         _prevTouchDown = touchDown;
         #endif
+
+        if (!Game1.CanAcceptInput)
+        {
+            _hoveredLevelIndex = -1;
+            _hoveredEditIndex = -1;
+            _hoveredMainCard = -1;
+            _newBtnHover = false;
+            _closePanelBtnHover = false;
+            _folderIconHover = false;
+            _importBtnHover  = false;
+            _refreshBtnHover = false;
+            _footerBarHover  = false;
+            _modalYesHover   = false;
+            _modalNoHover    = false;
+            _syncPointerNextUpdate = true;
+            _prevKb = default;
+            _prevMs = Game1.NeutralMouseState(mouse);
+            return;
+        }
 
         if (_syncPointerNextUpdate)
         {

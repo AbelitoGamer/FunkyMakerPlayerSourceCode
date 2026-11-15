@@ -212,6 +212,7 @@ public static class FnmmSceneRenderer
             for (int fi = 0; fi < frames.Count; fi++)
             {
                 int frameTexStart = textures.Count;
+                long estRawBytes = 0;
                 try
                 {
                     if (onRenderTick != null && (fi % FRAMES_PER_UPDATE == 0 || lastFrameUpdateTime.ElapsedMilliseconds > MAX_MS_BETWEEN_UPDATES))
@@ -221,45 +222,39 @@ public static class FnmmSceneRenderer
                     }
 
                 int frameCount = fi < def.Data.Count ? def.Data[fi].FrameCount : 1;
-                int pngW = 0, pngH = 0;
-                if (frames[fi].Length > 24)
-                {
-                    int signedW = (frames[fi][16] << 24) | (frames[fi][17] << 16) | (frames[fi][18] << 8) | frames[fi][19];
-                    int signedH = (frames[fi][20] << 24) | (frames[fi][21] << 16) | (frames[fi][22] << 8) | frames[fi][23];
-                    if (signedW != 0) pngW = Math.Abs(signedW);
-                    if (signedH != 0) pngH = Math.Abs(signedH);
-                    if (pngW > 65536) pngW = 0;
-                    if (pngH > 65536) pngH = 0;
-                }
-
-                if (frames[fi].Length == 0)
-                {
-                    var dummy = new Texture2D(gd, 1, 1);
-                    dummy.SetData(new[] { Color.Transparent });
-                    textures.Add(dummy);
+                byte[] frameBytes = frames[fi];
+                if (frameBytes.Length == 0)
                     continue;
+
+                int pngW = 0, pngH = 0;
+                if (frameBytes.Length >= 24 &&
+                    frameBytes[0] == 0x89 && frameBytes[1] == 0x50 && frameBytes[2] == 0x4E && frameBytes[3] == 0x47 &&
+                    frameBytes[4] == 0x0D && frameBytes[5] == 0x0A && frameBytes[6] == 0x1A && frameBytes[7] == 0x0A)
+                {
+                    uint rawW = ((uint)frameBytes[16] << 24) | ((uint)frameBytes[17] << 16) | ((uint)frameBytes[18] << 8) | frameBytes[19];
+                    uint rawH = ((uint)frameBytes[20] << 24) | ((uint)frameBytes[21] << 16) | ((uint)frameBytes[22] << 8) | frameBytes[23];
+                    if (rawW > 0 && rawW <= 2_000_000) pngW = (int)rawW;
+                    if (rawH > 0 && rawH <= 2_000_000) pngH = (int)rawH;
                 }
 
                 if (pngW <= 0 || pngH <= 0)
                 {
-                    onProgress?.Invoke((spriteIndex / (float)Math.Max(1, totalSprites)) * 0.8f, $"Fixing invalid sprite: {name}");
+                    onProgress?.Invoke((spriteIndex / (float)Math.Max(1, totalSprites)) * 0.8f, $"Inspecting sprite: {name}");
                     try
                     {
-                        using var msProbe = new MemoryStream(frames[fi]);
-                        using var imgProbe = SixLabors.ImageSharp.Image.Load<SixLabors.ImageSharp.PixelFormats.Rgba32>(msProbe);
-                        pngW = imgProbe.Width;
-                        pngH = imgProbe.Height;
+                        using var msProbe = new MemoryStream(frameBytes, writable: false);
+                        var info = SixLabors.ImageSharp.Image.Identify(msProbe);
+                        pngW = info.Width;
+                        pngH = info.Height;
                     }
                     catch (Exception exProbe)
                     {
                         Console.WriteLine($"[Texture] {name}[{fi}]: skipped — ImageSharp failed: {exProbe.Message}");
-                        var dummy = new Texture2D(gd, 1, 1);
-                        dummy.SetData(new[] { Color.Transparent });
-                        textures.Add(dummy);
                         continue;
                     }
                 }
 
+                estRawBytes = (long)pngW * Math.Max(1, pngH) * 4L;
                 int actualFrameCount = Math.Max(1, frameCount);
                 int fw0 = actualFrameCount > 1 ? pngW / actualFrameCount : pngW;
                 if (actualFrameCount > 1 && fw0 < 10)
@@ -273,7 +268,7 @@ public static class FnmmSceneRenderer
                 bool needsSplit = !needsDownscale && !needsBgTile && pngW > maxTexSize && actualFrameCount > 1;
 
                 Texture2D? fullTex = null;
-                if (!needsSplit && !needsBgTile)
+                if (!needsDownscale && !needsSplit && !needsBgTile)
                 {
                     try
                     {
@@ -324,32 +319,13 @@ public static class FnmmSceneRenderer
                     }
                 }
 
+                var animData = fi < def.Data.Count ? def.Data[fi] : null;
+
                 if (fullTex == null && needsDownscale)
                 {
                     try
                     {
-                        int fw = fw0;
-                        int fh = pngH;
-                        var packResults = AtlasPacker.PackHorizontalStrip(
-                            frames[fi], actualFrameCount, fw, fh, maxTexSize, gd,
-                            onProgress != null
-                                ? (curr, tot) => onProgress((spriteIndex / (float)Math.Max(1, totalSprites)) * 0.8f, $"Packing atlas: {name} ({curr}/{tot} frames)")
-                                : null);
-
-                        if (packResults.Count > 0)
-                        {
-                            int splitStart = textures.Count;
-                            foreach (var pack in packResults)
-                                textures.Add(pack.AtlasTexture);
-
-                            if (fi < def.Data.Count)
-                            {
-                                def.Data[fi].SplitOffset = splitStart;
-                                def.Data[fi].UsesPackedAtlas = true;
-                                def.Data[fi].AtlasFrameRects = packResults[0].FrameCoordinates;
-                                def.Data[fi].FrameWidth = fw;
-                            }
-                        }
+                        TryPackAtlas(gd, name, frameBytes, actualFrameCount, fw0, pngH, maxTexSize, textures, animData, onProgress, spriteIndex, totalSprites);
 #if ANDROID
                         onRenderTick?.Invoke();
 #endif
@@ -360,59 +336,36 @@ public static class FnmmSceneRenderer
                     }
                 }
 
-                if (fullTex == null && !needsSplit && !needsBgTile && !(fi < def.Data.Count && def.Data[fi].IsSplit))
+                if (fullTex == null && !needsSplit && !needsBgTile && !(animData != null && animData.IsSplit))
                 {
-                    var dummy = new Texture2D(gd, 1, 1);
-                    dummy.SetData(new[] { Color.Transparent });
-                    textures.Add(dummy);
                     continue;
                 }
 
                 if (needsSplit)
                 {
-                    int fw = fw0;
-                    int fh = pngH;
-                    var packResults = AtlasPacker.PackHorizontalStrip(
-                        frames[fi], actualFrameCount, fw, fh, maxTexSize, gd,
-                        onProgress != null
-                            ? (curr, tot) => onProgress((spriteIndex / (float)Math.Max(1, totalSprites)) * 0.8f, $"Packing atlas: {name} ({curr}/{tot} frames)")
-                            : null);
-
-                    if (packResults.Count > 0)
+                    if (!TryPackAtlas(gd, name, frameBytes, actualFrameCount, fw0, pngH, maxTexSize, textures, animData, onProgress, spriteIndex, totalSprites))
                     {
                         int splitStart = textures.Count;
-                        foreach (var pack in packResults)
-                            textures.Add(pack.AtlasTexture);
-
-                        if (fi < def.Data.Count)
+                        if (isBgSprite)
                         {
-                            def.Data[fi].SplitOffset = splitStart;
-                            def.Data[fi].UsesPackedAtlas = true;
-                            def.Data[fi].AtlasFrameRects = packResults[0].FrameCoordinates;
-                            def.Data[fi].FrameWidth = fw;
+                            int framesPerChunk = Math.Max(1, maxTexSize / Math.Max(1, fw0));
+                            SplitPngIntoChunks(gd, frameBytes, actualFrameCount, fw0, pngH, framesPerChunk, textures);
+                            if (animData != null && textures.Count > splitStart)
+                            {
+                                animData.SplitOffset = splitStart;
+                                animData.ChunkFrames = framesPerChunk;
+                                animData.FrameWidth = fw0;
+                            }
                         }
-                    }
-                    else if (isBgSprite)
-                    {
-                        int framesPerChunk = Math.Max(1, maxTexSize / Math.Max(1, fw));
-                        int splitStart = textures.Count;
-                        SplitPngIntoChunks(gd, frames[fi], actualFrameCount, fw, fh, framesPerChunk, textures);
-                        if (fi < def.Data.Count)
+                        else
                         {
-                            def.Data[fi].SplitOffset = splitStart;
-                            def.Data[fi].ChunkFrames = framesPerChunk;
-                            def.Data[fi].FrameWidth = fw;
-                        }
-                    }
-                    else
-                    {
-                        int splitStart = textures.Count;
-                        SplitPngIntoFrames(gd, frames[fi], actualFrameCount, fw, fh, textures);
-                        if (fi < def.Data.Count)
-                        {
-                            def.Data[fi].SplitOffset = splitStart;
-                            def.Data[fi].ChunkFrames = 0;
-                            def.Data[fi].FrameWidth = fw;
+                            SplitPngIntoFrames(gd, frameBytes, actualFrameCount, fw0, pngH, textures);
+                            if (animData != null && textures.Count > splitStart)
+                            {
+                                animData.SplitOffset = splitStart;
+                                animData.ChunkFrames = 0;
+                                animData.FrameWidth = fw0;
+                            }
                         }
                     }
 #if ANDROID
@@ -425,12 +378,12 @@ public static class FnmmSceneRenderer
                 {
                     int tileW = maxTexSize;
                     int splitStart = textures.Count;
-                    SplitBgIntoTiles(gd, frames[fi], pngW, pngH, tileW, textures);
-                    if (fi < def.Data.Count)
+                    SplitBgIntoTiles(gd, frameBytes, pngW, pngH, tileW, textures);
+                    if (animData != null && textures.Count > splitStart)
                     {
-                        def.Data[fi].SplitOffset = splitStart;
-                        def.Data[fi].ChunkFrames = 1;
-                        def.Data[fi].FrameWidth = tileW;
+                        animData.SplitOffset = splitStart;
+                        animData.ChunkFrames = 1;
+                        animData.FrameWidth = tileW;
                     }
 #if ANDROID
                     onRenderTick?.Invoke();
@@ -445,19 +398,38 @@ public static class FnmmSceneRenderer
                     int splitStart = textures.Count;
                     SplitTextureGpu(gd, fullTex, frameCount, fw, fh, textures);
                     fullTex.Dispose();
-                    if (fi < def.Data.Count)
-                        def.Data[fi].SplitOffset = splitStart;
+                    if (animData != null && textures.Count > splitStart)
+                        animData.SplitOffset = splitStart;
                 }
                 else
                 {
-                    if (fi < def.Data.Count)
-                        def.Data[fi].TextureIndex = textures.Count;
+                    if (animData != null)
+                        animData.TextureIndex = textures.Count;
                     textures.Add(fullTex!);
                 }
                 }
                 finally
                 {
+                    if (textures.Count == frameTexStart)
+                    {
+                        if (fi < def.Data.Count)
+                        {
+                            def.Data[fi].SplitOffset = -1;
+                            def.Data[fi].UsesPackedAtlas = false;
+                            def.Data[fi].AtlasFrameRects = null;
+                        }
+                        var dummy = new Texture2D(gd, 1, 1);
+                        dummy.SetData(new[] { Color.Transparent });
+                        textures.Add(dummy);
+                    }
                     frameTexRanges[fi] = (frameTexStart, Math.Max(0, textures.Count - frameTexStart));
+                    if (estRawBytes >= 64L * 1024 * 1024)
+                    {
+                        System.Runtime.GCSettings.LargeObjectHeapCompactionMode =
+                            System.Runtime.GCLargeObjectHeapCompactionMode.CompactOnce;
+                        GC.Collect(GC.MaxGeneration, GCCollectionMode.Forced, blocking: true, compacting: true);
+                        GC.WaitForPendingFinalizers();
+                    }
                 }
             }
 
@@ -492,6 +464,65 @@ public static class FnmmSceneRenderer
             Console.WriteLine($"[SceneCache] Textures: {cacheHits}/{totalSprites} sprite(s) reused from cache");
 
         return texCache;
+    }
+
+    private static bool TryPackAtlas(
+        GraphicsDevice gd,
+        string spriteName,
+        byte[] frameBytes,
+        int frameCount,
+        int frameW,
+        int frameH,
+        int maxTexSize,
+        List<Texture2D> textures,
+        SpriteAnimData? animData,
+        Action<float, string>? onProgress,
+        int spriteIndex,
+        int totalSprites)
+    {
+        var packResults = AtlasPacker.PackHorizontalStrip(
+            frameBytes, frameCount, frameW, frameH, maxTexSize, gd,
+            onProgress != null
+                ? (curr, tot) => onProgress((spriteIndex / (float)Math.Max(1, totalSprites)) * 0.8f, $"Packing atlas: {spriteName} ({curr}/{tot} frames)")
+                : null);
+
+        if (packResults.Count == 0)
+            return false;
+
+        ApplyPackedAtlasResults(packResults, textures, animData, frameW);
+        return true;
+    }
+
+    private static void ApplyPackedAtlasResults(
+        List<AtlasPacker.PackResult> packResults,
+        List<Texture2D> textures,
+        SpriteAnimData? animData,
+        int origFrameW)
+    {
+        int splitStart = textures.Count;
+        var allRects = new List<AtlasPacker.FrameRect>();
+        for (int i = 0; i < packResults.Count; i++)
+        {
+            textures.Add(packResults[i].AtlasTexture);
+            var coords = packResults[i].FrameCoordinates;
+            for (int r = 0; r < coords.Count; r++)
+            {
+                var rect = coords[r];
+                rect.AtlasIndex = i;
+                allRects.Add(rect);
+            }
+        }
+
+        if (animData != null)
+        {
+            animData.SplitOffset = splitStart;
+            animData.UsesPackedAtlas = true;
+            animData.AtlasFrameRects = allRects;
+            animData.FrameWidth = allRects.Count > 0 ? allRects[0].Width : origFrameW;
+
+            float ds = packResults[0].DownscaleFactor;
+            animData.DownscaleCompensation = ds > 0.001f && ds < 0.999f ? 1.0f / ds : 1.0f;
+        }
     }
 
     /// <summary>
