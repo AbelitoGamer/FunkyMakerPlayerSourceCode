@@ -51,11 +51,6 @@ docs/
 *.gz
 
 # Image files (except icons needed for build)
-*.png
-!Icon.png
-!*Icon*.png
-!FunkyMakerPlayerIcon.png
-AnkushCat.png
 
 
 # Build scripts
