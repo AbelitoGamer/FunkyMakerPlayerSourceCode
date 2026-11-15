@@ -40,6 +40,8 @@ namespace FunkyMakerPlayer.Multiplayer
         public string LevelName { get; set; } = "";
         public string Difficulty { get; set; } = "Normal";
         public LevelSource Source { get; set; } = LevelSource.Local;
+        public string Username { get; set; } = "";
+        public string RoomCode { get; set; } = "";
         public long Timestamp { get; set; }
     }
 

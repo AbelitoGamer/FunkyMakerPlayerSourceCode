@@ -32,6 +32,9 @@ public class MultiplayerResultsScreen
     private readonly int _playerShits;
     private readonly int _playerMisses;
     private readonly bool _playerWon;
+    private readonly bool _isDraw;
+    private readonly Color _playerColor;
+    private readonly Color _opponentColor;
     
     // Animation state
     private float _timer = 0f;
@@ -57,7 +60,10 @@ public class MultiplayerResultsScreen
         int playerBads,
         int playerShits,
         int playerMisses,
-        bool playerWon)
+        bool playerWon,
+        Color? playerColor = null,
+        Color? opponentColor = null,
+        bool isDraw = false)
     {
         _pixel = pixel;
         _catTex = catTex;
@@ -73,6 +79,9 @@ public class MultiplayerResultsScreen
         _playerShits = playerShits;
         _playerMisses = playerMisses;
         _playerWon = playerWon;
+        _isDraw = isDraw;
+        _playerColor = playerColor ?? new Color(100, 255, 100);
+        _opponentColor = opponentColor ?? new Color(255, 100, 100);
     }
     
     public void Update(float dt, KeyboardState kb, KeyboardState prevKb)
@@ -126,8 +135,8 @@ public class MultiplayerResultsScreen
         sb.Draw(_pixel, new Rectangle(0, 0, sw, sh), Color.Black * (0.85f * _alpha));
         
         // Winner announcement
-        string winnerText = _playerWon ? "VICTORY!" : "DEFEAT";
-        Color winnerColor = _playerWon ? new Color(100, 255, 100) : new Color(255, 100, 100);
+        string winnerText = _isDraw ? "DRAW!" : (_playerWon ? "VICTORY!" : "DEFEAT");
+        Color winnerColor = _isDraw ? new Color(255, 215, 80) : (_playerWon ? new Color(100, 255, 100) : new Color(255, 100, 100));
         float winnerScale = 2.0f * _textScale;
         Vector2 winnerSize = font.MeasureString(winnerText) * winnerScale;
         Vector2 winnerPos = new Vector2(sw / 2 - winnerSize.X / 2, sh * 0.15f);
@@ -147,7 +156,7 @@ public class MultiplayerResultsScreen
         float scoreScale = 1.2f * _textScale;
         
         // Player score (left side)
-        string playerScoreText = $"{_playerName}\n{_playerScore:N0}";
+        string playerScoreText = UI.ErrorOverlay.Safe($"{_playerName}\n{_playerScore:N0}");
         Vector2 playerScoreSize = font.MeasureString(playerScoreText) * scoreScale;
         Vector2 playerScorePos = new Vector2(sw / 4 - playerScoreSize.X / 2, scoreY);
         
@@ -155,7 +164,7 @@ public class MultiplayerResultsScreen
             playerScorePos + new Vector2(2, 2), Color.Black * (0.7f * _alpha),
             0f, Vector2.Zero, scoreScale, SpriteEffects.None, 0f);
         sb.DrawString(font, playerScoreText,
-            playerScorePos, new Color(100, 255, 100) * _alpha,
+            playerScorePos, _playerColor * _alpha,
             0f, Vector2.Zero, scoreScale, SpriteEffects.None, 0f);
         
         // VS separator
@@ -171,7 +180,7 @@ public class MultiplayerResultsScreen
             0f, Vector2.Zero, scoreScale, SpriteEffects.None, 0f);
         
         // Opponent score (right side)
-        string oppScoreText = $"{_opponentName}\n{_opponentScore:N0}";
+        string oppScoreText = UI.ErrorOverlay.Safe($"{_opponentName}\n{_opponentScore:N0}");
         Vector2 oppScoreSize = font.MeasureString(oppScoreText) * scoreScale;
         Vector2 oppScorePos = new Vector2(sw * 3 / 4 - oppScoreSize.X / 2, scoreY);
         
@@ -179,7 +188,7 @@ public class MultiplayerResultsScreen
             oppScorePos + new Vector2(2, 2), Color.Black * (0.7f * _alpha),
             0f, Vector2.Zero, scoreScale, SpriteEffects.None, 0f);
         sb.DrawString(font, oppScoreText,
-            oppScorePos, new Color(255, 100, 100) * _alpha,
+            oppScorePos, _opponentColor * _alpha,
             0f, Vector2.Zero, scoreScale, SpriteEffects.None, 0f);
         
         // Accuracy section

@@ -19,13 +19,7 @@ internal static class Program
     [STAThread]
     static void Main(string[] args)
     {
-        // ── Auto-updater ──────────────────────────────────────────────────────
-        if (Updater.CheckAndUpdate())
-        {
-            Environment.Exit(0);
-            return;
-        }
-
+        // Startup proceeds straight to the game window; update checks run asynchronously in-menu.
         // Load a level only if explicitly passed as argument.
         if (args.Length >= 1 && File.Exists(args[0]))
             Game1.FnmmPath = args[0];

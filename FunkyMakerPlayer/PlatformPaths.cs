@@ -1,6 +1,7 @@
 using System;
 using System.IO;
 using System.Collections.Generic;
+using System.Runtime.InteropServices;
 
 namespace FunkyMakerPlayer;
 
@@ -23,6 +24,27 @@ public static class PlatformPaths
     /// - Windows/Linux: ./mods/ (next to exe)
     /// - Android: App-private storage (fast, always accessible)
     /// </summary>
+    /// <summary>
+    /// Gets the actual directory containing the executable (handles single-file builds cleanly
+    /// where AppContext.BaseDirectory points to a temp extraction folder).
+    /// </summary>
+    public static string GetAppBaseDirectory()
+    {
+        try
+        {
+            string? processPath = Environment.ProcessPath;
+            if (!string.IsNullOrEmpty(processPath))
+            {
+                string? dir = Path.GetDirectoryName(processPath);
+                if (!string.IsNullOrEmpty(dir) && Directory.Exists(dir))
+                    return dir;
+            }
+        }
+        catch { }
+
+        return AppDomain.CurrentDomain.BaseDirectory;
+    }
+
     public static string GetModsBasePath()
     {
 #if ANDROID
@@ -38,7 +60,7 @@ public static class PlatformPaths
         
         return modsPath;
 #else
-        return Path.Combine(AppDomain.CurrentDomain.BaseDirectory, MODS_FOLDER);
+        return Path.Combine(GetAppBaseDirectory(), MODS_FOLDER);
 #endif
     }
     
@@ -334,8 +356,8 @@ public static class PlatformPaths
         if (string.IsNullOrEmpty(fileName)) return false;
         
         return fileName.EndsWith(".fnmm", StringComparison.OrdinalIgnoreCase) ||
-               fileName.EndsWith(".FNMM", StringComparison.OrdinalIgnoreCase) ||
-               fileName.EndsWith(".rar", StringComparison.OrdinalIgnoreCase);
+               fileName.EndsWith(".zip",  StringComparison.OrdinalIgnoreCase) ||
+               fileName.EndsWith(".rar",  StringComparison.OrdinalIgnoreCase);
     }
 #endif
     
@@ -423,6 +445,9 @@ public static class PlatformPaths
         // On Android, Assets are bundled inside the APK
         return "Assets"; // Will be accessed via ContentManager/AssetManager
 #else
+        string exeAssets = Path.Combine(GetAppBaseDirectory(), "Assets");
+        if (Directory.Exists(exeAssets))
+            return exeAssets;
         return Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "Assets");
 #endif
     }
@@ -466,7 +491,7 @@ public static class PlatformPaths
             Console.WriteLine($"[PlatformPaths] [OK] Countdowns: {countdowns}");
             
             // Scan for content and count items
-            int totalLevels = ScanModContent(levels, "levels", new[] { ".fnmm", ".rar" });
+            int totalLevels = ScanModContent(levels, "levels", new[] { ".fnmm", ".zip", ".rar" });
             int totalNoteStyles = ScanModContent(noteStyles, "notestyles", null);
             int totalNoteSplashes = ScanModContent(noteSplashes, "notesplashes", null);
             int totalFonts = ScanModContent(fonts, "fonts", new[] { ".otf", ".ttf" });
@@ -675,6 +700,111 @@ public static class PlatformPaths
         }
         
         return crashPath;
+    }
+#endif
+
+#if !BLAZORGL && !ANDROID
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+    private struct OPENFILENAMEW
+    {
+        public int lStructSize;
+        public IntPtr hwndOwner;
+        public IntPtr hInstance;
+        public string lpstrFilter;
+        public IntPtr lpstrCustomFilter;
+        public int nMaxCustFilter;
+        public int nFilterIndex;
+        public IntPtr lpstrFile;
+        public int nMaxFile;
+        public IntPtr lpstrFileTitle;
+        public int nMaxFileTitle;
+        public string? lpstrInitialDir;
+        public string lpstrTitle;
+        public int Flags;
+        public short nFileOffset;
+        public short nFileExtension;
+        public string? lpstrDefExt;
+        public IntPtr lCustData;
+        public IntPtr lpfnHook;
+        public string? lpTemplateName;
+        public IntPtr pvReserved;
+        public int dwReserved;
+        public int flagsEx;
+    }
+
+    [DllImport("comdlg32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+    private static extern bool GetOpenFileNameW(ref OPENFILENAMEW ofn);
+
+    /// <summary>
+    /// Opens a native Windows file picker dialog with the specified null-delimited filter.
+    /// </summary>
+    public static List<string> PickDesktopFiles(string filter, string title, bool allowMultiSelect = false)
+    {
+        var results = new List<string>();
+        if (!OperatingSystem.IsWindows())
+            return results;
+
+        const int OFN_NOCHANGEDIR      = 0x00000008;
+        const int OFN_ALLOWMULTISELECT = 0x00000200;
+        const int OFN_PATHMUSTEXIST    = 0x00000800;
+        const int OFN_FILEMUSTEXIST    = 0x00001000;
+        const int OFN_EXPLORER         = 0x00080000;
+        const int MAX_BUFFER_CHARS     = 65536;
+
+        IntPtr fileBuffer = Marshal.AllocHGlobal(MAX_BUFFER_CHARS * 2);
+        try
+        {
+            Marshal.WriteInt16(fileBuffer, 0);
+            int flags = OFN_EXPLORER | OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR;
+            if (allowMultiSelect) flags |= OFN_ALLOWMULTISELECT;
+
+            var ofn = new OPENFILENAMEW
+            {
+                lStructSize = Marshal.SizeOf<OPENFILENAMEW>(),
+                hwndOwner   = IntPtr.Zero,
+                lpstrFilter = filter,
+                nFilterIndex = 1,
+                lpstrFile   = fileBuffer,
+                nMaxFile    = MAX_BUFFER_CHARS,
+                lpstrTitle  = title,
+                Flags       = flags
+            };
+
+            if (GetOpenFileNameW(ref ofn))
+            {
+                var parts = new List<string>();
+                int offsetBytes = 0;
+                while (offsetBytes < MAX_BUFFER_CHARS * 2)
+                {
+                    string? s = Marshal.PtrToStringUni(IntPtr.Add(fileBuffer, offsetBytes));
+                    if (string.IsNullOrEmpty(s))
+                        break;
+                    parts.Add(s);
+                    offsetBytes += (s.Length + 1) * 2;
+                }
+
+                if (parts.Count == 1)
+                {
+                    results.Add(parts[0]);
+                }
+                else if (parts.Count > 1)
+                {
+                    string directory = parts[0];
+                    for (int i = 1; i < parts.Count; i++)
+                        results.Add(Path.Combine(directory, parts[i]));
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[PlatformPaths] Error opening desktop file dialog: {ex.Message}");
+        }
+        finally
+        {
+            Marshal.FreeHGlobal(fileBuffer);
+        }
+
+        return results;
     }
 #endif
 }

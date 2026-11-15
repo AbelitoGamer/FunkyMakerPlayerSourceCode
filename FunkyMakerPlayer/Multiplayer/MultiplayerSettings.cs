@@ -30,25 +30,36 @@ namespace FunkyMakerPlayer.Multiplayer
         private const string SETTINGS_FILE = "multiplayer_settings.json";
         
         /// <summary>
-        /// Get the full path for the multiplayer settings file in AppData.
+        /// Get the directory used to persist multiplayer data (settings, leaderboards, match history).
+        /// </summary>
+        public static string GetStorageDirectory()
+        {
+#if ANDROID
+            string appFolder = Environment.GetFolderPath(Environment.SpecialFolder.Personal);
+#else
+            string appData = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
+            string appFolder = Path.Combine(appData, "FunkyMakerPlayer");
+#endif
+            if (!Directory.Exists(appFolder))
+                Directory.CreateDirectory(appFolder);
+
+            return appFolder;
+        }
+
+        /// <summary>
+        /// Get the full path for the multiplayer settings file.
         /// </summary>
         private static string GetSettingsPath()
         {
-            string appData = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
-            string appFolder = Path.Combine(appData, "FunkyMakerPlayer");
-            
-            // Ensure directory exists
-            if (!Directory.Exists(appFolder))
-                Directory.CreateDirectory(appFolder);
-            
-            return Path.Combine(appFolder, SETTINGS_FILE);
+            return Path.Combine(GetStorageDirectory(), SETTINGS_FILE);
         }
 
         // ══════════════════════════════════════════════════════════════════════
         // Category 2: User Configuration
         // ══════════════════════════════════════════════════════════════════════
+        public string PlayerId { get; set; } = "";
         public string Username { get; set; } = "Player";
-        public int AvatarIndex { get; set; } = 0; // 0-9 for different avatar icons
+        public int AvatarIndex { get; set; } = 0; // Kept for wire/JSON backwards compatibility (hidden in UI)
         public int PlayerColorHue { get; set; } = 180; // 0-360 for HSV hue
 
         // ══════════════════════════════════════════════════════════════════════
@@ -98,7 +109,8 @@ namespace FunkyMakerPlayer.Multiplayer
             BottomLeft,
             BottomRight
         }
-        public IndicatorPosition ConnectionIndicatorPosition { get; set; } = IndicatorPosition.TopRight;
+        public IndicatorPosition ConnectionIndicatorPosition { get; set; } = IndicatorPosition.TopLeft;
+        public int SettingsSchemaVersion { get; set; } = 0;
         
         public enum UIMode
         {
@@ -146,7 +158,12 @@ namespace FunkyMakerPlayer.Multiplayer
                 if (!File.Exists(path))
                 {
                     Console.WriteLine("[Multiplayer Settings] No settings file found, using defaults");
-                    var defaultSettings = new MultiplayerSettings();
+                    var defaultSettings = new MultiplayerSettings
+                    {
+                        PlayerId = Guid.NewGuid().ToString("N"),
+                        SettingsSchemaVersion = 1,
+                        ConnectionIndicatorPosition = IndicatorPosition.TopLeft
+                    };
                     defaultSettings.Save(); // Create default file
                     return defaultSettings;
                 }
@@ -157,8 +174,30 @@ namespace FunkyMakerPlayer.Multiplayer
                 if (settings == null)
                 {
                     Console.WriteLine("[Multiplayer Settings] Failed to parse settings, using defaults");
-                    return new MultiplayerSettings();
+                    return new MultiplayerSettings
+                    {
+                        PlayerId = Guid.NewGuid().ToString("N"),
+                        SettingsSchemaVersion = 1,
+                        ConnectionIndicatorPosition = IndicatorPosition.TopLeft
+                    };
                 }
+
+                bool dirty = false;
+                if (string.IsNullOrWhiteSpace(settings.PlayerId))
+                {
+                    settings.PlayerId = Guid.NewGuid().ToString("N");
+                    dirty = true;
+                }
+
+                if (settings.SettingsSchemaVersion < 1)
+                {
+                    settings.ConnectionIndicatorPosition = IndicatorPosition.TopLeft;
+                    settings.SettingsSchemaVersion = 1;
+                    dirty = true;
+                }
+
+                if (dirty)
+                    settings.Save();
 
                 Console.WriteLine($"[Multiplayer Settings] Loaded from {path}");
                 return settings;
@@ -166,7 +205,7 @@ namespace FunkyMakerPlayer.Multiplayer
             catch (Exception ex)
             {
                 Console.WriteLine($"[Multiplayer Settings] Failed to load: {ex.Message}, using defaults");
-                return new MultiplayerSettings();
+                return new MultiplayerSettings { PlayerId = Guid.NewGuid().ToString("N") };
             }
         }
 
@@ -175,8 +214,30 @@ namespace FunkyMakerPlayer.Multiplayer
         /// </summary>
         public Color GetPlayerColor()
         {
-            float hue = PlayerColorHue / 360f;
-            return ColorFromHSV(hue, 0.8f, 0.9f);
+            return ColorFromHue(PlayerColorHue);
+        }
+
+        /// <summary>
+        /// Convert a 0-360 hue degree value to an RGB Color.
+        /// </summary>
+        public static Color ColorFromHue(int hueDegrees)
+        {
+            int wrapped = ((hueDegrees % 360) + 360) % 360;
+            return ColorFromHSV(wrapped / 360f, 0.8f, 0.9f);
+        }
+
+        /// <summary>
+        /// Get state sync interval in seconds corresponding to the configured <see cref="UpdateRate"/>.
+        /// </summary>
+        public float GetStateSyncIntervalSeconds()
+        {
+            return UpdateRate switch
+            {
+                NetworkUpdateRate.Low => 0.20f,
+                NetworkUpdateRate.Medium => 0.10f,
+                NetworkUpdateRate.High => 0.05f,
+                _ => 0.10f
+            };
         }
 
         /// <summary>
@@ -241,8 +302,9 @@ namespace FunkyMakerPlayer.Multiplayer
             BandwidthLimitKbps = 0;
             
             HudOpacity = 100;
-            ConnectionIndicatorPosition = IndicatorPosition.TopRight;
+            ConnectionIndicatorPosition = IndicatorPosition.TopLeft;
             InterfaceMode = UIMode.Full;
+            SettingsSchemaVersion = 1;
             
             Save();
             Console.WriteLine("[Multiplayer Settings] Reset to defaults");

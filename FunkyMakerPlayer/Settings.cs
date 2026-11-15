@@ -49,6 +49,8 @@ public static class Settings
         public bool  BilinearFiltering { get; set; } = true;
         public string NoteStyleName    { get; set; } = "Default";
         public string NoteSplashStyleName { get; set; } = "Default";
+        public bool  ShowStrumlines       { get; set; } = true;
+        public bool  HidePlayerStrumline  { get; set; } = false;
         public bool  HideExtraStrumlines { get; set; } = false;
         public bool  HideOpponentStrumline { get; set; } = false;
         public bool  ShowCombo         { get; set; } = true;
@@ -57,7 +59,7 @@ public static class Settings
         public bool  ColorGradeEnabled        { get; set; } = false;
         public float ColorGradeHue            { get; set; } = -0.05f;
         public float ColorGradeSaturation     { get; set; } = 0.80f;
-        public float ColorGradeBrightness     { get; set; } = -0.20f;
+        public float ColorGradeBrightness     { get; set; } = 0.00f;
         public float ColorGradeContrast       { get; set; } = 1.00f;
         public float ColorGradeShadowAmount   { get; set; } = 0.35f;
         public float ColorGradeShadowTintR    { get; set; } = 0.65f;
@@ -72,16 +74,14 @@ public static class Settings
         public bool  GhostTapping      { get; set; } = true;
         
         /// <summary>
-        /// Input buffer in seconds. Allows hitting notes slightly early (before hit window).
-        /// Default: 0.010 (10ms) - makes the game feel more responsive.
-        /// Range: 0.000 to 0.050 (0-50ms)
+        /// Input buffer in seconds. Allows lowering pre-hit anticipation below default.
+        /// Default / Max: 0.010 (10ms). Range: 0.000 to 0.010 (0-10ms)
         /// </summary>
         public float InputBuffer       { get; set; } = 0.010f;
         
         /// <summary>
         /// Safe frames at song start in seconds. Misses don't count during this time.
-        /// Default: 0.083 (~5 frames at 60fps) - prevents accidental early misses.
-        /// Range: 0.000 to 0.500 (0-500ms)
+        /// Default / Max: 0.083 (~5 frames at 60fps). Range: 0.000 to 0.083 (0-83ms)
         /// </summary>
         public float SafeFramesTime    { get; set; } = 0.083f;
         
@@ -157,25 +157,27 @@ public static class Settings
 
             NoteRenderer.Autoplay          = d.Autoplay;
             NoteRenderer.Downscroll        = d.Downscroll;
-            NoteRenderer.ScrollMultiplier  = d.ScrollMultiplier;
+            NoteRenderer.ScrollMultiplier  = d.ScrollMultiplier <= 0f ? 1.0f : Math.Clamp(d.ScrollMultiplier, 0.25f, 5.0f);
             NoteRenderer.Midlescroll       = d.Midlescroll;
             NoteRenderer.GhostTapping      = d.GhostTapping;
-            NoteRenderer.InputBuffer       = d.InputBuffer;
-            NoteRenderer.SafeFramesTime    = d.SafeFramesTime;
+            NoteRenderer.InputBuffer       = Math.Clamp(d.InputBuffer, 0f, 0.010f);
+            NoteRenderer.SafeFramesTime    = Math.Clamp(d.SafeFramesTime, 0f, 0.083f);
             NoteRenderer.CameraFollowPlayer = d.CameraFollowPlayer;
             Game1.ShowTimer                = d.ShowTimer;
             Game1.TimeskipEnabled          = d.TimeskipEnabled;
-            Game1.TimeskipSeconds          = d.TimeskipSeconds;
+            Game1.TimeskipSeconds          = Math.Clamp(d.TimeskipSeconds, 5f, 60f);
             Game1.TimerColorPreset         = d.TimerColorPreset;
             Game1.TimerPreset              = d.TimerPreset;
             Game1.TimerTextMode            = d.TimerTextMode;
             Game1.TimerForceTop            = d.TimerForceTop;
             Game1.ShowDebugInfo            = d.ShowDebugInfo;
             Game1.ShowFpsCounter           = d.ShowFpsCounter;
-            Game1.MusicVolume              = d.MusicVolume;
+            Game1.MusicVolume              = Math.Clamp(d.MusicVolume, 0f, 1f);
             Game1.BilinearFiltering        = d.BilinearFiltering;
             Game1.NoteStyleName            = d.NoteStyleName;
             Game1.NoteSplashStyleName      = d.NoteSplashStyleName;
+            NoteRenderer.ShowStrumlines    = d.ShowStrumlines;
+            NoteRenderer.HidePlayerStrumline = d.HidePlayerStrumline;
             Game1.HideExtraStrumlines      = d.HideExtraStrumlines;
             Game1.HideOpponentStrumline    = d.HideOpponentStrumline;
             Game1.ShowCombo                = d.ShowCombo;
@@ -246,6 +248,8 @@ public static class Settings
                 BilinearFiltering = Game1.BilinearFiltering,
                 NoteStyleName     = Game1.NoteStyleName,
                 NoteSplashStyleName = Game1.NoteSplashStyleName,
+                ShowStrumlines      = NoteRenderer.ShowStrumlines,
+                HidePlayerStrumline = NoteRenderer.HidePlayerStrumline,
                 HideExtraStrumlines = Game1.HideExtraStrumlines,
                 HideOpponentStrumline = Game1.HideOpponentStrumline,
                 ShowCombo = Game1.ShowCombo,

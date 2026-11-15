@@ -13,6 +13,7 @@ namespace FunkyMakerPlayer.Multiplayer
         public static TimeSyncManager Instance => _instance ??= new TimeSyncManager();
 
         // Clock offset (server time - client time)
+        private readonly object _lock = new object();
         private long _clockOffset = 0;
         private List<long> _offsetSamples = new List<long>();
         private const int MAX_SAMPLES = 10;
@@ -20,12 +21,32 @@ namespace FunkyMakerPlayer.Multiplayer
 
         // Lag compensation
         private int _estimatedLag = 0; // One-way latency estimate
+        private bool _hasLagSample = false;
         private const float LAG_SMOOTHING = 0.8f; // For exponential smoothing
 
         /// <summary>
         /// True if we have enough samples to trust the clock offset.
         /// </summary>
-        public bool IsSynced => _isSynced;
+        public bool IsSynced
+        {
+            get { lock (_lock) return _isSynced; }
+        }
+
+        /// <summary>
+        /// Get the current median clock offset (server time - client time) in milliseconds.
+        /// </summary>
+        public long GetClockOffsetMs()
+        {
+            lock (_lock) return _clockOffset;
+        }
+
+        /// <summary>
+        /// Get the number of clock sync samples collected so far.
+        /// </summary>
+        public int GetSampleCount()
+        {
+            lock (_lock) return _offsetSamples.Count;
+        }
 
         /// <summary>
         /// Get the current synchronized server time in milliseconds.
@@ -33,7 +54,7 @@ namespace FunkyMakerPlayer.Multiplayer
         public long GetServerTime()
         {
             long clientTime = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
-            return clientTime + _clockOffset;
+            lock (_lock) return clientTime + _clockOffset;
         }
 
         /// <summary>
@@ -41,7 +62,7 @@ namespace FunkyMakerPlayer.Multiplayer
         /// </summary>
         public long ServerToClientTime(long serverTime)
         {
-            return serverTime - _clockOffset;
+            lock (_lock) return serverTime - _clockOffset;
         }
 
         /// <summary>
@@ -49,7 +70,7 @@ namespace FunkyMakerPlayer.Multiplayer
         /// </summary>
         public int GetEstimatedLag()
         {
-            return _estimatedLag;
+            lock (_lock) return _estimatedLag;
         }
 
         /// <summary>
@@ -62,33 +83,35 @@ namespace FunkyMakerPlayer.Multiplayer
         /// <param name="clientReceiveTime">When client received pong</param>
         public void UpdateClockOffset(long clientSendTime, long serverReceiveTime, long serverSendTime, long clientReceiveTime)
         {
-            // Calculate round-trip time (RTT)
-            long rtt = clientReceiveTime - clientSendTime;
-
-            // Estimate one-way latency (half of RTT)
+            long rtt = Math.Max(0, clientReceiveTime - clientSendTime);
             int oneWayLatency = (int)(rtt / 2);
 
-            // Smooth the lag estimate
-            if (_estimatedLag == 0)
-                _estimatedLag = oneWayLatency;
-            else
-                _estimatedLag = (int)(_estimatedLag * LAG_SMOOTHING + oneWayLatency * (1 - LAG_SMOOTHING));
-
-            // Calculate clock offset
-            // Server time when pong was sent + estimated time to reach client = expected client time
             long expectedClientTime = serverSendTime + oneWayLatency;
             long offset = expectedClientTime - clientReceiveTime;
 
-            // Add to samples
-            _offsetSamples.Add(offset);
-            if (_offsetSamples.Count > MAX_SAMPLES)
-                _offsetSamples.RemoveAt(0);
+            long medianOffset;
+            lock (_lock)
+            {
+                if (!_hasLagSample)
+                {
+                    _estimatedLag = oneWayLatency;
+                    _hasLagSample = true;
+                }
+                else
+                {
+                    _estimatedLag = (int)(_estimatedLag * LAG_SMOOTHING + oneWayLatency * (1 - LAG_SMOOTHING));
+                }
 
-            // Calculate median offset (more robust than average)
-            _clockOffset = CalculateMedian(_offsetSamples);
-            _isSynced = _offsetSamples.Count >= 3; // Need at least 3 samples
+                _offsetSamples.Add(offset);
+                if (_offsetSamples.Count > MAX_SAMPLES)
+                    _offsetSamples.RemoveAt(0);
 
-            Console.WriteLine($"[TimeSync] RTT: {rtt}ms, OneWay: {oneWayLatency}ms, Offset: {offset}ms, Median: {_clockOffset}ms");
+                _clockOffset = CalculateMedian(_offsetSamples);
+                _isSynced = _offsetSamples.Count >= 3; // Need at least 3 samples
+                medianOffset = _clockOffset;
+            }
+
+            Console.WriteLine($"[TimeSync] RTT: {rtt}ms, OneWay: {oneWayLatency}ms, Offset: {offset}ms, Median: {medianOffset}ms");
         }
 
         /// <summary>
@@ -97,28 +120,33 @@ namespace FunkyMakerPlayer.Multiplayer
         /// </summary>
         public void UpdateClockOffsetSimple(long pingTimestamp, int currentPing)
         {
-            // Estimate one-way latency from ping
-            int oneWayLatency = currentPing / 2;
+            int clampedPing = Math.Max(0, currentPing);
+            int oneWayLatency = clampedPing / 2;
+            long offset = oneWayLatency; // Rough estimate when server timestamp is unavailable
 
-            // Smooth the lag estimate
-            if (_estimatedLag == 0)
-                _estimatedLag = oneWayLatency;
-            else
-                _estimatedLag = (int)(_estimatedLag * LAG_SMOOTHING + oneWayLatency * (1 - LAG_SMOOTHING));
+            long medianOffset;
+            lock (_lock)
+            {
+                if (!_hasLagSample)
+                {
+                    _estimatedLag = oneWayLatency;
+                    _hasLagSample = true;
+                }
+                else
+                {
+                    _estimatedLag = (int)(_estimatedLag * LAG_SMOOTHING + oneWayLatency * (1 - LAG_SMOOTHING));
+                }
 
-            // Simple offset: assume symmetric latency
-            long now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
-            long rtt = now - pingTimestamp;
-            long offset = oneWayLatency; // Rough estimate
+                _offsetSamples.Add(offset);
+                if (_offsetSamples.Count > MAX_SAMPLES)
+                    _offsetSamples.RemoveAt(0);
 
-            _offsetSamples.Add(offset);
-            if (_offsetSamples.Count > MAX_SAMPLES)
-                _offsetSamples.RemoveAt(0);
+                _clockOffset = CalculateMedian(_offsetSamples);
+                _isSynced = _offsetSamples.Count >= 3;
+                medianOffset = _clockOffset;
+            }
 
-            _clockOffset = CalculateMedian(_offsetSamples);
-            _isSynced = _offsetSamples.Count >= 3;
-
-            Console.WriteLine($"[TimeSync] Simple sync - Ping: {currentPing}ms, Offset: {_clockOffset}ms");
+            Console.WriteLine($"[TimeSync] Simple sync - Ping: {clampedPing}ms, Offset: {medianOffset}ms");
         }
 
         /// <summary>
@@ -127,8 +155,7 @@ namespace FunkyMakerPlayer.Multiplayer
         /// </summary>
         public long CompensateLag(long serverTimestamp)
         {
-            // Subtract the estimated lag so events appear to happen "in the past"
-            return serverTimestamp - _estimatedLag;
+            lock (_lock) return serverTimestamp - _estimatedLag;
         }
 
         /// <summary>
@@ -147,10 +174,14 @@ namespace FunkyMakerPlayer.Multiplayer
         /// </summary>
         public void Reset()
         {
-            _clockOffset = 0;
-            _offsetSamples.Clear();
-            _estimatedLag = 0;
-            _isSynced = false;
+            lock (_lock)
+            {
+                _clockOffset = 0;
+                _offsetSamples.Clear();
+                _estimatedLag = 0;
+                _hasLagSample = false;
+                _isSynced = false;
+            }
             Console.WriteLine("[TimeSync] Reset");
         }
 
@@ -177,10 +208,13 @@ namespace FunkyMakerPlayer.Multiplayer
         /// </summary>
         public string GetDiagnostics()
         {
-            if (!_isSynced)
-                return "Not synchronized (collecting samples...)";
+            lock (_lock)
+            {
+                if (!_isSynced)
+                    return $"Not synchronized ({_offsetSamples.Count}/3 samples...)";
 
-            return $"Synced | Offset: {_clockOffset}ms | Lag: {_estimatedLag}ms | Samples: {_offsetSamples.Count}";
+                return $"Synced | Offset: {_clockOffset}ms | Lag: {_estimatedLag}ms | Samples: {_offsetSamples.Count}";
+            }
         }
     }
 }

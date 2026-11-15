@@ -37,36 +37,87 @@ public class HudSettings
     
     public static HudSettings Instance => _instance ??= Load();
 
+    // ── Master HUD Toggle ────────────────────────────────────────────────────
+    public bool MasterHudVisible { get; set; } = true;
+
     // ── Health Bar ───────────────────────────────────────────────────────────
     public HudPosition HealthBarPosition { get; set; } = new HudPosition(340, 650);
     public HudPosition HealthBarSize { get; set; } = new HudPosition(600, 20);
+    public bool HealthBarVisible { get; set; } = true;
 
     // ── Score, Misses, Accuracy (below health bar) ──────────────────────────
     public HudPosition ScorePosition { get; set; } = new HudPosition(440, 680);
+    public bool ScoreVisible { get; set; } = true;
     public HudPosition MissesPosition { get; set; } = new HudPosition(600, 680);
+    public bool MissesVisible { get; set; } = true;
     public HudPosition AccuracyPosition { get; set; } = new HudPosition(720, 680);
+    public bool AccuracyVisible { get; set; } = true;
 
     // ── Timer Bar ────────────────────────────────────────────────────────────
     public HudPosition TimerBarPosition { get; set; } = new HudPosition(340, 4);
     public HudPosition TimerBarSize { get; set; } = new HudPosition(600, 32);
+    [JsonIgnore]
+    public bool TimerBarVisible
+    {
+        get => Game1.ShowTimer;
+        set => Game1.ShowTimer = value;
+    }
 
     // ── Song Info (top-left) ─────────────────────────────────────────────────
     public HudPosition SongInfoPosition { get; set; } = new HudPosition(17, 7);
+    public bool SongInfoVisible { get; set; } = true;
+
+    // ── Status Info (bottom-left: Autoplay / Scroll / Speed) ─────────────────
+    public HudPosition StatusInfoPosition { get; set; } = new HudPosition(20, 692);
+    public bool StatusInfoVisible { get; set; } = true;
 
     // ── Combo Display (center screen, above player strumline) ───────────────
     // Position is top-left corner of text (no automatic centering)
     // Centered at X=640 for 1280px width (middle of player strumline)
     public HudPosition ComboPosition { get; set; } = new HudPosition(610, 360);
+    public bool ComboVisible { get; set; } = true;
 
     // ── Judgement Text (above combo) ─────────────────────────────────────────
     // Position is top-left corner of text (no automatic centering)
     // Centered at X=640 for 1280px width (middle of player strumline)
     public HudPosition JudgementPosition { get; set; } = new HudPosition(600, 300);
+    public bool JudgementVisible { get; set; } = true;
 
     // ── Health Icons (for "Fixed at Ends" IconMode) ──────────────────────────
     // These positions are only used when IconMode = 1 (Fixed at Ends)
     public HudPosition OpponentIconPosition { get; set; } = new HudPosition(290, 610);
+    public bool OpponentIconVisible { get; set; } = true;
     public HudPosition PlayerIconPosition { get; set; } = new HudPosition(890, 610);
+    public bool PlayerIconVisible { get; set; } = true;
+
+    // ── Strumlines (unified with NoteRenderer / Game1 static state) ──────────
+    [JsonIgnore]
+    public bool StrumlinesVisible
+    {
+        get => NoteRenderer.ShowStrumlines;
+        set => NoteRenderer.ShowStrumlines = value;
+    }
+
+    [JsonIgnore]
+    public bool PlayerStrumlineVisible
+    {
+        get => !NoteRenderer.HidePlayerStrumline;
+        set => NoteRenderer.HidePlayerStrumline = !value;
+    }
+
+    [JsonIgnore]
+    public bool OpponentStrumlineVisible
+    {
+        get => !Game1.HideOpponentStrumline;
+        set => Game1.HideOpponentStrumline = !value;
+    }
+
+    [JsonIgnore]
+    public bool ExtraStrumlinesVisible
+    {
+        get => !Game1.HideExtraStrumlines;
+        set => Game1.HideExtraStrumlines = !value;
+    }
 
     // ── File Path ────────────────────────────────────────────────────────────
     private static string SettingsPath
@@ -164,22 +215,39 @@ public class HudSettings
     }
 
     /// <summary>
-    /// Reset all positions to default values.
+    /// Reset all positions and visibility to default values.
     /// </summary>
     public void ResetToDefaults()
     {
+        MasterHudVisible = true;
         HealthBarPosition = new HudPosition(340, 650);
         HealthBarSize = new HudPosition(600, 20);
+        HealthBarVisible = true;
         ScorePosition = new HudPosition(440, 680);
+        ScoreVisible = true;
         MissesPosition = new HudPosition(600, 680);
+        MissesVisible = true;
         AccuracyPosition = new HudPosition(720, 680);
+        AccuracyVisible = true;
         TimerBarPosition = new HudPosition(340, 4);
         TimerBarSize = new HudPosition(600, 32);
+        TimerBarVisible = true;
         SongInfoPosition = new HudPosition(17, 7);
+        SongInfoVisible = true;
+        StatusInfoPosition = new HudPosition(20, 692);
+        StatusInfoVisible = true;
         ComboPosition = new HudPosition(610, 360);
+        ComboVisible = true;
         JudgementPosition = new HudPosition(600, 300);
+        JudgementVisible = true;
         OpponentIconPosition = new HudPosition(290, 610);
+        OpponentIconVisible = true;
         PlayerIconPosition = new HudPosition(890, 610);
+        PlayerIconVisible = true;
+        StrumlinesVisible = true;
+        PlayerStrumlineVisible = true;
+        OpponentStrumlineVisible = true;
+        ExtraStrumlinesVisible = true;
         
         Console.WriteLine("[HudSettings] Reset to default values");
     }
@@ -192,29 +260,43 @@ public class HudSettings
     {
         var adjusted = new HudSettings
         {
+            MasterHudVisible = MasterHudVisible,
+
             // Flip health bar to top
-            HealthBarPosition = new HudPosition(340, 50),
-            HealthBarSize = new HudPosition(600, 20),
+            HealthBarPosition = new HudPosition(HealthBarPosition.X, 50),
+            HealthBarSize = HealthBarSize,
+            HealthBarVisible = HealthBarVisible,
             
             // Flip stats to top (below health bar)
-            ScorePosition = new HudPosition(440, 80),
-            MissesPosition = new HudPosition(600, 80),
-            AccuracyPosition = new HudPosition(720, 80),
+            ScorePosition = new HudPosition(ScorePosition.X, 80),
+            ScoreVisible = ScoreVisible,
+            MissesPosition = new HudPosition(MissesPosition.X, 80),
+            MissesVisible = MissesVisible,
+            AccuracyPosition = new HudPosition(AccuracyPosition.X, 80),
+            AccuracyVisible = AccuracyVisible,
             
             // Flip timer to bottom
-            TimerBarPosition = new HudPosition(340, screenHeight - 40),
+            TimerBarPosition = new HudPosition(TimerBarPosition.X, screenHeight - 40),
             TimerBarSize = TimerBarSize,
+            TimerBarVisible = TimerBarVisible,
             
-            // Keep song info at top-left (unchanged)
+            // Keep song info and status info positions from base settings
             SongInfoPosition = SongInfoPosition,
+            SongInfoVisible = SongInfoVisible,
+            StatusInfoPosition = StatusInfoPosition,
+            StatusInfoVisible = StatusInfoVisible,
             
             // Keep combo and judgement positions from base settings (user can customize in HUD editor)
             ComboPosition = ComboPosition,
+            ComboVisible = ComboVisible,
             JudgementPosition = JudgementPosition,
+            JudgementVisible = JudgementVisible,
             
             // Flip icon positions to top (for Fixed at Ends mode)
-            OpponentIconPosition = new HudPosition(290, 10),
-            PlayerIconPosition = new HudPosition(890, 10)
+            OpponentIconPosition = new HudPosition(OpponentIconPosition.X, 10),
+            OpponentIconVisible = OpponentIconVisible,
+            PlayerIconPosition = new HudPosition(PlayerIconPosition.X, 10),
+            PlayerIconVisible = PlayerIconVisible
         };
         
         return adjusted;

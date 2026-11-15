@@ -43,6 +43,8 @@ public class HudEditor
         _pixel = pixel;
         _font = font;
         _graphicsDevice = graphicsDevice;
+        _prevKb = Keyboard.GetState();
+        _prevMouse = Mouse.GetState();
         
         // Load actual positions from HudSettings
         LoadFromHudSettings(screenWidth, screenHeight);
@@ -62,10 +64,9 @@ public class HudEditor
             Position = hudSettings.HealthBarPosition.ToPoint(),
             Size = hudSettings.HealthBarSize.ToPoint(),
             Color = Color.Red,
-            Type = HudElementType.HealthBar
+            Type = HudElementType.HealthBar,
+            Visible = hudSettings.HealthBarVisible
         });
-        
-        // Note: Icons are automatically calculated from health bar position, so we don't edit them
         
         // Score
         _elements.Add(new HudElement
@@ -74,7 +75,8 @@ public class HudEditor
             Position = hudSettings.ScorePosition.ToPoint(),
             Size = new Point(140, 30),
             Color = Color.White,
-            Type = HudElementType.Text
+            Type = HudElementType.Text,
+            Visible = hudSettings.ScoreVisible
         });
         
         // Misses
@@ -84,7 +86,8 @@ public class HudEditor
             Position = hudSettings.MissesPosition.ToPoint(),
             Size = new Point(100, 30),
             Color = Color.OrangeRed,
-            Type = HudElementType.Text
+            Type = HudElementType.Text,
+            Visible = hudSettings.MissesVisible
         });
         
         // Accuracy
@@ -94,7 +97,8 @@ public class HudEditor
             Position = hudSettings.AccuracyPosition.ToPoint(),
             Size = new Point(120, 30),
             Color = Color.LightBlue,
-            Type = HudElementType.Text
+            Type = HudElementType.Text,
+            Visible = hudSettings.AccuracyVisible
         });
         
         // Timer Bar
@@ -104,7 +108,8 @@ public class HudEditor
             Position = hudSettings.TimerBarPosition.ToPoint(),
             Size = hudSettings.TimerBarSize.ToPoint(),
             Color = Color.Cyan,
-            Type = HudElementType.HealthBar
+            Type = HudElementType.HealthBar,
+            Visible = hudSettings.TimerBarVisible
         });
         
         // Song Info
@@ -114,7 +119,19 @@ public class HudEditor
             Position = hudSettings.SongInfoPosition.ToPoint(),
             Size = new Point(200, 30),
             Color = Color.White,
-            Type = HudElementType.Text
+            Type = HudElementType.Text,
+            Visible = hudSettings.SongInfoVisible
+        });
+
+        // Status Info (bottom-left: Autoplay / Scroll / Speed)
+        _elements.Add(new HudElement
+        {
+            Name = "Status Info",
+            Position = hudSettings.StatusInfoPosition.ToPoint(),
+            Size = new Point(260, 28),
+            Color = Color.LightGreen,
+            Type = HudElementType.Text,
+            Visible = hudSettings.StatusInfoVisible
         });
         
         // Combo Counter
@@ -124,7 +141,8 @@ public class HudEditor
             Position = hudSettings.ComboPosition.ToPoint(),
             Size = new Point(100, 40),
             Color = Color.Yellow,
-            Type = HudElementType.Text
+            Type = HudElementType.Text,
+            Visible = hudSettings.ComboVisible
         });
         
         // Judgement Text
@@ -134,7 +152,8 @@ public class HudEditor
             Position = hudSettings.JudgementPosition.ToPoint(),
             Size = new Point(200, 50),
             Color = Color.Cyan,
-            Type = HudElementType.Text
+            Type = HudElementType.Text,
+            Visible = hudSettings.JudgementVisible
         });
         
         // Opponent Icon (for Fixed at Ends mode)
@@ -144,7 +163,8 @@ public class HudEditor
             Position = hudSettings.OpponentIconPosition.ToPoint(),
             Size = new Point(100, 100),
             Color = Color.Red,
-            Type = HudElementType.Icon
+            Type = HudElementType.Icon,
+            Visible = hudSettings.OpponentIconVisible
         });
         
         // Player Icon (for Fixed at Ends mode)
@@ -154,7 +174,30 @@ public class HudEditor
             Position = hudSettings.PlayerIconPosition.ToPoint(),
             Size = new Point(100, 100),
             Color = Color.Cyan,
-            Type = HudElementType.Icon
+            Type = HudElementType.Icon,
+            Visible = hudSettings.PlayerIconVisible
+        });
+
+        // Opponent Strumline (left side)
+        _elements.Add(new HudElement
+        {
+            Name = "Opponent Strumline",
+            Position = new Point(100, 60),
+            Size = new Point(440, 90),
+            Color = new Color(194, 75, 153),
+            Type = HudElementType.Strumline,
+            Visible = hudSettings.StrumlinesVisible && hudSettings.OpponentStrumlineVisible
+        });
+
+        // Player Strumline (right side)
+        _elements.Add(new HudElement
+        {
+            Name = "Player Strumline",
+            Position = new Point(740, 60),
+            Size = new Point(440, 90),
+            Color = new Color(0, 255, 255),
+            Type = HudElementType.Strumline,
+            Visible = hudSettings.StrumlinesVisible && hudSettings.PlayerStrumlineVisible
         });
     }
     
@@ -213,9 +256,10 @@ public class HudEditor
         BackPressed = false;
         SavePressed = false;
         
-        // ESC to go back
+        // ESC to go back (auto-save layout so changes take effect immediately)
         if (kb.IsKeyDown(Keys.Escape) && !_prevKb.IsKeyDown(Keys.Escape))
         {
+            SaveHudLayout();
             BackPressed = true;
         }
         
@@ -234,7 +278,7 @@ public class HudEditor
             HudSettings.Instance.ResetToDefaults();
             HudSettings.Instance.Save();
             LoadFromHudSettings(screenWidth, screenHeight);
-            _feedbackMessage = "Reset to default positions!";
+            _feedbackMessage = "Reset to default positions & visibility!";
             _feedbackTimer = FEEDBACK_DURATION;
         }
         
@@ -249,8 +293,53 @@ public class HudEditor
         {
             _showInstructions = !_showInstructions;
         }
+
+        // A to toggle visibility of ALL elements at once (master toggle)
+        if (kb.IsKeyDown(Keys.A) && !_prevKb.IsKeyDown(Keys.A))
+        {
+            bool anyVisible = _elements.Exists(e => e.Visible);
+            bool nextState = !anyVisible;
+            foreach (var elem in _elements)
+                elem.Visible = nextState;
+            HudSettings.Instance.MasterHudVisible = nextState;
+            SyncToHudSettings();
+            _feedbackMessage = $"All HUD Elements: {(nextState ? "VISIBLE" : "HIDDEN")}";
+            _feedbackTimer = FEEDBACK_DURATION;
+        }
+
+        // V, Space, or Delete to toggle visibility of selected element
+        bool toggleVisKey = (kb.IsKeyDown(Keys.V) && !_prevKb.IsKeyDown(Keys.V)) ||
+                            (kb.IsKeyDown(Keys.Space) && !_prevKb.IsKeyDown(Keys.Space)) ||
+                            (kb.IsKeyDown(Keys.Delete) && !_prevKb.IsKeyDown(Keys.Delete));
+        if (toggleVisKey && _selectedElement >= 0 && _selectedElement < _elements.Count)
+        {
+            var elem = _elements[_selectedElement];
+            elem.Visible = !elem.Visible;
+            SyncToHudSettings();
+            _feedbackMessage = $"{elem.Name}: {(elem.Visible ? "VISIBLE" : "HIDDEN")}";
+            _feedbackTimer = FEEDBACK_DURATION;
+        }
         
-        // Mouse interaction
+        // Right-click on an element to select and toggle its visibility
+        if (mouse.RightButton == ButtonState.Pressed && _prevMouse.RightButton == ButtonState.Released)
+        {
+            for (int i = _elements.Count - 1; i >= 0; i--)
+            {
+                var elem = _elements[i];
+                var rect = new Rectangle(elem.Position, elem.Size);
+                if (rect.Contains(mousePos))
+                {
+                    _selectedElement = i;
+                    elem.Visible = !elem.Visible;
+                    SyncToHudSettings();
+                    _feedbackMessage = $"{elem.Name}: {(elem.Visible ? "VISIBLE" : "HIDDEN")}";
+                    _feedbackTimer = FEEDBACK_DURATION;
+                    break;
+                }
+            }
+        }
+        
+        // Mouse interaction (left-click drag)
         if (mouse.LeftButton == ButtonState.Pressed && _prevMouse.LeftButton == ButtonState.Released)
         {
             // Start dragging
@@ -273,6 +362,7 @@ public class HudEditor
         {
             // Stop dragging
             _isDragging = false;
+            SyncToHudSettings();
         }
         
         // Drag selected element
@@ -302,15 +392,30 @@ public class HudEditor
         {
             var elem = _elements[_selectedElement];
             int moveSpeed = kb.IsKeyDown(Keys.LeftShift) ? 1 : 5;
+            bool moved = false;
             
             if (kb.IsKeyDown(Keys.Up))
+            {
                 elem.Position = new Point(elem.Position.X, Math.Max(0, elem.Position.Y - moveSpeed));
+                moved = true;
+            }
             if (kb.IsKeyDown(Keys.Down))
+            {
                 elem.Position = new Point(elem.Position.X, Math.Min(screenHeight - elem.Size.Y, elem.Position.Y + moveSpeed));
+                moved = true;
+            }
             if (kb.IsKeyDown(Keys.Left))
+            {
                 elem.Position = new Point(Math.Max(0, elem.Position.X - moveSpeed), elem.Position.Y);
+                moved = true;
+            }
             if (kb.IsKeyDown(Keys.Right))
+            {
                 elem.Position = new Point(Math.Min(screenWidth - elem.Size.X, elem.Position.X + moveSpeed), elem.Position.Y);
+                moved = true;
+            }
+            if (moved)
+                SyncToHudSettings();
         }
         
         // Tab to cycle selection
@@ -323,14 +428,19 @@ public class HudEditor
         _prevMouse = mouse;
     }
 
-    public void Draw(SpriteBatch sb, int screenWidth, int screenHeight)
+    public void Draw(SpriteBatch sb, int screenWidth, int screenHeight, bool hasLiveBackground = false)
     {
-        // Dark background (like gameplay)
-        sb.Draw(_pixel, new Rectangle(0, 0, screenWidth, screenHeight), new Color(20, 20, 30));
-        
-        // TODO: In the future, we could draw the actual gameplay scene here as background
-        // For now, draw a simple representation of the strumline area
-        DrawGameplayPreview(sb, screenWidth, screenHeight);
+        if (hasLiveBackground)
+        {
+            // Subtle dark overlay over the live paused level so HUD boxes stand out clearly
+            sb.Draw(_pixel, new Rectangle(0, 0, screenWidth, screenHeight), Color.Black * 0.45f);
+        }
+        else
+        {
+            // Dark background (like gameplay)
+            sb.Draw(_pixel, new Rectangle(0, 0, screenWidth, screenHeight), new Color(20, 20, 30));
+            DrawGameplayPreview(sb, screenWidth, screenHeight);
+        }
         
         // Grid
         if (_showGrid)
@@ -420,55 +530,82 @@ public class HudEditor
         var rect = new Rectangle(elem.Position, elem.Size);
         
         // Element background
-        Color bgColor = elem.Color * 0.3f;
-        if (isSelected)
-            bgColor = Color.Yellow * 0.5f;
+        Color bgColor;
+        if (!elem.Visible)
+        {
+            bgColor = isSelected ? new Color(120, 60, 60) * 0.45f : Color.Black * 0.35f;
+        }
+        else
+        {
+            bgColor = isSelected ? Color.Yellow * 0.5f : elem.Color * 0.3f;
+        }
         
         sb.Draw(_pixel, rect, bgColor);
         
         // Border
-        Color borderColor = isSelected ? Color.Yellow : Color.White * 0.7f;
+        Color borderColor;
+        if (!elem.Visible)
+            borderColor = isSelected ? new Color(255, 120, 100) : Color.Gray * 0.45f;
+        else
+            borderColor = isSelected ? Color.Yellow : Color.White * 0.7f;
+
         int borderThickness = isSelected ? 3 : 2;
         DrawRectangleBorder(sb, rect.X, rect.Y, rect.Width, rect.Height, borderColor, borderThickness);
         
         // Label
         float labelScale = 0.8f;
-        var labelSize = _font.MeasureString(elem.Name) * labelScale;
+        string displayText = elem.Visible ? elem.Name : $"{elem.Name} [HIDDEN]";
+        var labelSize = _font.MeasureString(displayText) * labelScale;
         Vector2 labelPos = new Vector2(
             rect.X + rect.Width / 2 - labelSize.X / 2,
             rect.Y + rect.Height / 2 - labelSize.Y / 2
         );
         
+        Color textColor = elem.Visible ? Color.White : new Color(180, 140, 140);
         // Shadow
-        sb.DrawString(_font, elem.Name, labelPos + new Vector2(1, 1), Color.Black, 0f, Vector2.Zero, labelScale, Microsoft.Xna.Framework.Graphics.SpriteEffects.None, 0f);
+        sb.DrawString(_font, displayText, labelPos + new Vector2(1, 1), Color.Black, 0f, Vector2.Zero, labelScale, Microsoft.Xna.Framework.Graphics.SpriteEffects.None, 0f);
         // Text
-        sb.DrawString(_font, elem.Name, labelPos, Color.White, 0f, Vector2.Zero, labelScale, Microsoft.Xna.Framework.Graphics.SpriteEffects.None, 0f);
+        sb.DrawString(_font, displayText, labelPos, textColor, 0f, Vector2.Zero, labelScale, Microsoft.Xna.Framework.Graphics.SpriteEffects.None, 0f);
         
-        // Position indicator
+        // Position & visibility indicator when selected
         if (isSelected)
         {
-            string posText = $"({elem.Position.X}, {elem.Position.Y})";
+            string visTag = elem.Visible ? "VISIBLE" : "HIDDEN";
+            string posText = $"({elem.Position.X}, {elem.Position.Y}) [{visTag}]";
             var posSize = _font.MeasureString(posText);
-            Vector2 posTextPos = new Vector2(rect.X, rect.Y - posSize.Y - 5);
+            Vector2 posTextPos = new Vector2(rect.X, Math.Max(4, rect.Y - posSize.Y - 5));
             sb.DrawString(_font, posText, posTextPos + new Vector2(1, 1), Color.Black);
-            sb.DrawString(_font, posText, posTextPos, Color.Yellow);
+            sb.DrawString(_font, posText, posTextPos, elem.Visible ? Color.Yellow : new Color(255, 120, 100));
             
-            // Note: Size is fixed (not resizable)
-            string sizeNote = $"{elem.Size.X}x{elem.Size.Y} (fixed)";
-            var sizeSize = _font.MeasureString(sizeNote) * 0.7f;
-            Vector2 sizeTextPos = new Vector2(rect.X, rect.Y + rect.Height + 5);
+            string sizeNote = "V / Right-Click: Hide/Show";
+            Vector2 sizeTextPos = new Vector2(rect.X, Math.Min(700, rect.Y + rect.Height + 5));
             sb.DrawString(_font, sizeNote, sizeTextPos + new Vector2(1, 1), Color.Black, 0f, Vector2.Zero, 0.7f, Microsoft.Xna.Framework.Graphics.SpriteEffects.None, 0f);
-            sb.DrawString(_font, sizeNote, sizeTextPos, Color.Gray, 0f, Vector2.Zero, 0.7f, Microsoft.Xna.Framework.Graphics.SpriteEffects.None, 0f);
+            sb.DrawString(_font, sizeNote, sizeTextPos, Color.Cyan, 0f, Vector2.Zero, 0.7f, Microsoft.Xna.Framework.Graphics.SpriteEffects.None, 0f);
         }
     }
     
     private void DrawInstructionsPanel(SpriteBatch sb, int screenWidth, int screenHeight)
     {
+        // Instructions
+        string[] instructions = new[]
+        {
+            "Left-Click & Drag: Move elements",
+            "Right-Click / V / Space: Hide or Show element",
+            "A: Hide or Show ALL elements at once",
+            "Arrow Keys (+Shift): Fine-tune position",
+            "Tab: Cycle through elements",
+            "G: Toggle grid   |   H: Toggle instructions",
+            "R: Reset positions & visibility",
+            "S: Save layout",
+            "ESC: Save & Exit editor"
+        };
+
+        int lineStep = Math.Max(20, (int)Math.Ceiling(_font.MeasureString("Ag").Y) + 3);
         int panelW = 500;
-        int panelH = 195; // Increased for extra line
+        int panelH = 44 + instructions.Length * lineStep + 10;
         int panelX = screenWidth - panelW - 20;
         int panelY = 20;
-        
+
         // Panel background
         sb.Draw(_pixel, new Rectangle(panelX, panelY, panelW, panelH), Color.Black * 0.85f);
         DrawRectangleBorder(sb, panelX, panelY, panelW, panelH, Color.Cyan, 2);
@@ -480,25 +617,12 @@ public class HudEditor
             new Vector2(panelX + panelW / 2 - titleSize.X / 2, panelY + 10), 
             Color.Cyan);
         
-        // Instructions
-        string[] instructions = new[]
-        {
-            "Mouse: Click & drag to move elements",
-            "Arrow Keys: Fine-tune position",
-            "Shift + Arrows: Pixel-perfect adjustment",
-            "Tab: Cycle through elements",
-            "G: Toggle grid",
-            "H: Toggle instructions panel",
-            "R: Reset to defaults",
-            "S: Save layout",
-            "ESC: Exit editor"
-        };
-        
         int lineY = panelY + 40;
         foreach (var line in instructions)
         {
-            sb.DrawString(_font, line, new Vector2(panelX + 10, lineY), Color.White);
-            lineY += 15;
+            Color c = (line.StartsWith("Right-Click") || line.StartsWith("A:")) ? Color.Yellow : Color.White;
+            sb.DrawString(_font, line, new Vector2(panelX + 10, lineY), c);
+            lineY += lineStep;
         }
     }
     
@@ -540,12 +664,12 @@ public class HudEditor
         // Right
         sb.Draw(_pixel, new Rectangle(x + width - thickness, y, thickness, height), color);
     }
-    
-    private void SaveHudLayout()
+
+    private void SyncToHudSettings()
     {
         var hudSettings = HudSettings.Instance;
+        hudSettings.MasterHudVisible = _elements.Exists(e => e.Visible);
         
-        // Update HudSettings with current element positions
         foreach (var elem in _elements)
         {
             switch (elem.Name)
@@ -553,57 +677,79 @@ public class HudEditor
                 case "Health Bar":
                     hudSettings.HealthBarPosition = HudPosition.FromPoint(elem.Position);
                     hudSettings.HealthBarSize = HudPosition.FromPoint(elem.Size);
+                    hudSettings.HealthBarVisible = elem.Visible;
                     break;
                     
                 case "Score":
                     hudSettings.ScorePosition = HudPosition.FromPoint(elem.Position);
+                    hudSettings.ScoreVisible = elem.Visible;
                     break;
                     
                 case "Misses":
                     hudSettings.MissesPosition = HudPosition.FromPoint(elem.Position);
+                    hudSettings.MissesVisible = elem.Visible;
                     break;
                     
                 case "Accuracy":
                     hudSettings.AccuracyPosition = HudPosition.FromPoint(elem.Position);
+                    hudSettings.AccuracyVisible = elem.Visible;
                     break;
                     
                 case "Timer Bar":
                     hudSettings.TimerBarPosition = HudPosition.FromPoint(elem.Position);
                     hudSettings.TimerBarSize = HudPosition.FromPoint(elem.Size);
+                    hudSettings.TimerBarVisible = elem.Visible;
                     break;
                     
                 case "Song Info":
                     hudSettings.SongInfoPosition = HudPosition.FromPoint(elem.Position);
+                    hudSettings.SongInfoVisible = elem.Visible;
+                    break;
+
+                case "Status Info":
+                    hudSettings.StatusInfoPosition = HudPosition.FromPoint(elem.Position);
+                    hudSettings.StatusInfoVisible = elem.Visible;
                     break;
                     
                 case "Combo":
                     hudSettings.ComboPosition = HudPosition.FromPoint(elem.Position);
+                    hudSettings.ComboVisible = elem.Visible;
                     break;
                     
                 case "Judgement":
                     hudSettings.JudgementPosition = HudPosition.FromPoint(elem.Position);
+                    hudSettings.JudgementVisible = elem.Visible;
                     break;
                     
                 case "Opponent Icon":
                     hudSettings.OpponentIconPosition = HudPosition.FromPoint(elem.Position);
+                    hudSettings.OpponentIconVisible = elem.Visible;
                     break;
                     
                 case "Player Icon":
                     hudSettings.PlayerIconPosition = HudPosition.FromPoint(elem.Position);
+                    hudSettings.PlayerIconVisible = elem.Visible;
+                    break;
+
+                case "Opponent Strumline":
+                    hudSettings.OpponentStrumlineVisible = elem.Visible;
+                    break;
+
+                case "Player Strumline":
+                    hudSettings.PlayerStrumlineVisible = elem.Visible;
                     break;
             }
         }
-        
-        // Save to file
-        hudSettings.Save();
-        
+
+        hudSettings.StrumlinesVisible = hudSettings.OpponentStrumlineVisible || hudSettings.PlayerStrumlineVisible;
+    }
+    
+    private void SaveHudLayout()
+    {
+        SyncToHudSettings();
+        HudSettings.Instance.Save();
+        Settings.Save(Game1.Instance?._graphics.SynchronizeWithVerticalRetrace ?? true);
         Console.WriteLine("[HudEditor] Layout saved to hud_settings.json!");
-        
-        // Print positions for debugging
-        foreach (var elem in _elements)
-        {
-            Console.WriteLine($"  {elem.Name}: ({elem.Position.X}, {elem.Position.Y})");
-        }
     }
 }
 
@@ -613,7 +759,8 @@ public enum HudElementType
 {
     HealthBar,
     Icon,
-    Text
+    Text,
+    Strumline
 }
 
 public class HudElement
@@ -623,4 +770,5 @@ public class HudElement
     public Point Size { get; set; }
     public Color Color { get; set; }
     public HudElementType Type { get; set; }
+    public bool Visible { get; set; } = true;
 }

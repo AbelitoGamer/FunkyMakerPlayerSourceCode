@@ -34,9 +34,15 @@ public static class FnmmLoader
     {
         progressCallback?.Invoke(0.05f, "Reading archive...");
         
-        // Psych Engine mod folder - skip for now, handle separately in Game1
+        // Psych Engine mod folder or unpacked Funky Maker level folder
         if (Directory.Exists(fnmmPath))
         {
+            string? unpackedLevelDir = FindLevelDir(fnmmPath);
+            if (unpackedLevelDir != null)
+            {
+                return LoadFromDirectory(unpackedLevelDir, Path.GetFileName(fnmmPath.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)), progressCallback);
+            }
+
             // Check if it's a Psych Engine mod
             string dataDir = Path.Combine(fnmmPath, "data");
             if (Directory.Exists(dataDir))
@@ -52,26 +58,43 @@ public static class FnmmLoader
 
         progressCallback?.Invoke(0.1f, "Reading archive...");
 
-        bool isZip = header[0] == 0x50 && header[1] == 0x4B; // PK
-        bool isRar = header[0] == 0x52 && header[1] == 0x61; // Ra
+        bool isZip = header[0] == 0x50 && header[1] == 0x4B; // PK (.fnmm or .zip)
+        bool isRar = header[0] == 0x52 && header[1] == 0x61; // Ra (.rar)
 
         if (isZip)
         {
-            // Check if old format and convert if needed
-            byte[]? converted = FnmmConverter.ConvertIfNeeded(fnmmPath);
-            if (converted != null)
+            try
             {
-                // Load from converted in-memory bytes
-                using var ms = new MemoryStream(converted);
-                using var zip = new ZipArchive(ms, ZipArchiveMode.Read);
-                return LoadFromZipArchive(zip, Path.GetFileNameWithoutExtension(fnmmPath), progressCallback);
+                // Check if old format and convert if needed
+                byte[]? converted = FnmmConverter.ConvertIfNeeded(fnmmPath);
+                if (converted != null)
+                {
+                    // Load from converted in-memory bytes
+                    using var ms = new MemoryStream(converted);
+                    using var zip = new ZipArchive(ms, ZipArchiveMode.Read);
+                    return LoadFromZipArchive(zip, Path.GetFileNameWithoutExtension(fnmmPath), progressCallback);
+                }
+                return LoadFromZip(fnmmPath, progressCallback);
             }
-            return LoadFromZip(fnmmPath, progressCallback);
+            catch
+            {
+                // Fallback to SharpCompress extraction (same logic as .rar) — handles .zip files
+                // that contain an inner .fnmm/.rar archive or non-standard directory structures
+                return LoadFromRar(fnmmPath, progressCallback);
+            }
         }
         if (isRar)
             return LoadFromRar(fnmmPath, progressCallback);
 
-        throw new Exception($"Unknown .FNMM container format (header: {header[0]:X2} {header[1]:X2})");
+        // Final fallback: attempt SharpCompress extraction for any other supported archive container
+        try
+        {
+            return LoadFromRar(fnmmPath, progressCallback);
+        }
+        catch
+        {
+            throw new Exception($"Unknown level container format (header: {header[0]:X2} {header[1]:X2})");
+        }
     }
 
     // ── ZIP loader ──────────────────────────────────────────────────────────
@@ -206,11 +229,11 @@ public static class FnmmLoader
         return level;
     }
 
-    // ── RAR loader ──────────────────────────────────────────────────────────
+    // ── Archive extraction loader (RAR / ZIP / nested containers) ──────────
 
     private static FnmmLevel LoadFromRar(string path, Action<float, string>? progressCallback = null)
     {
-        progressCallback?.Invoke(0.15f, "Extracting RAR archive...");
+        progressCallback?.Invoke(0.15f, "Extracting archive...");
         string tmp = Path.Combine(Path.GetTempPath(), "fnmm_" + Path.GetRandomFileName());
         Directory.CreateDirectory(tmp);
 
@@ -218,9 +241,28 @@ public static class FnmmLoader
         {
             ExtractRar(path, tmp);
             progressCallback?.Invoke(0.3f, "Parsing level data...");
-            string levelDir = FindLevelDir(tmp)
-                ?? throw new Exception("No data.json found after RAR extraction.");
-            return LoadFromDirectory(levelDir, Path.GetFileNameWithoutExtension(path), progressCallback);
+            string? levelDir = FindLevelDir(tmp);
+            if (levelDir != null)
+            {
+                FnmmConverter.ConvertDirectoryIfNeeded(levelDir);
+                return LoadFromDirectory(levelDir, Path.GetFileNameWithoutExtension(path), progressCallback);
+            }
+
+            // Check if the archive contains an inner .fnmm / .zip / .rar level package
+            var innerArchive = Directory.EnumerateFiles(tmp, "*.*", SearchOption.AllDirectories)
+                .FirstOrDefault(f =>
+                    f.EndsWith(".fnmm", StringComparison.OrdinalIgnoreCase) ||
+                    f.EndsWith(".zip",  StringComparison.OrdinalIgnoreCase) ||
+                    f.EndsWith(".rar",  StringComparison.OrdinalIgnoreCase));
+            if (innerArchive != null)
+            {
+                var loaded = Load(innerArchive, progressCallback);
+                if (string.IsNullOrEmpty(loaded.Meta.Name))
+                    loaded.LevelName = Path.GetFileNameWithoutExtension(path);
+                return loaded;
+            }
+
+            throw new Exception("No data.json or .FNMM level found in archive.");
         }
         finally
         {

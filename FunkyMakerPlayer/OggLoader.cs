@@ -86,6 +86,16 @@ public static class OggLoader
         return new SoundEffect(slice, validatedSampleRate,
             channels == 2 ? AudioChannels.Stereo : AudioChannels.Mono);
     }
+
+    /// <summary>
+    /// Creates a SoundEffect directly from an existing PCM buffer without copying or re-decoding OGG.
+    /// </summary>
+    public static SoundEffect CreateFromPcm(byte[] pcmData, int sampleRate, int channels)
+    {
+        int validatedSampleRate = ValidateSampleRate(sampleRate);
+        return new SoundEffect(pcmData, validatedSampleRate,
+            channels == 2 ? AudioChannels.Stereo : AudioChannels.Mono);
+    }
     
     private static int ValidateSampleRate(int sampleRate)
     {

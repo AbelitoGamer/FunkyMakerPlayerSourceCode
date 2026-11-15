@@ -9,7 +9,7 @@ namespace FunkyMakerPlayer.UI;
 /// <summary>
 /// NoteSplash selector menu with animated preview.
 /// </summary>
-public class NoteSplashMenu
+public class NoteSplashMenu : IScreenOverlay
 {
     private readonly Texture2D _pixel;
     private readonly SpriteFont _font;

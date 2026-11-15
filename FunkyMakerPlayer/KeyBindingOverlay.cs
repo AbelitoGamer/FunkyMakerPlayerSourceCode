@@ -1,3 +1,4 @@
+using System;
 using Microsoft.Xna.Framework;
 using Microsoft.Xna.Framework.Graphics;
 using Microsoft.Xna.Framework.Input;
@@ -128,8 +129,8 @@ public class KeyBindingOverlay
             Color.White, 0f, Vector2.Zero, 0.9f, SpriteEffects.None, 0f);
 
         // 4 receptor slots layout
-        float slotW   = 110f;
-        float slotH   = 130f;
+        float slotW   = 114f;
+        float slotH   = 152f;
         float totalW  = slotW * 4f + 12f * 3f;
         float startX  = sw / 2f - totalW / 2f;
         float slotY   = sh / 2f - slotH / 2f - 10f;
@@ -159,29 +160,33 @@ public class KeyBindingOverlay
                 DrawRect((int)sx, (int)slotY, (int)slotW, 2, new Color(0x44, 0xFF, 0x44) * 0.5f);
             }
 
-            // Receptor sprite or colored rect
+            // Receptor sprite bounded strictly inside upper slot area so it never overlaps text
             float cx = sx + slotW / 2f;
-            float ry = slotY + 18f;
+            float iconBoxW = slotW - 22f;
+            float iconBoxH = 74f;
+            float ry = slotY + 12f + iconBoxH / 2f;
             if (noteStyle?.ReceptorFrames[lane, sel ? 2 : 0] is List<AtlasFrame> frames && frames.Count > 0)
             {
-                var f  = frames[0];
-                float s = (noteStyle.ReceptorScale * 0.55f);
-                float drawX = cx - f.FrameW * s / 2f + (-f.OffsetX) * s;
-                float drawY = ry - f.FrameH * s / 2f + (-f.OffsetY) * s;
-                spriteBatch.Draw(f.Texture, new Vector2(drawX, drawY), f.Source,
-                    sel ? Color.White : Color.White * 0.5f, 0f, Vector2.Zero, s, SpriteEffects.None, 0f);
+                var f = frames[0];
+                float srcW = Math.Max(1f, f.Source.Width);
+                float srcH = Math.Max(1f, f.Source.Height);
+                float maxFitScale = Math.Min(iconBoxW / srcW, iconBoxH / srcH);
+                float s = Math.Min(noteStyle.ReceptorScale * 0.55f, maxFitScale);
+                spriteBatch.Draw(f.Texture, new Vector2(cx, ry), f.Source,
+                    sel ? Color.White : Color.White * 0.5f, 0f,
+                    new Vector2(srcW / 2f, srcH / 2f), s, SpriteEffects.None, 0f);
             }
             else
             {
-                DrawRect((int)(cx - 22), (int)ry, 44, 44, _laneColors[lane] * (sel ? 0.9f : 0.4f));
+                DrawRect((int)(cx - 22), (int)(ry - 22), 44, 44, _laneColors[lane] * (sel ? 0.9f : 0.4f));
             }
 
             // Lane name
             string lname = _laneNames[lane];
-            var lsz = font.MeasureString(lname) * 0.7f;
+            var lsz = font.MeasureString(lname) * 0.68f;
             spriteBatch.DrawString(font, lname,
-                new Vector2(cx - lsz.X / 2f, slotY + slotH - 46f),
-                sel ? _laneColors[lane] : Color.White * 0.5f, 0f, Vector2.Zero, 0.7f, SpriteEffects.None, 0f);
+                new Vector2(cx - lsz.X / 2f, slotY + slotH - 54f),
+                sel ? _laneColors[lane] : Color.White * 0.5f, 0f, Vector2.Zero, 0.68f, SpriteEffects.None, 0f);
 
             // Current key binding
             string keyStr = done || lane < _currentLane
@@ -190,7 +195,7 @@ public class KeyBindingOverlay
             Color keyCol = done ? new Color(0x44, 0xFF, 0x44) : (sel ? Color.White : Color.White * 0.4f);
             var ksz = font.MeasureString(keyStr) * 0.75f;
             spriteBatch.DrawString(font, keyStr,
-                new Vector2(cx - ksz.X / 2f, slotY + slotH - 26f),
+                new Vector2(cx - ksz.X / 2f, slotY + slotH - 28f),
                 keyCol, 0f, Vector2.Zero, 0.75f, SpriteEffects.None, 0f);
         }
 

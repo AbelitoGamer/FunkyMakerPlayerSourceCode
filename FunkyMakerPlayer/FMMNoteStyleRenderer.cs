@@ -6,7 +6,7 @@ namespace FunkyMakerPlayer
 {
     /// <summary>
     /// FunkyMaker's native notestyle renderer.
-    /// Handles the original FMM format with 8-column hold textures.
+    /// Handles the original FMM/FNF format with 8-column hold textures (SustainTrail.hx logic).
     /// </summary>
     public class FMMNoteStyleRenderer : INoteStyleRenderer
     {
@@ -23,7 +23,6 @@ namespace FunkyMakerPlayer
         
         public void DrawArrow(SpriteBatch sb, int lane, float x, float y, float scale, float alpha, Color tint)
         {
-            // FMM uses atlas frames for arrows
             var frame = _style.GetNoteFrame(lane, 0);
             if (frame == null) return;
             
@@ -37,13 +36,10 @@ namespace FunkyMakerPlayer
         
         public void DrawReceptor(SpriteBatch sb, int lane, float x, float y, int state, float scale, float alpha)
         {
-            // FMM receptor rendering (uses existing animation system)
-            // This would integrate with the existing receptor animation code
-            // For now, simplified version
             var frames = _style.ReceptorFrames[lane, state];
             if (frames == null || frames.Count == 0) return;
             
-            var frame = frames[0]; // First frame for simplicity
+            var frame = frames[0];
             var src = frame.Source;
             var dst = new Rectangle((int)x, (int)y,
                                    (int)(frame.Source.Width * scale),
@@ -56,85 +52,24 @@ namespace FunkyMakerPlayer
                                     float holdLengthPx, float strumY, float laneWidth, 
                                     float alpha, float scrollSpeed, float bpm)
         {
-            if (_style.HoldTexture == null) return;
-            
-            var holdTex = _style.HoldTexture;
-            int colWidth = holdTex.Width / 8;
-            int texHeight = holdTex.Height;
-            int bodyCol = lane * 2;
-            int capCol = lane * 2 + 1;
-            
-            var bodySrc = new Rectangle(bodyCol * colWidth, 0, colWidth, texHeight);
-            var capSrc = new Rectangle(capCol * colWidth, 0, colWidth, texHeight);
-            
-            float noteScale = _style.NoteScale;
-            float scaledWidth = colWidth * noteScale;
-            float fixedCapHeight = texHeight * noteScale;
-            
-            float totalLength = holdLengthPx;
-            float actualCapHeight = Math.Min(fixedCapHeight, totalLength);
-            float bodyStretchHeight = totalLength - actualCapHeight;
-            
-            // Integer positioning to prevent sub-pixel gaps
-            int intX = (int)(centerX - scaledWidth / 2f);
-            int intWidth = (int)Math.Ceiling(scaledWidth);
-            
-            Color bodyTint = Color.White * 0.85f * alpha;
-            Color capTint = Color.White * 0.85f * alpha;
-            
-            if (!_downscroll)
-            {
-                // Upscroll: body first, then cap
-                int currentY = (int)arrowY;
-                
-                if (bodyStretchHeight > 1f)
-                {
-                    // Add 2px overlap to eliminate gaps
-                    int bodyHeight = (int)Math.Ceiling(bodyStretchHeight) + 2;
-                    sb.Draw(holdTex, 
-                        new Rectangle(intX, currentY, intWidth, bodyHeight),
-                        bodySrc, bodyTint);
-                    currentY += (int)bodyStretchHeight;
-                }
-                
-                if (actualCapHeight > 0f)
-                {
-                    int capHeight = (int)Math.Ceiling(actualCapHeight);
-                    sb.Draw(holdTex,
-                        new Rectangle(intX, currentY, intWidth, capHeight),
-                        capSrc, capTint);
-                }
-            }
-            else
-            {
-                // Downscroll: cap first (flipped), then body (flipped)
-                int currentY = (int)arrowY;
-                
-                if (actualCapHeight > 0f)
-                {
-                    int capHeight = (int)Math.Ceiling(actualCapHeight) + 2;
-                    int capTop = currentY - capHeight;
-                    sb.Draw(holdTex,
-                        new Rectangle(intX, capTop, intWidth, capHeight),
-                        capSrc, capTint, 0f, Vector2.Zero, SpriteEffects.FlipVertically, 0f);
-                    currentY = capTop;
-                }
-                
-                if (bodyStretchHeight > 1f)
-                {
-                    int bodyHeight = (int)Math.Ceiling(bodyStretchHeight);
-                    int bodyTop = currentY - bodyHeight;
-                    sb.Draw(holdTex,
-                        new Rectangle(intX, bodyTop, intWidth, bodyHeight),
-                        bodySrc, bodyTint, 0f, Vector2.Zero, SpriteEffects.FlipVertically, 0f);
-                }
-            }
+            DrawFMMHold(sb, lane, centerX, arrowY, holdLengthPx, laneWidth, alpha * 0.85f);
         }
         
         public void DrawActiveHold(SpriteBatch sb, int lane, float centerX, float strumY, 
                                   float holdLengthPx, float laneWidth, float alpha)
         {
-            if (_style.HoldTexture == null) return;
+            DrawFMMHold(sb, lane, centerX, strumY, holdLengthPx, laneWidth, alpha * 0.75f);
+        }
+
+        /// <summary>
+        /// Direct port of official FunkinCrew/Funkin SustainTrail.hx (lines 94, 100, 308-398).
+        /// Keeps end caps at their exact 1:1 scaled aspect ratio without squishing, clips off the
+        /// bottom 10% overflow line (bottomClip = 0.9), and joins body + end cap with zero overlap/gap.
+        /// </summary>
+        private void DrawFMMHold(SpriteBatch sb, int lane, float centerX, float startY,
+                                 float holdLengthPx, float laneWidth, float alphaTint)
+        {
+            if (_style.HoldTexture == null || holdLengthPx <= 0.5f) return;
             
             var holdTex = _style.HoldTexture;
             int colWidth = holdTex.Width / 8;
@@ -142,69 +77,79 @@ namespace FunkyMakerPlayer
             int bodyCol = lane * 2;
             int capCol = lane * 2 + 1;
             
-            var bodySrc = new Rectangle(bodyCol * colWidth, 0, colWidth, texHeight);
-            var capSrc = new Rectangle(capCol * colWidth, 0, colWidth, texHeight);
-            
-            float noteScale = _style.NoteScale;
+            float sx = laneWidth > 0f ? laneWidth / NoteRenderer.LANE_WIDTH : 1f;
+            float noteScale = _style.NoteScale * sx;
             float scaledWidth = colWidth * noteScale;
-            float fixedCapHeight = texHeight * noteScale;
             
-            float totalLength = holdLengthPx;
-            float actualCapHeight = Math.Min(fixedCapHeight, totalLength);
-            float bodyStretchHeight = totalLength - actualCapHeight;
+            // Official FNF SustainTrail.hx bottomClip = 0.9f clips off the bottom 10% overflow artifact
+            const float BOTTOM_CLIP = 0.9f;
+            int capSrcBottom = (int)Math.Round(BOTTOM_CLIP * texHeight);
+            float fullCapHeight = capSrcBottom * noteScale;
+            float partHeight = holdLengthPx - fullCapHeight;
             
-            // Integer positioning to prevent sub-pixel gaps
-            int intX = (int)(centerX - scaledWidth / 2f);
-            int intWidth = (int)Math.Ceiling(scaledWidth);
+            // Trim 1px top/bottom on body column to avoid stretching any edge-filtering row
+            var bodySrc = texHeight > 4
+                ? new Rectangle(bodyCol * colWidth, 1, colWidth, texHeight - 2)
+                : new Rectangle(bodyCol * colWidth, 0, colWidth, texHeight);
             
-            Color bodyTint = Color.White * 0.7f * alpha;
-            Color capTint = Color.White * 0.7f * alpha;
+            // While partHeight >= 0, the end cap is drawn 100% intact.
+            // When partHeight < 0 (body consumed), clip the top of the end cap at 1:1 scale at the receptor.
+            float consumedRatio = partHeight >= 0f
+                ? 0f
+                : 1f - (holdLengthPx / Math.Max(1f, fullCapHeight));
+            consumedRatio = Math.Clamp(consumedRatio, 0f, 1f);
             
-            if (!_downscroll)
+            int capSrcY = (int)Math.Round(consumedRatio * capSrcBottom);
+            int capSrcH = capSrcBottom - capSrcY;
+            if (capSrcH <= 0) return;
+            
+            var capSrc = new Rectangle(capCol * colWidth, capSrcY, colWidth, capSrcH);
+            
+            // Screen height of the end cap is ALWAYS 1:1 with capSrcH * noteScale (never squished or stretched!)
+            int capHeight = (int)Math.Round(capSrcH * noteScale);
+            if (capHeight <= 0) return;
+            
+            int intX = (int)Math.Round(centerX - scaledWidth / 2f);
+            int intWidth = (int)Math.Round(scaledWidth);
+            
+            Color tint = Color.White * alphaTint;
+            bool downscroll = NoteRenderer.Downscroll;
+            
+            if (!downscroll)
             {
-                // Upscroll: body first, then cap extending downward from strum
-                int currentY = (int)strumY;
+                // Upscroll: body from startIntY to joinY, end cap from joinY to joinY + capHeight (0 gap, 0 overlap)
+                int startIntY = (int)Math.Round(startY);
+                int joinY = partHeight > 0f ? (int)Math.Round(startY + partHeight) : startIntY;
+                int bodyH = joinY - startIntY;
                 
-                if (bodyStretchHeight > 1f)
+                if (bodyH > 0)
                 {
-                    int bodyHeight = (int)Math.Ceiling(bodyStretchHeight) + 2;
                     sb.Draw(holdTex,
-                        new Rectangle(intX, currentY, intWidth, bodyHeight),
-                        bodySrc, bodyTint);
-                    currentY += (int)bodyStretchHeight;
+                        new Rectangle(intX, startIntY, intWidth, bodyH),
+                        bodySrc, tint);
                 }
                 
-                if (actualCapHeight > 0f)
-                {
-                    int capHeight = (int)Math.Ceiling(actualCapHeight);
-                    sb.Draw(holdTex,
-                        new Rectangle(intX, currentY, intWidth, capHeight),
-                        capSrc, capTint);
-                }
+                sb.Draw(holdTex,
+                    new Rectangle(intX, joinY, intWidth, capHeight),
+                    capSrc, tint);
             }
             else
             {
-                // Downscroll: cap first (flipped), then body (flipped) extending upward from strum
-                int currentY = (int)strumY;
+                // Downscroll: body from joinY to startIntY, end cap from joinY - capHeight to joinY (0 gap, 0 overlap)
+                int startIntY = (int)Math.Round(startY);
+                int joinY = partHeight > 0f ? (int)Math.Round(startY - partHeight) : startIntY;
+                int bodyH = startIntY - joinY;
                 
-                if (actualCapHeight > 0f)
+                if (bodyH > 0)
                 {
-                    int capHeight = (int)Math.Ceiling(actualCapHeight) + 2;
-                    int capTop = currentY - capHeight;
                     sb.Draw(holdTex,
-                        new Rectangle(intX, capTop, intWidth, capHeight),
-                        capSrc, capTint, 0f, Vector2.Zero, SpriteEffects.FlipVertically, 0f);
-                    currentY = capTop;
+                        new Rectangle(intX, joinY, intWidth, bodyH),
+                        bodySrc, tint, 0f, Vector2.Zero, SpriteEffects.FlipVertically, 0f);
                 }
                 
-                if (bodyStretchHeight > 1f)
-                {
-                    int bodyHeight = (int)Math.Ceiling(bodyStretchHeight);
-                    int bodyTop = currentY - bodyHeight;
-                    sb.Draw(holdTex,
-                        new Rectangle(intX, bodyTop, intWidth, bodyHeight),
-                        bodySrc, bodyTint, 0f, Vector2.Zero, SpriteEffects.FlipVertically, 0f);
-                }
+                sb.Draw(holdTex,
+                    new Rectangle(intX, joinY - capHeight, intWidth, capHeight),
+                    capSrc, tint, 0f, Vector2.Zero, SpriteEffects.FlipVertically, 0f);
             }
         }
     }

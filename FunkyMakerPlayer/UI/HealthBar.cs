@@ -105,48 +105,47 @@ public class HealthBar
         int innerBarX = barX + INNER_BORDER;
         int innerBarY = barY + INNER_BORDER;
         
-        // ── Draw bar background with borders ──────────────────────────────────
-        
-        // Outer glow/shadow (subtle)
-        DrawRect(barX - (OUTER_SHADOW - INNER_BORDER), barY - (OUTER_SHADOW - INNER_BORDER), 
-                 totalBarW + (OUTER_SHADOW - INNER_BORDER) * 2, totalBarH + (OUTER_SHADOW - INNER_BORDER) * 2, 
-                 Color.Black * 0.5f);
-        
-        // Black background with thicker border
-        DrawRect(barX - (THICK_BORDER - INNER_BORDER), barY - (THICK_BORDER - INNER_BORDER), 
-                 totalBarW + (THICK_BORDER - INNER_BORDER) * 2, totalBarH + (THICK_BORDER - INNER_BORDER) * 2, 
-                 Color.Black * 0.9f);
-        DrawRect(barX, barY, totalBarW, totalBarH, new Color(30, 30, 30));
-        
-        // ── Draw gradient fill ────────────────────────────────────────────────
-        
         // Calculate bar widths
         int playerW = (int)(Health * barW);
         int enemyW = barW - playerW;
-        
-        // Draw opponent side (left) with smooth gradient
-        for (int i = 0; i < enemyW; i++)
+
+        if (hudSettings.HealthBarVisible)
         {
-            float t = (float)i / barW;
-            Color c = Color.Lerp(OpponentBarColor * 0.6f, OpponentBarColor * 1.1f, t * t);
-            DrawRect(innerBarX + i, innerBarY, 1, barH, c);
+            // ── Draw bar background with borders ──────────────────────────────────
+            
+            // Outer glow/shadow (subtle)
+            DrawRect(barX - (OUTER_SHADOW - INNER_BORDER), barY - (OUTER_SHADOW - INNER_BORDER), 
+                     totalBarW + (OUTER_SHADOW - INNER_BORDER) * 2, totalBarH + (OUTER_SHADOW - INNER_BORDER) * 2, 
+                     Color.Black * 0.5f);
+            
+            // Black background with thicker border
+            DrawRect(barX - (THICK_BORDER - INNER_BORDER), barY - (THICK_BORDER - INNER_BORDER), 
+                     totalBarW + (THICK_BORDER - INNER_BORDER) * 2, totalBarH + (THICK_BORDER - INNER_BORDER) * 2, 
+                     Color.Black * 0.9f);
+            DrawRect(barX, barY, totalBarW, totalBarH, new Color(30, 30, 30));
+            
+            // ── Draw gradient fill ────────────────────────────────────────────────
+            
+            // Draw opponent side (left) with smooth gradient
+            for (int i = 0; i < enemyW; i++)
+            {
+                float t = (float)i / barW;
+                Color c = Color.Lerp(OpponentBarColor * 0.6f, OpponentBarColor * 1.1f, t * t);
+                DrawRect(innerBarX + i, innerBarY, 1, barH, c);
+            }
+            
+            // Draw player side (right) with smooth gradient
+            for (int i = 0; i < playerW; i++)
+            {
+                float t = (float)i / barW;
+                Color c = Color.Lerp(PlayerBarColor * 1.1f, PlayerBarColor * 0.6f, t * t);
+                DrawRect(innerBarX + enemyW + i, innerBarY, 1, barH, c);
+            }
+            
+            // Add subtle highlights on top and bottom edges
+            DrawRect(innerBarX, innerBarY, enemyW, 1, Color.White * 0.2f);
+            DrawRect(innerBarX + enemyW, innerBarY, playerW, 1, Color.White * 0.2f);
         }
-        
-        // Draw player side (right) with smooth gradient
-        for (int i = 0; i < playerW; i++)
-        {
-            float t = (float)i / barW;
-            Color c = Color.Lerp(PlayerBarColor * 1.1f, PlayerBarColor * 0.6f, t * t);
-            DrawRect(innerBarX + enemyW + i, innerBarY, 1, barH, c);
-        }
-        
-        // Add subtle highlights on top and bottom edges
-        DrawRect(innerBarX, innerBarY, enemyW, 1, Color.White * 0.2f);
-        DrawRect(innerBarX + enemyW, innerBarY, playerW, 1, Color.White * 0.2f);
-        
-        // Center divider (white line with glow)
-        DrawRect(innerBarX + enemyW - 3, innerBarY - 5, 6, barH + 10, Color.White * 0.3f);
-        DrawRect(innerBarX + enemyW - 2, innerBarY - 4, 4, barH + 8, Color.White);
         
         // ── Draw icons ────────────────────────────────────────────────────────
         
@@ -202,8 +201,10 @@ public class HealthBar
             playerIconY = hudSettings.PlayerIconPosition.Y;
         }
         
-        DrawIcon(OpponentIcon, opponentIconX, opponentIconY, iconSize, flipX: false, _iconBounceScale);
-        DrawIcon(PlayerIcon, playerIconX, playerIconY, iconSize, flipX: false, _iconBounceScale);
+        if (hudSettings.OpponentIconVisible)
+            DrawIcon(OpponentIcon, opponentIconX, opponentIconY, iconSize, flipX: false, _iconBounceScale);
+        if (hudSettings.PlayerIconVisible)
+            DrawIcon(PlayerIcon, playerIconX, playerIconY, iconSize, flipX: false, _iconBounceScale);
     }
     
     /// <summary>

@@ -27,6 +27,15 @@ namespace FunkyMakerPlayer.Multiplayer
         /// Player color as HSV hue (0-360)
         /// </summary>
         public int PlayerColorHue { get; set; } = 180;
+
+        /// <summary>
+        /// Alias matching FunkyMakerServer's PlayerProfilePacket.ColorHue property name.
+        /// </summary>
+        public int ColorHue
+        {
+            get => PlayerColorHue;
+            set => PlayerColorHue = value;
+        }
         
         /// <summary>
         /// Timestamp when profile was last updated

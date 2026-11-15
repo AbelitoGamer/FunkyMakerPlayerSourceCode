@@ -3,10 +3,9 @@ using Microsoft.Xna.Framework.Graphics;
 
 namespace FunkyMakerPlayer.Editors;
 
-public interface IEditor
+public interface IEditor : FunkyMakerPlayer.UI.IDirectScreen
 {
     void Update(float dt, KeyboardState kb);
-    void Draw(SpriteBatch sb, int screenWidth, int screenHeight);
     bool BackPressed { get; }
     bool IsModified { get; }
 }

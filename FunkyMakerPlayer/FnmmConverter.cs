@@ -41,14 +41,17 @@ public static class FnmmConverter
         // Also check nested layout (subfolder/evt.json)
         if (!isOld)
             isOld = zip.Entries.Any(e =>
-                e.FullName.EndsWith("/evt.json", StringComparison.OrdinalIgnoreCase));
+                e.FullName.Replace('\\', '/').EndsWith("/evt.json", StringComparison.OrdinalIgnoreCase));
 
         // Also check if data.json has "notes" instead of "strumlines"
         if (!isOld)
         {
             var dataEntry = zip.Entries.FirstOrDefault(e =>
-                e.FullName.Equals("data.json", StringComparison.OrdinalIgnoreCase) ||
-                e.FullName.EndsWith("/data.json", StringComparison.OrdinalIgnoreCase));
+            {
+                string norm = e.FullName.Replace('\\', '/');
+                return norm.Equals("data.json", StringComparison.OrdinalIgnoreCase) ||
+                       norm.EndsWith("/data.json", StringComparison.OrdinalIgnoreCase);
+            });
             if (dataEntry != null)
             {
                 using var sr = new StreamReader(dataEntry.Open());
@@ -64,15 +67,53 @@ public static class FnmmConverter
         return Convert(zip);
     }
 
+    /// <summary>
+    /// Detects if an extracted level directory (e.g. from .rar or .zip) uses the old format
+    /// and converts its JSON files in-place.
+    /// </summary>
+    public static void ConvertDirectoryIfNeeded(string levelDir)
+    {
+        string dataPath = Path.Combine(levelDir, "data.json");
+        if (!File.Exists(dataPath)) return;
+
+        string evtPath = Path.Combine(levelDir, "evt.json");
+        string dataJson = File.ReadAllText(dataPath);
+        bool isOld = File.Exists(evtPath) ||
+                     (dataJson.Contains("\"notes\"") && !dataJson.Contains("\"strumlines\""));
+
+        if (!isOld) return;
+
+        Console.WriteLine("[FnmmConverter] Old format detected in extracted directory, converting...");
+
+        File.WriteAllText(dataPath, ConvertData(dataJson));
+
+        string? evtJson = File.Exists(evtPath) ? File.ReadAllText(evtPath) : null;
+        if (File.Exists(evtPath))
+            File.Delete(evtPath);
+        File.WriteAllText(Path.Combine(levelDir, "events.json"), ConvertEvents(evtJson, dataJson));
+
+        string scenePath = Path.Combine(levelDir, "scene.json");
+        if (File.Exists(scenePath))
+            File.WriteAllText(scenePath, ConvertScene(File.ReadAllText(scenePath)));
+
+        string spritesDir = Path.Combine(levelDir, "sprites");
+        if (Directory.Exists(spritesDir))
+        {
+            foreach (var sprJsonPath in Directory.EnumerateFiles(spritesDir, "sprite.json", SearchOption.AllDirectories))
+                File.WriteAllText(sprJsonPath, FixSpriteJson(File.ReadAllText(sprJsonPath)));
+        }
+    }
+
     private static byte[] Convert(ZipArchive zip)
     {
         // Read all entries into memory first (zip is read-only)
         var entries = new Dictionary<string, byte[]>(StringComparer.OrdinalIgnoreCase);
         foreach (var entry in zip.Entries)
         {
+            if (string.IsNullOrEmpty(entry.Name)) continue; // skip directory entries
             using var ms = new MemoryStream();
             entry.Open().CopyTo(ms);
-            entries[entry.FullName] = ms.ToArray();
+            entries[entry.FullName.Replace('\\', '/')] = ms.ToArray();
         }
 
         // Detect prefix (nested layout: "UUID/data.json" → prefix = "UUID/")

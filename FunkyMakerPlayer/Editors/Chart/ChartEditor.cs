@@ -1,123 +1,312 @@
+using FunkyMakerPlayer.Managers;
+using FunkyMakerPlayer.UI;
 using Microsoft.Xna.Framework;
+using Microsoft.Xna.Framework.Audio;
 using Microsoft.Xna.Framework.Graphics;
 using Microsoft.Xna.Framework.Input;
 using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Linq;
 
 namespace FunkyMakerPlayer.Editors.Chart
 {
     /// <summary>
-    /// Chart Editor - Clean and functional design for modders
-    /// Layout: Timeline (top) | Toolbar (left) | Grid (center) | Info Panel (right) | Status Bar (bottom)
+    /// Redesigned Chart Editor with interactive timeline scrubber, aligned clickable toolbar,
+    /// working Select/Move/Hold-resize/Delete tools, Undo/Redo, Playtest hook, and toggleable
+    /// docked stage preview that never obscures the chart grid.
     /// </summary>
     public class ChartEditor : IEditor
     {
         // ── Core data ────────────────────────────────────────────────────────
-        private readonly string _levelPath;
+        private string _levelPath;
         private FnmmLevel? _level;
         private readonly Texture2D _pixel;
         private readonly SpriteFont? _font;
         private readonly FontRenderer? _fontRenderer;
         private readonly NoteStyle? _noteStyle;
-        
+
         // ── Editor state ─────────────────────────────────────────────────────
+        private const int MAX_STRUMLINES = 32;
         private EditorPhase _phase = EditorPhase.Loading;
         private string? _errorMessage;
-        private EditorTool _currentTool = EditorTool.Select;
-        private int _selectedStrumline = 0;  // 0 = player, 1 = opponent
-        private int _selectedLane = -1;       // -1 = none, 0-3 = lane
-        
-        // ── Loading animation ────────────────────────────────────────────────
+        private EditorTool _currentTool = EditorTool.PlaceNote;
+        private int _selectedStrumline = 0;  // Focused strumline (0 = BF right, >=1 = FOE/Extra left)
+        private int _leftStrumline = 1;      // Strumline displayed on left columns (cycles 1..N-1)
+        private int _rightStrumline = 0;     // Strumline displayed on right columns (0 = BF)
+        private int _selectedLane = -1;
+        private int _hoverCol = -1;          // 0..3 = Left block, 4..7 = Right block
+        private int _hoverLane = -1;
+        private int _hoverStrumline = -1;
+        private float _hoverSnappedBeat = -1f;
+        private string? _hoveredEventSummary;
+        private bool _showPreview = true;
+        private int _snapDivisor = 16;       // 1/4, 1/8, 1/12, 1/16 (1 step square), 1/24, 1/32
+        private float _defaultHoldBeats = 0.5f;
+        private float _activeNoteSkin = 0f;  // 0=Normal, 1=Damage, 2=Instakill, 3=Heal
+
+        // ── Undo/Redo, Selection, Clipboard & Drag state ─────────────────────
+        private readonly UndoManager _undoManager = new();
+        private FnmmNote? _selectedNote;
+        private int _selectedNoteLane = -1;
+        private int _selectedNoteStrumline = 0;
+        private readonly List<(int lane, float relBeat, float duration, float skin)> _clipboardNotes = new();
+
+        private enum DragMode { None, Scrubber, MoveNote, ResizeHold, NewHoldTail }
+        private DragMode _dragMode = DragMode.None;
+        private FnmmNote? _dragNote;
+        private int _dragOrigLane;
+        private int _dragOrigStrumline;
+        private float _dragOrigStart;
+        private float _dragOrigDuration;
+        private float _dragGrabOffset;
+
+        // ── Loading & Feedback ───────────────────────────────────────────────
         private float _loadingSpinnerRotation = 0f;
-        private float _loadingFadeAlpha = 0f;
-        private bool _waitingForClick = false;
-        private System.Threading.Tasks.Task? _loadingTask = null;
-        
-        // ── Receptor animation ───────────────────────────────────────────────
-        private float[] _receptorPressTime = new float[LANE_COUNT];  // Time since press
-        private const float RECEPTOR_ANIM_DURATION = 0.1f;  // Press animation duration
-        
-        // ── Audio playback ───────────────────────────────────────────────────
-        private EditorAudioManager _audioManager = new EditorAudioManager();
+        private System.Threading.Tasks.Task? _loadingTask;
+        private string? _toastMessage;
+        private float _toastTimer;
+        private float _inputCooldown = 0f;
+
+        // ── Receptor & Engine Stage Preview State ────────────────────────────
+        private readonly float[,] _receptorPressTime = new float[MAX_STRUMLINES, LANE_COUNT];
+        private const float RECEPTOR_ANIM_DURATION = 0.12f;
+        private readonly float[] _characterSingTime = new float[MAX_STRUMLINES];
+        private readonly int[] _characterSingLane = Enumerable.Repeat(-1, MAX_STRUMLINES).ToArray();
+        private const float SING_ANIM_DURATION = 0.22f;
+
+        private FnmmLevel? _previewLevel;
+        private readonly Dictionary<string, Dictionary<int, SpriteTextureCacheEntry>> _previewSpriteTextureCache;
+        private readonly bool _ownsPreviewTextures;
+        private Dictionary<string, List<Texture2D>> _previewTexCache = new(StringComparer.OrdinalIgnoreCase);
+        private SpriteAnimator?[] _previewAnimators = Array.Empty<SpriteAnimator?>();
+        private EventProcessor? _previewEvents;
+        private CameraManager? _previewCameraManager;
+        private RenderTarget2D? _previewTarget;
+        private int _previewTargetW = 1280;
+        private int _previewTargetH = 720;
+        private bool _previewInitialized = false;
+        private bool _previewNeedsSeek = true;
+        private float _previewLastSeekTime = -1f;
+        private int _previewCameraMode = -1; // -1 = AUTO, -2 = FIT STAGE, >=0 = scene.Cameras[idx]
+        private bool _previewShowOverlays = true;
+
+        // ── Audio Playback, Hitsounds & Metronome ────────────────────────────
+        private readonly EditorAudioManager _audioManager = new();
         private bool _isPlaying = false;
-        private float _playbackTime = 0f;  // Current playback time in seconds
-        
-        // ── Character preview ────────────────────────────────────────────────
-        private const int PREVIEW_WIDTH = 300;
-        private const int PREVIEW_HEIGHT = 200;
-        private const int PREVIEW_MARGIN = 20;
-        private Rectangle _previewRect;
-        private float[] _characterSingTime = new float[2]; // Time remaining for sing animation [player, opponent]
-        private int[] _characterSingLane = new int[2];     // Which lane they're singing [-1 = idle]
-        private const float SING_ANIM_DURATION = 0.15f;
-        
-        // ── IEditor implementation ───────────────────────────────────────────
+        private float _playbackTime = 0f;     // Seconds
+        private float _prevPlaybackTime = 0f; // Seconds (for interval edge triggers)
+        private bool _hitsoundsEnabled = true;
+        private bool _metronomeEnabled = false;
+        private SoundEffect? _hitSoundFx;
+        private SoundEffect? _metroBeatFx;
+        private SoundEffect? _metroSubFx;
+        private bool _audioCuesInitialized = false;
+
+        // ── Public integration properties (Game1) ────────────────────────────
         public bool BackPressed { get; private set; }
-        public bool IsModified { get; private set; }
-        
+        public bool IsModified => _undoManager.IsModified || _manualModified;
+        public bool SavedInSession { get; private set; }
+        private bool _manualModified = false;
+
+        public bool PlaytestRequested { get; private set; }
+        public float PlaytestStartSeconds { get; private set; }
+        public string LevelPath => _levelPath;
+        public FnmmLevel? GetEditedLevel() => _level;
+        public Dictionary<string, Dictionary<int, SpriteTextureCacheEntry>> PreviewSpriteTextureCache => _previewSpriteTextureCache;
+        public bool OwnsPreviewTextures => _ownsPreviewTextures;
+
+        public bool HasCachedPreviewTextures
+        {
+            get
+            {
+                if (_level == null) return false;
+                if (_level.Sprites.Count == 0) return true;
+                foreach (var (name, (_, frames)) in _level.Sprites)
+                {
+                    if (!_previewSpriteTextureCache.TryGetValue(name, out var sc)) return false;
+                    if (sc.Count != frames.Count) return false;
+                    foreach (var kvp in sc)
+                    {
+                        if (kvp.Value.Textures.Count == 0) return false;
+                        foreach (var t in kvp.Value.Textures)
+                            if (t == null || t.IsDisposed) return false;
+                    }
+                }
+                return true;
+            }
+        }
+
+        public (byte[]? Pcm, int SampleRate, int Channels) GetCachedAudioPcm()
+            => (_audioManager.CachedPcm, _audioManager.SampleRate, _audioManager.Channels);
+
+        public void ConsumePlaytestRequest() => PlaytestRequested = false;
+
+        public void ResetInputCooldown()
+        {
+            _inputCooldown = 0.2f;
+            BackPressed = false;
+            PlaytestRequested = false;
+            _dragMode = DragMode.None;
+        }
+
         // ── Grid & Scroll ────────────────────────────────────────────────────
-        private float _scrollY = 0f;          // Vertical scroll position (in time units: beats or seconds)
-        private float _zoom = 1.0f;           // Zoom level (1.0 = default)
-        private float _scrollSpeed = 1.0f;    // Scroll speed multiplier (affects visual spacing)
-        private const float BEAT_HEIGHT = 80f; // Pixels per beat at zoom 1.0 (for beat-based charts)
-        private const float SECOND_HEIGHT = 120f; // Pixels per second at zoom 1.0 (for time-based charts)
+        private float _scrollY = 0f;         // Current playhead position (beats or seconds, per TimesAreSeconds)
+        private float _zoom = 1.0f;          // Vertical grid zoom only (1.0x => 1/16th step is a 1:1 square)
         private const int LANE_COUNT = 4;
-        private const float LANE_WIDTH = 120f;
-        private const float RECEPTOR_Y_OFFSET = 0.2f; // Receptor bar at 20% from top (like FNF)
-        
-        // ── Layout dimensions (set in UpdateLayout) ──────────────────────────
+        private const int GRID_COLS = LANE_COUNT * 2;
+        private const int STEPS_PER_BEAT = 4;
+        private const float RECEPTOR_Y_OFFSET = 0.20f;
+
+        // ── Layout & Interactive Rectangles ──────────────────────────────────
+        private int _screenWidth = 1280;
+        private int _screenHeight = 720;
+        private float _uiScale = 1f;
+        private float _laneWidth = 72f;
+        private int _gridHeaderH = 46;
+        private int _gridGroupGap = 18;
+
         private Rectangle _timelineRect;
+        private Rectangle _scrubberRect;
         private Rectangle _toolbarRect;
         private Rectangle _gridRect;
+        private Rectangle _gridBodyRect;
         private Rectangle _infoPanelRect;
+        private Rectangle _previewRect;
+        private Rectangle _previewCamBtnRect;
+        private Rectangle _previewFxBtnRect;
+        private Rectangle _previewCloseBtn;
         private Rectangle _statusBarRect;
-        
-        // ── Colors ───────────────────────────────────────────────────────────
-        private static readonly Color BG_DARK = new Color(20, 20, 25);
-        private static readonly Color BG_MEDIUM = new Color(30, 30, 35);
-        private static readonly Color BG_LIGHT = new Color(40, 40, 45);
-        private static readonly Color ACCENT = new Color(100, 150, 255);
-        private static readonly Color GRID_LINE = new Color(60, 60, 65);
-        private static readonly Color BEAT_LINE = new Color(80, 80, 85);
-        private static readonly Color MEASURE_LINE = new Color(120, 120, 125);
-        
-        private static readonly Color[] LANE_COLORS = new[]
+        private Rectangle _leftStrumPrevBtn;
+        private Rectangle _leftStrumNextBtn;
+        private Rectangle _hitsoundBtnRect;
+        private Rectangle _metronomeBtnRect;
+
+        private Rectangle _backBtnRect;
+        private Rectangle _playBtnRect;
+        private Rectangle _playtestBtnRect;
+        private Rectangle _undoBtnRect;
+        private Rectangle _redoBtnRect;
+        private Rectangle _previewToggleRect;
+        private Rectangle _saveBtnRect;
+
+        private readonly Rectangle[] _toolBtnRects = new Rectangle[4];
+        private Rectangle _strumPlayerBtn;
+        private Rectangle _strumEnemyBtn;
+        private Rectangle _snapPrevBtn;
+        private Rectangle _snapNextBtn;
+        private Rectangle _holdMinusBtn;
+        private Rectangle _holdPlusBtn;
+        private readonly Rectangle[] _skinBtnRects = new Rectangle[4];
+
+        // Inspector clickable controls
+        private Rectangle _inspDurMinusBtn;
+        private Rectangle _inspDurPlusBtn;
+        private Rectangle _inspDeleteBtn;
+        private Rectangle _inspSkinBtn;
+        private Rectangle _inspSwapStrumBtn;
+        private Rectangle _inspBpmMinusBtn;
+        private Rectangle _inspBpmPlusBtn;
+        private Rectangle _inspZoomMinusBtn;
+        private Rectangle _inspZoomPlusBtn;
+        private Rectangle _inspSpeedMinusBtn;
+        private Rectangle _inspSpeedPlusBtn;
+
+        private readonly List<(Rectangle Rect, Action OnClick, Func<bool>? IsActive)> _clickActions = new();
+        private RasterizerState? _scissorRasterizer;
+
+        // ── Theme Colors ─────────────────────────────────────────────────────
+        private static readonly Color BG_DARK = new(18, 17, 26);
+        private static readonly Color BG_PANEL = new(25, 24, 36);
+        private static readonly Color BG_CARD = new(36, 35, 52);
+        private static readonly Color BG_CARD_HOVER = new(50, 48, 72);
+        private static readonly Color ACCENT_PINK = new(255, 68, 136);
+        private static readonly Color ACCENT_GOLD = new(255, 215, 0);
+        private static readonly Color ACCENT_CYAN = new(0, 200, 255);
+        private static readonly Color ACCENT_GREEN = new(65, 225, 145);
+        private static readonly Color GRID_LINE = new(52, 52, 68);
+        private static readonly Color BEAT_LINE = new(82, 82, 102);
+        private static readonly Color MEASURE_LINE = new(135, 135, 165);
+
+        private static readonly Color[] LANE_COLORS =
         {
-            new Color(194, 75, 153),  // Purple/Pink - Left
-            new Color(0, 255, 255),   // Cyan - Down
-            new Color(18, 250, 5),    // Green - Up
-            new Color(249, 57, 63),   // Red - Right
+            new(194, 75, 153), // Left
+            new(0, 225, 255),  // Down
+            new(32, 235, 72),  // Up
+            new(249, 57, 63),  // Right
         };
-        
-        // ── Input state ──────────────────────────────────────────────────────
+
+        private static readonly string[] LANE_ARROWS = { "L", "D", "U", "R" };
+        private static readonly int[] SNAP_VALUES = { 4, 8, 12, 16, 24, 32 };
+
         private KeyboardState _prevKeyboard;
         private MouseState _prevMouse;
-        
-        // ── Constructor ──────────────────────────────────────────────────────
-        public ChartEditor(string levelPath, Texture2D pixel, SpriteFont? font, 
-                          FontRenderer? fontRenderer, NoteStyle? noteStyle = null)
+
+        public ChartEditor(string levelPath, Texture2D pixel, SpriteFont? font,
+                          FontRenderer? fontRenderer, NoteStyle? noteStyle = null,
+                          Dictionary<string, Dictionary<int, SpriteTextureCacheEntry>>? sharedSpriteTextureCache = null)
         {
             _levelPath = levelPath;
             _pixel = pixel;
             _font = font;
             _fontRenderer = fontRenderer;
             _noteStyle = noteStyle;
-            
-            // Initialize character arrays
-            _characterSingLane[0] = -1;
-            _characterSingLane[1] = -1;
-            
+            _previewSpriteTextureCache = sharedSpriteTextureCache
+                ?? new Dictionary<string, Dictionary<int, SpriteTextureCacheEntry>>(StringComparer.OrdinalIgnoreCase);
+            _ownsPreviewTextures = sharedSpriteTextureCache == null;
+            _prevKeyboard = Keyboard.GetState();
+            _prevMouse = Mouse.GetState();
+
             LoadLevel();
         }
-        
-        // ── Destructor / Cleanup ─────────────────────────────────────────────
-        ~ChartEditor()
+
+        public void DisposeAudio()
         {
-            _audioManager?.Dispose();
+            _audioManager.Dispose();
+            DisposePreviewResources();
+            _hitSoundFx?.Dispose();
+            _metroBeatFx?.Dispose();
+            _metroSubFx?.Dispose();
+            _hitSoundFx = null;
+            _metroBeatFx = null;
+            _metroSubFx = null;
+            _audioCuesInitialized = false;
         }
-        
-        // ── Load level from file (asíncrono) ─────────────────────────────────
+
+        private void DisposePreviewResources()
+        {
+            if (_ownsPreviewTextures)
+            {
+                var toDispose = new HashSet<Texture2D>();
+                foreach (var texList in _previewTexCache.Values)
+                {
+                    foreach (var t in texList)
+                        if (t != null && !t.IsDisposed) toDispose.Add(t);
+                }
+                foreach (var spriteEntry in _previewSpriteTextureCache.Values)
+                {
+                    foreach (var cacheEntry in spriteEntry.Values)
+                    {
+                        foreach (var t in cacheEntry.Textures)
+                            if (t != null && !t.IsDisposed) toDispose.Add(t);
+                    }
+                }
+                foreach (var t in toDispose)
+                    t.Dispose();
+                _previewSpriteTextureCache.Clear();
+            }
+            _previewTexCache.Clear();
+            _previewTarget?.Dispose();
+            _previewTarget = null;
+            _previewAnimators = Array.Empty<SpriteAnimator?>();
+            _previewEvents = null;
+            _previewCameraManager = null;
+            _previewLevel = null;
+            _previewInitialized = false;
+            _previewNeedsSeek = true;
+            _previewLastSeekTime = -1f;
+        }
+
         private void LoadLevel()
         {
             _loadingTask = System.Threading.Tasks.Task.Run(() =>
@@ -125,1149 +314,2971 @@ namespace FunkyMakerPlayer.Editors.Chart
                 try
                 {
                     _level = FnmmLoader.Load(_levelPath);
-                    Console.WriteLine($"[ChartEditor] Loaded level: {_levelPath}");
-                    Console.WriteLine($"[ChartEditor] BPM: {_level.Data.Bpm}, EffectiveBPM: {_level.Data.EffectiveBpm}");
-                    Console.WriteLine($"[ChartEditor] Version: {_level.Data.Version}, TimesAreSeconds: {_level.Data.TimesAreSeconds}");
-                    
-                    // Load music on main thread after level loads
-                    System.Threading.Tasks.Task.Run(() =>
-                    {
-                        System.Threading.Thread.Sleep(100); // Small delay to ensure we're past loading
-                        if (_level != null)
-                        {
-                            _audioManager.LoadFromLevel(_level);
-                        }
-                    });
+                    EnsureMinimumStrumlines(_level);
+                    _leftStrumline = _level.Data.Strumlines.Count > 1 ? 1 : 0;
+                    _rightStrumline = 0;
+                    _selectedStrumline = 0;
+                    _audioManager.LoadFromLevel(_level);
+                    Console.WriteLine($"[ChartEditor] Loaded: {_levelPath} | BPM={_level.Data.EffectiveBpm} TimesAreSeconds={_level.Data.TimesAreSeconds} Strumlines={_level.Data.Strumlines.Count}");
                 }
                 catch (Exception ex)
                 {
                     _errorMessage = $"Failed to load level: {ex.Message}";
-                    Console.WriteLine($"[ChartEditor] Error: {ex.Message}");
+                    Console.WriteLine($"[ChartEditor] Load error: {ex.Message}");
                 }
             });
         }
-        
+
+        private static void EnsureMinimumStrumlines(FnmmLevel level)
+        {
+            while (level.Data.Strumlines.Count < 2)
+                level.Data.Strumlines.Add(new List<List<FnmmNote>>());
+
+            for (int s = 0; s < level.Data.Strumlines.Count; s++)
+            {
+                while (level.Data.Strumlines[s].Count < LANE_COUNT)
+                    level.Data.Strumlines[s].Add(new List<FnmmNote>());
+            }
+        }
+
         // ── Update ───────────────────────────────────────────────────────────
         public void Update(float dt, KeyboardState kb)
         {
+            Update(dt, kb, _screenWidth, _screenHeight);
+        }
+
+        public void Update(float dt, KeyboardState kb, int screenWidth, int screenHeight)
+        {
+            if (screenWidth > 0 && screenHeight > 0)
+            {
+                _screenWidth = screenWidth;
+                _screenHeight = screenHeight;
+                UpdateLayout(_screenWidth, _screenHeight);
+            }
+
             var ms = Mouse.GetState();
-            
-            // Update receptor press animations
-            for (int i = 0; i < LANE_COUNT; i++)
+
+            if (_toastTimer > 0f)
             {
-                if (_receptorPressTime[i] > 0f)
-                    _receptorPressTime[i] -= dt;
+                _toastTimer -= dt;
+                if (_toastTimer <= 0f) _toastMessage = null;
             }
-            
-            // Update character sing animations
-            for (int i = 0; i < 2; i++)
+
+            for (int sl = 0; sl < MAX_STRUMLINES; sl++)
             {
-                if (_characterSingTime[i] > 0f)
-                    _characterSingTime[i] -= dt;
+                for (int i = 0; i < LANE_COUNT; i++)
+                {
+                    if (_receptorPressTime[sl, i] > 0f)
+                        _receptorPressTime[sl, i] = Math.Max(0f, _receptorPressTime[sl, i] - dt);
+                }
+
+                if (_characterSingTime[sl] > 0f)
+                    _characterSingTime[sl] = Math.Max(0f, _characterSingTime[sl] - dt);
                 else
-                    _characterSingLane[i] = -1; // Return to idle
+                    _characterSingLane[sl] = -1;
             }
-            
-            // Handle loading state
+
             if (_phase == EditorPhase.Loading)
             {
-                _loadingSpinnerRotation += dt * 3f; // Rotate spinner
-                
-                // Check if loading finished
-                if (_loadingTask != null && _loadingTask.IsCompleted)
+                _loadingSpinnerRotation += dt * 4f;
+                if (JustPressed(kb, Keys.Escape))
                 {
-                    if (_errorMessage != null)
-                    {
-                        _phase = EditorPhase.Error;
-                    }
-                    else if (_level != null)
-                    {
-                        _phase = EditorPhase.LoadComplete;
-                        _waitingForClick = true;
-                    }
+                    _audioManager.Stop();
+                    BackPressed = true;
+                }
+                else if (_loadingTask != null && _loadingTask.IsCompleted)
+                {
+                    _phase = _errorMessage != null ? EditorPhase.Error : (_level != null ? EditorPhase.Ready : EditorPhase.Error);
                     _loadingTask = null;
                 }
-                
+
                 _prevKeyboard = kb;
                 _prevMouse = ms;
                 return;
             }
-            
-            if (_phase == EditorPhase.LoadComplete)
+
+            if (_phase == EditorPhase.Error)
             {
-                _loadingSpinnerRotation += dt * 3f; // Keep rotating
-                _loadingFadeAlpha += dt * 2f; // Fade in "Click to continue"
-                
-                // Wait for click to continue
-                if (ms.LeftButton == ButtonState.Pressed && _prevMouse.LeftButton == ButtonState.Released)
+                if (JustPressed(kb, Keys.Escape) || JustPressed(kb, Keys.Enter) ||
+                    (ms.LeftButton == ButtonState.Pressed && _prevMouse.LeftButton == ButtonState.Released && _backBtnRect.Contains(ms.Position)))
                 {
-                    _phase = EditorPhase.Ready;
-                    _waitingForClick = false;
-                    Console.WriteLine("[ChartEditor] User clicked, entering editor");
+                    _audioManager.Stop();
+                    BackPressed = true;
                 }
-                
                 _prevKeyboard = kb;
                 _prevMouse = ms;
                 return;
             }
-            
-            if (_phase != EditorPhase.Ready) 
+
+            if (_inputCooldown > 0f)
             {
+                _inputCooldown -= dt;
                 _prevKeyboard = kb;
                 _prevMouse = ms;
                 return;
             }
-            
+
             HandleKeyboard(kb, dt);
             HandleMouse(ms);
-            
-            // Update playback if playing
-            if (_isPlaying && _audioManager.IsLoaded)
+
+            if (_isPlaying && _level != null)
             {
-                // Sync with ACTUAL audio playback time (not dt accumulation)
-                _playbackTime = _audioManager.CurrentTime / 1000f; // Convert ms to seconds
-                
-                // Sync scroll position with playback time
-                if (_level != null)
+                float prevSec = _playbackTime;
+                if (_audioManager.HasAudioTrack)
                 {
-                    // If times are in seconds (Version >= 2.0), _playbackTime IS the beat position
-                    // If times are in beats (Version < 2.0), convert: (seconds * BPM) / 60
-                    if (_level.Data.TimesAreSeconds)
+                    _audioManager.Update();
+                    if (!_audioManager.IsPlaying)
                     {
-                        _scrollY = _playbackTime; // Times are already in seconds
+                        _isPlaying = false;
                     }
                     else
                     {
-                        float bpm = _level.Data.EffectiveBpm;
-                        _scrollY = (_playbackTime * bpm) / 60f; // Convert seconds to beats
+                        _playbackTime = _audioManager.CurrentTime / 1000f;
                     }
-                    
-                    // Check for notes hitting the receptor bar and trigger character animations
-                    CheckNotesAtReceptor();
-                }
-            }
-            
-            _prevKeyboard = kb;
-            _prevMouse = ms;
-        }
-        
-        // ── Keyboard input ───────────────────────────────────────────────────
-        private void HandleKeyboard(KeyboardState kb, float dt)
-        {
-            // Space to play/pause preview
-            if (JustPressed(kb, Keys.Space))
-            {
-                _isPlaying = !_isPlaying;
-                
-                if (_isPlaying && _audioManager.IsLoaded)
-                {
-                    // Seek audio to current scroll position before playing
-                    float startTimeMs = _scrollY * 1000f; // Convert to milliseconds
-                    _audioManager.Seek(startTimeMs);
-                    _audioManager.Play();
-                    _playbackTime = _scrollY; // Sync playback time
-                    Console.WriteLine($"[ChartEditor] Playback started from {_scrollY:F2}s");
-                }
-                else if (_audioManager.IsLoaded)
-                {
-                    _audioManager.Pause();
-                    Console.WriteLine($"[ChartEditor] Playback paused at {_playbackTime:F2}s");
-                }
-            }
-            
-            // Don't allow other inputs while playing
-            if (_isPlaying) return;
-            
-            // Scroll with arrow keys (INVERTIDO - hacia abajo como FNF)
-            float scrollSpeed = 4f * _zoom * dt;
-            if (kb.IsKeyDown(Keys.Up)) _scrollY -= scrollSpeed;    // Up = scroll hacia atrás
-            if (kb.IsKeyDown(Keys.Down)) _scrollY += scrollSpeed;  // Down = scroll hacia adelante
-            
-            // Clamp scroll position to valid range
-            if (_scrollY < 0f) _scrollY = 0f;
-            
-            // Zoom with +/- (affects visual spacing)
-            if (JustPressed(kb, Keys.OemPlus) || JustPressed(kb, Keys.Add))
-            {
-                _zoom = Math.Clamp(_zoom + 0.25f, 0.25f, 4f);
-                Console.WriteLine($"[ChartEditor] Zoom: {_zoom:F2}x");
-            }
-            if (JustPressed(kb, Keys.OemMinus) || JustPressed(kb, Keys.Subtract))
-            {
-                _zoom = Math.Clamp(_zoom - 0.25f, 0.25f, 4f);
-                Console.WriteLine($"[ChartEditor] Zoom: {_zoom:F2}x");
-            }
-            
-            // Scroll Speed with O/P (más accesible y cerca de otras teclas)
-            if (JustPressed(kb, Keys.O))
-            {
-                _scrollSpeed = Math.Clamp(_scrollSpeed - 0.25f, 0.25f, 4f);
-                Console.WriteLine($"[ChartEditor] Scroll Speed: {_scrollSpeed:F2}x");
-            }
-            if (JustPressed(kb, Keys.P))
-            {
-                _scrollSpeed = Math.Clamp(_scrollSpeed + 0.25f, 0.25f, 4f);
-                Console.WriteLine($"[ChartEditor] Scroll Speed: {_scrollSpeed:F2}x");
-            }
-            
-            // Tool selection (1-4)
-            if (JustPressed(kb, Keys.D1)) _currentTool = EditorTool.Select;
-            if (JustPressed(kb, Keys.D2)) _currentTool = EditorTool.PlaceNote;
-            if (JustPressed(kb, Keys.D3)) _currentTool = EditorTool.PlaceHold;
-            if (JustPressed(kb, Keys.D4)) _currentTool = EditorTool.Delete;
-            
-            // Strumline selection (Q/W) - with validation and logging
-            if (JustPressed(kb, Keys.Q))
-            {
-                if (_level != null && _level.Data.Strumlines.Count > 0)
-                {
-                    _selectedStrumline = 0; // Player
-                    Console.WriteLine($"[ChartEditor] Selected strumline: Player (0)");
-                }
-            }
-            if (JustPressed(kb, Keys.W))
-            {
-                if (_level != null && _level.Data.Strumlines.Count > 1)
-                {
-                    _selectedStrumline = 1; // Opponent
-                    Console.WriteLine($"[ChartEditor] Selected strumline: Opponent (1)");
                 }
                 else
                 {
-                    Console.WriteLine($"[ChartEditor] Cannot switch to Opponent - only {_level?.Data.Strumlines.Count ?? 0} strumline(s) available");
+                    _playbackTime += dt;
+                    float maxSec = TimeUnitsToSeconds(GetMaxTimeUnits());
+                    if (_playbackTime >= maxSec)
+                    {
+                        _playbackTime = maxSec;
+                        _isPlaying = false;
+                    }
+                }
+
+                if (_isPlaying)
+                {
+                    _scrollY = SecondsToTimeUnits(_playbackTime);
+                    float bpm = _level.Data.EffectiveBpm;
+                    float prevBeat = prevSec * bpm / 60f;
+                    float currBeat = _playbackTime * bpm / 60f;
+
+                    if (_metronomeEnabled && _playbackTime >= prevSec)
+                    {
+                        int prevWhole = (int)MathF.Floor(prevBeat);
+                        int currWhole = (int)MathF.Floor(currBeat);
+                        if (currWhole > prevWhole && currWhole >= 0)
+                            PlayMetronomeTick(downbeat: (currWhole % 4) == 0);
+                    }
+
+                    CheckNotesAtReceptor(prevSec, _playbackTime);
+                    UpdatePreviewDuringPlay(_playbackTime, currBeat, dt);
+                    _prevPlaybackTime = _playbackTime;
                 }
             }
-            
-            // Save (Ctrl+S)
-            if (kb.IsKeyDown(Keys.LeftControl) && JustPressed(kb, Keys.S))
-                SaveLevel();
-            
-            // Escape to go back
-            if (JustPressed(kb, Keys.Escape))
+            else if (_level != null)
             {
-                _audioManager.Stop();
-                BackPressed = true;
+                UpdatePreviewPaused(dt);
             }
+
+            _prevKeyboard = kb;
+            _prevMouse = ms;
         }
-        
-        // ── Mouse input ──────────────────────────────────────────────────────
-        private void HandleMouse(MouseState ms)
+
+        // ── Coordinate & Time Unit Helpers ───────────────────────────────────
+        private float TimeUnitsToSeconds(float timeUnits)
         {
-            // Scroll with mouse wheel
-            int wheelDelta = ms.ScrollWheelValue - _prevMouse.ScrollWheelValue;
-            if (wheelDelta != 0)
-            {
-                _scrollY += wheelDelta * 0.003f * _zoom; // Adjust scroll sensitivity with zoom
-            }
-            
-            // Left click in grid area
-            if (ms.LeftButton == ButtonState.Pressed && 
-                _prevMouse.LeftButton == ButtonState.Released &&
-                _gridRect.Contains(ms.Position))
-            {
-                HandleGridClick(ms.X, ms.Y);
-            }
+            if (_level == null) return timeUnits;
+            return _level.Data.ToSeconds(timeUnits);
         }
-        
-        // ── Handle click in grid area ────────────────────────────────────────
-        private void HandleGridClick(int mouseX, int mouseY)
+
+        private float SecondsToTimeUnits(float seconds)
         {
-            if (_level == null) return;
-            
-            // Convert mouse position to grid coordinates
-            float relX = mouseX - _gridRect.X;
-            float relY = mouseY - _gridRect.Y;
-            
-            // Determine lane (0-3)
-            float totalGridWidth = LANE_WIDTH * LANE_COUNT;
-            float gridStartX = (_gridRect.Width - totalGridWidth) / 2f;
-            int lane = (int)((relX - gridStartX) / LANE_WIDTH);
-            
-            if (lane < 0 || lane >= LANE_COUNT) return;
-            
-            // Determine time position (INVERTIDO - desde receptor)
-            float scaledTimeHeight = GetScaledTimeHeight();
-            float receptorY = _gridRect.Y + _gridRect.Height * RECEPTOR_Y_OFFSET;
-            float timePos = _scrollY + (relY - (_gridRect.Height * RECEPTOR_Y_OFFSET)) / scaledTimeHeight;
-            
-            // Snap to grid
-            float snapResolution = _level.Data.TimesAreSeconds ? 0.0625f : 0.25f; // 1/16 second or 1/4 beat
-            float snappedTime = MathF.Round(timePos / snapResolution) * snapResolution;
-            
-            Console.WriteLine($"[ChartEditor] Clicked lane {lane} at time {snappedTime:F2}");
-            
-            // Animate receptor press
-            _receptorPressTime[lane] = RECEPTOR_ANIM_DURATION;
-            
-            // Place note based on current tool
-            if (_currentTool == EditorTool.PlaceNote)
-            {
-                PlaceNote(lane, snappedTime, 0f);
-                IsModified = true;
-            }
-            else if (_currentTool == EditorTool.PlaceHold)
-            {
-                PlaceNote(lane, snappedTime, 0.5f); // Default hold duration
-                IsModified = true;
-            }
-            else if (_currentTool == EditorTool.Delete)
-            {
-                DeleteNoteAt(lane, snappedTime);
-                IsModified = true;
-            }
-            
-            _selectedLane = lane;
+            if (_level == null || _level.Data.TimesAreSeconds)
+                return seconds;
+            return (seconds * _level.Data.EffectiveBpm) / 60f;
         }
-        
-        // ── Place note at position ───────────────────────────────────────────
-        private void PlaceNote(int lane, float beat, float duration)
+
+        private float TimeUnitsToBeats(float timeUnits)
         {
-            if (_level == null || _selectedStrumline >= _level.Data.Strumlines.Count) return;
-            
-            var strumline = _level.Data.Strumlines[_selectedStrumline];
-            if (lane >= strumline.Count) return;
-            
-            // Check if note already exists at this position
-            var existing = strumline[lane].FirstOrDefault(n => MathF.Abs(n.Start - beat) < 0.01f);
-            if (existing != null)
-            {
-                Console.WriteLine($"[ChartEditor] Note already exists at beat {beat:F2}");
-                return;
-            }
-            
-            var newNote = new FnmmNote
-            {
-                Start = beat,
-                Duration = duration,
-                Props = new NoteProps { Skin = 0 }
-            };
-            
-            strumline[lane].Add(newNote);
-            Console.WriteLine($"[ChartEditor] Placed note at lane {lane}, beat {beat:F2}, duration {duration:F2}");
+            if (_level == null || !_level.Data.TimesAreSeconds)
+                return timeUnits;
+            return (timeUnits * _level.Data.EffectiveBpm) / 60f;
         }
-        
-        // ── Delete note at position ──────────────────────────────────────────
-        private void DeleteNoteAt(int lane, float beat)
+
+        private float BeatsToTimeUnits(float beats)
         {
-            if (_level == null || _selectedStrumline >= _level.Data.Strumlines.Count) return;
-            
-            var strumline = _level.Data.Strumlines[_selectedStrumline];
-            if (lane >= strumline.Count) return;
-            
-            var noteToDelete = strumline[lane].FirstOrDefault(n => MathF.Abs(n.Start - beat) < 0.1f);
-            if (noteToDelete != null)
-            {
-                strumline[lane].Remove(noteToDelete);
-                Console.WriteLine($"[ChartEditor] Deleted note at lane {lane}, beat {beat:F2}");
-            }
+            if (_level == null || !_level.Data.TimesAreSeconds)
+                return beats;
+            return (beats * 60f) / _level.Data.EffectiveBpm;
         }
-        
-        // ── Save level ───────────────────────────────────────────────────────
-        private void SaveLevel()
+
+        private float GetMaxTimeUnits()
         {
-            if (_level == null) return;
-            
-            try
+            float durSec = Math.Max(30f, _audioManager.Duration / 1000f);
+            float maxUnits = SecondsToTimeUnits(durSec);
+            if (_level != null)
             {
-                FnmmSaver.Save(_level, _levelPath);
-                IsModified = false;
-                Console.WriteLine($"[ChartEditor] Saved level to {_levelPath}");
+                foreach (var sl in _level.Data.Strumlines)
+                    foreach (var lane in sl)
+                        foreach (var n in lane)
+                            maxUnits = Math.Max(maxUnits, n.Start + n.Duration + 4f);
             }
-            catch (Exception ex)
-            {
-                _errorMessage = $"Save failed: {ex.Message}";
-                Console.WriteLine($"[ChartEditor] Save error: {ex.Message}");
-            }
+            return maxUnits;
         }
-        
-        // ── Helper: Check if key just pressed ────────────────────────────────
-        private bool JustPressed(KeyboardState kb, Keys key)
+
+        private float GetSnapStepBeats() => 4f / Math.Max(1, _snapDivisor);
+
+        private float GetSnapStepUnits() => BeatsToTimeUnits(GetSnapStepBeats());
+
+        private float SnapBeatCell(float beat)
         {
-            return kb.IsKeyDown(key) && !_prevKeyboard.IsKeyDown(key);
+            float step = GetSnapStepBeats();
+            if (step <= 0.0001f) return Math.Max(0f, beat);
+            return Math.Max(0f, MathF.Floor(beat / step) * step);
         }
-        
-        // ── Helper: Get scaled time unit height (beats or seconds) ───────────
+
+        private float SnapBeatNearest(float beat)
+        {
+            float step = GetSnapStepBeats();
+            if (step <= 0.0001f) return Math.Max(0f, beat);
+            return Math.Max(0f, MathF.Round(beat / step) * step);
+        }
+
+        private float GetStepHeight() => _laneWidth * _zoom;
+        private float GetBeatHeight() => GetStepHeight() * STEPS_PER_BEAT;
         private float GetScaledTimeHeight()
         {
-            if (_level == null) return BEAT_HEIGHT * _zoom * _scrollSpeed;
-            
-            // If times are in seconds (Version 2.0+), use SECOND_HEIGHT
-            // If times are in beats (Version < 2.0), use BEAT_HEIGHT
-            float baseHeight = _level.Data.TimesAreSeconds ? SECOND_HEIGHT : BEAT_HEIGHT;
-            return baseHeight * _zoom * _scrollSpeed;
+            if (_level != null && _level.Data.TimesAreSeconds)
+                return GetBeatHeight() * (_level.Data.EffectiveBpm / 60f);
+            return GetBeatHeight();
         }
-        
-        // ── Check for notes at receptor bar (trigger character animations) ──
-        private void CheckNotesAtReceptor()
+
+        private float GetTotalGridWidth() => _laneWidth * GRID_COLS + _gridGroupGap;
+
+        private float GetGridStartX()
+        {
+            float totalW = GetTotalGridWidth();
+            float leftGutter = UiScale.Px(52, _uiScale, 32);
+            float rightPad = UiScale.Px(14, _uiScale, 8);
+            return _gridBodyRect.X + leftGutter + Math.Max(0f, (_gridBodyRect.Width - leftGutter - rightPad - totalW) * 0.5f);
+        }
+
+        private float GetColumnX(int col) =>
+            col < LANE_COUNT
+                ? GetGridStartX() + col * _laneWidth
+                : GetGridStartX() + LANE_COUNT * _laneWidth + _gridGroupGap + (col - LANE_COUNT) * _laneWidth;
+
+        private void ColToStrumAndLane(int col, out int strumIdx, out int lane)
+        {
+            if (col < LANE_COUNT)
+            {
+                strumIdx = _leftStrumline; // Left block = Opponent / selected extra track
+                lane = col;
+            }
+            else
+            {
+                strumIdx = _rightStrumline; // Right block = Player (BF)
+                lane = col - LANE_COUNT;
+            }
+        }
+
+        private int StrumAndLaneToCol(int strumIdx, int lane)
+        {
+            if (strumIdx == _leftStrumline) return lane;
+            if (strumIdx == _rightStrumline) return LANE_COUNT + lane;
+            return -1;
+        }
+
+        private float GetReceptorY() => _gridBodyRect.Y + _gridBodyRect.Height * RECEPTOR_Y_OFFSET;
+
+        private float ScreenYToBeat(int y) =>
+            TimeUnitsToBeats(_scrollY) + (y - GetReceptorY()) / Math.Max(4f, GetBeatHeight());
+
+        private float ScreenYToTime(int y) =>
+            BeatsToTimeUnits(ScreenYToBeat(y));
+
+        private int BeatToScreenY(float beat) =>
+            (int)MathF.Round(GetReceptorY() + (beat - TimeUnitsToBeats(_scrollY)) * GetBeatHeight());
+
+        private int TimeToScreenY(float timeUnits) =>
+            BeatToScreenY(TimeUnitsToBeats(timeUnits));
+
+        private int ScreenXToColumn(int x)
+        {
+            float lx = GetGridStartX();
+            if (x >= lx && x < lx + _laneWidth * LANE_COUNT)
+                return Math.Clamp((int)((x - lx) / _laneWidth), 0, LANE_COUNT - 1);
+
+            float rx = GetColumnX(LANE_COUNT);
+            if (x >= rx && x < rx + _laneWidth * LANE_COUNT)
+                return LANE_COUNT + Math.Clamp((int)((x - rx) / _laneWidth), 0, LANE_COUNT - 1);
+
+            return -1;
+        }
+
+        private int ScreenXToLane(int x)
+        {
+            int col = ScreenXToColumn(x);
+            return col >= 0 ? col % LANE_COUNT : -1;
+        }
+
+        // ── Keyboard Input ───────────────────────────────────────────────────
+        private void HandleKeyboard(KeyboardState kb, float dt)
+        {
+            bool ctrl = kb.IsKeyDown(Keys.LeftControl) || kb.IsKeyDown(Keys.RightControl);
+            bool shift = kb.IsKeyDown(Keys.LeftShift) || kb.IsKeyDown(Keys.RightShift);
+
+            if (JustPressed(kb, Keys.Escape))
+            {
+                PausePlayback();
+                BackPressed = true;
+                return;
+            }
+
+            if (ctrl && JustPressed(kb, Keys.S))
+            {
+                SaveLevel();
+                return;
+            }
+
+            if (ctrl && JustPressed(kb, Keys.Z))
+            {
+                Undo();
+                return;
+            }
+
+            if (ctrl && JustPressed(kb, Keys.Y))
+            {
+                Redo();
+                return;
+            }
+
+            if (JustPressed(kb, Keys.Space))
+            {
+                TogglePlayPause();
+                return;
+            }
+
+            if (JustPressed(kb, Keys.Enter))
+            {
+                TriggerPlaytest(fromStart: shift);
+                return;
+            }
+
+            if (JustPressed(kb, Keys.V))
+            {
+                _showPreview = !_showPreview;
+                ShowToast(_showPreview ? "Stage Preview shown" : "Stage Preview hidden");
+            }
+
+            // Tools 1-4
+            if (JustPressed(kb, Keys.D1)) SetTool(EditorTool.Select);
+            if (JustPressed(kb, Keys.D2)) SetTool(EditorTool.PlaceNote);
+            if (JustPressed(kb, Keys.D3)) SetTool(EditorTool.PlaceHold);
+            if (JustPressed(kb, Keys.D4)) SetTool(EditorTool.Delete);
+
+            // Clipboard Copy / Paste (Ctrl+C / Ctrl+V)
+            if (ctrl && JustPressed(kb, Keys.C)) { CopyCurrentMeasure(); return; }
+            if (ctrl && JustPressed(kb, Keys.V)) { PasteClipboardAtPlayhead(); return; }
+
+            // Focus Strumlines Q=BF (Right), W=Left Track, Tab=Cycle Extra Strumlines (3+)
+            if (JustPressed(kb, Keys.Q)) SwitchStrumline(_rightStrumline);
+            if (JustPressed(kb, Keys.W)) SwitchStrumline(_leftStrumline);
+            if (JustPressed(kb, Keys.Tab)) CycleLeftStrumline(shift ? -1 : 1);
+
+            // Stage Preview Cam / Audio Cues / Mirror shortcuts (when Ctrl not held)
+            if (!ctrl && JustPressed(kb, Keys.C)) CyclePreviewCamera();
+            if (!ctrl && JustPressed(kb, Keys.H))
+            {
+                _hitsoundsEnabled = !_hitsoundsEnabled;
+                ShowToast(_hitsoundsEnabled ? "Hitsounds ON" : "Hitsounds OFF");
+            }
+            if (!ctrl && JustPressed(kb, Keys.N))
+            {
+                _metronomeEnabled = !_metronomeEnabled;
+                ShowToast(_metronomeEnabled ? "Metronome ON" : "Metronome OFF");
+            }
+            if (!ctrl && JustPressed(kb, Keys.M)) MirrorCurrentMeasure();
+
+            // Snap cycle Z/X
+            if (JustPressed(kb, Keys.Z)) CycleSnap(-1);
+            if (JustPressed(kb, Keys.X)) CycleSnap(1);
+
+            // Hold duration [ / ]
+            if (JustPressed(kb, Keys.OemOpenBrackets)) AdjustHoldDuration(-1);
+            if (JustPressed(kb, Keys.OemCloseBrackets)) AdjustHoldDuration(1);
+
+            // Note skin cycle T
+            if (JustPressed(kb, Keys.T))
+            {
+                if (_selectedNote != null)
+                {
+                    CycleSelectedNoteSkin();
+                }
+                else
+                {
+                    _activeNoteSkin = (_activeNoteSkin + 1f) % 4f;
+                    ShowToast($"Brush Skin: {GetSkinName(_activeNoteSkin)}");
+                }
+            }
+
+            // Delete selected note
+            if ((JustPressed(kb, Keys.Delete) || JustPressed(kb, Keys.Back)) && _selectedNote != null)
+            {
+                DeleteSpecificNote(_selectedNoteStrumline, _selectedNoteLane, _selectedNote);
+                _selectedNote = null;
+            }
+
+            // Live/Step Note Input on focused strumline (D F J K = Left Down Up Right)
+            if (!ctrl)
+            {
+                if (JustPressed(kb, Keys.D)) StepToggleNoteAtPlayhead(0);
+                if (JustPressed(kb, Keys.F)) StepToggleNoteAtPlayhead(1);
+                if (JustPressed(kb, Keys.J)) StepToggleNoteAtPlayhead(2);
+                if (JustPressed(kb, Keys.K)) StepToggleNoteAtPlayhead(3);
+            }
+
+            if (_isPlaying) return;
+
+            // Scroll Up/Down (Beat-normalized speed), PageUp/PageDown (Measure jump), or Home
+            float scrollRate = BeatsToTimeUnits((shift ? 12f : 5f) * dt);
+            if (kb.IsKeyDown(Keys.Up)) ScrollTo(_scrollY - scrollRate);
+            if (kb.IsKeyDown(Keys.Down)) ScrollTo(_scrollY + scrollRate);
+            if (JustPressed(kb, Keys.PageUp)) ScrollTo(BeatsToTimeUnits(Math.Max(0f, SnapBeatCell(TimeUnitsToBeats(_scrollY)) - 4f)));
+            if (JustPressed(kb, Keys.PageDown)) ScrollTo(BeatsToTimeUnits(SnapBeatCell(TimeUnitsToBeats(_scrollY)) + 4f));
+            if (JustPressed(kb, Keys.Home)) ScrollTo(0f);
+
+            // Move selected note Left/Right across all 8 grid columns when in Select mode
+            if (_selectedNote != null && JustPressed(kb, Keys.Left))
+            {
+                int col = StrumAndLaneToCol(_selectedNoteStrumline, _selectedNoteLane);
+                if (col > 0)
+                {
+                    ColToStrumAndLane(col - 1, out int dstStrum, out int dstLane);
+                    MoveNote(_selectedNote, _selectedNoteStrumline, _selectedNoteLane, dstStrum, dstLane, _selectedNote.Start);
+                }
+            }
+            if (_selectedNote != null && JustPressed(kb, Keys.Right))
+            {
+                int col = StrumAndLaneToCol(_selectedNoteStrumline, _selectedNoteLane);
+                if (col >= 0 && col < GRID_COLS - 1)
+                {
+                    ColToStrumAndLane(col + 1, out int dstStrum, out int dstLane);
+                    MoveNote(_selectedNote, _selectedNoteStrumline, _selectedNoteLane, dstStrum, dstLane, _selectedNote.Start);
+                }
+            }
+
+            // Grid Zoom +/-
+            if (JustPressed(kb, Keys.OemPlus) || JustPressed(kb, Keys.Add))
+                ChangeZoom(0.25f);
+            if (JustPressed(kb, Keys.OemMinus) || JustPressed(kb, Keys.Subtract))
+                ChangeZoom(-0.25f);
+
+            // Gameplay Note Scroll Speed O/P
+            if (JustPressed(kb, Keys.O)) ChangeChartSpeed(-0.1f);
+            if (JustPressed(kb, Keys.P)) ChangeChartSpeed(0.1f);
+        }
+
+        // ── Audio Cues, Step Input, Multi-Strumline & Clipboard ──────────────
+        private void EnsureAudioCuesInitialized()
+        {
+            if (_audioCuesInitialized) return;
+            _audioCuesInitialized = true;
+            try
+            {
+                _hitSoundFx = CreateToneFx(1150f, 0.036f, 55f, 0.55f);
+                _metroBeatFx = CreateToneFx(1320f, 0.048f, 42f, 0.60f);
+                _metroSubFx = CreateToneFx(880f, 0.038f, 52f, 0.42f);
+            }
+            catch
+            {
+                // Headless or audio-disabled environments safely ignore cue synth errors
+            }
+        }
+
+        private static SoundEffect CreateToneFx(float freqHz, float durationSec, float decayRate, float volume)
+        {
+            const int sampleRate = 44100;
+            int samples = Math.Max(64, (int)(sampleRate * durationSec));
+            byte[] pcm = new byte[samples * 2];
+            for (int i = 0; i < samples; i++)
+            {
+                float t = i / (float)sampleRate;
+                float env = MathF.Exp(-t * decayRate);
+                float wave = MathF.Sin(2f * MathF.PI * freqHz * t) * 0.7f
+                           + MathF.Sin(2f * MathF.PI * freqHz * 2.1f * t) * 0.3f;
+                short sample = (short)Math.Clamp(wave * env * volume * short.MaxValue, short.MinValue, short.MaxValue);
+                pcm[i * 2] = (byte)(sample & 0xFF);
+                pcm[i * 2 + 1] = (byte)((sample >> 8) & 0xFF);
+            }
+            return new SoundEffect(pcm, sampleRate, AudioChannels.Mono);
+        }
+
+        private void PlayHitsound()
+        {
+            if (!_hitsoundsEnabled) return;
+            EnsureAudioCuesInitialized();
+            try { _hitSoundFx?.Play(0.70f, 0f, 0f); } catch { }
+        }
+
+        private void PlayMetronomeTick(bool downbeat)
+        {
+            if (!_metronomeEnabled) return;
+            EnsureAudioCuesInitialized();
+            try { (downbeat ? _metroBeatFx : _metroSubFx)?.Play(downbeat ? 0.75f : 0.52f, 0f, 0f); } catch { }
+        }
+
+        private void StepToggleNoteAtPlayhead(int lane)
+        {
+            if (_level == null || lane < 0 || lane >= LANE_COUNT) return;
+            if (_selectedStrumline < 0 || _selectedStrumline >= _level.Data.Strumlines.Count) return;
+
+            float targetBeat = SnapBeatNearest(TimeUnitsToBeats(_scrollY));
+            float targetUnits = BeatsToTimeUnits(targetBeat);
+            float tolUnits = Math.Max(0.005f, GetSnapStepUnits() * 0.45f);
+
+            var laneNotes = _level.Data.Strumlines[_selectedStrumline][lane];
+            FnmmNote? existing = null;
+            foreach (var n in laneNotes)
+            {
+                if (MathF.Abs(n.Start - targetUnits) <= tolUnits)
+                {
+                    existing = n;
+                    break;
+                }
+            }
+
+            _receptorPressTime[Math.Min(_selectedStrumline, MAX_STRUMLINES - 1), lane] = RECEPTOR_ANIM_DURATION;
+            _selectedLane = lane;
+
+            if (existing != null)
+            {
+                DeleteSpecificNote(_selectedStrumline, lane, existing);
+                if (_selectedNote == existing) _selectedNote = null;
+            }
+            else
+            {
+                float dur = _currentTool == EditorTool.PlaceHold
+                    ? BeatsToTimeUnits(Math.Max(GetSnapStepBeats(), _defaultHoldBeats))
+                    : 0f;
+                var created = CreateAndAddNote(_selectedStrumline, lane, targetUnits, dur, _activeNoteSkin);
+                if (created != null)
+                    SelectNote(created, _selectedStrumline, lane);
+            }
+        }
+
+        private void CycleLeftStrumline(int dir)
         {
             if (_level == null) return;
-            
-            // Current time depends on format
-            float currentTime = _level.Data.TimesAreSeconds 
-                ? _playbackTime  // Already in seconds
-                : (_playbackTime * _level.Data.EffectiveBpm) / 60f; // Convert to beats
-            
-            const float TOLERANCE = 0.08f; // Window for note detection
-            
-            // Check each strumline
-            for (int strumlineIdx = 0; strumlineIdx < Math.Min(2, _level.Data.Strumlines.Count); strumlineIdx++)
+            int count = _level.Data.Strumlines.Count;
+            if (count <= 2)
             {
-                var strumline = _level.Data.Strumlines[strumlineIdx];
-                
-                // Check each lane
-                for (int lane = 0; lane < Math.Min(LANE_COUNT, strumline.Count); lane++)
+                int toggle = _selectedStrumline == _rightStrumline ? _leftStrumline : _rightStrumline;
+                SwitchStrumline(toggle);
+                ShowToast(toggle == _rightStrumline ? "Focus: Player (BF)" : "Focus: Opponent (FOE)");
+                return;
+            }
+
+            int extraCount = count - 1; // 1 .. count-1
+            int offset = (_leftStrumline - 1 + dir + extraCount * 4) % extraCount;
+            _leftStrumline = 1 + offset;
+            _selectedStrumline = _leftStrumline;
+            _selectedNote = null;
+            ShowToast($"Left Track: SL{_leftStrumline} ({CountStrumNotes(_leftStrumline)} notes)");
+        }
+
+        private void CyclePreviewCamera()
+        {
+            int camCount = _previewLevel?.Scene.Cameras.Count ?? _level?.Scene.Cameras.Count ?? 0;
+            if (_previewCameraMode == -1)
+                _previewCameraMode = -2;
+            else if (_previewCameraMode == -2)
+                _previewCameraMode = camCount > 0 ? 0 : -1;
+            else if (_previewCameraMode + 1 < camCount)
+                _previewCameraMode++;
+            else
+                _previewCameraMode = -1;
+
+            _previewNeedsSeek = true;
+            ShowToast($"Preview Cam: {GetPreviewCameraLabel()}");
+        }
+
+        private string GetPreviewCameraLabel() => _previewCameraMode switch
+        {
+            -1 => "AUTO",
+            -2 => "FIT",
+            _ => $"CAM {_previewCameraMode + 1}",
+        };
+
+        private void CopyCurrentMeasure()
+        {
+            if (_level == null || _selectedStrumline >= _level.Data.Strumlines.Count) return;
+            float playBeat = Math.Max(0f, TimeUnitsToBeats(_scrollY));
+            int barIdx = (int)MathF.Floor(playBeat / 4f);
+            float barStart = barIdx * 4f;
+            float barEnd = barStart + 4f;
+
+            _clipboardNotes.Clear();
+            var strum = _level.Data.Strumlines[_selectedStrumline];
+            for (int lane = 0; lane < LANE_COUNT && lane < strum.Count; lane++)
+            {
+                foreach (var n in strum[lane])
                 {
-                    foreach (var note in strumline[lane])
+                    float b = TimeUnitsToBeats(n.Start);
+                    if (b >= barStart - 0.002f && b < barEnd - 0.002f)
+                        _clipboardNotes.Add((lane, Math.Max(0f, b - barStart), n.Duration, n.Props.Skin));
+                }
+            }
+
+            ShowToast(_clipboardNotes.Count > 0
+                ? $"Copied {_clipboardNotes.Count} notes (Bar #{barIdx + 1})"
+                : $"No notes in Bar #{barIdx + 1} (SL{_selectedStrumline})");
+        }
+
+        private void PasteClipboardAtPlayhead()
+        {
+            if (_level == null || _clipboardNotes.Count == 0)
+            {
+                ShowToast("Clipboard empty (Ctrl+C inside a measure first)");
+                return;
+            }
+            if (_selectedStrumline >= _level.Data.Strumlines.Count) return;
+
+            float playBeat = Math.Max(0f, TimeUnitsToBeats(_scrollY));
+            int barIdx = (int)MathF.Floor(playBeat / 4f);
+            float targetBarStart = barIdx * 4f;
+            var strum = _level.Data.Strumlines[_selectedStrumline];
+            var added = new List<(int lane, FnmmNote note)>();
+
+            foreach (var item in _clipboardNotes)
+            {
+                if (item.lane < 0 || item.lane >= LANE_COUNT) continue;
+                float destUnits = BeatsToTimeUnits(targetBarStart + item.relBeat);
+                if (strum[item.lane].Any(n => MathF.Abs(n.Start - destUnits) < 0.005f))
+                    continue;
+                added.Add((item.lane, new FnmmNote
+                {
+                    Start = destUnits,
+                    Duration = item.duration,
+                    Props = new NoteProps { Skin = item.skin }
+                }));
+            }
+
+            if (added.Count == 0)
+            {
+                ShowToast("All copied notes already present at target bar");
+                return;
+            }
+
+            _undoManager.Do(new DelegateEditorAction(
+                () =>
+                {
+                    foreach (var (lane, note) in added)
+                        if (!strum[lane].Contains(note)) strum[lane].Add(note);
+                },
+                () =>
+                {
+                    foreach (var (lane, note) in added)
+                        strum[lane].Remove(note);
+                }
+            ));
+            MarkPreviewDirty();
+            ShowToast($"Pasted {added.Count} notes to Bar #{barIdx + 1}");
+        }
+
+        private void MirrorCurrentMeasure()
+        {
+            if (_level == null || _selectedStrumline >= _level.Data.Strumlines.Count) return;
+            float playBeat = Math.Max(0f, TimeUnitsToBeats(_scrollY));
+            int barIdx = (int)MathF.Floor(playBeat / 4f);
+            float barStart = barIdx * 4f;
+            float barEnd = barStart + 4f;
+
+            var strum = _level.Data.Strumlines[_selectedStrumline];
+            var moves = new List<(FnmmNote note, int fromLane, int toLane)>();
+            for (int lane = 0; lane < LANE_COUNT && lane < strum.Count; lane++)
+            {
+                foreach (var n in strum[lane])
+                {
+                    float b = TimeUnitsToBeats(n.Start);
+                    if (b >= barStart - 0.002f && b < barEnd - 0.002f)
+                        moves.Add((n, lane, LANE_COUNT - 1 - lane));
+                }
+            }
+
+            if (moves.Count == 0)
+            {
+                ShowToast($"No notes to mirror in Bar #{barIdx + 1}");
+                return;
+            }
+
+            _undoManager.Do(new DelegateEditorAction(
+                () =>
+                {
+                    foreach (var (n, from, _) in moves) strum[from].Remove(n);
+                    foreach (var (n, _, to) in moves) if (!strum[to].Contains(n)) strum[to].Add(n);
+                },
+                () =>
+                {
+                    foreach (var (n, _, to) in moves) strum[to].Remove(n);
+                    foreach (var (n, from, _) in moves) if (!strum[from].Contains(n)) strum[from].Add(n);
+                }
+            ));
+            _selectedNote = null;
+            MarkPreviewDirty();
+            ShowToast($"Mirrored {moves.Count} notes in Bar #{barIdx + 1}");
+        }
+
+        // ── Mouse Input ──────────────────────────────────────────────────────
+        private void HandleMouse(MouseState ms)
+        {
+            var pt = ms.Position;
+            bool leftDown = ms.LeftButton == ButtonState.Pressed;
+            bool leftJustPressed = leftDown && _prevMouse.LeftButton == ButtonState.Released;
+            bool leftJustReleased = !leftDown && _prevMouse.LeftButton == ButtonState.Pressed;
+            bool rightJustPressed = ms.RightButton == ButtonState.Pressed && _prevMouse.RightButton == ButtonState.Released;
+            var kbNow = Keyboard.GetState();
+            bool shift = kbNow.IsKeyDown(Keys.LeftShift) || kbNow.IsKeyDown(Keys.RightShift);
+            bool ctrl = kbNow.IsKeyDown(Keys.LeftControl) || kbNow.IsKeyDown(Keys.RightControl);
+
+            // Mouse wheel: Ctrl+Wheel zooms grid, Shift+Wheel edits hold len, Wheel scrolls chart
+            int wheelDelta = ms.ScrollWheelValue - _prevMouse.ScrollWheelValue;
+            if (wheelDelta != 0 && _level != null)
+            {
+                if (ctrl)
+                {
+                    ChangeZoom(wheelDelta > 0 ? 0.25f : -0.25f);
+                }
+                else if (shift)
+                {
+                    AdjustHoldDuration(wheelDelta > 0 ? 1 : -1);
+                }
+                else
+                {
+                    float step = GetSnapStepUnits() * 2f;
+                    ScrollTo(_scrollY - (wheelDelta / 120f) * step);
+                }
+            }
+
+            // Track hover cell in 8-column grid
+            if (_gridBodyRect.Contains(pt))
+            {
+                _hoverCol = ScreenXToColumn(pt.X);
+                if (_hoverCol >= 0)
+                {
+                    ColToStrumAndLane(_hoverCol, out _hoverStrumline, out _hoverLane);
+                    _hoverSnappedBeat = SnapBeatCell(ScreenYToBeat(pt.Y));
+                }
+                else
+                {
+                    _hoverStrumline = -1;
+                    _hoverLane = -1;
+                    _hoverSnappedBeat = -1f;
+                }
+            }
+            else
+            {
+                _hoverCol = -1;
+                _hoverStrumline = -1;
+                _hoverLane = -1;
+                _hoverSnappedBeat = -1f;
+            }
+
+            // Active drags take priority
+            if (_dragMode != DragMode.None)
+            {
+                UpdateDrag(pt, leftDown, leftJustReleased);
+                return;
+            }
+
+            // Right-click in grid always quick-deletes under cursor (works on either FOE or BF column)
+            if (rightJustPressed && _gridBodyRect.Contains(pt))
+            {
+                int col = ScreenXToColumn(pt.X);
+                if (col >= 0)
+                {
+                    ColToStrumAndLane(col, out int strumIdx, out int lane);
+                    var hit = FindNoteAt(strumIdx, lane, pt.Y);
+                    if (hit != null)
                     {
-                        // Check if note is hitting receptor right now
-                        if (MathF.Abs(note.Start - currentTime) < TOLERANCE)
+                        DeleteSpecificNote(strumIdx, lane, hit);
+                        if (_selectedNote == hit) _selectedNote = null;
+                    }
+                }
+                return;
+            }
+
+            if (!leftJustPressed) return;
+
+            // Scrubber click/drag
+            if (_scrubberRect.Contains(pt))
+            {
+                _dragMode = DragMode.Scrubber;
+                SeekFromScrubberX(pt.X);
+                return;
+            }
+
+            // Clickable buttons across Timeline, Toolbar, InfoPanel, Preview close
+            foreach (var btn in _clickActions)
+            {
+                if (btn.Rect != Rectangle.Empty && btn.Rect.Contains(pt))
+                {
+                    btn.OnClick();
+                    return;
+                }
+            }
+
+            // Grid click
+            if (_gridBodyRect.Contains(pt))
+            {
+                HandleGridMouseDown(pt);
+            }
+        }
+
+        private void HandleGridMouseDown(Point pt)
+        {
+            if (_level == null) return;
+            int col = ScreenXToColumn(pt.X);
+            if (col < 0) return;
+
+            ColToStrumAndLane(col, out int strumIdx, out int lane);
+            _selectedStrumline = strumIdx;
+            _selectedLane = lane;
+            _receptorPressTime[strumIdx, lane] = RECEPTOR_ANIM_DURATION;
+
+            float rawBeat = ScreenYToBeat(pt.Y);
+            float snappedBeat = SnapBeatCell(rawBeat);
+            float snappedTime = BeatsToTimeUnits(snappedBeat);
+
+            var hitNote = FindNoteAt(strumIdx, lane, pt.Y);
+
+            switch (_currentTool)
+            {
+                case EditorTool.Select:
+                    if (hitNote != null)
+                    {
+                        SelectNote(hitNote, strumIdx, lane);
+                        if (hitNote.Duration > 0f && IsNearHoldTail(hitNote, pt.Y))
                         {
-                            // Trigger sing animation for this character
-                            _characterSingTime[strumlineIdx] = SING_ANIM_DURATION;
-                            _characterSingLane[strumlineIdx] = lane;
-                            break; // Only one note per lane at a time
+                            BeginDrag(DragMode.ResizeHold, hitNote, strumIdx, lane, ScreenYToTime(pt.Y));
                         }
+                        else
+                        {
+                            BeginDrag(DragMode.MoveNote, hitNote, strumIdx, lane, ScreenYToTime(pt.Y));
+                        }
+                    }
+                    else
+                    {
+                        _selectedNote = null;
+                    }
+                    break;
+
+                case EditorTool.PlaceNote:
+                    if (hitNote != null && MathF.Abs(TimeUnitsToBeats(hitNote.Start) - snappedBeat) < GetSnapStepBeats() * 0.45f)
+                    {
+                        SelectNote(hitNote, strumIdx, lane);
+                    }
+                    else
+                    {
+                        var created = CreateAndAddNote(strumIdx, lane, snappedTime, 0f, _activeNoteSkin);
+                        if (created != null) SelectNote(created, strumIdx, lane);
+                    }
+                    break;
+
+                case EditorTool.PlaceHold:
+                    if (hitNote != null && hitNote.Duration > 0f && IsNearHoldTail(hitNote, pt.Y))
+                    {
+                        SelectNote(hitNote, strumIdx, lane);
+                        BeginDrag(DragMode.ResizeHold, hitNote, strumIdx, lane, ScreenYToTime(pt.Y));
+                    }
+                    else
+                    {
+                        float initBeats = Math.Max(GetSnapStepBeats(), _defaultHoldBeats);
+                        float initDur = BeatsToTimeUnits(initBeats);
+                        var createdHold = CreateAndAddNote(strumIdx, lane, snappedTime, initDur, _activeNoteSkin);
+                        if (createdHold != null)
+                        {
+                            SelectNote(createdHold, strumIdx, lane);
+                            BeginDrag(DragMode.NewHoldTail, createdHold, strumIdx, lane, ScreenYToTime(pt.Y));
+                        }
+                    }
+                    break;
+
+                case EditorTool.Delete:
+                    if (hitNote != null)
+                    {
+                        DeleteSpecificNote(strumIdx, lane, hitNote);
+                        if (_selectedNote == hitNote) _selectedNote = null;
+                    }
+                    break;
+            }
+        }
+
+        private void BeginDrag(DragMode mode, FnmmNote note, int strumline, int lane, float rawTime)
+        {
+            _dragMode = mode;
+            _dragNote = note;
+            _dragOrigStrumline = strumline;
+            _dragOrigLane = lane;
+            _dragOrigStart = note.Start;
+            _dragOrigDuration = note.Duration;
+            _dragGrabOffset = rawTime - note.Start;
+        }
+
+        private void UpdateDrag(Point pt, bool leftDown, bool leftJustReleased)
+        {
+            if (_dragMode == DragMode.Scrubber)
+            {
+                if (leftDown) SeekFromScrubberX(pt.X);
+                if (!leftDown || leftJustReleased) _dragMode = DragMode.None;
+                return;
+            }
+
+            if (_dragNote == null || _level == null)
+            {
+                _dragMode = DragMode.None;
+                return;
+            }
+
+            float rawTime = ScreenYToTime(pt.Y);
+
+            if (_dragMode == DragMode.MoveNote)
+            {
+                int targetCol = ScreenXToColumn(pt.X);
+                int targetStrum = _selectedNoteStrumline;
+                int targetLane = _selectedNoteLane;
+                if (targetCol >= 0)
+                    ColToStrumAndLane(targetCol, out targetStrum, out targetLane);
+
+                float newBeat = SnapBeatNearest(TimeUnitsToBeats(rawTime - _dragGrabOffset));
+                float newStart = BeatsToTimeUnits(newBeat);
+
+                if (targetStrum != _selectedNoteStrumline || targetLane != _selectedNoteLane)
+                {
+                    _level.Data.Strumlines[_selectedNoteStrumline][_selectedNoteLane].Remove(_dragNote);
+                    _level.Data.Strumlines[targetStrum][targetLane].Add(_dragNote);
+                    _selectedNoteStrumline = targetStrum;
+                    _selectedStrumline = targetStrum;
+                    _selectedNoteLane = targetLane;
+                    _selectedLane = targetLane;
+                }
+                _dragNote.Start = newStart;
+
+                if (leftJustReleased || !leftDown)
+                {
+                    float finalStart = _dragNote.Start;
+                    int finalStrum = _selectedNoteStrumline;
+                    int finalLane = _selectedNoteLane;
+                    if (finalStrum != _dragOrigStrumline || finalLane != _dragOrigLane || MathF.Abs(finalStart - _dragOrigStart) > 0.0001f)
+                    {
+                        _level.Data.Strumlines[finalStrum][finalLane].Remove(_dragNote);
+                        _level.Data.Strumlines[_dragOrigStrumline][_dragOrigLane].Add(_dragNote);
+                        _dragNote.Start = _dragOrigStart;
+                        MoveNote(_dragNote, _dragOrigStrumline, _dragOrigLane, finalStrum, finalLane, finalStart);
+                    }
+                    _dragMode = DragMode.None;
+                    _dragNote = null;
+                }
+            }
+            else if (_dragMode == DragMode.ResizeHold || _dragMode == DragMode.NewHoldTail)
+            {
+                float startBeat = TimeUnitsToBeats(_dragNote.Start);
+                float endBeat = SnapBeatCell(ScreenYToBeat(pt.Y));
+                float minStep = GetSnapStepBeats();
+                float durBeats = Math.Max(_dragMode == DragMode.NewHoldTail ? minStep : 0f, endBeat - startBeat);
+                if (durBeats > 0f && durBeats < minStep * 0.5f) durBeats = 0f;
+                _dragNote.Duration = BeatsToTimeUnits(durBeats);
+
+                if (leftJustReleased || !leftDown)
+                {
+                    float finalDur = _dragNote.Duration;
+                    if (_dragMode == DragMode.ResizeHold && MathF.Abs(finalDur - _dragOrigDuration) > 0.0001f)
+                    {
+                        var targetNote = _dragNote;
+                        float oldDur = _dragOrigDuration;
+                        targetNote.Duration = oldDur;
+                        _undoManager.Do(new DelegateEditorAction(
+                            () => { targetNote.Duration = finalDur; MarkPreviewDirty(); },
+                            () => { targetNote.Duration = oldDur; MarkPreviewDirty(); }
+                        ));
+                    }
+                    else if (_dragMode == DragMode.NewHoldTail && durBeats > 0f)
+                    {
+                        _defaultHoldBeats = durBeats;
+                        MarkPreviewDirty();
+                    }
+                    _dragMode = DragMode.None;
+                    _dragNote = null;
+                }
+            }
+        }
+
+        // ── Chart Editing Actions (with Undo/Redo) ───────────────────────────
+        private FnmmNote? CreateAndAddNote(int strumIdx, int lane, float start, float duration, float skin)
+        {
+            if (_level == null || strumIdx < 0 || strumIdx >= _level.Data.Strumlines.Count) return null;
+            var strum = _level.Data.Strumlines[strumIdx];
+            if (lane < 0 || lane >= strum.Count) return null;
+
+            if (strum[lane].Any(n => MathF.Abs(n.Start - start) < 0.005f))
+            {
+                ShowToast("Note already exists at that beat");
+                return null;
+            }
+
+            var note = new FnmmNote
+            {
+                Start = start,
+                Duration = duration,
+                Props = new NoteProps { Skin = skin }
+            };
+
+            _undoManager.Do(new DelegateEditorAction(
+                () =>
+                {
+                    if (!strum[lane].Contains(note))
+                        strum[lane].Add(note);
+                    MarkPreviewDirty();
+                },
+                () =>
+                {
+                    strum[lane].Remove(note);
+                    MarkPreviewDirty();
+                }
+            ));
+            PlayHitsound();
+            return note;
+        }
+
+        private void DeleteSpecificNote(int strumIdx, int lane, FnmmNote note)
+        {
+            if (_level == null || strumIdx < 0 || strumIdx >= _level.Data.Strumlines.Count) return;
+            var strum = _level.Data.Strumlines[strumIdx];
+            if (lane < 0 || lane >= strum.Count) return;
+
+            _undoManager.Do(new DelegateEditorAction(
+                () =>
+                {
+                    strum[lane].Remove(note);
+                    MarkPreviewDirty();
+                },
+                () =>
+                {
+                    if (!strum[lane].Contains(note))
+                        strum[lane].Add(note);
+                    MarkPreviewDirty();
+                }
+            ));
+        }
+
+        private void MoveNote(FnmmNote note, int fromStrum, int fromLane, int toStrum, int toLane, float newStart)
+        {
+            if (_level == null) return;
+            float oldStart = note.Start;
+            var srcList = _level.Data.Strumlines[fromStrum][fromLane];
+            var dstList = _level.Data.Strumlines[toStrum][toLane];
+
+            _undoManager.Do(new DelegateEditorAction(
+                () =>
+                {
+                    srcList.Remove(note);
+                    if (!dstList.Contains(note)) dstList.Add(note);
+                    note.Start = newStart;
+                    _selectedNoteStrumline = toStrum;
+                    _selectedNoteLane = toLane;
+                    _selectedLane = toLane;
+                    MarkPreviewDirty();
+                },
+                () =>
+                {
+                    dstList.Remove(note);
+                    if (!srcList.Contains(note)) srcList.Add(note);
+                    note.Start = oldStart;
+                    _selectedNoteStrumline = fromStrum;
+                    _selectedNoteLane = fromLane;
+                    _selectedLane = fromLane;
+                    MarkPreviewDirty();
+                }
+            ));
+        }
+
+        private void SelectNote(FnmmNote note, int strumIdx, int lane)
+        {
+            _selectedNote = note;
+            _selectedNoteStrumline = strumIdx;
+            _selectedNoteLane = lane;
+            _selectedLane = lane;
+        }
+
+        private FnmmNote? FindNoteAt(int strumIdx, int lane, int mouseY)
+        {
+            if (_level == null || strumIdx < 0 || strumIdx >= _level.Data.Strumlines.Count) return null;
+            var notes = _level.Data.Strumlines[strumIdx][lane];
+
+            float stepH = GetStepHeight();
+            float headHalfH = Math.Max(14f * _uiScale, stepH * 0.48f);
+            float tailPad = Math.Max(10f * _uiScale, stepH * 0.35f);
+
+            FnmmNote? best = null;
+            float bestDist = float.MaxValue;
+
+            foreach (var n in notes)
+            {
+                float headCenterY = BeatToScreenY(TimeUnitsToBeats(n.Start)) + stepH * 0.5f;
+                float headDist = MathF.Abs(mouseY - headCenterY);
+                if (headDist <= headHalfH && headDist < bestDist)
+                {
+                    best = n;
+                    bestDist = headDist;
+                    continue;
+                }
+
+                if (n.Duration > 0f)
+                {
+                    float tailCenterY = BeatToScreenY(TimeUnitsToBeats(n.Start + n.Duration)) + stepH * 0.5f;
+                    if (mouseY >= headCenterY && mouseY <= tailCenterY + tailPad && best == null)
+                    {
+                        best = n;
+                        bestDist = headHalfH;
                     }
                 }
             }
+            return best;
         }
-        
-        // ── Draw ─────────────────────────────────────────────────────────────
+
+        private bool IsNearHoldTail(FnmmNote note, int mouseY)
+        {
+            if (note.Duration <= 0f) return false;
+            float stepH = GetStepHeight();
+            float tailCenterY = BeatToScreenY(TimeUnitsToBeats(note.Start + note.Duration)) + stepH * 0.5f;
+            float handleTol = Math.Max(10f * _uiScale, stepH * 0.36f);
+            return MathF.Abs(mouseY - tailCenterY) <= handleTol;
+        }
+
+        // ── Quick Controls & Actions ─────────────────────────────────────────
+        private void SetTool(EditorTool tool)
+        {
+            _currentTool = tool;
+        }
+
+        private void SwitchStrumline(int idx)
+        {
+            if (_level == null || idx < 0 || idx >= _level.Data.Strumlines.Count) return;
+            if (idx > 0 && idx != _rightStrumline) _leftStrumline = idx;
+            _selectedStrumline = idx;
+            _selectedNote = null;
+        }
+
+        private void SwapSelectedNoteStrumline()
+        {
+            if (_selectedNote == null || _level == null || _level.Data.Strumlines.Count < 2) return;
+            int toStrum = _selectedNoteStrumline == _rightStrumline ? _leftStrumline : _rightStrumline;
+            if (toStrum == _selectedNoteStrumline || toStrum < 0 || toStrum >= _level.Data.Strumlines.Count) return;
+            MoveNote(_selectedNote, _selectedNoteStrumline, _selectedNoteLane, toStrum, _selectedNoteLane, _selectedNote.Start);
+        }
+
+        private void CycleSnap(int dir)
+        {
+            int idx = Array.IndexOf(SNAP_VALUES, _snapDivisor);
+            if (idx < 0) idx = 0;
+            idx = Math.Clamp(idx + dir, 0, SNAP_VALUES.Length - 1);
+            _snapDivisor = SNAP_VALUES[idx];
+            ShowToast($"Snap: 1/{_snapDivisor}");
+        }
+
+        private void AdjustHoldDuration(int dir)
+        {
+            float stepBeats = GetSnapStepBeats();
+            if (_selectedNote != null)
+            {
+                float oldDur = _selectedNote.Duration;
+                float newBeats = Math.Max(0f, TimeUnitsToBeats(oldDur) + dir * stepBeats);
+                if (newBeats > 0f && newBeats < stepBeats * 0.5f) newBeats = 0f;
+                float newDur = BeatsToTimeUnits(newBeats);
+                var target = _selectedNote;
+                _undoManager.Do(new DelegateEditorAction(
+                    () => { target.Duration = newDur; MarkPreviewDirty(); },
+                    () => { target.Duration = oldDur; MarkPreviewDirty(); }
+                ));
+                if (newBeats > 0f) _defaultHoldBeats = newBeats;
+            }
+            else
+            {
+                _defaultHoldBeats = Math.Clamp(_defaultHoldBeats + dir * stepBeats, stepBeats, stepBeats * 32f);
+                ShowToast($"Hold Len: {_defaultHoldBeats:F2} beats");
+            }
+        }
+
+        private void CycleSelectedNoteSkin()
+        {
+            if (_selectedNote == null) return;
+            var target = _selectedNote;
+            float oldSkin = target.Props.Skin;
+            float newSkin = (oldSkin + 1f) % 4f;
+            _undoManager.Do(new DelegateEditorAction(
+                () => { target.Props.Skin = newSkin; MarkPreviewDirty(); },
+                () => { target.Props.Skin = oldSkin; MarkPreviewDirty(); }
+            ));
+            ShowToast($"Note Skin: {GetSkinName(newSkin)}");
+        }
+
+        private void ChangeBpm(float delta)
+        {
+            if (_level == null) return;
+            float oldBpm = _level.Data.EffectiveBpm;
+            float newBpm = Math.Clamp(MathF.Round((oldBpm + delta) * 10f) / 10f, 30f, 400f);
+            if (MathF.Abs(newBpm - oldBpm) < 0.01f) return;
+            _undoManager.Do(new DelegateEditorAction(
+                () => { _level.Data.Bpm = newBpm; MarkPreviewDirty(); },
+                () => { _level.Data.Bpm = oldBpm; MarkPreviewDirty(); }
+            ));
+        }
+
+        private void ChangeZoom(float delta)
+        {
+            _zoom = Math.Clamp(_zoom + delta, 0.50f, 2.50f);
+            ShowToast($"Grid Zoom: {_zoom:F2}x");
+        }
+
+        private void ChangeChartSpeed(float delta)
+        {
+            if (_level == null) return;
+            float oldSpd = _level.Data.Speed;
+            float newSpd = Math.Clamp(MathF.Round((oldSpd + delta) * 20f) / 20f, 0.2f, 8.0f);
+            if (MathF.Abs(newSpd - oldSpd) < 0.005f) return;
+            _undoManager.Do(new DelegateEditorAction(
+                () => _level.Data.Speed = newSpd,
+                () => _level.Data.Speed = oldSpd
+            ));
+            ShowToast($"Note Scroll Speed: {newSpd:F2}x");
+        }
+
+        private void Undo()
+        {
+            if (!_undoManager.CanUndo) return;
+            _undoManager.Undo();
+            _selectedNote = null;
+            MarkPreviewDirty();
+            ShowToast("Undo");
+        }
+
+        private void Redo()
+        {
+            if (!_undoManager.CanRedo) return;
+            _undoManager.Redo();
+            MarkPreviewDirty();
+            ShowToast("Redo");
+        }
+
+        private float GetTotalDurationSeconds()
+        {
+            float maxSec = 30f;
+            if (_audioManager.HasAudioTrack && _audioManager.Duration > 0f)
+                maxSec = Math.Max(maxSec, _audioManager.Duration / 1000f);
+            return Math.Max(maxSec, TimeUnitsToSeconds(GetMaxTimeUnits()));
+        }
+
+        private void TogglePlayPause()
+        {
+            _isPlaying = !_isPlaying;
+            if (_isPlaying)
+            {
+                float startSec = TimeUnitsToSeconds(_scrollY);
+                _playbackTime = startSec;
+                _prevPlaybackTime = startSec;
+                if (_audioManager.HasAudioTrack)
+                {
+                    _audioManager.Seek(startSec * 1000f);
+                    _audioManager.Play();
+                }
+                SyncPreviewToTime(startSec);
+            }
+            else
+            {
+                PausePlayback();
+            }
+        }
+
+        private void PausePlayback()
+        {
+            _isPlaying = false;
+            _audioManager.Pause();
+            _previewNeedsSeek = true;
+        }
+
+        private void ScrollTo(float targetUnits)
+        {
+            _scrollY = Math.Clamp(targetUnits, 0f, GetMaxTimeUnits());
+            _playbackTime = TimeUnitsToSeconds(_scrollY);
+            _prevPlaybackTime = _playbackTime;
+            if (!_isPlaying && _audioManager.HasAudioTrack)
+                _audioManager.Seek(_playbackTime * 1000f);
+            MarkPreviewDirty();
+        }
+
+        private void SeekFromScrubberX(int mouseX)
+        {
+            if (_scrubberRect.Width <= 0) return;
+            float norm = Math.Clamp((mouseX - _scrubberRect.X) / (float)_scrubberRect.Width, 0f, 1f);
+            float durSec = GetTotalDurationSeconds();
+            float targetSec = norm * durSec;
+            _playbackTime = targetSec;
+            _prevPlaybackTime = targetSec;
+            _scrollY = SecondsToTimeUnits(targetSec);
+            if (_audioManager.HasAudioTrack)
+                _audioManager.Seek(targetSec * 1000f);
+            MarkPreviewDirty();
+        }
+
+        private void TriggerPlaytest(bool fromStart)
+        {
+            if (_level == null) return;
+            PausePlayback();
+            PlaytestStartSeconds = fromStart ? 0f : Math.Max(0f, TimeUnitsToSeconds(_scrollY));
+            PlaytestRequested = true;
+        }
+
+        private void SaveLevel()
+        {
+            if (_level == null) return;
+            try
+            {
+                string savePath = _levelPath;
+                if (Directory.Exists(savePath))
+                {
+                    savePath = savePath.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar) + ".fnmm";
+                    _levelPath = savePath;
+                }
+                else if (!savePath.EndsWith(".fnmm", StringComparison.OrdinalIgnoreCase) &&
+                         !savePath.EndsWith(".zip", StringComparison.OrdinalIgnoreCase))
+                {
+                    savePath = Path.ChangeExtension(savePath, ".fnmm");
+                    _levelPath = savePath;
+                }
+
+                if (File.Exists(savePath))
+                    Common.BackupManager.CreateBackupIfNeeded(savePath);
+
+                FnmmSaver.Save(_level, savePath);
+                _undoManager.MarkAsSaved();
+                _manualModified = false;
+                SavedInSession = true;
+                ShowToast($"Saved {Path.GetFileName(savePath)}");
+            }
+            catch (Exception ex)
+            {
+                ShowToast($"Save failed: {ex.Message}");
+                Console.WriteLine($"[ChartEditor] Save error: {ex.Message}");
+            }
+        }
+
+        private void ShowToast(string msg)
+        {
+            _toastMessage = msg;
+            _toastTimer = 2.4f;
+        }
+
+        private void CheckNotesAtReceptor(float prevSec, float currSec)
+        {
+            if (_level == null || currSec < prevSec - 0.001f) return;
+
+            int slCount = Math.Min(_level.Data.Strumlines.Count, MAX_STRUMLINES);
+            bool anyHeadCrossed = false;
+            bool startedAtZero = MathF.Abs(prevSec) < 0.0005f;
+
+            for (int sl = 0; sl < slCount; sl++)
+            {
+                var strum = _level.Data.Strumlines[sl];
+                bool strumCrossed = false;
+
+                for (int lane = 0; lane < Math.Min(LANE_COUNT, strum.Count); lane++)
+                {
+                    foreach (var note in strum[lane])
+                    {
+                        float startSec = TimeUnitsToSeconds(note.Start);
+                        float durSec = Math.Max(0f, TimeUnitsToSeconds(note.Duration));
+                        float endSec = startSec + durSec;
+
+                        bool crossedHead = (currSec > prevSec) &&
+                            ((startSec > prevSec && startSec <= currSec) || (startedAtZero && startSec >= 0f && startSec <= currSec));
+                        bool inHold = durSec > 0.001f && currSec >= startSec && currSec <= endSec;
+
+                        if (crossedHead)
+                        {
+                            _characterSingTime[sl] = SING_ANIM_DURATION;
+                            _characterSingLane[sl] = lane;
+                            _receptorPressTime[sl, lane] = RECEPTOR_ANIM_DURATION;
+                            strumCrossed = true;
+                            anyHeadCrossed = true;
+                            if (_previewInitialized && _previewLevel != null)
+                                FnmmSceneRenderer.TriggerCharacterSing(_previewLevel, _previewAnimators, sl, lane, currSec, endSec);
+                        }
+                        else if (inHold)
+                        {
+                            _characterSingTime[sl] = Math.Max(_characterSingTime[sl], 0.10f);
+                            _characterSingLane[sl] = lane;
+                            _receptorPressTime[sl, lane] = Math.Max(_receptorPressTime[sl, lane], 0.08f);
+                            if (_previewInitialized && _previewLevel != null)
+                                ExtendPreviewHoldSing(sl, lane, currSec, endSec);
+                        }
+                    }
+                }
+
+                if (strumCrossed)
+                    _previewEvents?.NotifyNoteHit(sl);
+            }
+
+            if (anyHeadCrossed)
+                PlayHitsound();
+        }
+
+        private void ExtendPreviewHoldSing(int sl, int lane, float songTime, float holdEnd)
+        {
+            if (_previewLevel == null) return;
+            var objs = _previewLevel.Scene.Objects;
+            int targetAnim = lane + 1;
+            for (int j = 0; j < objs.Count && j < _previewAnimators.Length; j++)
+            {
+                if ((int)objs[j].StrumLine != sl) continue;
+                var anim = _previewAnimators[j];
+                if (anim == null || !anim.Visible || anim.Opacity <= 0.01f || anim.IsSetByEvent) continue;
+                if (anim.CurrentAnimIndex == targetAnim)
+                    anim.HoldUntil = Math.Max(anim.HoldUntil, holdEnd);
+                else
+                    FnmmSceneRenderer.TriggerCharacterSing(_previewLevel, _previewAnimators, sl, lane, songTime, holdEnd);
+            }
+        }
+
+        private void MarkPreviewDirty() => _previewNeedsSeek = true;
+
+        private void ResetPreviewAnimatorsToIdle()
+        {
+            if (_previewLevel == null) return;
+            var objs = _previewLevel.Scene.Objects;
+            for (int i = 0; i < _previewAnimators.Length && i < objs.Count; i++)
+            {
+                var anim = _previewAnimators[i];
+                if (anim == null) continue;
+                anim.HoldUntil = -1f;
+                int idleIdx = 0;
+                if (anim.IsCharacter && _previewLevel.Sprites.TryGetValue(objs[i].Spr, out var sprPair))
+                {
+                    if (sprPair.Def.Data.Count > 1 && sprPair.Def.Data[0].FrameCount == 1)
+                        idleIdx = 1;
+                }
+                anim.SetAnimation(idleIdx, setByEvent: false);
+            }
+        }
+
+        private void SyncPreviewToTime(float targetSec)
+        {
+            if (!_previewInitialized || _previewLevel == null || _previewEvents == null || _level == null)
+                return;
+
+            float clamped = Math.Max(0f, targetSec);
+            _previewLevel.Data.Bpm = _level.Data.Bpm;
+            float bpm = _level.Data.EffectiveBpm;
+
+            ResetPreviewAnimatorsToIdle();
+            _previewCameraManager?.Reset();
+            _previewEvents.SeekTo(clamped);
+            _previewEvents.Update(clamped, 5.0f);
+
+            // Restore note-driven poses near targetSec so scrubbed stops show characters singing!
+            int slCount = Math.Min(_level.Data.Strumlines.Count, MAX_STRUMLINES);
+            for (int sl = 0; sl < slCount; sl++)
+            {
+                var strum = _level.Data.Strumlines[sl];
+                int bestLane = -1;
+                float bestStart = -1f;
+                float bestEnd = -1f;
+
+                for (int lane = 0; lane < Math.Min(LANE_COUNT, strum.Count); lane++)
+                {
+                    foreach (var n in strum[lane])
+                    {
+                        float ns = TimeUnitsToSeconds(n.Start);
+                        float ne = ns + Math.Max(0f, TimeUnitsToSeconds(n.Duration));
+                        bool activeHold = ne > ns + 0.01f && clamped >= ns && clamped <= ne;
+                        bool recentTap = clamped >= ns && clamped - ns <= 0.22f;
+                        if ((activeHold || recentTap) && ns >= bestStart)
+                        {
+                            bestStart = ns;
+                            bestEnd = Math.Max(ne, clamped + SING_ANIM_DURATION);
+                            bestLane = lane;
+                        }
+                    }
+                }
+
+                if (bestLane >= 0)
+                {
+                    FnmmSceneRenderer.TriggerCharacterSing(_previewLevel, _previewAnimators, sl, bestLane, clamped, bestEnd);
+                    _characterSingTime[sl] = SING_ANIM_DURATION;
+                    _characterSingLane[sl] = bestLane;
+                }
+            }
+
+            foreach (var anim in _previewAnimators)
+            {
+                if (anim == null) continue;
+                anim.Bpm = bpm;
+                anim.Update(0.016f, clamped);
+            }
+
+            _previewLastSeekTime = clamped;
+            _previewNeedsSeek = false;
+        }
+
+        private void UpdatePreviewDuringPlay(float songTime, float currentBeat, float dt)
+        {
+            if (!_previewInitialized || _previewLevel == null || _previewEvents == null || _level == null)
+                return;
+
+            float bpm = _level.Data.EffectiveBpm;
+            _previewLevel.Data.Bpm = _level.Data.Bpm;
+            _previewEvents.Update(songTime, dt);
+            _previewCameraManager?.UpdateBeatZoom((int)MathF.Floor(currentBeat), dt);
+
+            foreach (var anim in _previewAnimators)
+            {
+                if (anim == null) continue;
+                anim.Bpm = bpm;
+                anim.Update(dt, songTime);
+            }
+
+            _previewLastSeekTime = songTime;
+            _previewNeedsSeek = false;
+        }
+
+        private void UpdatePreviewPaused(float dt)
+        {
+            if (!_previewInitialized || _previewLevel == null || _previewEvents == null || _level == null)
+                return;
+
+            float curSec = TimeUnitsToSeconds(_scrollY);
+            if (_previewNeedsSeek || MathF.Abs(curSec - _previewLastSeekTime) > 0.004f)
+            {
+                SyncPreviewToTime(curSec);
+                return;
+            }
+
+            // Keep idle loops breathing gently at paused timestamp (notes holding keeps sing pose via HoldUntil >= _previewLastSeekTime)
+            float bpm = _level.Data.EffectiveBpm;
+            foreach (var anim in _previewAnimators)
+            {
+                if (anim == null) continue;
+                anim.Bpm = bpm;
+                anim.Update(dt, _previewLastSeekTime);
+            }
+        }
+
+        // ── Layout ───────────────────────────────────────────────────────────
+        private void UpdateLayout(int sw, int sh)
+        {
+            float s = UiScale.FromScreen(sw, sh);
+            _uiScale = s;
+
+            int timelineH = UiScale.Px(74, s, 56);
+            int statusH = UiScale.Px(28, s, 22);
+            _gridHeaderH = UiScale.Px(46, s, 34);
+            int toolbarW = Math.Clamp((int)(sw * 0.125f), UiScale.Px(140, s, 110), UiScale.Px(240, s));
+            int infoW = Math.Clamp((int)(sw * 0.245f), UiScale.Px(290, s, 240), UiScale.Px(440, s));
+
+            _timelineRect = new Rectangle(0, 0, sw, timelineH);
+            _toolbarRect = new Rectangle(0, timelineH, toolbarW, sh - timelineH - statusH);
+            _infoPanelRect = new Rectangle(sw - infoW, timelineH, infoW, sh - timelineH - statusH);
+            _gridRect = new Rectangle(toolbarW, timelineH, Math.Max(UiScale.Px(220, s), sw - toolbarW - infoW), sh - timelineH - statusH);
+            _gridBodyRect = new Rectangle(_gridRect.X, _gridRect.Y + _gridHeaderH, _gridRect.Width, Math.Max(80, _gridRect.Height - _gridHeaderH));
+            _statusBarRect = new Rectangle(0, sh - statusH, sw, statusH);
+
+            _gridGroupGap = UiScale.Px(18, s, 10);
+            float leftGutter = UiScale.Px(52, s, 32);
+            float rightPad = UiScale.Px(14, s, 8);
+            float availGridW = Math.Max(200f, _gridBodyRect.Width - leftGutter - rightPad - _gridGroupGap);
+            _laneWidth = Math.Clamp(availGridW / GRID_COLS, 40f * s, 72f * s);
+
+            // Top bar layout
+            int pad = UiScale.Px(10, s, 6);
+            int topY = UiScale.Px(10, s, 6);
+            int backH = UiScale.Px(26, s, 22);
+            _backBtnRect = new Rectangle(pad, topY, UiScale.Px(76, s, 62), backH);
+
+            // Right-side action pills (row 2 of header)
+            int rightX = sw - pad;
+            int btnGap = UiScale.Px(6, s, 4);
+            int btnH = UiScale.Px(28, s, 22);
+            int btnY = UiScale.Px(40, s, 30);
+            _saveBtnRect = AllocRightButton(ref rightX, btnY, UiScale.Px(70, s), btnH, btnGap);
+            _previewToggleRect = AllocRightButton(ref rightX, btnY, UiScale.Px(94, s), btnH, btnGap);
+            _redoBtnRect = AllocRightButton(ref rightX, btnY, UiScale.Px(58, s), btnH, btnGap);
+            _undoBtnRect = AllocRightButton(ref rightX, btnY, UiScale.Px(60, s), btnH, btnGap);
+            _playtestBtnRect = AllocRightButton(ref rightX, btnY, UiScale.Px(98, s), btnH, btnGap);
+            _playBtnRect = AllocRightButton(ref rightX, btnY, UiScale.Px(84, s), btnH, btnGap);
+
+            int scrubX = UiScale.Px(12, s, 8);
+            int scrubH = UiScale.Px(20, s, 16);
+            int scrubW = Math.Max(UiScale.Px(140, s), rightX - scrubX - UiScale.Px(14, s));
+            _scrubberRect = new Rectangle(scrubX, btnY + (btnH - scrubH) / 2, scrubW, scrubH);
+
+            // Docked preview inside bottom of _infoPanelRect (zero overlap with chart!)
+            if (_showPreview)
+            {
+                int prevMargin = UiScale.Px(8, s, 6);
+                int prevH = Math.Clamp((int)(_infoPanelRect.Height * 0.34f), UiScale.Px(150, s), UiScale.Px(250, s));
+                _previewRect = new Rectangle(_infoPanelRect.X + prevMargin, _infoPanelRect.Bottom - prevH - prevMargin, _infoPanelRect.Width - prevMargin * 2, prevH);
+                int hdrBtnH = UiScale.Px(20, s, 16);
+                int hdrBtnY = _previewRect.Y + UiScale.Px(3, s);
+                int hdrGap = UiScale.Px(4, s, 2);
+                int cursorX = _previewRect.Right - UiScale.Px(4, s);
+                _previewCloseBtn = AllocRightButton(ref cursorX, hdrBtnY, UiScale.Px(22, s, 18), hdrBtnH, hdrGap);
+                _previewFxBtnRect = AllocRightButton(ref cursorX, hdrBtnY, UiScale.Px(32, s, 26), hdrBtnH, hdrGap);
+                _previewCamBtnRect = AllocRightButton(ref cursorX, hdrBtnY, UiScale.Px(54, s, 44), hdrBtnH, hdrGap);
+            }
+            else
+            {
+                _previewRect = Rectangle.Empty;
+                _previewCamBtnRect = Rectangle.Empty;
+                _previewFxBtnRect = Rectangle.Empty;
+                _previewCloseBtn = Rectangle.Empty;
+            }
+        }
+
+        private static Rectangle AllocRightButton(ref int cursorX, int y, int width, int height, int gap)
+        {
+            cursorX -= width;
+            var r = new Rectangle(cursorX, y, width, height);
+            cursorX -= gap;
+            return r;
+        }
+
+        // ── Draw Entry ───────────────────────────────────────────────────────
         public void Draw(SpriteBatch sb, int screenWidth, int screenHeight)
         {
+            _screenWidth = screenWidth;
+            _screenHeight = screenHeight;
             UpdateLayout(screenWidth, screenHeight);
-            
+
             switch (_phase)
             {
                 case EditorPhase.Loading:
                     DrawLoading(sb, screenWidth, screenHeight);
                     break;
-                case EditorPhase.LoadComplete:
-                    DrawLoadComplete(sb, screenWidth, screenHeight);
-                    break;
                 case EditorPhase.Error:
                     DrawError(sb, screenWidth, screenHeight);
                     break;
                 case EditorPhase.Ready:
+                    EnsurePreviewLoaded(sb.GraphicsDevice);
+                    if (_showPreview)
+                        RenderPreviewToTarget(sb);
                     DrawEditor(sb, screenWidth, screenHeight);
                     break;
             }
         }
-        
-        // ── Update layout rectangles ─────────────────────────────────────────
-        private void UpdateLayout(int screenWidth, int screenHeight)
+
+        private void DrawLoading(SpriteBatch sb, int sw, int sh)
         {
-            const int TIMELINE_HEIGHT = 80;
-            const int TOOLBAR_WIDTH = 80;
-            const int INFO_PANEL_WIDTH = 250;
-            const int STATUS_BAR_HEIGHT = 30;
-            
-            _timelineRect = new Rectangle(0, 0, screenWidth, TIMELINE_HEIGHT);
-            _toolbarRect = new Rectangle(0, TIMELINE_HEIGHT, TOOLBAR_WIDTH, screenHeight - TIMELINE_HEIGHT - STATUS_BAR_HEIGHT);
-            _infoPanelRect = new Rectangle(screenWidth - INFO_PANEL_WIDTH, TIMELINE_HEIGHT, INFO_PANEL_WIDTH, screenHeight - TIMELINE_HEIGHT - STATUS_BAR_HEIGHT);
-            _gridRect = new Rectangle(TOOLBAR_WIDTH, TIMELINE_HEIGHT, screenWidth - TOOLBAR_WIDTH - INFO_PANEL_WIDTH, screenHeight - TIMELINE_HEIGHT - STATUS_BAR_HEIGHT);
-            _statusBarRect = new Rectangle(0, screenHeight - STATUS_BAR_HEIGHT, screenWidth, STATUS_BAR_HEIGHT);
-            
-            // Preview window in bottom-right corner WITHIN grid area (not overlapping info panel)
-            _previewRect = new Rectangle(
-                _gridRect.Right - PREVIEW_WIDTH - PREVIEW_MARGIN,
-                _gridRect.Bottom - PREVIEW_HEIGHT - PREVIEW_MARGIN,
-                PREVIEW_WIDTH,
-                PREVIEW_HEIGHT
-            );
-        }
-        
-        // ── Draw loading screen ──────────────────────────────────────────────
-        private void DrawLoading(SpriteBatch sb, int screenWidth, int screenHeight)
-        {
-            // Dark background
-            sb.Draw(_pixel, new Rectangle(0, 0, screenWidth, screenHeight), Color.Black * 0.85f);
-            
-            // Spinning circle (bottom right)
-            int spinnerSize = 60;
-            int spinnerX = screenWidth - spinnerSize - 40;
-            int spinnerY = screenHeight - spinnerSize - 40;
-            
-            // Draw spinning circle segments
-            for (int i = 0; i < 8; i++)
+            sb.Draw(_pixel, new Rectangle(0, 0, sw, sh), BG_DARK);
+            float s = _uiScale;
+            int cx = sw / 2;
+            int cy = sh / 2 - UiScale.Px(20, s);
+            float rad = 28f * s;
+            int dot = UiScale.Px(8, s, 5);
+
+            for (int i = 0; i < 10; i++)
             {
-                float angle = _loadingSpinnerRotation + (i * MathF.PI / 4f);
-                float alpha = 1f - (i / 8f) * 0.7f; // Fade trail
-                
-                float x = spinnerX + spinnerSize / 2 + MathF.Cos(angle) * (spinnerSize / 3);
-                float y = spinnerY + spinnerSize / 2 + MathF.Sin(angle) * (spinnerSize / 3);
-                
-                sb.Draw(_pixel, new Rectangle((int)x - 4, (int)y - 4, 8, 8), 
-                    new Color(100, 150, 255) * alpha);
+                float angle = _loadingSpinnerRotation + (i * MathF.PI / 5f);
+                float alpha = 1f - (i / 10f) * 0.75f;
+                int x = (int)(cx + MathF.Cos(angle) * rad);
+                int y = (int)(cy + MathF.Sin(angle) * rad);
+                sb.Draw(_pixel, new Rectangle(x - dot / 2, y - dot / 2, dot, dot), ACCENT_PINK * alpha);
             }
-            
-            // "Loading..." text
-            DrawText(sb, "Loading...", 
-                new Vector2(spinnerX + spinnerSize / 2, spinnerY - 20), 
-                Color.White, 1f, centered: true);
+
+            DrawText(sb, "Loading Chart Editor...", new Vector2(sw / 2f, cy + UiScale.Px(54, s)), Color.White, UiScale.FontPx(22, s), centered: true);
+            DrawText(sb, Path.GetFileName(_levelPath), new Vector2(sw / 2f, cy + UiScale.Px(84, s)), Color.White * 0.55f, UiScale.FontPx(15, s), centered: true);
         }
-        
-        // ── Draw load complete (waiting for click) ───────────────────────────
-        private void DrawLoadComplete(SpriteBatch sb, int screenWidth, int screenHeight)
+
+        private void DrawError(SpriteBatch sb, int sw, int sh)
         {
-            // Dark overlay
-            sb.Draw(_pixel, new Rectangle(0, 0, screenWidth, screenHeight), Color.Black * 0.85f);
-            
-            // Spinning circle (bottom right) - still spinning
-            int spinnerSize = 60;
-            int spinnerX = screenWidth - spinnerSize - 40;
-            int spinnerY = screenHeight - spinnerSize - 40;
-            
-            for (int i = 0; i < 8; i++)
-            {
-                float angle = _loadingSpinnerRotation + (i * MathF.PI / 4f);
-                float alpha = 1f - (i / 8f) * 0.7f;
-                
-                float x = spinnerX + spinnerSize / 2 + MathF.Cos(angle) * (spinnerSize / 3);
-                float y = spinnerY + spinnerSize / 2 + MathF.Sin(angle) * (spinnerSize / 3);
-                
-                sb.Draw(_pixel, new Rectangle((int)x - 4, (int)y - 4, 8, 8), 
-                    new Color(100, 255, 150) * alpha); // Green tint = complete
-            }
-            
-            DrawText(sb, "Complete!", 
-                new Vector2(spinnerX + spinnerSize / 2, spinnerY - 20), 
-                new Color(100, 255, 150), 1f, centered: true);
-            
-            // "Click to continue" message (center, pulsing)
-            float pulse = 0.7f + 0.3f * MathF.Sin(_loadingFadeAlpha * 3f);
-            DrawText(sb, "Click anywhere to continue", 
-                new Vector2(screenWidth / 2, screenHeight / 2), 
-                Color.White * Math.Min(1f, _loadingFadeAlpha) * pulse, 
-                1.5f, centered: true);
+            sb.Draw(_pixel, new Rectangle(0, 0, sw, sh), BG_DARK);
+            _clickActions.Clear();
+            float s = _uiScale;
+            DrawButton(sb, _backBtnRect, "< ESC", BG_CARD, Color.White, UiScale.FontPx(13, s), ACCENT_PINK, () => BackPressed = true);
+            DrawText(sb, "CHART LOAD ERROR", new Vector2(sw / 2f, sh / 2f - UiScale.Px(40, s)), new Color(255, 95, 95), UiScale.FontPx(28, s), centered: true);
+            DrawText(sb, _errorMessage ?? "Unknown error", new Vector2(sw / 2f, sh / 2f + UiScale.Px(4, s)), Color.White * 0.85f, UiScale.FontPx(16, s), centered: true);
+            DrawText(sb, "Press ESC or click Back to return", new Vector2(sw / 2f, sh / 2f + UiScale.Px(42, s)), Color.Gray, UiScale.FontPx(15, s), centered: true);
         }
-        
-        // ── Draw error screen ────────────────────────────────────────────────
-        private void DrawError(SpriteBatch sb, int screenWidth, int screenHeight)
-        {
-            sb.Draw(_pixel, new Rectangle(0, 0, screenWidth, screenHeight), BG_DARK);
-            DrawText(sb, "ERROR", new Vector2(screenWidth / 2, screenHeight / 2 - 60), Color.Red, 2f, centered: true);
-            DrawText(sb, _errorMessage ?? "Unknown error", new Vector2(screenWidth / 2, screenHeight / 2), Color.White, 1f, centered: true);
-        }
-        
-        // ── Draw main editor ─────────────────────────────────────────────────
-        private void DrawEditor(SpriteBatch sb, int screenWidth, int screenHeight)
+
+        private void DrawEditor(SpriteBatch sb, int sw, int sh)
         {
             if (_level == null) return;
-            
-            // Background
-            sb.Draw(_pixel, new Rectangle(0, 0, screenWidth, screenHeight), BG_DARK);
-            
-            // Draw each section
+            _clickActions.Clear();
+
+            sb.Draw(_pixel, new Rectangle(0, 0, sw, sh), BG_DARK);
+
+            DrawGrid(sb);
             DrawTimeline(sb);
             DrawToolbar(sb);
-            DrawGrid(sb);
             DrawInfoPanel(sb);
             DrawStatusBar(sb);
-            
-            // Draw character preview window (on top of everything)
-            DrawCharacterPreview(sb);
+
+            if (_showPreview)
+                DrawCharacterPreview(sb);
         }
-        
-        // ── Draw timeline (audio waveform) ───────────────────────────────────
+
+        // ── Timeline Header ──────────────────────────────────────────────────
         private void DrawTimeline(SpriteBatch sb)
         {
-            sb.Draw(_pixel, _timelineRect, BG_MEDIUM);
-            
-            // Border
-            sb.Draw(_pixel, new Rectangle(_timelineRect.X, _timelineRect.Bottom - 2, _timelineRect.Width, 2), ACCENT);
-            
-            DrawText(sb, "Timeline", new Vector2(_timelineRect.X + 10, _timelineRect.Y + 10), Color.White, 1f);
-        }
-        
-        // ── Draw toolbar (tools on left) ─────────────────────────────────────
-        private void DrawToolbar(SpriteBatch sb)
-        {
-            sb.Draw(_pixel, _toolbarRect, BG_MEDIUM);
-            
-            // Border
-            sb.Draw(_pixel, new Rectangle(_toolbarRect.Right - 2, _toolbarRect.Y, 2, _toolbarRect.Height), ACCENT);
-            
-            // Tool buttons
-            string[] tools = { "Select", "Note", "Hold", "Delete" };
-            for (int i = 0; i < tools.Length; i++)
+            float s = _uiScale;
+            sb.Draw(_pixel, _timelineRect, BG_PANEL);
+            sb.Draw(_pixel, new Rectangle(_timelineRect.X, _timelineRect.Bottom - 2, _timelineRect.Width, 2), ACCENT_PINK * 0.7f);
+
+            int btnFont = UiScale.FontPx(13, s);
+            int smallBtnFont = UiScale.FontPx(12, s);
+            DrawButton(sb, _backBtnRect, "< ESC", BG_CARD, Color.White, btnFont, Color.White * 0.2f, () =>
             {
-                int y = _toolbarRect.Y + 10 + i * 70;
-                bool isSelected = (int)_currentTool == i;
-                Color bg = isSelected ? ACCENT : BG_LIGHT;
-                
-                sb.Draw(_pixel, new Rectangle(_toolbarRect.X + 10, y, 60, 60), bg);
-                DrawText(sb, (i + 1).ToString(), new Vector2(_toolbarRect.X + 40, y + 30), Color.White, 1.2f, centered: true);
-            }
-        }
-        
-        // ── Draw grid (main chart area) ──────────────────────────────────────
-        private void DrawGrid(SpriteBatch sb)
-        {
-            sb.Draw(_pixel, _gridRect, BG_DARK);
-            
-            if (_level == null) return;
-            
-            float scaledTimeHeight = GetScaledTimeHeight();
-            float totalGridWidth = LANE_WIDTH * LANE_COUNT;
-            float gridStartX = _gridRect.X + (_gridRect.Width - totalGridWidth) / 2f;
-            
-            // Receptor Y (20% from top like FNF)
-            float receptorY = _gridRect.Y + _gridRect.Height * RECEPTOR_Y_OFFSET;
-            
-            // Draw checkerboard background pattern
-            DrawGridBackground(sb, gridStartX, scaledTimeHeight, receptorY);
-            
-            // Draw time lines (beats or seconds depending on format)
-            float bpm = _level.Data.EffectiveBpm;
-            int beatsPerMeasure = 4;
-            bool isTimeBased = _level.Data.TimesAreSeconds;
-            
-            // Calculate line interval
-            float lineInterval = isTimeBased ? 1.0f : 1.0f; // 1 second or 1 beat
-            float measureInterval = isTimeBased ? (60f / bpm) * beatsPerMeasure : beatsPerMeasure;
-            
-            for (int i = (int)_scrollY - 10; i < (int)_scrollY + 40; i++)
+                PausePlayback();
+                BackPressed = true;
+            });
+
+            string songTitle = string.IsNullOrWhiteSpace(_level?.LevelName) ? Path.GetFileNameWithoutExtension(_levelPath) : _level!.LevelName;
+            string modStar = IsModified ? " *" : "";
+            string unitName = (_level?.Data.TimesAreSeconds ?? false) ? "SEC" : "BEATS";
+            string metaLine = $"{songTitle}{modStar}   |   BPM {_level?.Data.EffectiveBpm:F1}   |   SPD {_level?.Data.Speed ?? 1f:F2}x   |   {unitName}";
+            int titleFont = UiScale.FontPx(16, s);
+            float titleH = MeasureText(metaLine, titleFont).Y;
+            DrawText(sb, metaLine, new Vector2(_backBtnRect.Right + UiScale.Px(12, s), _backBtnRect.Y + (_backBtnRect.Height - titleH) / 2f), ACCENT_GOLD, titleFont);
+
+            // Interactive Scrubber Bar
+            float durSec = GetTotalDurationSeconds();
+            float curSec = Math.Clamp(TimeUnitsToSeconds(_scrollY), 0f, durSec);
+            float frac = Math.Clamp(curSec / durSec, 0f, 1f);
+
+            sb.Draw(_pixel, _scrubberRect, new Color(14, 14, 22));
+            DrawBorder(sb, _scrubberRect, Color.White * 0.16f);
+
+            int fillW = (int)(_scrubberRect.Width * frac);
+            if (fillW > 0)
+                sb.Draw(_pixel, new Rectangle(_scrubberRect.X, _scrubberRect.Y, fillW, _scrubberRect.Height), ACCENT_PINK * 0.45f);
+
+            // Mini note density ticks & event markers on scrubber
+            if (_level != null)
             {
-                float timeValue = i * lineInterval;
-                
-                // Calculate Y position FROM receptor (notes scroll down)
-                float y = receptorY + (timeValue - _scrollY) * scaledTimeHeight;
-                
-                if (y < _gridRect.Y || y > _gridRect.Bottom) continue;
-                
-                bool isMeasure = MathF.Abs(timeValue % measureInterval) < 0.01f;
-                bool isHalfMeasure = !isMeasure && MathF.Abs(timeValue % (measureInterval / 2f)) < 0.01f;
-                
-                Color lineColor = isMeasure ? MEASURE_LINE : (isHalfMeasure ? BEAT_LINE : GRID_LINE);
-                int lineThickness = isMeasure ? 3 : (isHalfMeasure ? 2 : 1);
-                
-                sb.Draw(_pixel, new Rectangle((int)gridStartX, (int)y, (int)totalGridWidth, lineThickness), lineColor);
-                
-                // Time label on measure lines
-                if (isMeasure && timeValue >= 0)
+                int tickW = Math.Max(2, UiScale.Px(2, s));
+                int tickH = Math.Max(3, UiScale.Px(4, s));
+                foreach (var sl in _level.Data.Strumlines)
                 {
-                    string label = isTimeBased ? $"{timeValue:F1}s" : $"{(int)timeValue}";
-                    DrawText(sb, label, new Vector2(gridStartX - 40, y - 10), Color.Gray, 0.8f);
-                }
-            }
-            
-            // Draw lane dividers
-            for (int lane = 0; lane <= LANE_COUNT; lane++)
-            {
-                float x = gridStartX + lane * LANE_WIDTH;
-                Color laneColor = lane < LANE_COUNT ? LANE_COLORS[lane] * 0.4f : GRID_LINE;
-                int thickness = (lane == 0 || lane == LANE_COUNT) ? 3 : 2;
-                sb.Draw(_pixel, new Rectangle((int)x, _gridRect.Y, thickness, _gridRect.Height), laneColor);
-            }
-            
-            // Highlight selected lane
-            if (_selectedLane >= 0 && _selectedLane < LANE_COUNT)
-            {
-                float x = gridStartX + _selectedLane * LANE_WIDTH;
-                sb.Draw(_pixel, new Rectangle((int)x, _gridRect.Y, (int)LANE_WIDTH, _gridRect.Height), LANE_COLORS[_selectedLane] * 0.15f);
-            }
-            
-            // Draw notes (scrolling down from receptor)
-            DrawNotes(sb, gridStartX, scaledTimeHeight, receptorY);
-            
-            // Draw RECEPTOR BAR (encima de todo)
-            DrawReceptorBar(sb, gridStartX, receptorY, totalGridWidth);
-        }
-        
-        // ── Draw receptor bar (strumline) ────────────────────────────────────
-        private void DrawReceptorBar(SpriteBatch sb, float gridStartX, float receptorY, float totalGridWidth)
-        {
-            // Receptor bar line (thick white line)
-            sb.Draw(_pixel, new Rectangle((int)gridStartX, (int)receptorY - 3, (int)totalGridWidth, 6), Color.White * 0.9f);
-            
-            // Draw receptors (arrows) on the bar
-            for (int lane = 0; lane < LANE_COUNT; lane++)
-            {
-                float centerX = gridStartX + lane * LANE_WIDTH + LANE_WIDTH / 2f;
-                float receptorSize = LANE_WIDTH * 0.7f;
-                
-                // Check if receptor is being pressed
-                bool isPressed = _receptorPressTime[lane] > 0f;
-                float pressScale = isPressed ? 0.9f : 1.0f; // Shrink when pressed
-                Color receptorColor = LANE_COLORS[lane] * (isPressed ? 1.0f : 0.7f);
-                
-                // Draw receptor arrow using NoteStyle
-                if (_noteStyle != null)
-                {
-                    var frame = _noteStyle.GetNoteFrame(lane, 0);
-                    if (frame != null)
+                    foreach (var lane in sl)
                     {
-                        float scale = (receptorSize / frame.Source.Width) * pressScale;
-                        sb.Draw(frame.Texture,
-                            new Vector2(centerX, receptorY),
-                            frame.Source, receptorColor, 0f,
-                            new Vector2(frame.Source.Width / 2, frame.Source.Height / 2),
-                            scale, SpriteEffects.None, 0f);
-                        continue;
-                    }
-                }
-                
-                // Fallback: colored square
-                int squareSize = (int)(receptorSize * 0.9f * pressScale);
-                int squareX = (int)(centerX - squareSize / 2);
-                int squareY = (int)(receptorY - squareSize / 2);
-                
-                sb.Draw(_pixel, new Rectangle(squareX, squareY, squareSize, squareSize), receptorColor * 0.8f);
-                sb.Draw(_pixel, new Rectangle(squareX, squareY, squareSize, 2), receptorColor);
-                sb.Draw(_pixel, new Rectangle(squareX, squareY + squareSize - 2, squareSize, 2), receptorColor);
-                sb.Draw(_pixel, new Rectangle(squareX, squareY, 2, squareSize), receptorColor);
-                sb.Draw(_pixel, new Rectangle(squareX + squareSize - 2, squareY, 2, squareSize), receptorColor);
-            }
-        }
-        
-        // ── Draw grid background pattern ─────────────────────────────────────
-        private void DrawGridBackground(SpriteBatch sb, float gridStartX, float scaledTimeHeight, float receptorY)
-        {
-            if (_level == null) return;
-            
-            // Draw subtle checkerboard pattern for better visibility
-            float minTime = _scrollY - 10f;
-            float maxTime = _scrollY + 40f;
-            
-            // Quarter divisions
-            float quarterInterval = _level.Data.TimesAreSeconds ? 0.25f : 0.25f;
-            
-            for (float time = MathF.Floor(minTime / quarterInterval) * quarterInterval; time <= maxTime; time += quarterInterval)
-            {
-                // Y position FROM receptor (scrolling down)
-                float y = receptorY + (time - _scrollY) * scaledTimeHeight;
-                
-                if (y < _gridRect.Y || y > _gridRect.Bottom) continue;
-                
-                // Alternate pattern every quarter
-                int timeIndex = (int)(time / quarterInterval);
-                
-                for (int lane = 0; lane < LANE_COUNT; lane++)
-                {
-                    float x = gridStartX + lane * LANE_WIDTH;
-                    
-                    // Checkerboard pattern
-                    bool isDark = (timeIndex + lane) % 2 == 0;
-                    Color cellColor = isDark ? BG_DARK : BG_MEDIUM;
-                    
-                    // Highlight every measure
-                    float measureInterval = _level.Data.TimesAreSeconds 
-                        ? (60f / _level.Data.EffectiveBpm) * 4f  // 4 beats in seconds
-                        : 4f; // 4 beats
-                        
-                    if (MathF.Abs(time % measureInterval) < 0.01f)
-                    {
-                        cellColor = isDark ? new Color(25, 25, 30) : new Color(35, 35, 40);
-                    }
-                    
-                    sb.Draw(_pixel, new Rectangle((int)x, (int)y, (int)LANE_WIDTH, (int)(scaledTimeHeight * quarterInterval)), cellColor * 0.3f);
-                }
-            }
-        }
-        
-        // ── Draw notes on grid (scrolling down from receptor) ────────────────
-        private void DrawNotes(SpriteBatch sb, float gridStartX, float scaledTimeHeight, float receptorY)
-        {
-            if (_level == null || _selectedStrumline >= _level.Data.Strumlines.Count) return;
-            
-            var strumline = _level.Data.Strumlines[_selectedStrumline];
-            
-            for (int lane = 0; lane < LANE_COUNT && lane < strumline.Count; lane++)
-            {
-                foreach (var note in strumline[lane])
-                {
-                    // Y position FROM receptor (notes scroll down)
-                    float timeValue = note.Start;
-                    float y = receptorY + (timeValue - _scrollY) * scaledTimeHeight;
-                    
-                    // Cull off-screen notes
-                    if (y < _gridRect.Y - 50 || y > _gridRect.Bottom + 50) continue;
-                    
-                    // Center X position in lane
-                    float centerX = gridStartX + lane * LANE_WIDTH + LANE_WIDTH / 2f;
-                    float noteSize = LANE_WIDTH * 0.7f;
-                    
-                    Color noteColor = LANE_COLORS[lane];
-                    
-                    // Check for special note properties
-                    if (note.Props.IsDamage) noteColor = Color.Purple;
-                    if (note.Props.IsInstakill) noteColor = Color.Black;
-                    if (note.Props.IsHeal) noteColor = Color.LightGreen;
-                    
-                    // Draw hold tail first (behind note) - DOWN from receptor
-                    if (note.Duration > 0)
-                    {
-                        float holdHeight = note.Duration * scaledTimeHeight;
-                        float holdWidth = LANE_WIDTH * 0.3f;
-                        sb.Draw(_pixel, 
-                            new Rectangle((int)(centerX - holdWidth / 2), (int)y, (int)holdWidth, (int)holdHeight), 
-                            noteColor * 0.6f);
-                    }
-                    
-                    // Draw note arrow using NoteStyle
-                    if (_noteStyle != null)
-                    {
-                        var frame = _noteStyle.GetNoteFrame(lane, (int)note.Props.Skin);
-                        if (frame != null)
+                        foreach (var n in lane)
                         {
-                            float scale = noteSize / frame.Source.Width;
-                            sb.Draw(frame.Texture,
-                                new Vector2(centerX, y),
-                                frame.Source, noteColor, 0f,
-                                new Vector2(frame.Source.Width / 2, frame.Source.Height / 2),
-                                scale, SpriteEffects.None, 0f);
-                            continue; // Skip fallback rendering
+                            float nf = Math.Clamp(TimeUnitsToSeconds(n.Start) / durSec, 0f, 1f);
+                            int tx = _scrubberRect.X + (int)(nf * Math.Max(1, _scrubberRect.Width - tickW));
+                            sb.Draw(_pixel, new Rectangle(tx, _scrubberRect.Bottom - tickH - 1, tickW, tickH), ACCENT_CYAN * 0.55f);
                         }
                     }
-                    
-                    // Fallback: colored square with border
-                    int squareSize = (int)(noteSize * 0.9f);
-                    int squareX = (int)(centerX - squareSize / 2);
-                    int squareY = (int)(y - squareSize / 2);
-                    
-                    sb.Draw(_pixel, new Rectangle(squareX, squareY, squareSize, squareSize), noteColor * 0.8f);
-                    // Border
-                    sb.Draw(_pixel, new Rectangle(squareX, squareY, squareSize, 2), noteColor);
-                    sb.Draw(_pixel, new Rectangle(squareX, squareY + squareSize - 2, squareSize, 2), noteColor);
-                    sb.Draw(_pixel, new Rectangle(squareX, squareY, 2, squareSize), noteColor);
-                    sb.Draw(_pixel, new Rectangle(squareX + squareSize - 2, squareY, 2, squareSize), noteColor);
+                }
+
+                bool evAlreadySec = _previewLevel != null;
+                var evList = _previewLevel?.Events.Events ?? _level.Events.Events;
+                foreach (var ev in evList)
+                {
+                    float evSec = GetEventSeconds(ev, evAlreadySec);
+                    float ef = Math.Clamp(evSec / durSec, 0f, 1f);
+                    int tx = _scrubberRect.X + (int)(ef * Math.Max(1, _scrubberRect.Width - tickW));
+                    sb.Draw(_pixel, new Rectangle(tx, _scrubberRect.Y + 1, tickW, tickH), ACCENT_GOLD * 0.85f);
                 }
             }
+
+            int headW = Math.Max(4, UiScale.Px(4, s));
+            int headX = _scrubberRect.X + Math.Clamp(fillW - headW / 2, 0, Math.Max(0, _scrubberRect.Width - headW));
+            sb.Draw(_pixel, new Rectangle(headX, _scrubberRect.Y - 2, headW, _scrubberRect.Height + 4), Color.White);
+
+            string timeLabel = $"{FormatTime(curSec)} / {FormatTime(durSec)}" + (_audioManager.HasAudioTrack ? "" : " (No Audio)");
+            int timeFont = UiScale.FontPx(12, s);
+            var timeSz = MeasureText(timeLabel, timeFont);
+            int lblPadX = UiScale.Px(6, s);
+            int lblPadY = Math.Max(1, UiScale.Px(2, s));
+            float lblX = _scrubberRect.X + UiScale.Px(8, s);
+            float lblY = _scrubberRect.Y + (_scrubberRect.Height - timeSz.Y) / 2f;
+            sb.Draw(_pixel, new Rectangle((int)lblX - lblPadX / 2, (int)lblY - lblPadY / 2, (int)timeSz.X + lblPadX, (int)timeSz.Y + lblPadY), new Color(12, 12, 20) * 0.80f);
+            DrawText(sb, timeLabel, new Vector2(lblX, lblY), Color.White * 0.95f, timeFont);
+
+            // Action Buttons
+            DrawButton(sb, _playBtnRect, _isPlaying ? "PAUSE" : "PLAY", _isPlaying ? new Color(180, 120, 30) : new Color(36, 90, 62), Color.White, btnFont, _isPlaying ? ACCENT_GOLD : ACCENT_GREEN, TogglePlayPause);
+            DrawButton(sb, _playtestBtnRect, "PLAYTEST", new Color(22, 82, 108), Color.White, btnFont, ACCENT_CYAN, () => TriggerPlaytest(false));
+            DrawButton(sb, _undoBtnRect, "UNDO", _undoManager.CanUndo ? BG_CARD : new Color(24, 24, 34), _undoManager.CanUndo ? Color.White : Color.Gray, smallBtnFont, Color.White * 0.2f, Undo);
+            DrawButton(sb, _redoBtnRect, "REDO", _undoManager.CanRedo ? BG_CARD : new Color(24, 24, 34), _undoManager.CanRedo ? Color.White : Color.Gray, smallBtnFont, Color.White * 0.2f, Redo);
+            DrawButton(sb, _previewToggleRect, _showPreview ? "PREV ON" : "PREV OFF", _showPreview ? new Color(46, 54, 88) : BG_CARD, _showPreview ? ACCENT_GOLD : Color.Gray, smallBtnFont, _showPreview ? ACCENT_GOLD * 0.6f : Color.White * 0.15f, () => _showPreview = !_showPreview);
+            DrawButton(sb, _saveBtnRect, IsModified ? "SAVE*" : "SAVE", IsModified ? new Color(150, 50, 88) : BG_CARD, Color.White, btnFont, IsModified ? ACCENT_PINK : Color.White * 0.2f, SaveLevel);
         }
-        
-        // ── Draw info panel (right side) ─────────────────────────────────────
-        private void DrawInfoPanel(SpriteBatch sb)
+
+        // ── Left Toolbar (Aligned, Labelled & Clickable!) ────────────────────
+        private void DrawToolbar(SpriteBatch sb)
         {
-            sb.Draw(_pixel, _infoPanelRect, BG_MEDIUM);
-            
-            // Border
-            sb.Draw(_pixel, new Rectangle(_infoPanelRect.X, _infoPanelRect.Y, 2, _infoPanelRect.Height), ACCENT);
-            
+            float s = _uiScale;
+            sb.Draw(_pixel, _toolbarRect, BG_PANEL);
+            sb.Draw(_pixel, new Rectangle(_toolbarRect.Right - 2, _toolbarRect.Y, 2, _toolbarRect.Height), ACCENT_PINK * 0.45f);
+
+            int padX = UiScale.Px(8, s);
+            int w = _toolbarRect.Width - padX * 2;
+            int y = _toolbarRect.Y + UiScale.Px(10, s);
+
+            int hdrFont = UiScale.FontPx(12, s);
+            int labelFont = UiScale.FontPx(13, s);
+            int smallFont = UiScale.FontPx(11, s);
+            int hdrStep = UiScale.Px(18, s);
+
+            DrawText(sb, "TOOLS", new Vector2(_toolbarRect.X + padX, y), ACCENT_GOLD, hdrFont);
+            y += hdrStep;
+
+            (EditorTool tool, string num, string name, Color accent)[] tools =
+            {
+                (EditorTool.Select,    "1", "SELECT", ACCENT_CYAN),
+                (EditorTool.PlaceNote, "2", "NOTE",   ACCENT_GREEN),
+                (EditorTool.PlaceHold, "3", "HOLD",   ACCENT_GOLD),
+                (EditorTool.Delete,    "4", "DELETE", ACCENT_PINK),
+            };
+
+            int toolH = UiScale.Px(42, s);
+            int toolStep = UiScale.Px(47, s);
+            int numW = UiScale.Px(22, s);
+            int numH = UiScale.Px(24, s);
+
+            for (int i = 0; i < tools.Length; i++)
+            {
+                var t = tools[i];
+                var r = new Rectangle(_toolbarRect.X + padX, y, w, toolH);
+                _toolBtnRects[i] = r;
+                bool active = _currentTool == t.tool;
+                bool hovered = r.Contains(_prevMouse.Position);
+
+                Color fill = active ? t.accent * 0.24f : (hovered ? BG_CARD_HOVER : BG_CARD);
+                sb.Draw(_pixel, r, fill);
+                DrawBorder(sb, r, active ? t.accent : Color.White * 0.1f);
+                if (active)
+                    sb.Draw(_pixel, new Rectangle(r.X, r.Y, Math.Max(3, UiScale.Px(4, s)), r.Height), t.accent);
+
+                var numBox = new Rectangle(r.X + UiScale.Px(8, s), r.Y + (r.Height - numH) / 2, numW, numH);
+                sb.Draw(_pixel, numBox, active ? t.accent : new Color(24, 24, 34));
+                DrawTextCenteredInBox(sb, t.num, numBox, active ? BG_DARK : Color.White, labelFont);
+
+                var labelX = numBox.Right + UiScale.Px(8, s);
+                DrawText(sb, t.name, new Vector2(labelX, r.Y + (r.Height - MeasureText(t.name, labelFont).Y) / 2f), active ? Color.White : new Color(205, 205, 225), labelFont);
+
+                var capturedTool = t.tool;
+                _clickActions.Add((r, () => SetTool(capturedTool), null));
+                y += toolStep;
+            }
+
+            // Target Side Focus (Left=FOE / SLn, Right=BF)
+            y += UiScale.Px(6, s);
+            DrawText(sb, "SIDE FOCUS", new Vector2(_toolbarRect.X + padX, y), ACCENT_GOLD, hdrFont);
+            y += hdrStep;
+            int halfGap = UiScale.Px(4, s);
+            int halfW = (w - halfGap) / 2;
+            int ctrlH = UiScale.Px(28, s);
+            _strumEnemyBtn = new Rectangle(_toolbarRect.X + padX, y, halfW, ctrlH);
+            _strumPlayerBtn = new Rectangle(_toolbarRect.X + padX + halfW + halfGap, y, halfW, ctrlH);
+            string leftFocusLabel = (_level != null && _level.Data.Strumlines.Count > 2) ? $"SL{_leftStrumline} (W)" : "FOE (W)";
+            bool leftFocused = _selectedStrumline == _leftStrumline;
+            bool rightFocused = _selectedStrumline == _rightStrumline;
+            DrawButton(sb, _strumEnemyBtn, leftFocusLabel, leftFocused ? new Color(115, 38, 66) : BG_CARD, Color.White, smallFont, leftFocused ? ACCENT_PINK : Color.White * 0.12f, () => SwitchStrumline(_leftStrumline));
+            DrawButton(sb, _strumPlayerBtn, "BF (Q)", rightFocused ? new Color(30, 88, 125) : BG_CARD, Color.White, smallFont, rightFocused ? ACCENT_CYAN : Color.White * 0.12f, () => SwitchStrumline(_rightStrumline));
+            y += ctrlH + UiScale.Px(10, s);
+
+            // Snap divisor
+            DrawText(sb, "GRID SNAP", new Vector2(_toolbarRect.X + padX, y), ACCENT_GOLD, hdrFont);
+            y += hdrStep;
+            int stepBtnW = UiScale.Px(26, s);
+            int stepGap = UiScale.Px(4, s);
+            _snapPrevBtn = new Rectangle(_toolbarRect.X + padX, y, stepBtnW, ctrlH);
+            var snapLblRect = new Rectangle(_snapPrevBtn.Right + stepGap, y, Math.Max(20, w - (stepBtnW + stepGap) * 2), ctrlH);
+            _snapNextBtn = new Rectangle(snapLblRect.Right + stepGap, y, stepBtnW, ctrlH);
+            DrawButton(sb, _snapPrevBtn, "<", BG_CARD, Color.White, labelFont, Color.White * 0.14f, () => CycleSnap(-1));
+            sb.Draw(_pixel, snapLblRect, new Color(16, 16, 24));
+            DrawTextCenteredInBox(sb, $"1/{_snapDivisor}", snapLblRect, Color.White, labelFont);
+            DrawButton(sb, _snapNextBtn, ">", BG_CARD, Color.White, labelFont, Color.White * 0.14f, () => CycleSnap(1));
+            y += ctrlH + UiScale.Px(10, s);
+
+            // Default hold length
+            DrawText(sb, "HOLD BEATS", new Vector2(_toolbarRect.X + padX, y), ACCENT_GOLD, hdrFont);
+            y += hdrStep;
+            _holdMinusBtn = new Rectangle(_toolbarRect.X + padX, y, stepBtnW, ctrlH);
+            var holdLblRect = new Rectangle(_holdMinusBtn.Right + stepGap, y, Math.Max(20, w - (stepBtnW + stepGap) * 2), ctrlH);
+            _holdPlusBtn = new Rectangle(holdLblRect.Right + stepGap, y, stepBtnW, ctrlH);
+            DrawButton(sb, _holdMinusBtn, "-", BG_CARD, Color.White, labelFont, Color.White * 0.14f, () => AdjustHoldDuration(-1));
+            sb.Draw(_pixel, holdLblRect, new Color(16, 16, 24));
+            DrawTextCenteredInBox(sb, $"{_defaultHoldBeats:F2}", holdLblRect, ACCENT_GOLD, smallFont);
+            DrawButton(sb, _holdPlusBtn, "+", BG_CARD, Color.White, labelFont, Color.White * 0.14f, () => AdjustHoldDuration(1));
+            y += ctrlH + UiScale.Px(10, s);
+
+            // Note Type (synced with NoteStyle tints: 1=Red DMG, 2=Cyan KILL, 3=Green HEAL)
+            int skinH = UiScale.Px(26, s);
+            int skinStepY = UiScale.Px(30, s);
+            if (y + hdrStep + skinStepY * 2 <= _toolbarRect.Bottom)
+            {
+                DrawText(sb, "NOTE TYPE", new Vector2(_toolbarRect.X + padX, y), ACCENT_GOLD, hdrFont);
+                y += hdrStep;
+                string[] skinLabels = { "NORM", "DMG X", "KILL O", "HEAL" };
+                Color[] skinCols = { ACCENT_CYAN, new(255, 50, 50), new(0, 200, 255), new(0, 230, 80) };
+                for (int i = 0; i < 4; i++)
+                {
+                    int row = i / 2;
+                    int col = i % 2;
+                    var sr = new Rectangle(_toolbarRect.X + padX + col * (halfW + halfGap), y + row * skinStepY, halfW, skinH);
+                    _skinBtnRects[i] = sr;
+                    bool sel = (int)_activeNoteSkin == i;
+                    float capturedSkin = i;
+                    DrawButton(sb, sr, skinLabels[i], sel ? skinCols[i] * 0.28f : BG_CARD, sel ? Color.White : Color.Gray, smallFont, sel ? skinCols[i] : Color.White * 0.1f, () => _activeNoteSkin = capturedSkin);
+                }
+                y += skinStepY * 2 + UiScale.Px(8, s);
+            }
+
+            // Audio cues (Hitsound + Metronome)
+            if (y + hdrStep + ctrlH <= _toolbarRect.Bottom)
+            {
+                DrawText(sb, "AUDIO CUES", new Vector2(_toolbarRect.X + padX, y), ACCENT_GOLD, hdrFont);
+                y += hdrStep;
+                _hitsoundBtnRect = new Rectangle(_toolbarRect.X + padX, y, halfW, ctrlH);
+                _metronomeBtnRect = new Rectangle(_toolbarRect.X + padX + halfW + halfGap, y, halfW, ctrlH);
+                DrawButton(sb, _hitsoundBtnRect, "SND (H)", _hitsoundsEnabled ? new Color(24, 88, 62) : BG_CARD,
+                    _hitsoundsEnabled ? Color.White : Color.Gray, smallFont, _hitsoundsEnabled ? ACCENT_GREEN : Color.White * 0.12f,
+                    () => { _hitsoundsEnabled = !_hitsoundsEnabled; ShowToast(_hitsoundsEnabled ? "Hitsounds ON" : "Hitsounds OFF"); });
+                DrawButton(sb, _metronomeBtnRect, "MET (N)", _metronomeEnabled ? new Color(92, 72, 22) : BG_CARD,
+                    _metronomeEnabled ? Color.White : Color.Gray, smallFont, _metronomeEnabled ? ACCENT_GOLD : Color.White * 0.12f,
+                    () => { _metronomeEnabled = !_metronomeEnabled; ShowToast(_metronomeEnabled ? "Metronome ON" : "Metronome OFF"); });
+            }
+            else
+            {
+                _hitsoundBtnRect = Rectangle.Empty;
+                _metronomeBtnRect = Rectangle.Empty;
+            }
+        }
+
+        // ── Grid Rendering (8-Column FOE/Extra | BF, Square 16th Cells) ───────
+        private void DrawGrid(SpriteBatch sb)
+        {
+            float s = _uiScale;
+            sb.Draw(_pixel, _gridRect, BG_DARK);
+            _hoveredEventSummary = null;
+
+            float gridStartX = GetGridStartX();
+            float rightStartX = GetColumnX(LANE_COUNT);
+            float blockW = _laneWidth * LANE_COUNT;
+
+            // Fixed Two-Row Header: Section Badges (Left SL / BF) + Lane Arrows (L D U R)
+            var headerRect = new Rectangle(_gridRect.X, _gridRect.Y, _gridRect.Width, _gridHeaderH);
+            sb.Draw(_pixel, headerRect, new Color(24, 22, 34));
+            sb.Draw(_pixel, new Rectangle(_gridRect.X, headerRect.Bottom - 2, _gridRect.Width, 2), ACCENT_PINK * 0.35f);
+
+            int padY = Math.Max(2, UiScale.Px(3, s));
+            int secH = Math.Max(14, (int)(_gridHeaderH * 0.42f) - padY);
+            int laneY = headerRect.Y + secH + padY * 2;
+            int laneH = Math.Max(14, headerRect.Bottom - laneY - padY - 2);
+            int secFont = UiScale.FontPx(11, s);
+            int laneFont = UiScale.FontPx(14, s);
+
+            var foeHdr = new Rectangle((int)gridStartX, headerRect.Y + padY, (int)blockW, secH);
+            var bfHdr = new Rectangle((int)rightStartX, headerRect.Y + padY, (int)blockW, secH);
+            bool leftSel = _selectedStrumline == _leftStrumline;
+            bool rightSel = _selectedStrumline == _rightStrumline;
+
+            if (_level != null && _level.Data.Strumlines.Count > 2)
+            {
+                int arrowW = UiScale.Px(22, s, 16);
+                _leftStrumPrevBtn = new Rectangle(foeHdr.X, foeHdr.Y, arrowW, foeHdr.Height);
+                var midHdr = new Rectangle(foeHdr.X + arrowW + 2, foeHdr.Y, Math.Max(24, foeHdr.Width - (arrowW + 2) * 2), foeHdr.Height);
+                _leftStrumNextBtn = new Rectangle(foeHdr.Right - arrowW, foeHdr.Y, arrowW, foeHdr.Height);
+                DrawButton(sb, _leftStrumPrevBtn, "<", BG_CARD, Color.White, secFont, ACCENT_PINK * 0.5f, () => CycleLeftStrumline(-1));
+                DrawButton(sb, midHdr, $"LEFT TRACK (SL{_leftStrumline})", leftSel ? new Color(92, 32, 58) : new Color(36, 26, 42),
+                    leftSel ? Color.White : Color.White * 0.75f, secFont, ACCENT_PINK * (leftSel ? 0.9f : 0.35f), () => SwitchStrumline(_leftStrumline));
+                DrawButton(sb, _leftStrumNextBtn, ">", BG_CARD, Color.White, secFont, ACCENT_PINK * 0.5f, () => CycleLeftStrumline(1));
+            }
+            else
+            {
+                _leftStrumPrevBtn = _leftStrumNextBtn = Rectangle.Empty;
+                DrawButton(sb, foeHdr, "OPPONENT (FOE)", leftSel ? new Color(92, 32, 58) : new Color(36, 26, 42),
+                    leftSel ? Color.White : Color.White * 0.7f, secFont, ACCENT_PINK * (leftSel ? 0.9f : 0.35f), () => SwitchStrumline(_leftStrumline));
+            }
+
+            DrawButton(sb, bfHdr, "PLAYER (BF)", rightSel ? new Color(24, 72, 102) : new Color(24, 34, 48),
+                rightSel ? Color.White : Color.White * 0.7f, secFont, ACCENT_CYAN * (rightSel ? 0.9f : 0.35f), () => SwitchStrumline(_rightStrumline));
+
+            for (int col = 0; col < GRID_COLS; col++)
+            {
+                ColToStrumAndLane(col, out int sl, out int lane);
+                float colX = GetColumnX(col);
+                var laneHdr = new Rectangle((int)colX + 1, laneY, Math.Max(4, (int)_laneWidth - 2), laneH);
+                bool activeLane = _hoverCol == col || (_selectedStrumline == sl && _selectedLane == lane);
+                sb.Draw(_pixel, laneHdr, LANE_COLORS[lane] * (activeLane ? 0.28f : 0.11f));
+                DrawTextCenteredInBox(sb, LANE_ARROWS[lane], laneHdr, LANE_COLORS[lane], laneFont);
+            }
+
             if (_level == null) return;
-            
-            int y = _infoPanelRect.Y + 10;
-            
-            // Level info
-            DrawText(sb, $"BPM: {_level.Data.EffectiveBpm:F1}", new Vector2(_infoPanelRect.X + 10, y), Color.White, 1f);
-            y += 30;
-            
-            // Strumline info with lane count
-            string strumlineName = _selectedStrumline == 0 ? "Player" : "Opponent";
-            int laneCount = _selectedStrumline < _level.Data.Strumlines.Count 
-                ? _level.Data.Strumlines[_selectedStrumline].Count 
-                : 0;
-            DrawText(sb, $"Strumline: {strumlineName}", new Vector2(_infoPanelRect.X + 10, y), ACCENT, 1f);
-            y += 25;
-            DrawText(sb, $"  Lanes: {laneCount}", new Vector2(_infoPanelRect.X + 10, y), Color.Gray, 0.9f);
-            y += 30;
-            
-            DrawText(sb, $"Lane: {(_selectedLane >= 0 ? _selectedLane.ToString() : "None")}", new Vector2(_infoPanelRect.X + 10, y), Color.White, 1f);
-            y += 30;
-            DrawText(sb, $"Tool: {_currentTool}", new Vector2(_infoPanelRect.X + 10, y), Color.White, 1f);
-            y += 30;
-            
-            // View settings
-            DrawText(sb, $"Zoom: {_zoom:F2}x", new Vector2(_infoPanelRect.X + 10, y), new Color(150, 200, 255), 0.9f);
-            y += 25;
-            DrawText(sb, $"Scroll Speed: {_scrollSpeed:F2}x", new Vector2(_infoPanelRect.X + 10, y), new Color(150, 255, 200), 0.9f);
-            y += 35;
-            
-            // Controls
-            DrawText(sb, "Controls:", new Vector2(_infoPanelRect.X + 10, y), ACCENT, 1f);
-            y += 25;
-            DrawText(sb, "1-4: Tools", new Vector2(_infoPanelRect.X + 10, y), Color.Gray, 0.8f);
-            y += 20;
-            DrawText(sb, "Q/W: Strumline", new Vector2(_infoPanelRect.X + 10, y), Color.Gray, 0.8f);
-            y += 20;
-            DrawText(sb, "+/-: Zoom", new Vector2(_infoPanelRect.X + 10, y), Color.Gray, 0.8f);
-            y += 20;
-            DrawText(sb, "O/P: Scroll Speed", new Vector2(_infoPanelRect.X + 10, y), new Color(150, 255, 200), 0.8f);
-            y += 20;
-            DrawText(sb, "Arrows: Scroll", new Vector2(_infoPanelRect.X + 10, y), Color.Gray, 0.8f);
-            y += 20;
-            DrawText(sb, "Wheel: Scroll", new Vector2(_infoPanelRect.X + 10, y), Color.Gray, 0.8f);
-            y += 20;
-            DrawText(sb, "Space: Play/Pause", new Vector2(_infoPanelRect.X + 10, y), new Color(100, 255, 150), 0.8f);
-            y += 20;
-            DrawText(sb, "Ctrl+S: Save", new Vector2(_infoPanelRect.X + 10, y), Color.Gray, 0.8f);
-        }
-        
-        // ── Draw status bar (bottom) ─────────────────────────────────────────
-        private void DrawStatusBar(SpriteBatch sb)
-        {
-            sb.Draw(_pixel, _statusBarRect, BG_MEDIUM);
-            
-            // Border
-            sb.Draw(_pixel, new Rectangle(_statusBarRect.X, _statusBarRect.Y, _statusBarRect.Width, 2), ACCENT);
-            
-            if (_level == null) return;
-            
-            string playbackStatus = _isPlaying ? "▶ PLAYING" : "⏸ PAUSED";
-            string timeFormat = _level.Data.TimesAreSeconds ? "seconds" : "beats";
-            string status = $"{playbackStatus} | Pos: {_scrollY:F2} {timeFormat} | Zoom: {_zoom:F2}x | Speed: {_scrollSpeed:F2}x";
-            
-            if (IsModified)
-                status += " | ● Modified";
-            
-            DrawText(sb, status, new Vector2(_statusBarRect.X + 10, _statusBarRect.Y + 5), Color.White, 0.8f);
-            
-            // Playback time on right
-            if (_isPlaying)
+
+            // Begin scissor clipping for the scrollable chart grid body
+            var gd = sb.GraphicsDevice;
+            var prevScissor = gd.ScissorRectangle;
+            var prevRaster = gd.RasterizerState;
+            _scissorRasterizer ??= new RasterizerState { CullMode = CullMode.None, ScissorTestEnable = true };
+            var scissor = Rectangle.Intersect(_gridBodyRect, new Rectangle(0, 0, _screenWidth, _screenHeight));
+            if (scissor.Width <= 0 || scissor.Height <= 0) return;
+
+            sb.End();
+            gd.ScissorRectangle = scissor;
+            sb.Begin(SpriteSortMode.Deferred, BlendState.AlphaBlend, SamplerState.LinearClamp, DepthStencilState.None, _scissorRasterizer);
+
+            float stepH = GetStepHeight();
+            float beatH = GetBeatHeight();
+            float receptorTopY = GetReceptorY();
+
+            // 16th-step square checkerboard rows (0.25 beats per row -> exact square at 1.0x zoom)
+            const float stepBeat = 1f / STEPS_PER_BEAT;
+            float visibleTopBeat = ScreenYToBeat(_gridBodyRect.Y) - 1f;
+            float visibleBotBeat = ScreenYToBeat(_gridBodyRect.Bottom) + 1f;
+            int minStep = Math.Max(0, (int)MathF.Floor(visibleTopBeat * STEPS_PER_BEAT));
+            int measureFont = UiScale.FontPx(12, s);
+            int gutterOffset = UiScale.Px(44, s);
+
+            // Center divider background strip between Left and BF
+            sb.Draw(_pixel, new Rectangle((int)(gridStartX + blockW), _gridBodyRect.Y, _gridGroupGap, _gridBodyRect.Height), new Color(13, 13, 21));
+
+            for (int step = minStep; ; step++)
             {
-                string time = $"♪ {_playbackTime:F2}s";
-                DrawText(sb, time, new Vector2(_statusBarRect.Right - 120, _statusBarRect.Y + 5), new Color(100, 255, 150), 0.8f);
-            }
-        }
-        
-        // ── Helper: Draw text ────────────────────────────────────────────────
-        private void DrawText(SpriteBatch sb, string text, Vector2 pos, Color color, float scale, bool centered = false)
-        {
-            if (_fontRenderer != null)
-            {
-                if (centered)
+                float bTop = step * stepBeat;
+                if (bTop > visibleBotBeat) break;
+
+                int yTop = BeatToScreenY(bTop);
+                int yBot = BeatToScreenY(bTop + stepBeat);
+                int cellH = Math.Max(1, yBot - yTop);
+
+                for (int col = 0; col < GRID_COLS; col++)
                 {
-                    var size = _fontRenderer.MeasureString(text) * scale;
-                    pos.X -= size.X / 2;
+                    bool alt = (step + col) % 2 == 0;
+                    Color cellCol = alt ? new Color(24, 24, 34) : new Color(30, 30, 42);
+                    sb.Draw(_pixel, new Rectangle((int)GetColumnX(col), yTop, (int)MathF.Ceiling(_laneWidth), cellH), cellCol);
                 }
-                _fontRenderer.DrawString(sb, text, pos, color, scale);
-            }
-            else if (_font != null)
-            {
-                if (centered)
+
+                // Sub-step lines when snap > 1/16 and zoomed in enough
+                float subDiv = _snapDivisor / 16f;
+                if (subDiv > 1f && stepH / subDiv >= 7f * s)
                 {
-                    var size = _font.MeasureString(text) * scale;
-                    pos.X -= size.X / 2;
+                    float subBeat = stepBeat / subDiv;
+                    for (int k = 1; k < (int)subDiv; k++)
+                    {
+                        int sy = BeatToScreenY(bTop + k * subBeat);
+                        sb.Draw(_pixel, new Rectangle((int)gridStartX, sy, (int)blockW, 1), Color.White * 0.04f);
+                        sb.Draw(_pixel, new Rectangle((int)rightStartX, sy, (int)blockW, 1), Color.White * 0.04f);
+                    }
                 }
-                sb.DrawString(_font, text, pos, color, 0f, Vector2.Zero, scale, SpriteEffects.None, 0f);
-            }
-        }
-        
-        // ── Draw character preview window ────────────────────────────────────
-        private void DrawCharacterPreview(SpriteBatch sb)
-        {
-            if (_level == null) return;
-            
-            // Dark background with border
-            sb.Draw(_pixel, _previewRect, BG_DARK * 0.95f);
-            sb.Draw(_pixel, new Rectangle(_previewRect.X, _previewRect.Y, _previewRect.Width, 3), ACCENT);
-            sb.Draw(_pixel, new Rectangle(_previewRect.X, _previewRect.Bottom - 3, _previewRect.Width, 3), ACCENT);
-            sb.Draw(_pixel, new Rectangle(_previewRect.X, _previewRect.Y, 3, _previewRect.Height), ACCENT);
-            sb.Draw(_pixel, new Rectangle(_previewRect.Right - 3, _previewRect.Y, 3, _previewRect.Height), ACCENT);
-            
-            // Title
-            DrawText(sb, "Level Preview", 
-                new Vector2(_previewRect.X + _previewRect.Width / 2, _previewRect.Y + 8), 
-                ACCENT, 0.8f, centered: true);
-            
-            // Preview area (below title)
-            Rectangle previewArea = new Rectangle(
-                _previewRect.X + 10,
-                _previewRect.Y + 25,
-                _previewRect.Width - 20,
-                _previewRect.Height - 65 // Leave space for character indicators at bottom
-            );
-            
-            // Draw stage/level preview background
-            sb.Draw(_pixel, previewArea, new Color(15, 15, 20) * 0.9f);
-            
-            // Draw a simplified representation of the level
-            DrawLevelMiniature(sb, previewArea);
-            
-            // Draw character singing indicators at bottom
-            int charY = _previewRect.Bottom - 35;
-            DrawCharacterIndicator(sb, new Vector2(_previewRect.X + 75, charY), 0, "Player");
-            DrawCharacterIndicator(sb, new Vector2(_previewRect.Right - 75, charY), 1, "Opponent");
-            
-            // Stats
-            int totalNotes = 0;
-            foreach (var strumline in _level.Data.Strumlines)
-                foreach (var lane in strumline)
-                    totalNotes += lane.Count;
-            
-            DrawText(sb, $"{totalNotes} notes | BPM: {_level.Data.EffectiveBpm:F0}", 
-                new Vector2(_previewRect.X + _previewRect.Width / 2, _previewRect.Bottom - 10), 
-                Color.Gray, 0.65f, centered: true);
-        }
-        
-        // ── Draw level miniature (stage, characters, objects) ─────────────────
-        private void DrawLevelMiniature(SpriteBatch sb, Rectangle area)
-        {
-            if (_level == null) return;
-            
-            // Calculate world bounds from scene objects
-            float minX = float.MaxValue, maxX = float.MinValue;
-            float minY = float.MaxValue, maxY = float.MinValue;
-            
-            foreach (var obj in _level.Scene.Objects)
-            {
-                var pos = obj.GetPosition();
-                minX = Math.Min(minX, pos.X);
-                maxX = Math.Max(maxX, pos.X);
-                minY = Math.Min(minY, pos.Y);
-                maxY = Math.Max(maxY, pos.Y);
-            }
-            
-            // If no objects, use default bounds
-            if (minX == float.MaxValue)
-            {
-                minX = 0; maxX = 1920;
-                minY = 0; maxY = 1080;
-            }
-            
-            // Add padding
-            float worldWidth = maxX - minX;
-            float worldHeight = maxY - minY;
-            if (worldWidth < 100) worldWidth = 1920;
-            if (worldHeight < 100) worldHeight = 1080;
-            
-            minX -= worldWidth * 0.1f;
-            maxX += worldWidth * 0.1f;
-            minY -= worldHeight * 0.1f;
-            maxY += worldHeight * 0.1f;
-            worldWidth = maxX - minX;
-            worldHeight = maxY - minY;
-            
-            // Calculate scale to fit in preview area
-            float scaleX = area.Width / worldWidth;
-            float scaleY = area.Height / worldHeight;
-            float scale = Math.Min(scaleX, scaleY);
-            
-            // Draw simplified scene objects
-            foreach (var obj in _level.Scene.Objects)
-            {
-                var pos = obj.GetPosition();
-                var objScale = obj.GetScale();
-                
-                // Map world position to preview area
-                float screenX = area.X + (pos.X - minX) * scale;
-                float screenY = area.Y + (pos.Y - minY) * scale;
-                
-                // Determine object color based on sprite name
-                Color objColor = Color.Gray;
-                string spriteName = obj.Spr?.ToLower() ?? "";
-                
-                if (spriteName.Contains("bf") || spriteName.Contains("player") || spriteName.Contains("boyfriend"))
+
+                bool isMeasure = (step % 16) == 0;
+                bool isBeat = (step % 4) == 0;
+                if (isMeasure || isBeat)
                 {
-                    objColor = new Color(100, 150, 255); // Blue for player
-                    
-                    // Highlight if singing
-                    if (_characterSingTime[0] > 0f)
-                        objColor = LANE_COLORS[Math.Clamp(_characterSingLane[0], 0, 3)];
-                }
-                else if (spriteName.Contains("dad") || spriteName.Contains("opponent"))
-                {
-                    objColor = new Color(255, 100, 100); // Red for opponent
-                    
-                    // Highlight if singing
-                    if (_characterSingTime[1] > 0f)
-                        objColor = LANE_COLORS[Math.Clamp(_characterSingLane[1], 0, 3)];
-                }
-                else if (spriteName.Contains("stage") || spriteName.Contains("bg") || spriteName.Contains("background"))
-                {
-                    objColor = new Color(60, 60, 80); // Dark blue-gray for stage
+                    int lineH = isMeasure ? Math.Max(2, UiScale.Px(2, s)) : 1;
+                    Color lineCol = isMeasure ? MEASURE_LINE : BEAT_LINE * 0.65f;
+                    sb.Draw(_pixel, new Rectangle((int)gridStartX, yTop, (int)blockW, lineH), lineCol);
+                    sb.Draw(_pixel, new Rectangle((int)rightStartX, yTop, (int)blockW, lineH), lineCol);
+
+                    if (isMeasure)
+                    {
+                        int barNum = step / 16 + 1;
+                        DrawText(sb, $"#{barNum}", new Vector2(gridStartX - gutterOffset, yTop - measureFont * 0.45f), Color.White * 0.65f, measureFont);
+                    }
                 }
                 else
                 {
-                    objColor = new Color(80, 80, 90); // Gray for other objects
+                    sb.Draw(_pixel, new Rectangle((int)gridStartX, yTop, (int)blockW, 1), Color.White * 0.05f);
+                    sb.Draw(_pixel, new Rectangle((int)rightStartX, yTop, (int)blockW, 1), Color.White * 0.05f);
                 }
-                
-                // Draw object as rectangle
-                int objWidth = Math.Max(3, (int)(100 * objScale.X * scale));
-                int objHeight = Math.Max(3, (int)(100 * objScale.Y * scale));
-                
-                sb.Draw(_pixel, new Rectangle(
-                    (int)(screenX - objWidth / 2),
-                    (int)(screenY - objHeight / 2),
-                    objWidth,
-                    objHeight
-                ), objColor * 0.8f);
-                
-                // Draw outline
-                sb.Draw(_pixel, new Rectangle((int)(screenX - objWidth / 2), (int)(screenY - objHeight / 2), objWidth, 1), objColor);
-                sb.Draw(_pixel, new Rectangle((int)(screenX - objWidth / 2), (int)(screenY + objHeight / 2), objWidth, 1), objColor);
-                sb.Draw(_pixel, new Rectangle((int)(screenX - objWidth / 2), (int)(screenY - objHeight / 2), 1, objHeight), objColor);
-                sb.Draw(_pixel, new Rectangle((int)(screenX + objWidth / 2), (int)(screenY - objHeight / 2), 1, objHeight), objColor);
             }
-            
-            // If no scene objects, show placeholder
-            if (_level.Scene.Objects.Count == 0)
+
+            // Event Markers overlay (Read-only timeline inspection across chart)
+            DrawGridEvents(sb, gridStartX, blockW, rightStartX, visibleTopBeat, visibleBotBeat);
+
+            // Highlight hovered column
+            if (_hoverCol >= 0)
             {
-                DrawText(sb, "No scene objects", 
-                    new Vector2(area.X + area.Width / 2, area.Y + area.Height / 2 - 10), 
-                    Color.Gray * 0.6f, 0.8f, centered: true);
-                DrawText(sb, "Level is chart-only", 
-                    new Vector2(area.X + area.Width / 2, area.Y + area.Height / 2 + 10), 
-                    Color.Gray * 0.5f, 0.7f, centered: true);
+                float lx = GetColumnX(_hoverCol);
+                sb.Draw(_pixel, new Rectangle((int)lx, _gridBodyRect.Y, (int)_laneWidth, _gridBodyRect.Height), LANE_COLORS[_hoverLane] * 0.08f);
+            }
+
+            // Lane dividers for both Left and BF blocks
+            int outerW = Math.Max(2, UiScale.Px(3, s));
+            for (int lane = 0; lane <= LANE_COUNT; lane++)
+            {
+                float lx = gridStartX + lane * _laneWidth;
+                float rx = rightStartX + lane * _laneWidth;
+                int w = (lane == 0 || lane == LANE_COUNT) ? outerW : 1;
+                Color lc = (lane == 0 || lane == LANE_COUNT) ? ACCENT_PINK * 0.5f : GRID_LINE;
+                Color rc = (lane == 0 || lane == LANE_COUNT) ? ACCENT_CYAN * 0.5f : GRID_LINE;
+                sb.Draw(_pixel, new Rectangle((int)lx, _gridBodyRect.Y, w, _gridBodyRect.Height), lc);
+                sb.Draw(_pixel, new Rectangle((int)rx, _gridBodyRect.Y, w, _gridBodyRect.Height), rc);
+            }
+
+            // Receptor Bar (drawn beneath notes so beat-0 notes stack cleanly on top inside their squares)
+            DrawReceptorBar(sb, gridStartX, rightStartX, blockW, receptorTopY, stepH);
+
+            // All notes for active Left track and Right BF track
+            DrawStrumlineNotes(sb, _leftStrumline, stepH, beatH);
+            DrawStrumlineNotes(sb, _rightStrumline, stepH, beatH);
+
+            // Hover placement ghost cursor (snapped inside the hovered step square)
+            if (!_isPlaying && _hoverCol >= 0 && _hoverSnappedBeat >= 0f &&
+                (_currentTool == EditorTool.PlaceNote || _currentTool == EditorTool.PlaceHold))
+            {
+                int gyTop = BeatToScreenY(_hoverSnappedBeat);
+                float gCenterY = gyTop + stepH * 0.5f;
+                float gCenterX = GetColumnX(_hoverCol) + _laneWidth * 0.5f;
+
+                var cellRect = new Rectangle((int)GetColumnX(_hoverCol) + 1, gyTop + 1, Math.Max(2, (int)_laneWidth - 2), Math.Max(2, (int)stepH - 2));
+                DrawBorder(sb, cellRect, LANE_COLORS[_hoverLane] * 0.45f);
+
+                if (_currentTool == EditorTool.PlaceHold)
+                {
+                    float gBeats = Math.Max(GetSnapStepBeats(), _defaultHoldBeats);
+                    int gh = Math.Max(4, (int)MathF.Round(gBeats * beatH));
+                    DrawHoldTrail(sb, _hoverLane, _activeNoteSkin, gCenterX, gCenterY, gh, 0.35f, highlighted: false);
+                }
+                DrawSingleNote(sb, _hoverLane, _activeNoteSkin, gCenterX, gCenterY, 0.42f, highlighted: false);
+            }
+
+            // Restore normal batch
+            sb.End();
+            gd.RasterizerState = prevRaster;
+            gd.ScissorRectangle = prevScissor;
+            sb.Begin(SpriteSortMode.Deferred, BlendState.AlphaBlend, SamplerState.LinearClamp);
+        }
+
+        private float GetEventSeconds(FnmmEvent ev, bool alreadyNormalized)
+        {
+            if (alreadyNormalized || _level == null) return ev.Time;
+            if (!_level.Data.TimesAreSeconds && _level.Data.Bpm > 0f)
+                return ev.Time / _level.Data.Bpm * 60f;
+            return ev.Time;
+        }
+
+        private static string FormatEventActions(FnmmEvent ev)
+        {
+            if (ev.Actions.Count == 0) return "Event";
+            var parts = new List<string>(Math.Min(3, ev.Actions.Count));
+            for (int i = 0; i < ev.Actions.Count && i < 2; i++)
+                parts.Add(ev.Actions[i].Type);
+            if (ev.Actions.Count > 2)
+                parts.Add($"+{ev.Actions.Count - 2}");
+            return string.Join(", ", parts);
+        }
+
+        private void DrawGridEvents(SpriteBatch sb, float gridStartX, float blockW, float rightStartX, float visibleTopBeat, float visibleBotBeat)
+        {
+            if (_level == null) return;
+            bool evAlreadySec = _previewLevel != null;
+            var evList = _previewLevel?.Events.Events ?? _level.Events.Events;
+            if (evList.Count == 0) return;
+
+            float s = _uiScale;
+            float bpm = _level.Data.EffectiveBpm;
+            int evFont = UiScale.FontPx(10, s);
+            int badgeW = Math.Max(_gridGroupGap - 2, UiScale.Px(18, s));
+            int badgeH = UiScale.Px(14, s);
+            int midX = (int)(gridStartX + blockW + _gridGroupGap * 0.5f);
+            bool hoverInGrid = _gridBodyRect.Contains(_prevMouse.Position);
+
+            foreach (var ev in evList)
+            {
+                float evSec = GetEventSeconds(ev, evAlreadySec);
+                float evBeat = evSec * bpm / 60f;
+                if (evBeat < visibleTopBeat || evBeat > visibleBotBeat) continue;
+
+                int y = BeatToScreenY(evBeat);
+                sb.Draw(_pixel, new Rectangle((int)gridStartX, y, (int)(rightStartX + blockW - gridStartX), 1), ACCENT_GOLD * 0.45f);
+
+                var badgeRect = new Rectangle(midX - badgeW / 2, y - badgeH / 2, badgeW, badgeH);
+                bool hovered = hoverInGrid && Math.Abs(_prevMouse.Position.Y - y) <= UiScale.Px(8, s);
+                sb.Draw(_pixel, badgeRect, hovered ? ACCENT_GOLD : new Color(75, 58, 18));
+                DrawBorder(sb, badgeRect, ACCENT_GOLD * 0.85f);
+                DrawTextCenteredInBox(sb, ev.Actions.Count > 1 ? $"E{ev.Actions.Count}" : "EV", badgeRect, hovered ? BG_DARK : ACCENT_GOLD, evFont);
+
+                if (hovered)
+                    _hoveredEventSummary = $"Beat {evBeat:F2} ({evSec:F2}s): {FormatEventActions(ev)}";
             }
         }
-        
-        // ── Draw character singing indicator (compact version) ────────────────
-        private void DrawCharacterIndicator(SpriteBatch sb, Vector2 center, int strumlineIdx, string label)
+
+        private void DrawStrumlineNotes(SpriteBatch sb, int strumIdx, float stepH, float beatH)
         {
-            bool isSinging = _characterSingTime[strumlineIdx] > 0f;
-            int singLane = _characterSingLane[strumlineIdx];
-            
-            // Label
-            DrawText(sb, label, 
-                new Vector2(center.X, center.Y - 15), 
-                Color.Gray, 0.6f, centered: true);
-            
-            // Draw 4 mini arrows horizontally
-            int arrowSpacing = 15;
-            int startX = (int)(center.X - (LANE_COUNT * arrowSpacing) / 2 + arrowSpacing / 2);
-            
-            for (int lane = 0; lane < LANE_COUNT; lane++)
+            if (_level == null || strumIdx < 0 || strumIdx >= _level.Data.Strumlines.Count) return;
+            var strum = _level.Data.Strumlines[strumIdx];
+
+            for (int lane = 0; lane < LANE_COUNT && lane < strum.Count; lane++)
             {
-                int arrowX = startX + lane * arrowSpacing;
-                bool isActive = isSinging && singLane == lane;
-                float alpha = isActive ? 1.0f : 0.25f;
-                Color arrowColor = LANE_COLORS[lane] * alpha;
-                
-                // Draw mini arrow using NoteStyle if available
+                int col = StrumAndLaneToCol(strumIdx, lane);
+                if (col < 0) continue;
+                float centerX = GetColumnX(col) + _laneWidth * 0.5f;
+
+                foreach (var note in strum[lane])
+                {
+                    float startBeat = TimeUnitsToBeats(note.Start);
+                    int yTop = BeatToScreenY(startBeat);
+                    float centerY = yTop + stepH * 0.5f;
+                    int holdH = note.Duration > 0f ? Math.Max(4, (int)MathF.Round(TimeUnitsToBeats(note.Duration) * beatH)) : 0;
+
+                    if (centerY + holdH < _gridBodyRect.Y - stepH || centerY > _gridBodyRect.Bottom + stepH)
+                        continue;
+
+                    bool isSel = ReferenceEquals(note, _selectedNote);
+                    if (holdH > 0)
+                        DrawHoldTrail(sb, lane, note.Props.Skin, centerX, centerY, holdH, 1f, isSel);
+
+                    DrawSingleNote(sb, lane, note.Props.Skin, centerX, centerY, 1f, isSel,
+                        (int)note.Props.OnPressEvent, (int)note.Props.OnMissEvent);
+                }
+            }
+        }
+
+        private void DrawHoldTrail(SpriteBatch sb, int lane, float skin, float centerX, float topY, int holdH, float alpha, bool highlighted)
+        {
+            if (holdH <= 1 || lane < 0 || lane >= LANE_COUNT) return;
+
+            int skinType = (int)MathF.Round(skin);
+            bool hasDedicatedFrame = _noteStyle != null && _noteStyle.NoteFrames[lane, Math.Clamp(skinType, 0, 3)] != null;
+            Color skinTint = _noteStyle != null ? _noteStyle.GetSkinTint(skinType) : GetSkinDefaultTint(skinType);
+            Color baseTint = skinType == 0
+                ? (_noteStyle != null && _noteStyle.ColorizeByLane ? LANE_COLORS[lane] : Color.White)
+                : (hasDedicatedFrame ? Color.White : skinTint);
+            if (highlighted) baseTint = Color.Lerp(baseTint, ACCENT_GOLD, 0.35f);
+            Color spriteTint = baseTint * (alpha * 0.85f);
+
+            // Compute consistent NoteStyle -> GridCell scale from lane arrow size
+            float stepH = GetStepHeight();
+            float cellFitH = Math.Min(_laneWidth, Math.Max(14f * _uiScale, stepH));
+            float maxW = _laneWidth * 0.76f;
+            float maxH = cellFitH * 0.76f;
+            var refFrame = _noteStyle?.GetNoteFrame(lane, skinType);
+            float refW = refFrame != null ? Math.Max(1f, refFrame.FrameW > 0 ? refFrame.FrameW : refFrame.Source.Width) : 154f;
+            float refH = refFrame != null ? Math.Max(1f, refFrame.FrameH > 0 ? refFrame.FrameH : refFrame.Source.Height) : 154f;
+            float editorNoteScale = Math.Min(maxW / refW, maxH / refH);
+
+            // 1. Codename Engine atlas holds (HoldPieceFrames + HoldEndFrames) — always top-to-bottom Upscroll in chart grid
+            if (_noteStyle != null && _noteStyle.IsCodenameEngine &&
+                _noteStyle.HoldPieceFrames[lane] is { } pieceFrame &&
+                _noteStyle.HoldEndFrames[lane] is { } endFrame)
+            {
+                var pSrc = pieceFrame.Source.Height > 4
+                    ? new Rectangle(pieceFrame.Source.X, pieceFrame.Source.Y + 1, pieceFrame.Source.Width, pieceFrame.Source.Height - 2)
+                    : pieceFrame.Source;
+                var eSrc = endFrame.Source.Height > 4
+                    ? new Rectangle(endFrame.Source.X, endFrame.Source.Y + 1, endFrame.Source.Width, endFrame.Source.Height - 1)
+                    : endFrame.Source;
+
+                float bodyScale = Math.Min(editorNoteScale, (_laneWidth * 0.52f) / Math.Max(1, pSrc.Width));
+                int intWidth = Math.Max(4, (int)MathF.Round(pSrc.Width * bodyScale));
+                int intX = (int)MathF.Round(centerX - intWidth * 0.5f);
+                int endWidth = Math.Max(4, (int)MathF.Round(eSrc.Width * bodyScale));
+                int endX = (int)MathF.Round(centerX - endWidth * 0.5f);
+
+                float fullCapH = eSrc.Height * bodyScale;
+                float partH = holdH - fullCapH;
+                float consumed = partH >= 0f ? 0f : 1f - (holdH / Math.Max(1f, fullCapH));
+                int capClipY = (int)Math.Round(Math.Clamp(consumed, 0f, 1f) * eSrc.Height);
+                int capClipH = eSrc.Height - capClipY;
+                int startIntY = (int)MathF.Round(topY);
+                int joinY = partH > 0f ? (int)MathF.Round(topY + partH) : startIntY;
+                int bodyH = joinY - startIntY;
+
+                if (bodyH > 0)
+                    sb.Draw(pieceFrame.Texture, new Rectangle(intX, startIntY, intWidth, bodyH), pSrc, spriteTint);
+                if (capClipH > 0)
+                {
+                    int capH = Math.Max(1, (int)Math.Round(capClipH * bodyScale));
+                    var clippedEnd = new Rectangle(eSrc.X, eSrc.Y + capClipY, eSrc.Width, capClipH);
+                    sb.Draw(endFrame.Texture, new Rectangle(endX, joinY, endWidth, capH), clippedEnd, spriteTint);
+                }
+                return;
+            }
+
+            // 2. FMM 8-column HoldTexture (SustainTrail Upscroll, bottomClip = 0.9f)
+            if (_noteStyle?.HoldTexture != null && _noteStyle.HoldTexture.Width >= 8)
+            {
+                var holdTex = _noteStyle.HoldTexture;
+                int colWidth = holdTex.Width / 8;
+                int texHeight = holdTex.Height;
+                int bodyCol = lane * 2;
+                int capCol = lane * 2 + 1;
+
+                float bodyScale = Math.Min(editorNoteScale, (_laneWidth * 0.52f) / Math.Max(1, colWidth));
+                int intWidth = Math.Max(4, (int)MathF.Round(colWidth * bodyScale));
+                int intX = (int)MathF.Round(centerX - intWidth * 0.5f);
+
+                const float BOTTOM_CLIP = 0.9f;
+                int capSrcBottom = Math.Max(1, (int)Math.Round(BOTTOM_CLIP * texHeight));
+                float fullCapH = capSrcBottom * bodyScale;
+                float partH = holdH - fullCapH;
+
+                var bodySrc = texHeight > 4
+                    ? new Rectangle(bodyCol * colWidth, 1, colWidth, texHeight - 2)
+                    : new Rectangle(bodyCol * colWidth, 0, colWidth, texHeight);
+
+                float consumed = partH >= 0f ? 0f : 1f - (holdH / Math.Max(1f, fullCapH));
+                int capSrcY = (int)Math.Round(Math.Clamp(consumed, 0f, 1f) * capSrcBottom);
+                int capSrcH = capSrcBottom - capSrcY;
+
+                int startIntY = (int)MathF.Round(topY);
+                int joinY = partH > 0f ? (int)MathF.Round(topY + partH) : startIntY;
+                int bodyH = joinY - startIntY;
+
+                if (bodyH > 0)
+                    sb.Draw(holdTex, new Rectangle(intX, startIntY, intWidth, bodyH), bodySrc, spriteTint);
+                if (capSrcH > 0)
+                {
+                    int capH = Math.Max(1, (int)Math.Round(capSrcH * bodyScale));
+                    var capSrc = new Rectangle(capCol * colWidth, capSrcY, colWidth, capSrcH);
+                    sb.Draw(holdTex, new Rectangle(intX, joinY, intWidth, capH), capSrc, spriteTint);
+                }
+                return;
+            }
+
+            // 3. Programmatic fallback sustain bar + tail cap
+            Color fbCol = GetNoteColor(lane, skin) * alpha;
+            int fbW = Math.Max(UiScale.Px(12, _uiScale), (int)(_laneWidth * 0.26f));
+            var fbRect = new Rectangle((int)(centerX - fbW / 2f), (int)MathF.Round(topY), fbW, holdH);
+            sb.Draw(_pixel, fbRect, fbCol * 0.55f);
+            DrawBorder(sb, fbRect, highlighted ? ACCENT_GOLD : fbCol);
+
+            int capPxH = Math.Max(4, UiScale.Px(6, _uiScale));
+            int capPad = UiScale.Px(3, _uiScale);
+            sb.Draw(_pixel, new Rectangle(fbRect.X - capPad, fbRect.Bottom - capPxH / 2, fbRect.Width + capPad * 2, capPxH), highlighted ? ACCENT_GOLD : fbCol);
+        }
+
+        private float AnalyzePackBenefit(int packIndex)
+        {
+            if (_level == null || packIndex < 0) return 0f;
+            var packs = _level.Events.ActionPacks;
+            if (packIndex >= packs.Count) return 0f;
+            float netHealth = 0f;
+            foreach (var action in packs[packIndex].Actions)
+            {
+                if (action.Type != "PlayerHealth") continue;
+                float val = action.Props.ValueFloat ?? 0f;
+                string op = action.Props.Operation ?? "remove";
+                netHealth += op == "add" ? val : -val;
+            }
+            return netHealth;
+        }
+
+        private string? GetNoteSymbol(int skinType, int pressPackIdx, int missPackIdx)
+        {
+            if (skinType == 0) return null;
+            if (pressPackIdx >= 0 || missPackIdx >= 0)
+            {
+                float pressB = pressPackIdx >= 0 ? AnalyzePackBenefit(pressPackIdx) : 0f;
+                float missB = missPackIdx >= 0 ? AnalyzePackBenefit(missPackIdx) : 0f;
+                if (pressB > missB) return "O";
+                if (missB > pressB) return "X";
+                if (pressB == 0f && missB == 0f)
+                    return skinType switch { 1 => "X", 2 => "O", 3 => "O", _ => null };
+                return "O";
+            }
+            return skinType switch { 1 => "X", 2 => "O", 3 => "O", _ => null };
+        }
+
+        private void DrawNoteSymbol(SpriteBatch sb, string symbol, float cx, float cy, float visualSize, Color laneColor, float alpha)
+        {
+            int fontPx = Math.Clamp((int)MathF.Round(visualSize * 0.42f), 9, 28);
+            var sz = MeasureText(symbol, fontPx);
+            float baseY = cy - sz.Y * 0.5f;
+            Color outline = Color.Black * (0.85f * alpha);
+            float off = Math.Max(1f, fontPx * 0.08f);
+            DrawText(sb, symbol, new Vector2(cx - off, baseY - off), outline, fontPx, centered: true);
+            DrawText(sb, symbol, new Vector2(cx + off, baseY - off), outline, fontPx, centered: true);
+            DrawText(sb, symbol, new Vector2(cx - off, baseY + off), outline, fontPx, centered: true);
+            DrawText(sb, symbol, new Vector2(cx + off, baseY + off), outline, fontPx, centered: true);
+            DrawText(sb, symbol, new Vector2(cx, baseY), laneColor * alpha, fontPx, centered: true);
+        }
+
+        private static float DrawAtlasFrameCentered(SpriteBatch sb, AtlasFrame f, float centerX, float centerY, float maxW, float maxH, Color tint, float extraScale = 1f)
+        {
+            float frameW = f.FrameW > 0 ? f.FrameW : f.Source.Width;
+            float frameH = f.FrameH > 0 ? f.FrameH : f.Source.Height;
+            float scale = Math.Min(maxW / Math.Max(1f, frameW), maxH / Math.Max(1f, frameH)) * extraScale;
+
+            if (f.Rotated)
+            {
+                Vector2 pivot = new(f.Source.Width * 0.5f, f.Source.Height * 0.5f);
+                sb.Draw(f.Texture, new Vector2(centerX, centerY), f.Source, tint, -MathF.PI / 2f, pivot, scale, SpriteEffects.None, 0f);
+            }
+            else
+            {
+                float drawX = centerX - frameW * scale * 0.5f + (-f.OffsetX) * scale;
+                float drawY = centerY - frameH * scale * 0.5f + (-f.OffsetY) * scale;
+                sb.Draw(f.Texture, new Vector2(drawX, drawY), f.Source, tint, 0f, Vector2.Zero, scale, SpriteEffects.None, 0f);
+            }
+            return frameW * scale;
+        }
+
+        private void DrawSingleNote(SpriteBatch sb, int lane, float skin, float centerX, float centerY, float alpha, bool highlighted,
+            int onPressEvent = -1, int onMissEvent = -1)
+        {
+            float s = _uiScale;
+            float stepH = GetStepHeight();
+            float cellFitH = Math.Min(_laneWidth, Math.Max(14f * s, stepH));
+            float maxW = _laneWidth * 0.76f;
+            float maxH = cellFitH * 0.76f;
+            int skinType = Math.Clamp((int)MathF.Round(skin), 0, 3);
+
+            if (highlighted)
+            {
+                int boxW = Math.Max(6, (int)(_laneWidth * 0.90f));
+                int boxH = Math.Max(6, (int)(cellFitH * 0.90f));
+                var selRect = new Rectangle((int)(centerX - boxW / 2f), (int)(centerY - boxH / 2f), boxW, boxH);
+                sb.Draw(_pixel, selRect, ACCENT_GOLD * 0.22f);
+                DrawBorder(sb, selRect, ACCENT_GOLD);
+            }
+
+            string? symbol = GetNoteSymbol(skinType, onPressEvent, onMissEvent);
+
+            if (_noteStyle != null)
+            {
+                var frame = _noteStyle.GetNoteFrame(lane, skinType);
+                if (frame != null)
+                {
+                    bool hasDedicated = _noteStyle.NoteFrames[lane, skinType] != null;
+                    Color baseTint = skinType == 0
+                        ? (_noteStyle.ColorizeByLane ? LANE_COLORS[lane] : Color.White)
+                        : (hasDedicated ? Color.White : _noteStyle.GetSkinTint(skinType));
+                    float visualW = DrawAtlasFrameCentered(sb, frame, centerX, centerY, maxW, maxH, baseTint * alpha);
+                    if (!hasDedicated && symbol != null)
+                        DrawNoteSymbol(sb, symbol, centerX, centerY, visualW, LANE_COLORS[lane], alpha);
+                    return;
+                }
+            }
+
+            Color col = GetNoteColor(lane, skin) * alpha;
+            int sqW = (int)(maxW * 0.85f);
+            int sqH = (int)(maxH * 0.85f);
+            var rect = new Rectangle((int)(centerX - sqW / 2f), (int)(centerY - sqH / 2f), sqW, sqH);
+            sb.Draw(_pixel, rect, col * 0.85f);
+            DrawBorder(sb, rect, Color.White * (0.7f * alpha));
+            if (symbol != null)
+                DrawNoteSymbol(sb, symbol, centerX, centerY, sqW, LANE_COLORS[lane], alpha);
+        }
+
+        private void DrawReceptorBar(SpriteBatch sb, float leftStartX, float rightStartX, float blockW, float receptorTopY, float stepH)
+        {
+            float s = _uiScale;
+            int rowH = Math.Max(8, (int)MathF.Round(stepH));
+            int topY = (int)MathF.Round(receptorTopY);
+
+            // Subtle playhead row highlight band + crisp top beat timing line across Left and BF
+            sb.Draw(_pixel, new Rectangle((int)leftStartX, topY, (int)blockW, rowH), Color.White * 0.05f);
+            sb.Draw(_pixel, new Rectangle((int)rightStartX, topY, (int)blockW, rowH), Color.White * 0.05f);
+            int barH = Math.Max(2, UiScale.Px(3, s));
+            sb.Draw(_pixel, new Rectangle((int)leftStartX, topY - barH / 2, (int)blockW, barH), ACCENT_PINK * 0.85f);
+            sb.Draw(_pixel, new Rectangle((int)rightStartX, topY - barH / 2, (int)blockW, barH), ACCENT_CYAN * 0.85f);
+
+            float centerY = receptorTopY + stepH * 0.5f;
+            float cellFitH = Math.Min(_laneWidth, Math.Max(14f * s, stepH));
+            float maxW = _laneWidth * 0.72f;
+            float maxH = cellFitH * 0.72f;
+
+            for (int col = 0; col < GRID_COLS; col++)
+            {
+                ColToStrumAndLane(col, out int sl, out int lane);
+                float centerX = GetColumnX(col) + _laneWidth * 0.5f;
+                int safeSl = Math.Clamp(sl, 0, MAX_STRUMLINES - 1);
+                bool pressed = _receptorPressTime[safeSl, lane] > 0f;
+                float pressScale = pressed ? 0.90f : 1.0f;
+
                 if (_noteStyle != null)
                 {
-                    var frame = _noteStyle.GetNoteFrame(lane, 0);
+                    int recState = pressed ? 1 : 0;
+                    var recList = _noteStyle.ReceptorFrames[lane, recState];
+                    if ((recList == null || recList.Count == 0) && recState != 0)
+                        recList = _noteStyle.ReceptorFrames[lane, 0];
+
+                    var frame = (recList != null && recList.Count > 0) ? recList[0] : _noteStyle.GetNoteFrame(lane, 0);
+                    Color tint = (recList != null && recList.Count > 0)
+                        ? (_noteStyle.ColorizeByLane ? LANE_COLORS[lane] : Color.White) * (pressed ? 0.95f : 0.65f)
+                        : LANE_COLORS[lane] * (pressed ? 0.90f : 0.45f);
+
                     if (frame != null)
                     {
-                        float scale = 0.25f * (isActive ? 1.2f : 1.0f);
-                        sb.Draw(frame.Texture,
-                            new Vector2(arrowX, center.Y),
-                            frame.Source, arrowColor, 0f,
-                            new Vector2(frame.Source.Width / 2, frame.Source.Height / 2),
-                            scale, SpriteEffects.None, 0f);
+                        DrawAtlasFrameCentered(sb, frame, centerX, centerY, maxW, maxH, tint, pressScale);
                         continue;
                     }
                 }
-                
-                // Fallback: colored square
-                int squareSize = isActive ? 8 : 5;
-                sb.Draw(_pixel, new Rectangle(arrowX - squareSize / 2, (int)center.Y - squareSize / 2, squareSize, squareSize), arrowColor);
+
+                Color colCol = LANE_COLORS[lane] * (pressed ? 0.95f : 0.65f);
+                int sqW = (int)(maxW * 0.80f * pressScale);
+                int sqH = (int)(maxH * 0.80f * pressScale);
+                var rect = new Rectangle((int)(centerX - sqW / 2f), (int)(centerY - sqH / 2f), sqW, sqH);
+                sb.Draw(_pixel, rect, colCol * 0.30f);
+                DrawBorder(sb, rect, colCol);
             }
         }
-        
-        // ── Helper: Get lane name ────────────────────────────────────────────
-        private string GetLaneName(int lane)
+
+        // ── Right Info & Inspector Panel ─────────────────────────────────────
+        private void DrawInfoPanel(SpriteBatch sb)
         {
-            return lane switch
+            float s = _uiScale;
+            sb.Draw(_pixel, _infoPanelRect, BG_PANEL);
+            sb.Draw(_pixel, new Rectangle(_infoPanelRect.X, _infoPanelRect.Y, 2, _infoPanelRect.Height), ACCENT_PINK * 0.45f);
+            if (_level == null) return;
+
+            int padX = UiScale.Px(12, s);
+            int x = _infoPanelRect.X + padX;
+            int w = _infoPanelRect.Width - padX * 2;
+            int y = _infoPanelRect.Y + UiScale.Px(10, s);
+            int contentBottom = _showPreview ? _previewRect.Y - UiScale.Px(8, s) : _infoPanelRect.Bottom - UiScale.Px(8, s);
+
+            int hdrFont = UiScale.FontPx(13, s);
+            int bodyFont = UiScale.FontPx(13, s);
+            int smallFont = UiScale.FontPx(12, s);
+            int tipFont = UiScale.FontPx(11, s);
+            int rowStep = UiScale.Px(20, s);
+            int ctrlBtnW = UiScale.Px(30, s);
+            int ctrlBtnH = UiScale.Px(24, s);
+            int ctrlGap = UiScale.Px(6, s);
+
+            // Selected Note Inspector card (when a note is selected)
+            if (_selectedNote != null)
             {
-                0 => "LEFT",
-                1 => "DOWN",
-                2 => "UP",
-                3 => "RIGHT",
-                _ => "?"
-            };
+                DrawText(sb, "SELECTED NOTE", new Vector2(x, y), ACCENT_GOLD, hdrFont);
+                y += rowStep;
+
+                float sec = TimeUnitsToSeconds(_selectedNote.Start);
+                float beat = TimeUnitsToBeats(_selectedNote.Start);
+                DrawText(sb, $"Beat: {beat:F2} ({sec:F2}s)", new Vector2(x, y), Color.White, bodyFont);
+                y += rowStep;
+
+                string sideTag = _selectedNoteStrumline == _rightStrumline ? "BF" : (_level.Data.Strumlines.Count > 2 ? $"SL{_selectedNoteStrumline}" : "FOE");
+                DrawText(sb, $"{sideTag} {GetLaneName(_selectedNoteLane)} | {GetSkinName(_selectedNote.Props.Skin)}", new Vector2(x, y), Color.White * 0.85f, smallFont);
+                y += UiScale.Px(22, s);
+
+                // Hold Duration row
+                float holdBeats = TimeUnitsToBeats(_selectedNote.Duration);
+                DrawText(sb, $"Hold: {holdBeats:F2}b", new Vector2(x, y + UiScale.Px(3, s)), ACCENT_CYAN, bodyFont);
+                _inspDurMinusBtn = new Rectangle(_infoPanelRect.Right - padX - ctrlBtnW * 2 - ctrlGap, y, ctrlBtnW, ctrlBtnH);
+                _inspDurPlusBtn = new Rectangle(_infoPanelRect.Right - padX - ctrlBtnW, y, ctrlBtnW, ctrlBtnH);
+                DrawButton(sb, _inspDurMinusBtn, "-", BG_CARD, Color.White, bodyFont, Color.White * 0.15f, () => AdjustHoldDuration(-1));
+                DrawButton(sb, _inspDurPlusBtn, "+", BG_CARD, Color.White, bodyFont, Color.White * 0.15f, () => AdjustHoldDuration(1));
+                y += UiScale.Px(30, s);
+
+                // Skin + Swap Left/BF + Delete buttons
+                int actionGap = UiScale.Px(5, s);
+                int bw = (w - actionGap * 2) / 3;
+                int actH = UiScale.Px(26, s);
+                _inspSkinBtn = new Rectangle(x, y, bw, actH);
+                _inspSwapStrumBtn = new Rectangle(x + bw + actionGap, y, bw, actH);
+                _inspDeleteBtn = new Rectangle(x + (bw + actionGap) * 2, y, bw, actH);
+                string leftSwapTag = _level.Data.Strumlines.Count > 2 ? $"-> SL{_leftStrumline}" : "-> FOE";
+                string swapLbl = _selectedNoteStrumline == _rightStrumline ? leftSwapTag : "-> BF";
+                DrawButton(sb, _inspSkinBtn, "SKIN (T)", BG_CARD, Color.White, smallFont, ACCENT_CYAN * 0.5f, CycleSelectedNoteSkin);
+                DrawButton(sb, _inspSwapStrumBtn, swapLbl, BG_CARD, ACCENT_GOLD, smallFont, ACCENT_GOLD * 0.5f, SwapSelectedNoteStrumline);
+                DrawButton(sb, _inspDeleteBtn, "DEL", new Color(110, 32, 48), Color.White, smallFont, ACCENT_PINK, () =>
+                {
+                    if (_selectedNote != null)
+                    {
+                        DeleteSpecificNote(_selectedNoteStrumline, _selectedNoteLane, _selectedNote);
+                        _selectedNote = null;
+                    }
+                });
+                y += UiScale.Px(34, s);
+            }
+            else
+            {
+                _inspDurMinusBtn = _inspDurPlusBtn = _inspDeleteBtn = _inspSkinBtn = _inspSwapStrumBtn = Rectangle.Empty;
+
+                // Chart Stats
+                DrawText(sb, "CHART INFO", new Vector2(x, y), ACCENT_GOLD, hdrFont);
+                y += rowStep;
+
+                int leftNotes = CountStrumNotes(_leftStrumline);
+                int rightNotes = CountStrumNotes(_rightStrumline);
+                string leftTitle = _level.Data.Strumlines.Count > 2 ? $"Left (SL{_leftStrumline}):" : "Opponent (FOE):";
+                DrawText(sb, $"{leftTitle} {leftNotes}", new Vector2(x, y), ACCENT_PINK, bodyFont);
+                y += rowStep;
+                DrawText(sb, $"Player (BF):  {rightNotes}", new Vector2(x, y), ACCENT_CYAN, bodyFont);
+                y += rowStep;
+
+                if (_level.Data.Strumlines.Count > 2)
+                {
+                    DrawText(sb, $"Strumlines: {_level.Data.Strumlines.Count} (Tab to cycle)", new Vector2(x, y), ACCENT_GOLD * 0.9f, smallFont);
+                    y += rowStep;
+                }
+
+                if (!string.IsNullOrEmpty(_hoveredEventSummary))
+                {
+                    DrawText(sb, _hoveredEventSummary, new Vector2(x, y), ACCENT_GOLD, smallFont);
+                    y += rowStep;
+                }
+                y += UiScale.Px(6, s);
+            }
+
+            // BPM / Grid Zoom / Gameplay Note Speed adjusters
+            int adjBlockH = UiScale.Px(96, s);
+            int adjStep = UiScale.Px(30, s);
+            if (y + adjBlockH < contentBottom)
+            {
+                int minusX = _infoPanelRect.Right - padX - ctrlBtnW * 2 - ctrlGap;
+                int plusX = _infoPanelRect.Right - padX - ctrlBtnW;
+                int lblOffY = UiScale.Px(3, s);
+
+                DrawText(sb, $"BPM: {_level.Data.EffectiveBpm:F1}", new Vector2(x, y + lblOffY), Color.White, bodyFont);
+                _inspBpmMinusBtn = new Rectangle(minusX, y, ctrlBtnW, ctrlBtnH);
+                _inspBpmPlusBtn = new Rectangle(plusX, y, ctrlBtnW, ctrlBtnH);
+                DrawButton(sb, _inspBpmMinusBtn, "-", BG_CARD, Color.White, bodyFont, Color.White * 0.15f, () => ChangeBpm(-1f));
+                DrawButton(sb, _inspBpmPlusBtn, "+", BG_CARD, Color.White, bodyFont, Color.White * 0.15f, () => ChangeBpm(1f));
+                y += adjStep;
+
+                DrawText(sb, $"Grid Zoom: {_zoom:F2}x", new Vector2(x, y + lblOffY), Color.White * 0.9f, bodyFont);
+                _inspZoomMinusBtn = new Rectangle(minusX, y, ctrlBtnW, ctrlBtnH);
+                _inspZoomPlusBtn = new Rectangle(plusX, y, ctrlBtnW, ctrlBtnH);
+                DrawButton(sb, _inspZoomMinusBtn, "-", BG_CARD, Color.White, bodyFont, Color.White * 0.15f, () => ChangeZoom(-0.25f));
+                DrawButton(sb, _inspZoomPlusBtn, "+", BG_CARD, Color.White, bodyFont, Color.White * 0.15f, () => ChangeZoom(0.25f));
+                y += adjStep;
+
+                DrawText(sb, $"Note Spd: {_level.Data.Speed:F2}x", new Vector2(x, y + lblOffY), ACCENT_CYAN, bodyFont);
+                _inspSpeedMinusBtn = new Rectangle(minusX, y, ctrlBtnW, ctrlBtnH);
+                _inspSpeedPlusBtn = new Rectangle(plusX, y, ctrlBtnW, ctrlBtnH);
+                DrawButton(sb, _inspSpeedMinusBtn, "-", BG_CARD, Color.White, bodyFont, Color.White * 0.15f, () => ChangeChartSpeed(-0.1f));
+                DrawButton(sb, _inspSpeedPlusBtn, "+", BG_CARD, Color.White, bodyFont, Color.White * 0.15f, () => ChangeChartSpeed(0.1f));
+                y += adjStep + UiScale.Px(4, s);
+            }
+            else
+            {
+                _inspBpmMinusBtn = _inspBpmPlusBtn = _inspZoomMinusBtn = _inspZoomPlusBtn = _inspSpeedMinusBtn = _inspSpeedPlusBtn = Rectangle.Empty;
+            }
+
+            // Concise Shortcuts list in remaining top area
+            if (y + UiScale.Px(30, s) < contentBottom)
+            {
+                DrawText(sb, "SHORTCUTS", new Vector2(x, y), ACCENT_GOLD, smallFont);
+                y += UiScale.Px(18, s);
+                string[] tips =
+                {
+                    "L-Click: Place/Drag | R-Click: Del",
+                    "D/F/J/K: Step Input | M: Mirror Bar",
+                    "Space: Play | Enter: Playtest",
+                    "Ctrl+C/V: Copy/Paste Measure",
+                    "Tab: Track | C: Cam | H: Snd | N: Met",
+                    "Ctrl+Wheel/+/-: Zoom | O/P: Spd",
+                    "Ctrl+Z/Y: Undo/Redo | Ctrl+S: Save",
+                };
+                int tipStep = UiScale.Px(16, s);
+                foreach (var tip in tips)
+                {
+                    if (y + tipStep > contentBottom) break;
+                    DrawText(sb, tip, new Vector2(x, y), Color.White * 0.6f, tipFont);
+                    y += tipStep;
+                }
+            }
         }
-        
-        // ── Enums ────────────────────────────────────────────────────────────
-        private enum EditorPhase { Loading, LoadComplete, Ready, Error }
-        
-        private enum EditorTool
+
+        // ── Docked Engine Stage Preview (Live RenderTarget2D) ────────────────
+        private void DrawCharacterPreview(SpriteBatch sb)
         {
-            Select,    // Select and move notes
-            PlaceNote, // Place single notes
-            PlaceHold, // Place hold notes
-            Delete     // Delete notes
+            if (_level == null || _previewRect == Rectangle.Empty) return;
+            float s = _uiScale;
+
+            sb.Draw(_pixel, _previewRect, BG_DARK);
+            DrawBorder(sb, _previewRect, ACCENT_CYAN * 0.6f);
+
+            int hdrH = UiScale.Px(26, s);
+            int pad = UiScale.Px(6, s);
+            int footerH = UiScale.Px(28, s);
+
+            // Header bar with Camera mode, FX overlay toggle, and Close button
+            sb.Draw(_pixel, new Rectangle(_previewRect.X, _previewRect.Y, _previewRect.Width, hdrH), BG_CARD);
+            string hdrLabel = (_previewLevel?.Scene.Cameras.Count ?? 0) > 0 || _previewLevel?.Scene.Objects.Count > 0
+                ? "STAGE"
+                : "STAGE (NONE)";
+            DrawText(sb, hdrLabel, new Vector2(_previewRect.X + UiScale.Px(8, s), _previewRect.Y + UiScale.Px(5, s)), ACCENT_CYAN, UiScale.FontPx(11, s));
+
+            int btnFont = UiScale.FontPx(10, s);
+            DrawButton(sb, _previewCamBtnRect, GetPreviewCameraLabel(), new Color(30, 52, 78), ACCENT_GOLD, btnFont, ACCENT_CYAN * 0.55f, CyclePreviewCamera);
+            DrawButton(sb, _previewFxBtnRect, "FX", _previewShowOverlays ? new Color(36, 78, 56) : BG_DARK, _previewShowOverlays ? ACCENT_GREEN : Color.Gray, btnFont, _previewShowOverlays ? ACCENT_GREEN * 0.7f : Color.White * 0.15f,
+                () => { _previewShowOverlays = !_previewShowOverlays; ShowToast(_previewShowOverlays ? "Stage Overlays ON" : "Stage Overlays OFF"); });
+            DrawButton(sb, _previewCloseBtn, "X", new Color(75, 32, 46), Color.White, btnFont, ACCENT_PINK * 0.7f, () => _showPreview = false);
+
+            var stageRect = new Rectangle(_previewRect.X + pad, _previewRect.Y + hdrH + UiScale.Px(4, s),
+                _previewRect.Width - pad * 2, Math.Max(40, _previewRect.Height - hdrH - footerH - pad));
+            sb.Draw(_pixel, stageRect, new Color(12, 12, 18));
+
+            if (_previewLevel == null || _previewLevel.Scene.Objects.Count == 0 || _previewTarget == null)
+            {
+                DrawTextCenteredInBox(sb, "Chart-only level (No stage)", stageRect, Color.Gray, UiScale.FontPx(12, s));
+            }
+            else
+            {
+                float scale = Math.Min((float)stageRect.Width / _previewTargetW, (float)stageRect.Height / _previewTargetH);
+                int dstW = Math.Max(1, (int)MathF.Round(_previewTargetW * scale));
+                int dstH = Math.Max(1, (int)MathF.Round(_previewTargetH * scale));
+                int dstX = stageRect.X + (stageRect.Width - dstW) / 2;
+                int dstY = stageRect.Y + (stageRect.Height - dstH) / 2;
+                sb.Draw(_previewTarget, new Rectangle(dstX, dstY, dstW, dstH), Color.White);
+            }
+
+            // Character singing arrow strips at bottom of preview
+            int footerY = _previewRect.Bottom - UiScale.Px(14, s);
+            string leftInd = _level.Data.Strumlines.Count > 2 ? $"SL{_leftStrumline}" : "FOE";
+            DrawCharacterIndicator(sb, new Vector2(_previewRect.X + _previewRect.Width * 0.25f, footerY), _leftStrumline, leftInd);
+            DrawCharacterIndicator(sb, new Vector2(_previewRect.X + _previewRect.Width * 0.75f, footerY), _rightStrumline, "BF");
+        }
+
+        private void EnsurePreviewLoaded(GraphicsDevice gd)
+        {
+            if (_previewInitialized || _level == null) return;
+            _previewInitialized = true;
+
+            try
+            {
+                _previewLevel = FnmmSceneRenderer.CloneForStagePreview(_level);
+                _previewTargetW = _previewLevel.Scene.Landscape ? 1280 : 720;
+                _previewTargetH = _previewLevel.Scene.Landscape ? 720 : 1280;
+
+                int maxTexSize = FnmmSceneRenderer.GetGpuMaxTextureSize();
+                _previewTexCache = FnmmSceneRenderer.LoadLevelTextures(gd, _previewLevel, maxTexSize, _previewSpriteTextureCache);
+                _previewAnimators = FnmmSceneRenderer.CreateAnimators(_previewLevel, _previewTexCache, _previewTargetW, _previewTargetH);
+                _previewCameraManager = new CameraManager();
+                _previewEvents = new EventProcessor(_previewLevel, _previewAnimators, _previewTexCache);
+
+                if (_previewLevel.Scene.Objects.Count > 0)
+                    _previewTarget = new RenderTarget2D(gd, _previewTargetW, _previewTargetH);
+
+                SyncPreviewToTime(TimeUnitsToSeconds(_scrollY));
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[ChartEditor] Engine preview load warning: {ex.Message}");
+            }
+        }
+
+        private void RenderPreviewToTarget(SpriteBatch sb)
+        {
+            if (!_previewInitialized || _previewLevel == null || _previewEvents == null ||
+                _previewCameraManager == null || _previewTarget == null || _previewLevel.Scene.Objects.Count == 0)
+                return;
+
+            var gd = sb.GraphicsDevice;
+            var prevTargets = gd.GetRenderTargets();
+            sb.End();
+
+            try
+            {
+                gd.SetRenderTarget(_previewTarget);
+                gd.Clear(new Color(12, 12, 18));
+
+                float savedX = _previewEvents.Camera.X;
+                float savedY = _previewEvents.Camera.Y;
+                float savedScale = _previewEvents.Camera.Scale;
+                bool tempOverride = false;
+
+                Matrix camMatrix;
+                if (_previewCameraMode == -2)
+                {
+                    var (fx, fy, fscale) = FnmmSceneRenderer.ComputeFitCamera(_previewLevel, _previewAnimators);
+                    var fitCam = new CameraState { X = fx, Y = fy, Scale = fscale };
+                    _previewEvents.Camera.X = fx;
+                    _previewEvents.Camera.Y = fy;
+                    _previewEvents.Camera.Scale = fscale;
+                    tempOverride = true;
+                    camMatrix = _previewCameraManager.BuildCameraMatrix(_previewTargetW, _previewTargetH, fitCam, hasCameraEvents: true);
+                }
+                else if (_previewCameraMode >= 0 && _previewCameraMode < _previewLevel.Scene.Cameras.Count)
+                {
+                    var c = _previewLevel.Scene.Cameras[_previewCameraMode];
+                    float cScale = c.Scale > 0.01f ? c.Scale : 1f;
+                    var manualCam = new CameraState { X = (float)c.X, Y = (float)c.Y, Scale = cScale };
+                    _previewEvents.Camera.X = (float)c.X;
+                    _previewEvents.Camera.Y = (float)c.Y;
+                    _previewEvents.Camera.Scale = cScale;
+                    tempOverride = true;
+                    camMatrix = _previewCameraManager.BuildCameraMatrix(_previewTargetW, _previewTargetH, manualCam, hasCameraEvents: true);
+                }
+                else
+                {
+                    camMatrix = _previewCameraManager.BuildCameraMatrix(_previewTargetW, _previewTargetH, _previewEvents.Camera, _previewEvents.HasCameraEvents);
+                }
+
+                FnmmSceneRenderer.DrawSceneOrdered(sb, _previewLevel, _previewAnimators, _previewEvents, _previewCameraManager,
+                    _previewTargetW, _previewTargetH, camMatrix, activeEffect: null, includeFixedOverlays: _previewShowOverlays);
+
+                if (tempOverride)
+                {
+                    _previewEvents.Camera.X = savedX;
+                    _previewEvents.Camera.Y = savedY;
+                    _previewEvents.Camera.Scale = savedScale;
+                }
+
+                if (_previewShowOverlays && _previewEvents.ActiveFlashes.Count > 0)
+                {
+                    sb.Begin(SpriteSortMode.Deferred, BlendState.AlphaBlend, SamplerState.LinearClamp);
+                    GameplayHudOverlay.DrawScreenFlashes(sb, _pixel, _previewEvents, _previewTargetW, _previewTargetH);
+                    sb.End();
+                }
+            }
+            finally
+            {
+                gd.SetRenderTargets(prevTargets);
+                gd.Clear(Color.Black);
+                sb.Begin(samplerState: SamplerState.LinearClamp);
+            }
+        }
+
+        private void DrawCharacterIndicator(SpriteBatch sb, Vector2 center, int strumIdx, string label)
+        {
+            float s = _uiScale;
+            int safeSl = Math.Clamp(strumIdx, 0, MAX_STRUMLINES - 1);
+            bool isSinging = _characterSingTime[safeSl] > 0f;
+            int singLane = _characterSingLane[safeSl];
+
+            int lblFont = UiScale.FontPx(11, s);
+            DrawText(sb, label, new Vector2(center.X - UiScale.Px(42, s), center.Y - UiScale.Px(7, s)), isSinging ? Color.White : Color.Gray, lblFont);
+            for (int lane = 0; lane < LANE_COUNT; lane++)
+            {
+                bool active = isSinging && singLane == lane;
+                int size = UiScale.Px(active ? 10 : 7, s, 4);
+                int ax = (int)(center.X - UiScale.Px(8, s) + lane * UiScale.Px(14, s));
+                int ay = (int)(center.Y - size / 2f);
+                sb.Draw(_pixel, new Rectangle(ax, ay, size, size), LANE_COLORS[lane] * (active ? 1f : 0.25f));
+            }
+        }
+
+        // ── Bottom Status Bar ────────────────────────────────────────────────
+        private void DrawStatusBar(SpriteBatch sb)
+        {
+            float s = _uiScale;
+            sb.Draw(_pixel, _statusBarRect, BG_PANEL);
+            sb.Draw(_pixel, new Rectangle(_statusBarRect.X, _statusBarRect.Y, _statusBarRect.Width, 1), ACCENT_PINK * 0.45f);
+            if (_level == null) return;
+
+            int stFont = UiScale.FontPx(12, s);
+            string state = _isPlaying ? "PLAYING" : "PAUSED";
+            string mod = IsModified ? " | Unsaved *" : "";
+            float curBeat = TimeUnitsToBeats(_scrollY);
+            string leftText = $"{state} | Beat {curBeat:F2} | {FormatTime(TimeUnitsToSeconds(_scrollY))} | Snap 1/{_snapDivisor} | Tool: {_currentTool}{mod}";
+            float textH = MeasureText(leftText, stFont).Y;
+            DrawText(sb, leftText, new Vector2(_statusBarRect.X + UiScale.Px(10, s), _statusBarRect.Y + (_statusBarRect.Height - textH) / 2f), _isPlaying ? ACCENT_GREEN : Color.White * 0.85f, stFont);
+
+            if (!string.IsNullOrEmpty(_toastMessage) && _toastTimer > 0f)
+            {
+                var sz = MeasureText(_toastMessage, stFont);
+                DrawText(sb, _toastMessage, new Vector2(_statusBarRect.Right - sz.X - UiScale.Px(12, s), _statusBarRect.Y + (_statusBarRect.Height - sz.Y) / 2f), ACCENT_GOLD, stFont);
+            }
+        }
+
+        // ── UI Drawing Helpers ───────────────────────────────────────────────
+        private void DrawButton(SpriteBatch sb, Rectangle rect, string text, Color bg, Color textColor, int fontSize, Color borderColor, Action onClick)
+        {
+            bool hovered = rect.Contains(_prevMouse.Position);
+            sb.Draw(_pixel, rect, hovered ? Color.Lerp(bg, Color.White, 0.14f) : bg);
+            DrawBorder(sb, rect, hovered ? Color.White * 0.7f : borderColor);
+            DrawTextCenteredInBox(sb, text, rect, textColor, fontSize);
+            _clickActions.Add((rect, onClick, null));
+        }
+
+        private void DrawBorder(SpriteBatch sb, Rectangle r, Color c)
+        {
+            sb.Draw(_pixel, new Rectangle(r.X, r.Y, r.Width, 1), c);
+            sb.Draw(_pixel, new Rectangle(r.X, r.Bottom - 1, r.Width, 1), c);
+            sb.Draw(_pixel, new Rectangle(r.X, r.Y, 1, r.Height), c);
+            sb.Draw(_pixel, new Rectangle(r.Right - 1, r.Y, 1, r.Height), c);
+        }
+
+        private Vector2 MeasureText(string text, int fontSize)
+        {
+            if (_fontRenderer != null)
+                return _fontRenderer.MeasureString(text, fontSize);
+            if (_font != null)
+                return _font.MeasureString(text) * (fontSize / 32f);
+            return new Vector2(text.Length * fontSize * 0.55f, fontSize);
+        }
+
+        private void DrawText(SpriteBatch sb, string text, Vector2 pos, Color color, int fontSize, bool centered = false)
+        {
+            if (centered)
+            {
+                var sz = MeasureText(text, fontSize);
+                pos.X -= sz.X / 2f;
+            }
+
+            if (_fontRenderer != null)
+                _fontRenderer.DrawString(sb, text, pos, color, fontSize);
+            else if (_font != null)
+                sb.DrawString(_font, text, pos, color, 0f, Vector2.Zero, fontSize / 32f, SpriteEffects.None, 0f);
+        }
+
+        private void DrawTextCenteredInBox(SpriteBatch sb, string text, Rectangle box, Color color, int fontSize)
+        {
+            var sz = MeasureText(text, fontSize);
+            var pos = new Vector2(box.X + (box.Width - sz.X) / 2f, box.Y + (box.Height - sz.Y) / 2f);
+            DrawText(sb, text, pos, color, fontSize);
+        }
+
+        private int CountStrumNotes(int strumIdx)
+        {
+            if (_level == null || strumIdx >= _level.Data.Strumlines.Count) return 0;
+            int total = 0;
+            foreach (var lane in _level.Data.Strumlines[strumIdx])
+                total += lane.Count;
+            return total;
+        }
+
+        private static Color GetSkinDefaultTint(int skinType) => skinType switch
+        {
+            1 => new Color(255, 50, 50),
+            2 => new Color(0, 200, 255),
+            3 => new Color(0, 230, 80),
+            _ => Color.White,
+        };
+
+        private static Color GetNoteColor(int lane, float skin) => ((int)MathF.Round(skin)) switch
+        {
+            1 => new Color(255, 50, 50),
+            2 => new Color(0, 200, 255),
+            3 => new Color(0, 230, 80),
+            _ => LANE_COLORS[Math.Clamp(lane, 0, LANE_COLORS.Length - 1)],
+        };
+
+        private static string GetSkinName(float skin) => skin switch
+        {
+            1f => "Damage",
+            2f => "Instakill",
+            3f => "Heal",
+            _ => "Normal",
+        };
+
+        private static string GetLaneName(int lane) => lane switch
+        {
+            0 => "LEFT",
+            1 => "DOWN",
+            2 => "UP",
+            3 => "RIGHT",
+            _ => "?"
+        };
+
+        private static string FormatTime(float seconds)
+        {
+            if (seconds < 0f) seconds = 0f;
+            int totalTenths = (int)MathF.Round(seconds * 10f);
+            int mins = totalTenths / 600;
+            int remTenths = totalTenths % 600;
+            int wholeSecs = remTenths / 10;
+            int tenth = remTenths % 10;
+            return $"{mins:D2}:{wholeSecs:D2}.{tenth}";
+        }
+
+        private bool JustPressed(KeyboardState kb, Keys key) => kb.IsKeyDown(key) && !_prevKeyboard.IsKeyDown(key);
+
+        private enum EditorPhase { Loading, Ready, Error }
+        private enum EditorTool { Select, PlaceNote, PlaceHold, Delete }
+
+        private sealed class DelegateEditorAction : IEditorAction
+        {
+            private readonly Action _execute;
+            private readonly Action _undo;
+
+            public DelegateEditorAction(Action execute, Action undo)
+            {
+                _execute = execute;
+                _undo = undo;
+            }
+
+            public void Execute() => _execute();
+            public void Undo() => _undo();
         }
     }
 }

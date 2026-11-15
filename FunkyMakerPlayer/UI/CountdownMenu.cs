@@ -10,7 +10,7 @@ namespace FunkyMakerPlayer.UI;
 /// <summary>
 /// Countdown pack selector menu with preview of ready/set/go images.
 /// </summary>
-public class CountdownMenu
+public class CountdownMenu : IScreenOverlay
 {
     private readonly Texture2D _pixel;
     private readonly SpriteFont _font;

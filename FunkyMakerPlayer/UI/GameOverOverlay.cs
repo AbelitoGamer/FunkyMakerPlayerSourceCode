@@ -17,8 +17,11 @@ public class GameOverOverlay
     
     private bool _isActive = false;
     private float _timer = 0f;
+    private int _selection = 0; // 0 = Retry, 1 = Menu
+    private Rectangle _retryBtnRect = Rectangle.Empty;
+    private Rectangle _menuBtnRect = Rectangle.Empty;
     
-    private const float GAME_OVER_WAIT = 2.5f;
+    private const float INPUT_UNLOCK_DELAY = 0.35f;
     
     public bool IsActive => _isActive;
     public float Timer => _timer;
@@ -37,6 +40,7 @@ public class GameOverOverlay
     {
         _isActive = true;
         _timer = 0f;
+        _selection = 0;
     }
     
     /// <summary>
@@ -46,33 +50,59 @@ public class GameOverOverlay
     {
         _isActive = false;
         _timer = 0f;
+        _selection = 0;
+        _retryBtnRect = Rectangle.Empty;
+        _menuBtnRect = Rectangle.Empty;
     }
     
     /// <summary>
     /// Updates the overlay timer and handles input.
+    /// Never auto-restarts — requires explicit user input to retry or return to menu.
     /// Returns true if user wants to retry, false if going back to menu, null if still waiting.
     /// </summary>
-    public bool? Update(float deltaTime, KeyboardState currentKb, KeyboardState prevKb)
+    public bool? Update(float deltaTime, KeyboardState currentKb, KeyboardState prevKb, Point? rtMousePos = null, bool mouseClicked = false)
     {
         if (!_isActive) return null;
         
         _timer += deltaTime;
-        
-        bool enterPressed = currentKb.IsKeyDown(Keys.Enter) && !prevKb.IsKeyDown(Keys.Enter);
-        bool escPressed = currentKb.IsKeyDown(Keys.Escape) && !prevKb.IsKeyDown(Keys.Escape);
-        
-        // Auto-restart after wait time or manual restart
-        if (_timer >= GAME_OVER_WAIT || enterPressed)
+        if (_timer < INPUT_UNLOCK_DELAY)
+            return null;
+
+        if (rtMousePos.HasValue)
         {
-            return true;  // Retry
+            if (_retryBtnRect != Rectangle.Empty && _retryBtnRect.Contains(rtMousePos.Value))
+            {
+                _selection = 0;
+                if (mouseClicked) return true;
+            }
+            else if (_menuBtnRect != Rectangle.Empty && _menuBtnRect.Contains(rtMousePos.Value))
+            {
+                _selection = 1;
+                if (mouseClicked) return false;
+            }
         }
-        
-        // ESC → go back to menu
+
+        if ((currentKb.IsKeyDown(Keys.Left) && !prevKb.IsKeyDown(Keys.Left)) ||
+            (currentKb.IsKeyDown(Keys.Right) && !prevKb.IsKeyDown(Keys.Right)) ||
+            (currentKb.IsKeyDown(Keys.Up) && !prevKb.IsKeyDown(Keys.Up)) ||
+            (currentKb.IsKeyDown(Keys.Down) && !prevKb.IsKeyDown(Keys.Down)))
+        {
+            _selection = 1 - _selection;
+        }
+
+        bool escPressed = (currentKb.IsKeyDown(Keys.Escape) && !prevKb.IsKeyDown(Keys.Escape)) ||
+                          (currentKb.IsKeyDown(Keys.Back)   && !prevKb.IsKeyDown(Keys.Back));
         if (escPressed)
-        {
             return false;  // Back to menu
-        }
-        
+
+        bool confirmPressed = (currentKb.IsKeyDown(Keys.Enter) && !prevKb.IsKeyDown(Keys.Enter)) ||
+                              (currentKb.IsKeyDown(Keys.Space) && !prevKb.IsKeyDown(Keys.Space));
+        if (confirmPressed)
+            return _selection == 0;
+
+        if (currentKb.IsKeyDown(Keys.R) && !prevKb.IsKeyDown(Keys.R))
+            return true;
+
         return null;  // Still waiting
     }
     
@@ -115,17 +145,47 @@ public class GameOverOverlay
             DrawStatsPanel(sw, sh, playerRenderer, statsT);
         }
         
-        // Hint — fades in after 0.7s
-        float hintT = Math.Max(0f, Math.Min((_timer - 0.7f) / 0.4f, 1f));
+        // Action buttons & hint — fades in after 0.6s
+        float hintT = Math.Max(0f, Math.Min((_timer - 0.6f) / 0.4f, 1f));
         if (hintT > 0f)
         {
-            // Pulsing effect
-            float pulse = 0.7f + 0.3f * MathF.Sin(_timer * 4f);
-            string hint = "ENTER  Retry    ESC  Menu";
-            var hintSz = _font.MeasureString(hint) * 0.65f;
+            int btnW = 190;
+            int btnH = 44;
+            int btnGap = 24;
+            int btnY = (int)(sh / 2f + 132f);
+            int totalW = btnW * 2 + btnGap;
+            int retryX = sw / 2 - totalW / 2;
+            int menuX = retryX + btnW + btnGap;
+
+            _retryBtnRect = new Rectangle(retryX, btnY, btnW, btnH);
+            _menuBtnRect  = new Rectangle(menuX, btnY, btnW, btnH);
+
+            bool retrySel = _selection == 0;
+            bool menuSel  = _selection == 1;
+
+            // RETRY button
+            DrawRect(retryX, btnY, btnW, btnH, (retrySel ? new Color(60, 200, 120) : new Color(35, 35, 50)) * (0.35f * hintT));
+            DrawRect(retryX, btnY, btnW, 2, (retrySel ? new Color(80, 255, 150) : Color.White * 0.2f) * hintT);
+            string retryLbl = "RETRY (ENTER)";
+            var retrySz = _font.MeasureString(retryLbl) * 0.65f;
+            _spriteBatch.DrawString(_font, retryLbl,
+                new Vector2(retryX + (btnW - retrySz.X) / 2f, btnY + (btnH - retrySz.Y) / 2f),
+                (retrySel ? Color.White : Color.White * 0.65f) * hintT, 0f, Vector2.Zero, 0.65f, SpriteEffects.None, 0f);
+
+            // MENU button
+            DrawRect(menuX, btnY, btnW, btnH, (menuSel ? new Color(255, 70, 110) : new Color(35, 35, 50)) * (0.35f * hintT));
+            DrawRect(menuX, btnY, btnW, 2, (menuSel ? new Color(255, 90, 130) : Color.White * 0.2f) * hintT);
+            string menuLbl = "MENU (ESC)";
+            var menuSz = _font.MeasureString(menuLbl) * 0.65f;
+            _spriteBatch.DrawString(_font, menuLbl,
+                new Vector2(menuX + (btnW - menuSz.X) / 2f, btnY + (btnH - menuSz.Y) / 2f),
+                (menuSel ? Color.White : Color.White * 0.65f) * hintT, 0f, Vector2.Zero, 0.65f, SpriteEffects.None, 0f);
+
+            string hint = "LEFT/RIGHT: Choose   |   ENTER: Confirm   |   ESC: Exit to Menu";
+            var hintSz = _font.MeasureString(hint) * 0.58f;
             _spriteBatch.DrawString(_font, hint,
-                new Vector2(sw / 2f - hintSz.X / 2f, sh - 36f),
-                Color.White * (hintT * pulse * 0.6f), 0f, Vector2.Zero, 0.65f, SpriteEffects.None, 0f);
+                new Vector2(sw / 2f - hintSz.X / 2f, sh - 34f),
+                Color.White * (hintT * 0.55f), 0f, Vector2.Zero, 0.58f, SpriteEffects.None, 0f);
         }
     }
     

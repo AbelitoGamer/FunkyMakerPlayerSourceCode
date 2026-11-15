@@ -51,6 +51,14 @@ public class NoteRenderer
     /// </summary>
     public static bool  Midlescroll      = false;
     /// <summary>
+    /// Master visibility toggle for all strumlines (receptors, notes, holds, splashes).
+    /// </summary>
+    public static bool  ShowStrumlines   = true;
+    /// <summary>
+    /// Hides the player's strumline (strumline 0) visually while keeping gameplay input active.
+    /// </summary>
+    public static bool  HidePlayerStrumline = false;
+    /// <summary>
     /// Visual scroll speed multiplier. 1.0 = normal, 2.0 = 2x faster visually.
     /// Only affects how fast notes move on screen — does NOT affect timing or audio sync.
     /// </summary>
@@ -658,8 +666,8 @@ public class NoteRenderer
                 float elapsed  = songTime - _holdStart[lane];
                 float progress = duration > 0f ? Math.Clamp(elapsed / duration, 0f, 1f) : 1f;
 
-                bool holdNaturallyEnded = songTime >= holdEnd;
-                bool releasedEarly      = justReleased && !holdNaturallyEnded;
+                bool holdNaturallyEnded = songTime >= holdEnd || (!held && songTime >= holdEnd - HOLD_END_LENIENCY);
+                bool releasedEarly      = !held && !holdNaturallyEnded;
 
                 if (held || holdNaturallyEnded)
                 {
@@ -774,8 +782,12 @@ public class NoteRenderer
                     case "Shit":  Shits++; break;
                 }
                 
-                // Trigger splash effect on Sick! rating (350 points)
-                if (scoreGain >= 350)
+                // Trigger splash effect on Sick! rating (350 points) only when strumline is visible
+                bool isStrumlineVisible = HudSettings.Instance.MasterHudVisible &&
+                                          ShowStrumlines &&
+                                          !(_isPlayer && HidePlayerStrumline) &&
+                                          Alpha > 0.01f;
+                if (scoreGain >= 350 && isStrumlineVisible)
                 {
                     // If using particle splash, ONLY trigger particles (not default splash)
                     if (_particleSplash != null)
@@ -938,10 +950,24 @@ public class NoteRenderer
     public void Draw(SpriteBatch sb, float songTime, SpriteFont? font)
     {
         _font = font;
-        _currentSongTime = songTime; // Store for yellow arrow detection
-        _currentSongTime = songTime;  // Store for effects
+        _currentSongTime = songTime; // Store for yellow arrow detection & effects
+
+        // Master HUD / Strumline visibility and per-strumline visibility checks
+        if (!HudSettings.Instance.MasterHudVisible ||
+            !ShowStrumlines ||
+            (_isPlayer && HidePlayerStrumline) ||
+            Alpha <= 0.01f)
+        {
+            _pendingSplashLane = -1;
+            return;
+        }
+
         // HideWhenIdle: opponent strumlines only show when a note is active
-        if (HideWhenIdle && !_anyLaneActive) return;
+        if (HideWhenIdle && !_anyLaneActive)
+        {
+            _pendingSplashLane = -1;
+            return;
+        }
 
         float sh     = ScreenH;
         float sx     = ScaleX * NoteScale;
@@ -971,13 +997,11 @@ public class NoteRenderer
             float cx = baseX + laneW / 2f;  // Center X of the lane
 
             // Active hold tail (while pressing hold note)
-            // FNF holds are "consumed" visually faster than they scroll
-            // Apply a consumption multiplier to make the hold shrink faster (looks more responsive)
+            // Consumed at exact 1:1 chart scroll speed (spd) from the receptor (strumY)
             if (_holdEndTime[lane] > 0f && songTime < _holdEndTime[lane])
             {
                 float remainingTime = _holdEndTime[lane] - songTime;
-                // Multiply by 2.0x to make holds consume faster (FNF-style visual feedback)
-                float holdPx = remainingTime * spd * 2.0f;
+                float holdPx = remainingTime * spd;
                 DrawActiveHold(sb, lane, baseX, cx, strumY, holdPx, laneW);
             }
 
@@ -1010,8 +1034,7 @@ public class NoteRenderer
 
                 if (note.Duration > 0)
                 {
-                    // Apply same 2x multiplier as active holds for visual consistency
-                    DrawHold(sb, lane, baseX, cx, noteY, note.Duration * spd * 2.0f, strumY, laneW, alpha, sx);
+                    DrawHold(sb, lane, baseX, cx, noteY, note.Duration * spd, strumY, laneW, alpha, sx);
                 }
 
                 DrawNoteHead(sb, lane, cx, noteY, note, sx, alpha, strumY);
@@ -1066,6 +1089,10 @@ public class NoteRenderer
             _renderer.DrawActiveHold(sb, lane, cx, strumY, holdPx, laneW, Alpha);
             return;
         }
+
+        float bodyTop = !Downscroll ? strumY : strumY - holdPx;
+        float bodyBottom = !Downscroll ? strumY + holdPx : strumY;
+        DrawHoldBody(sb, lane, laneX, cx, bodyTop, bodyBottom, LaneColors[lane], true, laneW, Alpha);
     }
 
     // ── Upcoming hold note ────────────────────────────────────────────────────
@@ -1079,8 +1106,9 @@ public class NoteRenderer
             return;
         }
         
-        // Fallback: no renderer available
-        Console.WriteLine($"[DrawHold] WARNING: No renderer available for lane {lane}, _renderer is NULL!");
+        float bodyTop = !Downscroll ? noteY : noteY - holdPx;
+        float bodyBottom = !Downscroll ? noteY + holdPx : noteY;
+        DrawHoldBody(sb, lane, laneX, cx, bodyTop, bodyBottom, LaneColors[lane], false, laneW, alpha);
     }
 
     // ── Shared hold body + cap renderer ──────────────────────────────────────
@@ -1114,55 +1142,60 @@ public class NoteRenderer
             int bodyCol = lane * 2;
             int capCol = lane * 2 + 1;
             
-            var bodySrc = new Rectangle(bodyCol * colW, 0, colW, texH);
-            var capSrc = new Rectangle(capCol * colW, 0, colW, texH);
+            const float BOTTOM_CLIP = 0.9f;
+            int capSrcBottom = (int)Math.Round(BOTTOM_CLIP * texH);
+            float fullCapHeight = capSrcBottom * s;
+            float partHeight = bodyH - fullCapHeight;
             
-            float fixedCapH = texH * s;
-            float actualCapH = Math.Min(fixedCapH, bodyH);
-            float bodyStretchH = bodyH - actualCapH;
+            var bodySrc = texH > 4
+                ? new Rectangle(bodyCol * colW, 1, colW, texH - 2)
+                : new Rectangle(bodyCol * colW, 0, colW, texH);
             
-            // Integer positioning to prevent sub-pixel gaps
-            int intBx = (int)bx;
-            int intBw = (int)Math.Ceiling(bw);
-            int currentY = (int)bodyTop;
+            float consumedRatio = partHeight >= 0f
+                ? 0f
+                : 1f - (bodyH / Math.Max(1f, fullCapHeight));
+            consumedRatio = Math.Clamp(consumedRatio, 0f, 1f);
+            
+            int capSrcY = (int)Math.Round(consumedRatio * capSrcBottom);
+            int capSrcH = capSrcBottom - capSrcY;
+            if (capSrcH <= 0) return;
+            
+            var capSrc = new Rectangle(capCol * colW, capSrcY, colW, capSrcH);
+            int capH = (int)Math.Round(capSrcH * s);
+            if (capH <= 0) return;
+            
+            int intBx = (int)Math.Round(bx);
+            int intBw = (int)Math.Round(bw);
             
             if (!Downscroll)
             {
-                // Upscroll: body first, then cap
-                if (bodyStretchH > 1f)
+                int startIntY = (int)Math.Round(bodyTop);
+                int joinY = partHeight > 0f ? (int)Math.Round(bodyTop + partHeight) : startIntY;
+                int stretchH = joinY - startIntY;
+                
+                if (stretchH > 0)
                 {
-                    // Add 2px overlap to eliminate gaps completely
-                    float stretchH = (float)Math.Ceiling(bodyStretchH) + 2f;
-                    sb.Draw(holdTex, new Rectangle(intBx, currentY, intBw, (int)stretchH),
+                    sb.Draw(holdTex, new Rectangle(intBx, startIntY, intBw, stretchH),
                         bodySrc, bodyTint);
-                    currentY += (int)bodyStretchH;
                 }
                 
-                if (actualCapH > 0f)
-                {
-                    int capH = (int)Math.Ceiling(actualCapH);
-                    sb.Draw(holdTex, new Rectangle(intBx, currentY, intBw, capH),
-                        capSrc, capTint);
-                }
+                sb.Draw(holdTex, new Rectangle(intBx, joinY, intBw, capH),
+                    capSrc, capTint);
             }
             else
             {
-                // Downscroll: cap first (flipped), then body (flipped)
-                if (actualCapH > 0f)
-                {
-                    // Add 2px overlap to eliminate gaps completely
-                    float capH = (float)Math.Ceiling(actualCapH) + 2f;
-                    sb.Draw(holdTex, new Rectangle(intBx, currentY, intBw, (int)capH),
-                        capSrc, capTint, 0f, Vector2.Zero, SpriteEffects.FlipVertically, 0f);
-                    currentY += (int)actualCapH;
-                }
+                int startIntY = (int)Math.Round(bodyBottom);
+                int joinY = partHeight > 0f ? (int)Math.Round(bodyBottom - partHeight) : startIntY;
+                int stretchH = startIntY - joinY;
                 
-                if (bodyStretchH > 1f)
+                if (stretchH > 0)
                 {
-                    int stretchH = (int)Math.Ceiling(bodyStretchH);
-                    sb.Draw(holdTex, new Rectangle(intBx, currentY, intBw, stretchH),
+                    sb.Draw(holdTex, new Rectangle(intBx, joinY, intBw, stretchH),
                         bodySrc, bodyTint, 0f, Vector2.Zero, SpriteEffects.FlipVertically, 0f);
                 }
+                
+                sb.Draw(holdTex, new Rectangle(intBx, joinY - capH, intBw, capH),
+                    capSrc, capTint, 0f, Vector2.Zero, SpriteEffects.FlipVertically, 0f);
             }
             return;
         }

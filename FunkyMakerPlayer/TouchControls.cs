@@ -403,6 +403,28 @@ public class TouchControls
         bool previouslyPressed = _keyStatesPrev.TryGetValue(key, out bool prev) && prev;
         return currentlyPressed && !previouslyPressed;
     }
+
+    /// <summary>
+    /// Returns true if a screen point falls inside any currently visible menu/settings virtual control.
+    /// </summary>
+    public bool IsPointOnMenuControl(Point point)
+    {
+        if (!_allControlsVisible || _mode != ControlMode.Menu) return false;
+
+        foreach (var button in _menuButtons)
+        {
+            if (button.Bounds.Contains(point))
+                return true;
+        }
+
+        if (_showSettingsButtons)
+        {
+            if (_qButton != null && _qButton.Bounds.Contains(point)) return true;
+            if (_eButton != null && _eButton.Bounds.Contains(point)) return true;
+        }
+
+        return false;
+    }
     
     /// <summary>
     /// Draw touch controls on screen

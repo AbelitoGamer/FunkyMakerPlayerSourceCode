@@ -135,9 +135,9 @@ namespace FunkyMakerPlayer.Platforms.Android
             var intent = new Intent(Intent.ActionGetContent);
             intent.AddCategory(Intent.CategoryOpenable);
             
-            // Accept .FNMM and .rar files
+            // Accept .FNMM, .ZIP, and .RAR files
             intent.SetType("*/*");
-            var mimeTypes = new[] { "application/octet-stream", "application/x-rar-compressed", "application/x-rar", "application/zip" };
+            var mimeTypes = new[] { "application/octet-stream", "application/zip", "application/x-zip-compressed", "application/x-rar-compressed", "application/x-rar", "application/vnd.rar", "*/*" };
             intent.PutExtra(Intent.ExtraMimeTypes, mimeTypes);
             
             // Allow browsing all storage locations
@@ -279,7 +279,7 @@ namespace FunkyMakerPlayer.Platforms.Android
                         using var writer = new Java.IO.FileWriter(readmeFile);
                         writer.Write(
                             "=== FUNKYMAKER PLAYER - MODS FOLDER ===\n\n" +
-                            "Coloca tus archivos .fnmm o .rar aqui.\n" +
+                            "Coloca tus archivos .fnmm, .zip o .rar aqui.\n" +
                             "Los niveles apareceran en Freeplay al reiniciar la app.\n\n" +
                             "Formatos soportados:\n" +
                             "- .fnmm (formato nativo)\n" +
@@ -417,7 +417,7 @@ namespace FunkyMakerPlayer.Platforms.Android
                     "2. Ve a la carpeta 'Documents'\n" +
                     "3. Busca 'FunkyMakerPlayerPublicMods'\n" +
                     "4. Entra a la carpeta 'mods'\n" +
-                    "5. Copia tus archivos .fnmm o .rar aquí\n" +
+                    "5. Copia tus archivos .fnmm, .zip o .rar aquí\n" +
                     "6. Reinicia FunkyMaker Player\n\n" +
                     "💡 TIP: Algunos file managers necesitan actualizar/refrescar para ver la carpeta nueva.\n\n" +
                     "Ruta completa:\n" + modsDir.AbsolutePath

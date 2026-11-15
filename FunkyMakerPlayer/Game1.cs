@@ -18,80 +18,7 @@ using MonoGame.Extended;  // ← MonoGame.Extended for OrthographicCamera
 
 namespace FunkyMakerPlayer;
 
-// ── Dark Mode P/Invoke ──────────────────────────────────────────────────────
-internal static class DarkMode
-{
-    [DllImport("dwmapi.dll", PreserveSig = true)]
-    private static extern int DwmSetWindowAttribute(IntPtr hwnd, int attr, ref int attrValue, int attrSize);
-
-    [DllImport("SDL2", CallingConvention = CallingConvention.Cdecl)]
-    private static extern IntPtr SDL_GetWindowWMInfo(IntPtr window, ref SDL_SysWMinfo info);
-
-    [StructLayout(LayoutKind.Sequential)]
-    private struct SDL_version
-    {
-        public byte major;
-        public byte minor;
-        public byte patch;
-    }
-
-    [StructLayout(LayoutKind.Sequential)]
-    private struct SDL_SysWMinfo
-    {
-        public SDL_version version;
-        public SDL_SYSWM_TYPE subsystem;
-        public IntPtr win_window; // HWND on Windows
-    }
-
-    private enum SDL_SYSWM_TYPE
-    {
-        SDL_SYSWM_UNKNOWN = 0,
-        SDL_SYSWM_WINDOWS = 1,
-    }
-
-    private const int DWMWA_USE_IMMERSIVE_DARK_MODE_BEFORE_20H1 = 19;
-    private const int DWMWA_USE_IMMERSIVE_DARK_MODE = 20;
-
-    /// <summary>
-    /// Enables Windows 10/11 dark mode for the window title bar.
-    /// </summary>
-    public static void EnableDarkMode(IntPtr sdlWindowHandle)
-    {
-        if (!OperatingSystem.IsWindows())
-            return;
-
-        try
-        {
-            // Get native Windows HWND from SDL window
-            var wmInfo = new SDL_SysWMinfo();
-            wmInfo.version.major = 2;
-            wmInfo.version.minor = 0;
-            wmInfo.version.patch = 0;
-
-            SDL_GetWindowWMInfo(sdlWindowHandle, ref wmInfo);
-
-            if (wmInfo.subsystem == SDL_SYSWM_TYPE.SDL_SYSWM_WINDOWS && wmInfo.win_window != IntPtr.Zero)
-            {
-                int darkMode = 1;
-                // Try Windows 11/10 20H1+ attribute first
-                int result = DwmSetWindowAttribute(wmInfo.win_window, DWMWA_USE_IMMERSIVE_DARK_MODE, ref darkMode, sizeof(int));
-                // Fallback to older Windows 10 builds
-                if (result != 0)
-                    DwmSetWindowAttribute(wmInfo.win_window, DWMWA_USE_IMMERSIVE_DARK_MODE_BEFORE_20H1, ref darkMode, sizeof(int));
-                
-                Console.WriteLine($"[DarkMode] Applied dark mode to window (result={result})");
-            }
-            else
-            {
-                Console.WriteLine($"[DarkMode] Failed to get Windows HWND from SDL");
-            }
-        }
-        catch (Exception ex)
-        {
-            Console.WriteLine($"[DarkMode] Error: {ex.Message}");
-        }
-    }
-}
+// Dark mode P/Invoke helper extracted to UI/DarkModeHelper.cs
 
 public partial class Game1 : Game
 {
@@ -142,19 +69,9 @@ public partial class Game1 : Game
 
     // ── Sprite Texture Cache ────────────────────────────────────────────────
     // Caches converted textures to avoid reloading on song restart
-    private class SpriteTextureCache
-    {
-        public List<Texture2D> Textures = new List<Texture2D>();
-        public List<AtlasPacker.FrameRect>? AtlasFrameRects = null;
-        public int SplitOffset = -1;
-        public int ChunkFrames = 0;
-        public int FrameWidth = 0;
-        public int TextureIndex = -1;
-        public float DownscaleCompensation = 1.0f;
-    }
-    
     // spriteName → (frameIndex → cache)
-    private Dictionary<string, Dictionary<int, SpriteTextureCache>>? _spriteTextureCache = null;
+    private Dictionary<string, Dictionary<int, SpriteTextureCacheEntry>>? _spriteTextureCache = null;
+    private bool _spriteCacheOwnedByEditor = false;
 
     // ── Scene objects: dynamic array of animators indexed by object index ──
     // Key = object index, matching scene.objects[i]
@@ -171,19 +88,29 @@ public partial class Game1 : Game
     private Texture2D?    _folderIcon = null;  // Folder icon for empty state
     
     // ── Editor system ─────────────────────────────────────────────────────────
+    private enum ChartEditorReturnTarget { EditorPicker, Freeplay, LevelSelector, Gameplay }
+    private ChartEditorReturnTarget _chartEditorReturnTarget = ChartEditorReturnTarget.EditorPicker;
+    private ChartEditorReturnTarget _levelSelectorReturnTarget = ChartEditorReturnTarget.EditorPicker;
     private Editors.EditorPicker? _editorPicker;
     private bool _inEditorPicker = false;
     private Editors.Chart.LevelSelector? _levelSelector;
     private bool _inLevelSelector = false;
     private Editors.IEditor? _activeEditor;
+    private Editors.IEditor? _suspendedChartEditor;
     private bool _inEditor = false;
+    private bool _playtestingFromEditor = false;
+    private float _playtestStartSeconds = 0f;
+    private string? _playtestTempPath = null;
+    private (byte[] Pcm, int SampleRate, int Channels)? _preloadedPlaytestPcm = null;
     
     #if ANDROID
     private ModsHelpScreen? _modsHelpScreen;  // Help screen for Android mods setup
     #endif
     private FontRenderer? _fontRenderer = null;  // TrueType font renderer for crisp UI
 
-    // ── Main Settings menu (accessible from main menu) ───────────────────────
+    // ── Main Settings menu / HUD Editor launcher ─────────────────────────────
+    private enum HudEditorReturnTarget { Freeplay, EditorPicker, FreeplaySettings, GameplaySettings, MultiplayerSettings, PauseMenu }
+    private HudEditorReturnTarget _hudEditorReturnTarget = HudEditorReturnTarget.Freeplay;
     private MainSettingsMenu? _mainSettingsMenu = null;
     private bool              _inMainSettings = false;
     private HudEditor?        _hudEditor = null;
@@ -199,11 +126,23 @@ public partial class Game1 : Game
     private long _multiplayerStartTimestamp = 0;  // Server timestamp (milliseconds) for synchronized start
     private bool _countdownSignalReceived = false;  // true when server sends CountdownStart
     private string? _opponentName = null;
+    private string? _opponentPlayerId = null;
+    private int _opponentColorHue = 180;
     private int _opponentScore = 0;
     private float _opponentHealth = 0.5f;
+    private float _opponentTargetHealth = 0.5f;
+    private int _playerMaxCombo = 0;
+    private int _opponentMaxCombo = 0;
+    private int _opponentMisses = 0;
+    private int _opponentSicks = 0;
+    private int _opponentGoods = 0;
+    private int _opponentBads = 0;
+    private int _opponentShits = 0;
+    private string _multiplayerMatchId = "";
+    private bool _multiplayerMatchRecorded = false;
     private bool _crashLogged = false;  // Prevent spam logging the same crash
     private bool? _opponentReadyState = null;  // Store opponent ready state received before LoadingScreen exists
-    private float _stateUpdateTimer = 0f;  // Timer for sending state updates to opponent (every 200ms)
+    private float _stateUpdateTimer = 0f;  // Timer for sending state updates to opponent
     private MultiplayerResultsScreen? _resultsScreen = null;  // Results screen shown after match ends
     
     // ── Health Bar (UI component) ────────────────────────────────────────────
@@ -236,7 +175,6 @@ public partial class Game1 : Game
     private bool  _started   = false;
     private bool  _paused    = false;
     private float _discordUpdateTimer = 0f;  // throttle Discord RPC updates
-    private bool  _parallaxLoggedOnce = false;  // prevent parallax debug spam
     
     // High-precision timing to avoid desync when window is moved
     private Stopwatch _songStopwatch = new();
@@ -245,10 +183,16 @@ public partial class Game1 : Game
 
     // Song end
     private float _songEndTime = float.MaxValue;
+    private float _musicDurationSeconds = float.MaxValue;
     private float _songEndDelay = 0f;  // countdown after song ends before transition starts
 
     // ── Input ────────────────────────────────────────────────────────────────
     private KeyboardState _prevKb;
+    private MouseState    _prevMouse;
+    private float         _volumeToastTimer = 0f;
+    private const float   VOLUME_TOAST_DURATION = 1.6f;
+    private float         _timeskipRepeatTimer = 0f;
+    private bool          _keyBindCallbacksWired = false;
     private double        _lastDt = 1.0 / 60.0;
     private Matrix        _lastCamMatrix = Matrix.Identity;
 
@@ -263,7 +207,7 @@ public partial class Game1 : Game
     // _inSettings → _settingsManager.IsActive
     // _settingsSelection → _settingsManager.Selection
     // Settings item count delegated to SettingsManager
-    private int SettingsItemCount => _settingsManager?.GetItemCount() ?? 30;
+    private int SettingsItemCount => _settingsManager?.GetItemCount(this) ?? 8;
     private bool _pausedByTimeskip = false;  // true if PauseSong was called by timeskip scrubbing
 
     // ── UI Menus ──────────────────────────────────────────────────────────────
@@ -275,7 +219,7 @@ public partial class Game1 : Game
     // ── HUD options ───────────────────────────────────────────────────────────
     public static bool  ShowTimer       = true;   // song timer bar above strumline
     public static bool  ShowCombo       = true;   // combo counter popup (on/off)
-    public static bool  TimeskipEnabled = true;   // Tab to skip forward, Shift+Tab backward
+    public static bool  TimeskipEnabled = true;   // T or Ctrl+Left/Right to skip in OGG songs
     public static float TimeskipSeconds = 10f;    // seconds per timeskip step
     public static bool  ShowDebugInfo   = false;  // Level debug: BPM, cam, events (off by default)
 #if ANDROID
@@ -295,7 +239,7 @@ public partial class Game1 : Game
     // HSB adjustments (Hue, Saturation, Brightness)
     public static float ColorGradeHue          = -0.05f; // -5% hue shift (cool tone)
     public static float ColorGradeSaturation   = 0.80f;  // 80% saturation (desaturate)
-    public static float ColorGradeBrightness   = -0.20f; // -20% brightness (darker)
+    public static float ColorGradeBrightness   = 0.00f; // Neutral 0% brightness by default
     // Shadow-only approach: NO saturation/contrast, ONLY cool shadow tint
     public static float ColorGradeContrast      = 1.00f;  // OFF (not used)
     public static float ColorGradeShadowAmount  = 0.35f;  // 35% shadow tint (noticeable)
@@ -338,25 +282,17 @@ public partial class Game1 : Game
     // ── Countdown ────────────────────────────────────────────────────────────
     private UI.CountdownOverlay? _countdownOverlay;
 
-    // ── Hit judgement display ─────────────────────────────────────────────────
-    private string? _judgementText  = null;
-    private float   _judgementTimer = 0f;
-    private Color   _judgementColor = Color.White;
-    private const float JUDGEMENT_SHOW = 0.6f;
-    
-    // ── Combo display (FNF style with falling numbers) ──────────────────────
-    private int     _lastCombo      = 0;
-    private float   _comboTimer     = 0f;
-    private const float COMBO_SHOW  = 1.5f;  // Show for 1.5 seconds after combo increase
-    
-    // ── Falling combo digits system (extracted to UI/JudgementOverlay.cs) ────
-    // ── Judgement popups system (extracted to UI/JudgementOverlay.cs) ────────
+    // ── Falling combo digits & judgement popups (extracted to UI/JudgementOverlay.cs) ──
 
     // ── FNMM path ────────────────────────────────────────────────────────────
     public static string FnmmPath = "";
 
     // ── Error message ────────────────────────────────────────────────────────
     private string? _errorMsg;
+    private bool _errorReturnToMultiplayer;
+    private float _errorDismissGrace;
+    private volatile bool _pendingOpponentDisconnect;
+    private string _pendingDisconnectReason = "Opponent left the match";
 
     // ── Song transition (AnkushCat cascade) ──────────────────────────────────
     private SongTransition? _songTransition;
@@ -458,7 +394,7 @@ public partial class Game1 : Game
     /// Starts a multiplayer PvP match (called from MultiplayerMenu).
     /// Does NOT create a new Game instance - changes current instance to multiplayer mode.
     /// </summary>
-    public void StartMultiplayerMatch(string levelPath, string opponentName, int playerRole, long startTimestamp)
+    public void StartMultiplayerMatch(string levelPath, string opponentName, int playerRole, long startTimestamp, string? roomId = null)
     {
         Console.WriteLine($"[Game1] Starting multiplayer match:");
         Console.WriteLine($"  Level: {levelPath}");
@@ -467,11 +403,26 @@ public partial class Game1 : Game
         Console.WriteLine($"  Start Timestamp: {startTimestamp}");
         
         _isMultiplayerMatch = true;
-        _opponentName = opponentName;
+        var netMgr = Multiplayer.NetworkManager.Instance;
+        _opponentName = !string.IsNullOrWhiteSpace(netMgr.OpponentName) ? netMgr.OpponentName : opponentName;
+        _opponentPlayerId = netMgr.OpponentPlayerId;
+        _opponentColorHue = netMgr.OpponentColorHue;
         _multiplayerPlayerRole = playerRole;
         _multiplayerStartTimestamp = startTimestamp;
         _countdownSignalReceived = false;  // Reset countdown signal for new match
         _opponentReadyState = null;  // Reset stored opponent ready state
+        _opponentScore = 0;
+        _opponentHealth = 0.5f;
+        _opponentTargetHealth = 0.5f;
+        _playerMaxCombo = 0;
+        _opponentMaxCombo = 0;
+        _opponentMisses = 0;
+        _opponentSicks = 0;
+        _opponentGoods = 0;
+        _opponentBads = 0;
+        _opponentShits = 0;
+        _multiplayerMatchId = !string.IsNullOrWhiteSpace(roomId) ? roomId : Guid.NewGuid().ToString("N");
+        _multiplayerMatchRecorded = false;
         
         // Disable autoplay in multiplayer - players must play manually
         NoteRenderer.Autoplay = false;
@@ -534,13 +485,24 @@ public partial class Game1 : Game
     {
         Console.WriteLine($"[Game1] Opening editor: {type}");
         
-        if (type == Editors.EditorType.Chart)
+        if (type == Editors.EditorType.NewChart || type == Editors.EditorType.Chart)
         {
-            // Chart Editor: show level selector
             _inEditorPicker = false;
             _inLevelSelector = true;
-            _levelSelector = new Editors.Chart.LevelSelector(_pixel!, _font!, _fontRenderer);
-            Console.WriteLine("[Game1] Opened Level Selector for Chart Editor");
+            _levelSelectorReturnTarget = ChartEditorReturnTarget.EditorPicker;
+            _levelSelector = new Editors.Chart.LevelSelector(
+                _pixel!, _font!, _fontRenderer,
+                startCreateModal: type == Editors.EditorType.NewChart);
+            Console.WriteLine($"[Game1] Opened Level Selector (startCreateModal={type == Editors.EditorType.NewChart})");
+        }
+        else if (type == Editors.EditorType.Hud)
+        {
+            // HUD Editor: open launcher screen and return to Editor Hub on ESC
+            _inEditorPicker = false;
+            _hudEditorReturnTarget = HudEditorReturnTarget.EditorPicker;
+            _inMainSettings = true;
+            _mainSettingsMenu?.ResetInputCooldown();
+            Console.WriteLine("[Game1] Opened HUD Editor from Editor Hub");
         }
         else
         {
@@ -551,42 +513,366 @@ public partial class Game1 : Game
     }
     
     /// <summary>
-    /// Exits the active editor and returns to Editor Picker
+    /// Exits the active editor and returns to the caller (Editor Hub, Freeplay panel, or Gameplay)
     /// </summary>
     private void ExitEditor()
     {
+        bool savedInSession = false;
+        string editedPath = FnmmPath;
+        bool reuseGameplayCache = false;
+        if (_activeEditor is Editors.Chart.ChartEditor ce)
+        {
+            savedInSession = ce.SavedInSession;
+            editedPath = ce.LevelPath;
+            reuseGameplayCache = !ce.OwnsPreviewTextures
+                && _spriteTextureCache != null
+                && string.Equals(FnmmPath, editedPath, StringComparison.OrdinalIgnoreCase);
+            ce.DisposeAudio();
+        }
+
+        var target = _chartEditorReturnTarget;
+        _chartEditorReturnTarget = ChartEditorReturnTarget.EditorPicker;
         _inEditor = false;
-        _inEditorPicker = true;
         _activeEditor = null;
-        _editorPicker = new Editors.EditorPicker(_pixel!, _font, _fontRenderer);
-        _editorPicker.ResetInputCooldown();
-        Console.WriteLine("[Game1] Exited editor, returned to Editor Picker");
+
+        switch (target)
+        {
+            case ChartEditorReturnTarget.Freeplay:
+                _inFreeplay = true;
+                _freeplay?.Refresh();
+                _freeplay?.OpenLevelsPanel();
+                _freeplay?.ResetInputCooldown();
+                ResetWindowTitle();
+                break;
+
+            case ChartEditorReturnTarget.Gameplay:
+                if (!string.IsNullOrEmpty(editedPath) && (savedInSession || _level == null))
+                {
+                    StartLoadingLevel(editedPath, preserveSpriteCache: reuseGameplayCache);
+                }
+                else if (_level != null)
+                {
+                    Window.Title = $"Funky Maker Player — {_level.LevelName}";
+                    ResumeSong();
+                }
+                else
+                {
+                    _inFreeplay = true;
+                    _freeplay?.Refresh();
+                    _freeplay?.OpenLevelsPanel();
+                    _freeplay?.ResetInputCooldown();
+                    ResetWindowTitle();
+                }
+                break;
+
+            default:
+                _inEditorPicker = true;
+                _editorPicker = new Editors.EditorPicker(_pixel!, _font, _fontRenderer);
+                _editorPicker.ResetInputCooldown();
+                ResetWindowTitle();
+                break;
+        }
+        Console.WriteLine($"[Game1] Exited editor -> {target}");
     }
     
     /// <summary>
-    /// Exits level selector and returns to Editor Picker
+    /// Exits level selector and returns to Editor Picker or Freeplay
     /// </summary>
     private void ExitLevelSelector()
     {
+        var target = _levelSelectorReturnTarget;
+        _levelSelectorReturnTarget = ChartEditorReturnTarget.EditorPicker;
         _inLevelSelector = false;
-        _inEditorPicker = true;
         _levelSelector = null;
-        _editorPicker = new Editors.EditorPicker(_pixel!, _font, _fontRenderer);
-        _editorPicker.ResetInputCooldown();
-        Console.WriteLine("[Game1] Exited Level Selector");
+
+        if (target == ChartEditorReturnTarget.Freeplay)
+        {
+            _inFreeplay = true;
+            _freeplay?.Refresh();
+            _freeplay?.OpenLevelsPanel();
+            _freeplay?.ResetInputCooldown();
+            ResetWindowTitle();
+        }
+        else
+        {
+            _inEditorPicker = true;
+            _editorPicker = new Editors.EditorPicker(_pixel!, _font, _fontRenderer);
+            _editorPicker.ResetInputCooldown();
+            ResetWindowTitle();
+        }
+        Console.WriteLine($"[Game1] Exited Level Selector -> {target}");
     }
     
     /// <summary>
     /// Opens Chart Editor with selected level
     /// </summary>
-    private void OpenChartEditor(string levelPath)
+    private void OpenChartEditor(string levelPath, ChartEditorReturnTarget returnTarget = ChartEditorReturnTarget.EditorPicker)
     {
-        Console.WriteLine($"[Game1] Opening Chart Editor with level: {levelPath}");
+        Console.WriteLine($"[Game1] Opening Chart Editor with level: {levelPath} (return={returnTarget})");
         
+        _chartEditorReturnTarget = returnTarget;
         _inLevelSelector = false;
+        _inFreeplay = false;
+        _inEditorPicker = false;
         _inEditor = true;
         _levelSelector = null;
-        _activeEditor = new Editors.Chart.ChartEditor(levelPath, _pixel!, _font, _fontRenderer, _noteStyle);
+
+        Dictionary<string, Dictionary<int, SpriteTextureCacheEntry>>? sharedSpriteCache = null;
+        if (returnTarget == ChartEditorReturnTarget.Gameplay &&
+            _spriteTextureCache != null &&
+            _spriteTextureCache.Count > 0 &&
+            string.Equals(FnmmPath, levelPath, StringComparison.OrdinalIgnoreCase))
+        {
+            sharedSpriteCache = _spriteTextureCache;
+        }
+
+        var ce = new Editors.Chart.ChartEditor(levelPath, _pixel!, _font, _fontRenderer, _noteStyle, sharedSpriteCache);
+        ce.ResetInputCooldown();
+        _activeEditor = ce;
+        Window.Title = $"Funky Maker Chart Editor — {Path.GetFileName(levelPath)}";
+    }
+
+    private void BeginEditorPlaytest(Editors.Chart.ChartEditor ce)
+    {
+        if (!string.IsNullOrEmpty(_playtestTempPath))
+        {
+            try { if (File.Exists(_playtestTempPath)) File.Delete(_playtestTempPath); } catch { }
+            _playtestTempPath = null;
+        }
+
+        var editedLevel = ce.GetEditedLevel();
+        if (editedLevel == null)
+        {
+            string levelToLoad = ce.LevelPath;
+            if (string.IsNullOrEmpty(levelToLoad))
+                return;
+
+            _suspendedChartEditor = ce;
+            _activeEditor = null;
+            _inEditor = false;
+            _playtestingFromEditor = true;
+            _playtestStartSeconds = Math.Max(0f, ce.PlaytestStartSeconds);
+            StartLoadingLevel(levelToLoad);
+            return;
+        }
+
+        _suspendedChartEditor = ce;
+        _activeEditor = null;
+        _inEditor = false;
+        _playtestingFromEditor = true;
+        _playtestStartSeconds = Math.Max(0f, ce.PlaytestStartSeconds);
+
+        ResetGameplayStateForLevelLoad(ce.LevelPath);
+        _spriteTextureCache = ce.PreviewSpriteTextureCache;
+        _spriteCacheOwnedByEditor = ce.OwnsPreviewTextures;
+
+        var (cachedPcm, sampleRate, channels) = ce.GetCachedAudioPcm();
+        _preloadedPlaytestPcm = cachedPcm != null ? (cachedPcm, sampleRate, channels) : null;
+
+        _pendingLevel = FnmmSceneRenderer.CloneForGameplay(editedLevel);
+
+        if (ce.HasCachedPreviewTextures)
+        {
+            Console.WriteLine($"[Playtest] Reusing cached preview textures ({editedLevel.Sprites.Count} sprite(s)) — instant start");
+            _level = _pendingLevel;
+            _pendingLevel = null;
+            _loadState = LoadState.Done;
+            try
+            {
+                FinalizeLoadedLevelForGameplay(showReadyScreen: false);
+            }
+            catch (Exception ex)
+            {
+                HandleSetupLevelFailure(ex);
+            }
+        }
+        else
+        {
+            string levelName = Path.GetFileNameWithoutExtension(ce.LevelPath);
+            _loadingScreen = new LoadingScreen(levelName, _pixel!, _font, FindAssetsRoot(), GraphicsDevice, false);
+            _loadingComplete = true;
+            _loadState = LoadState.Finalizing;
+        }
+    }
+
+    private void ReturnFromPlaytest()
+    {
+        _musicInst?.Stop();
+        _musicInst?.Dispose();
+        _music?.Dispose();
+        _musicInst = null;
+        _music = null;
+        _musicPcm = null;
+        _preloadedPlaytestPcm = null;
+        _started = false;
+        _paused = false;
+        _inPauseMenu = false;
+        _gameOverOverlay?.Hide();
+        _songTransition = null;
+        _transitionToFreeplay = false;
+        _songEndDelay = 0f;
+        _loadingScreen = null;
+        _pendingLevel = null;
+        _loadState = LoadState.Done;
+        _level = null;
+        _objAnimators = Array.Empty<SpriteAnimator?>();
+        _events = null;
+        _corneredEvents = null;
+        _noteRenderers.Clear();
+        if (_healthBar != null)
+        {
+            _healthBar.OpponentIcon = null;
+            _healthBar.PlayerIcon = null;
+        }
+        if (_spriteCacheOwnedByEditor)
+            _spriteTextureCache = null;
+        _spriteCacheOwnedByEditor = false;
+        _playtestingFromEditor = false;
+        _playtestStartSeconds = 0f;
+
+        if (!string.IsNullOrEmpty(_playtestTempPath))
+        {
+            try { if (File.Exists(_playtestTempPath)) File.Delete(_playtestTempPath); } catch { }
+            _playtestTempPath = null;
+        }
+
+        if (_suspendedChartEditor is Editors.Chart.ChartEditor ce)
+        {
+            FnmmPath = ce.LevelPath;
+            _activeEditor = ce;
+            _suspendedChartEditor = null;
+            _inEditor = true;
+            ce.ResetInputCooldown();
+            Window.Title = $"Funky Maker Chart Editor — {Path.GetFileName(ce.LevelPath)}";
+        }
+        else
+        {
+            _suspendedChartEditor = null;
+            _inFreeplay = true;
+            _freeplay?.Refresh();
+            _freeplay?.ResetInputCooldown();
+            ResetWindowTitle();
+        }
+        Console.WriteLine("[Game1] Returned from Playtest to Chart Editor");
+    }
+
+    private void FinalizeLoadedLevelForGameplay(bool showReadyScreen)
+    {
+        if (_level == null) return;
+
+        SetupLevel();
+        _songTime        = 0f;
+        _songBeats       = 0f;
+        _started         = false;
+        _paused          = false;
+        if (_healthBar != null)
+            _healthBar.Health = 0.5f;
+        _gameOverOverlay?.Hide();
+        _countdownOverlay?.Reset();
+
+        // Start FNF-style receptor intro animation (pop-in effect)
+        // Only if HUD is visible (respects chart events that hide receptors)
+        if (_events?.HudVisible != false)
+        {
+            foreach (var renderer in _noteRenderers)
+                renderer?.StartReceptorIntro(0.0f, 0.05f);
+        }
+
+        _cameraManager?.Reset();
+        _healthBar?.ResetBounce();
+        _songStopwatch.Reset();
+        _pausedTime = 0.0;
+
+        if (!showReadyScreen)
+        {
+            _loadingScreen = null;
+            _loadingComplete = true;
+            if (_playtestingFromEditor && _level != null)
+            {
+                _started = true;
+                _songStopwatch.Restart();
+                _pausedTime = 0.0;
+                if (_playtestStartSeconds > 0.1f)
+                    SeekSong(_playtestStartSeconds);
+                else
+                    _musicInst?.Play();
+            }
+            return;
+        }
+
+        // Update loading screen with real level name
+        // In multiplayer, show loading screen normally and send Ready when done
+        _loadingScreen = new LoadingScreen(
+            _level.LevelName, _pixel!, _font,
+            FindAssetsRoot(), GraphicsDevice, _isMultiplayerMatch);
+        _loadingComplete = true;
+
+        if (_isMultiplayerMatch)
+        {
+            _loadingScreen.MyPlayerRole = _multiplayerPlayerRole;
+            if (_multiplayerPlayerRole == 1)
+            {
+                _loadingScreen.Player1Ready = false;
+                _loadingScreen.Player2Ready = false;
+            }
+            else if (_multiplayerPlayerRole == 2)
+            {
+                _loadingScreen.Player1Ready = false;
+                _loadingScreen.Player2Ready = false;
+            }
+
+            Console.WriteLine("[Game1] Level loaded! Sending Ready to server...");
+            Multiplayer.NetworkManager.Instance.SendReady(true);
+
+            if (_loadingScreen != null)
+            {
+                if (_multiplayerPlayerRole == 1)
+                {
+                    _loadingScreen.Player1Ready = true;
+                    Console.WriteLine("[Game1] Set Player1Ready=true (I am Player 1)");
+                }
+                else if (_multiplayerPlayerRole == 2)
+                {
+                    _loadingScreen.Player2Ready = true;
+                    Console.WriteLine("[Game1] Set Player2Ready=true (I am Player 2)");
+                }
+
+                if (_opponentReadyState.HasValue)
+                {
+                    Console.WriteLine($"[Game1] Applying stored opponent ready state: {_opponentReadyState.Value}");
+                    if (_multiplayerPlayerRole == 1)
+                    {
+                        _loadingScreen.Player2Ready = _opponentReadyState.Value;
+                        Console.WriteLine($"[Game1] Set Player2Ready={_opponentReadyState.Value} (from stored state)");
+                    }
+                    else if (_multiplayerPlayerRole == 2)
+                    {
+                        _loadingScreen.Player1Ready = _opponentReadyState.Value;
+                        Console.WriteLine($"[Game1] Set Player1Ready={_opponentReadyState.Value} (from stored state)");
+                    }
+                }
+            }
+
+            Console.WriteLine("[Game1] Waiting for opponent to be ready...");
+        }
+    }
+
+    private void HandleSetupLevelFailure(Exception ex)
+    {
+        bool wasMp = _isMultiplayerMatch;
+        if (wasMp)
+            Multiplayer.NetworkManager.Instance.LeaveMatch(notifyOpponent: true);
+
+        _errorReturnToMultiplayer = wasMp;
+        _errorDismissGrace = 0.25f;
+        _errorMsg        = ex.Message;
+        _loadingComplete = true;
+        _loadState       = LoadState.Done;
+        CloseAllInMatchOverlays();
+        _loadingScreen   = null;  // clear loading screen, error shown via DrawError
+        _level           = null;  // clear level so DrawError path is taken
+        ResetMultiplayerMatchState();
+        Console.Error.WriteLine($"[FunkyMakerPlayer] SetupLevel failed: {ex}");
     }
 
     protected override void Initialize()
@@ -664,7 +950,7 @@ public partial class Game1 : Game
 
         base.Initialize();
         
-        // Check for updates
+        // Check for updates asynchronously without blocking launch (Psych Engine-style in-menu prompt)
 #if !DEBUG
 #if ANDROID
         // Android: check for updates and open browser to GitHub releases
@@ -694,8 +980,19 @@ public partial class Game1 : Game
             }
         });
 #else
-        // Windows/Linux: full auto-update system
-        Task.Run(() => Updater.CheckAndUpdate());
+        // Windows/Linux: non-blocking background release check, surfaced inside main menu
+        Task.Run(async () =>
+        {
+            var updateInfo = await Updater.CheckForUpdatesAsync();
+            if (updateInfo != null && !string.IsNullOrEmpty(updateInfo.Value.downloadUrl))
+            {
+                _freeplay?.SetAvailableUpdate(
+                    updateInfo.Value.tag,
+                    updateInfo.Value.version.ToString(3),
+                    updateInfo.Value.downloadUrl,
+                    updateInfo.Value.changelog);
+            }
+        });
 #endif
 #endif
     }
@@ -706,27 +1003,49 @@ public partial class Game1 : Game
 
     private void OnFileDrop(object? sender, FileDropEventArgs e)
     {
+        var importedPaths = new List<string>();
+
         foreach (var file in e.Files)
         {
-            if (file.EndsWith(".FNMM", StringComparison.OrdinalIgnoreCase) ||
-                file.EndsWith(".rar",  StringComparison.OrdinalIgnoreCase))
+            if (FreeplayMenu.IsSupportedLevelFile(file))
             {
                 string imported = ImportLevelFile(file);
-                StartLoadingLevel(imported);
-                break;
+                importedPaths.Add(imported);
+                continue;
             }
-            // Psych Engine mod folder (drag the mod folder itself)
+
+            // Unpacked Funky Maker level folder (contains data.json or meta.json)
             if (Directory.Exists(file))
             {
+                if (File.Exists(Path.Combine(file, "data.json")) || File.Exists(Path.Combine(file, "meta.json")))
+                {
+                    string importedDir = ImportLevelDirectory(file);
+                    importedPaths.Add(importedDir);
+                    continue;
+                }
+
+                // Psych Engine mod folder (drag the mod folder itself)
                 StartLoadingLevel(file);
-                break;
+                return;
+            }
+        }
+
+        if (importedPaths.Count > 0)
+        {
+            _freeplay?.OnLevelsImported(importedPaths);
+            _levelSelector?.RefreshLevels();
+
+            // If on the empty fallback drop screen (no level loaded), switch to Freeplay
+            if (!_inFreeplay && _level == null && _loadState == LoadState.Idle)
+            {
+                _inFreeplay = true;
             }
         }
     }
 
     /// <summary>
-    /// Copies a dropped .FNMM or .rar file into the levels folder (if it isn't already there).
-    /// Returns the path to use for loading — either the copy or the original if copy fails.
+    /// Copies a dropped .FNMM, .ZIP, or .RAR file into the levels folder (if it isn't already there).
+    /// Returns the path in the levels folder (or the original if copy fails).
     /// </summary>
     private string ImportLevelFile(string sourcePath)
     {
@@ -748,15 +1067,50 @@ public partial class Game1 : Game
             File.Copy(sourcePath, destPath, overwrite: true);
             Console.WriteLine($"[Import] Copied {fileName} → levels/");
 
-            // Refresh freeplay list so the new level appears immediately
-            _freeplay?.Refresh();
-
             return destPath;
         }
         catch (Exception ex)
         {
-            Console.WriteLine($"[Import] Copy failed, loading from original: {ex.Message}");
+            Console.WriteLine($"[Import] Copy failed, using original: {ex.Message}");
             return sourcePath;
+        }
+    }
+
+    /// <summary>
+    /// Copies an unpacked level folder into the levels folder if it isn't already there.
+    /// </summary>
+    private string ImportLevelDirectory(string sourceDir)
+    {
+        try
+        {
+            string levelsFolder = FreeplayMenu.GetDefaultLevelsFolder();
+            if (!Directory.Exists(levelsFolder))
+                Directory.CreateDirectory(levelsFolder);
+
+            string dirName = Path.GetFileName(sourceDir.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar));
+            string destDir = Path.Combine(levelsFolder, dirName);
+
+            if (string.Equals(Path.GetFullPath(sourceDir), Path.GetFullPath(destDir),
+                    StringComparison.OrdinalIgnoreCase))
+                return sourceDir;
+
+            foreach (var dirPath in Directory.GetDirectories(sourceDir, "*", SearchOption.AllDirectories))
+                Directory.CreateDirectory(dirPath.Replace(sourceDir, destDir));
+
+            foreach (var filePath in Directory.GetFiles(sourceDir, "*.*", SearchOption.AllDirectories))
+            {
+                string targetFile = filePath.Replace(sourceDir, destDir);
+                Directory.CreateDirectory(Path.GetDirectoryName(targetFile)!);
+                File.Copy(filePath, targetFile, overwrite: true);
+            }
+
+            Console.WriteLine($"[Import] Copied folder {dirName} → levels/");
+            return destDir;
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[Import] Folder copy failed, using original: {ex.Message}");
+            return sourceDir;
         }
     }
 
@@ -766,16 +1120,18 @@ public partial class Game1 : Game
     /// Phase 2 (main thread, next Update): create GPU textures, init renderers.
     /// The loading screen is shown immediately and spins while loading.
     /// </summary>
-    private void StartLoadingLevel(string path)
+    private string ResetGameplayStateForLevelLoad(string path)
     {
         // Stop current song immediately
         _musicInst?.Stop();
         _started      = false;
+        _paused       = false;
         _errorMsg     = null;
-        _loadState    = LoadState.Loading;
+        _songTransition = null;
+        _songEndDelay = 0f;
+        _gameOverOverlay?.Hide();
         _pendingPath  = path;
         _inFreeplay   = false;
-        _parallaxLoggedOnce = false;  // Reset parallax debug log for new level
         _crashLogged  = false;  // Reset crash log flag for new level
         // Reset all overlay states so they don't persist into the new level
         _keyBindOverlay.Reset();
@@ -786,7 +1142,25 @@ public partial class Game1 : Game
 
         string levelName = System.IO.Path.GetFileNameWithoutExtension(path);
         DiscordRpc.SetLoading(levelName);
-        FnmmPath    = path;
+        FnmmPath = path;
+        return levelName;
+    }
+
+    private void StartLoadingLevel(string path, bool preserveSpriteCache = false)
+    {
+        string levelName = ResetGameplayStateForLevelLoad(path);
+        _loadState = LoadState.Loading;
+        _preloadedPlaytestPcm = null;
+        _spriteCacheOwnedByEditor = false;
+        if (!preserveSpriteCache)
+        {
+            _spriteTextureCache = null;
+            Console.WriteLine("[Cache] Cleared sprite texture cache for new level");
+        }
+        else
+        {
+            Console.WriteLine("[Cache] Preserved shared sprite texture cache for reload");
+        }
 
         // Show loading screen in main window
         _loadingScreen   = new LoadingScreen(levelName, _pixel!, _font,
@@ -822,10 +1196,6 @@ public partial class Game1 : Game
                     _loadingScreen.LoadingProgress = progress;
                     _loadingScreen.CurrentStep = step;
                 });
-                
-                // Clear sprite texture cache when loading a new level (not a restart)
-                _spriteTextureCache = null;
-                Console.WriteLine("[Cache] Cleared sprite texture cache for new level");
                 
                 _loadingComplete = true;
                 _loadState       = LoadState.Finalizing;
@@ -968,6 +1338,7 @@ public partial class Game1 : Game
 
         // Init freeplay menu
         _freeplay = new FreeplayMenu(_pixel, _font, levelsFolder, _folderIcon, _fontRenderer);
+        _mainSettingsMenu?.SetFontRenderer(_fontRenderer);
         
         #if ANDROID
         // Init mods help screen
@@ -992,11 +1363,16 @@ public partial class Game1 : Game
         // Blazor only: Wire file picker callback
         #if BLAZORGL
         _freeplay.OnFilePickerRequested = () => RequestFilePicker();
+#if ANDROID
+        _freeplay.IsPointOverOverlayControl = p => _touchControls?.IsPointOnMenuControl(p) ?? false;
+#endif
         #endif
 
         // Init multiplayer menu (for accessing multiplayer lobby)
         _multiplayerMenu = new Multiplayer.MultiplayerMenu();
         _multiplayerMenu.SetGame(this);  // Pass reference to this Game1 instance
+        _multiplayerMenu.SetFontRenderer(_fontRenderer);
+        _multiplayerMenu.SetIcons(LoadMultiplayerIcons(assetsRoot));
         
 #if ANDROID
         // Initialize touch controls for Android
@@ -1072,14 +1448,31 @@ public partial class Game1 : Game
             }
         };
         
-        // Receive opponent's state updates (score, health, combo)
+        // Receive opponent's profile updates (real username, ID, color)
+        Multiplayer.NetworkManager.Instance.OnOpponentProfileReceived += (packet) =>
+        {
+            if (!string.IsNullOrWhiteSpace(packet.Username))
+                _opponentName = packet.Username;
+            if (!string.IsNullOrWhiteSpace(packet.PlayerId))
+                _opponentPlayerId = packet.PlayerId;
+            _opponentColorHue = packet.ColorHue;
+        };
+
+        // Receive opponent's state updates (score, health, combo, ratings)
         Multiplayer.NetworkManager.Instance.OnOpponentState += (packet) =>
         {
             if (!_isMultiplayerMatch) return; // Ignore if not in multiplayer
             
             _opponentScore = packet.Score;
-            _opponentHealth = packet.Health;
-            // Could show this in UI later
+            _opponentMaxCombo = Math.Max(_opponentMaxCombo, packet.Combo);
+            _opponentSicks = packet.SickCount;
+            _opponentGoods = packet.GoodCount;
+            _opponentBads = packet.BadCount;
+            _opponentShits = packet.ShitCount;
+            _opponentMisses = packet.MissCount;
+            _opponentTargetHealth = Math.Clamp(packet.Health, 0f, 1f);
+            if (!Multiplayer.MultiplayerSettings.Instance.EnableInterpolation)
+                _opponentHealth = _opponentTargetHealth;
         };
         
         // Receive opponent's ready state changes (for loading screen)
@@ -1168,39 +1561,11 @@ public partial class Game1 : Game
             }
         };
         
-        // Handle opponent disconnection
+        // Handle opponent disconnection (SignalR fires off the main MonoGame thread)
         Multiplayer.NetworkManager.Instance.OnOpponentDisconnected += (reason) =>
         {
-            if (!_isMultiplayerMatch) return;
-            
-            Console.WriteLine($"[Game1] Opponent disconnected: {reason}");
-            
-            // Stop the music
-            _musicInst?.Stop();
-            
-            // Get player's final stats from renderer
-            if (_noteRenderers != null && _noteRenderers.Count > 0)
-            {
-                var playerRend = _noteRenderers[0];
-                int totalNotes = playerRend.Sicks + playerRend.Goods + playerRend.Bads + playerRend.Shits + playerRend.Misses;
-                float acc = 100f;
-                if (totalNotes > 0)
-                {
-                    float weightedHits = (playerRend.Sicks * 1.0f) + (playerRend.Goods * 0.75f) + 
-                                        (playerRend.Bads * 0.5f) + (playerRend.Shits * 0.25f);
-                    acc = (weightedHits / totalNotes) * 100f;
-                }
-                
-                Console.WriteLine($"[Game1] Match ended due to disconnect");
-                Console.WriteLine($"  Your Score: {playerRend.Score} | Accuracy: {acc:F1}%");
-                Console.WriteLine($"  Sicks: {playerRend.Sicks} | Goods: {playerRend.Goods} | Bads: {playerRend.Bads} | Shits: {playerRend.Shits} | Misses: {playerRend.Misses}");
-            }
-            
-            // Set error message to show disconnect reason
-            _errorMsg = $"Opponent Disconnected\n{reason}\n\nPress ESC to return to menu";
-            
-            // Clear multiplayer state
-            _isMultiplayerMatch = false;
+            _pendingDisconnectReason = string.IsNullOrWhiteSpace(reason) ? "Opponent left the match" : reason;
+            _pendingOpponentDisconnect = true;
         };
         
         Console.WriteLine($"[Game1] Multiplayer event handlers subscribed and ready");
@@ -1302,790 +1667,44 @@ public partial class Game1 : Game
         int sw = rtW;
         int sh = rtH;
 
-        // ── Pre-load all sprite textures into a name→textures cache ──────────
-        // We keep textures alive for the level lifetime.
-        // For very wide strips (exceeding GPU max texture size), split into
-        // per-frame textures — but only for background/prop sprites (strumLine = -1).
-        
-        // Get ACTUAL GPU max texture size from OpenGL
+        // ── Pre-load all sprite textures via shared scene renderer ────────────
         int maxTexSize = GetGpuMaxTextureSize();
         Console.WriteLine($"[GPU] Max texture size: {maxTexSize}px (device limit)");
-
-        // Build set of sprite names used ONLY by background objects (strumLine < 0)
-        // AND never used by characters (strumLine >= 0)
-        var spriteUsage = new Dictionary<string, (bool usedByBg, bool usedByChar)>();
-        foreach (var obj in _level.Scene.Objects)
-        {
-            if (!spriteUsage.ContainsKey(obj.Spr))
-                spriteUsage[obj.Spr] = (false, false);
-            
-            var (usedByBg, usedByChar) = spriteUsage[obj.Spr];
-            if (obj.StrumLine < 0f)
-                spriteUsage[obj.Spr] = (true, usedByChar);
-            else
-                spriteUsage[obj.Spr] = (usedByBg, true);
-        }
-
-        var texCache = new Dictionary<string, List<Texture2D>>(StringComparer.OrdinalIgnoreCase);
-
         Console.WriteLine($"[Scene] Loading {_level.Sprites.Count} sprites from level...");
-        
-        // Initialize cache if this is the first load of this level
-        if (_spriteTextureCache == null)
-        {
-            _spriteTextureCache = new Dictionary<string, Dictionary<int, SpriteTextureCache>>();
-            Console.WriteLine("[Cache] Initialized sprite texture cache");
-        }
-        
-        // Reset SplitOffset on all sprite anim data before rebuilding textures.
-        // This is needed for restarts — SplitOffset is set during texture loading
-        // and must be cleared so the split logic runs fresh on each SetupLevel call.
-        foreach (var (_, (def, _)) in _level.Sprites)
-            foreach (var animData in def.Data)
+
+        _spriteTextureCache ??= new Dictionary<string, Dictionary<int, SpriteTextureCacheEntry>>();
+
+        var texCache = FnmmSceneRenderer.LoadLevelTextures(
+            GraphicsDevice,
+            _level,
+            maxTexSize,
+            _spriteTextureCache,
+            (progress, step) =>
             {
-                animData.SplitOffset          = -1;
-                animData.ChunkFrames          = 0;
-                animData.FrameWidth           = 0;
-                animData.TextureIndex         = -1;
-                animData.DownscaleCompensation = 1.0f;
-            }
+                if (_loadingScreen == null) return;
+                _loadingScreen.LoadingProgress = progress;
+                _loadingScreen.CurrentStep = step;
+                RenderLoadingScreen();
+            },
+            () => RenderLoadingScreen());
 
-        int spriteIndex = 0;
-        int totalSprites = _level.Sprites.Count;
-        var stopwatch = System.Diagnostics.Stopwatch.StartNew();
-        int spritesProcessedSinceLastUpdate = 0;
-        const int SPRITES_PER_UPDATE = 5;  // Update screen every 5 sprites instead of every sprite
-        
-        foreach (var (name, (def, frames)) in _level.Sprites)
-        {
-            // Report progress (0% to 80% during texture loading)
-            if (totalSprites > 0)
-            {
-                float progress = (spriteIndex / (float)totalSprites) * 0.8f;
-                string step = $"Creating GPU textures... ({spriteIndex + 1}/{totalSprites})";
-                
-                if (_loadingScreen != null)
-                {
-                    _loadingScreen.LoadingProgress = progress;
-                    _loadingScreen.CurrentStep = step;
-                }
-                
-                // Update screen every N sprites or every 500ms (whichever comes first)
-                spritesProcessedSinceLastUpdate++;
-                if (_loadingScreen != null && 
-                    (spritesProcessedSinceLastUpdate >= SPRITES_PER_UPDATE || stopwatch.ElapsedMilliseconds >= 500))
-                {
-                    Console.WriteLine($"[SetupLevel] Rendering loading screen: {_loadingScreen.LoadingProgress * 100:F0}% - {_loadingScreen.CurrentStep}");
-                    RenderLoadingScreen();
-                    stopwatch.Restart();
-                    spritesProcessedSinceLastUpdate = 0;
-                }
-            }
-            spriteIndex++;
-            
-            // Check if this sprite is already cached
-            if (!_spriteTextureCache.ContainsKey(name))
-                _spriteTextureCache[name] = new Dictionary<int, SpriteTextureCache>();
-            
-            var spriteCache = _spriteTextureCache[name];
-            bool useCachedTextures = spriteCache.Count == frames.Count && spriteCache.All(kvp => kvp.Value.Textures.Count > 0);
-            
-            if (useCachedTextures)
-            {
-                Console.WriteLine($"[Cache] Using cached textures for '{name}' ({frames.Count} frames)");
-                
-                // Restore cached textures and metadata
-                for (int fi = 0; fi < frames.Count; fi++)
-                {
-                    if (!spriteCache.ContainsKey(fi)) continue;
-                    
-                    var cached = spriteCache[fi];
-                    if (fi < def.Data.Count)
-                    {
-                        def.Data[fi].SplitOffset = cached.SplitOffset;
-                        def.Data[fi].ChunkFrames = cached.ChunkFrames;
-                        def.Data[fi].FrameWidth = cached.FrameWidth;
-                        def.Data[fi].TextureIndex = cached.TextureIndex;
-                        def.Data[fi].DownscaleCompensation = cached.DownscaleCompensation;
-                        def.Data[fi].AtlasFrameRects = cached.AtlasFrameRects;
-                    }
-                }
-                
-                // Build texture list from cache
-                var cachedTextures = new List<Texture2D>();
-                for (int fi = 0; fi < frames.Count; fi++)
-                {
-                    if (spriteCache.ContainsKey(fi))
-                    {
-                        cachedTextures.AddRange(spriteCache[fi].Textures);
-                    }
-                }
-                
-                texCache[name] = cachedTextures;
-                continue;  // Skip texture creation, use cached
-            }
-            
-            // No cache hit - create textures normally
-            Console.WriteLine($"[Cache] Creating new textures for '{name}'");
-            var textures  = new List<Texture2D>();
-            // Sprite is splittable if:
-            // - (type 2.0 = explicit background/UI) OR (type 0.0 AND used only by backgrounds)
-            var (usedByBg, usedByChar) = spriteUsage.GetValueOrDefault(name, (false, false));
-            // Split rules by Funky Maker sprite type:
-            // type 1 (character): NEVER split — multi-anim spritesheet, corrupts if split
-            // type 2 (background): split if too wide — single large spritesheet
-            // type 0 (item): split if too wide — multiple PNGs, each can be a wide strip
-            // type 3 (icon): never split — small PNGs
-            bool isBgSprite = def.Type == 2.0f || (def.Type == 0.0f && !usedByChar);
-
-            // Track frame processing for loading screen updates
-            // On Android: Update VERY frequently to prevent ANR (every frame OR every 100ms)
-            // On PC: Less frequent updates (every 5 frames OR every 500ms)
-#if ANDROID
-            const int FRAMES_PER_UPDATE = 1;  // Update EVERY frame on Android
-            const int MAX_MS_BETWEEN_UPDATES = 100;  // Max 100ms between updates (ANR limit is 5000ms)
-#else
-            const int FRAMES_PER_UPDATE = 5;
-            const int MAX_MS_BETWEEN_UPDATES = 500;
-#endif
-            var lastFrameUpdateTime = System.Diagnostics.Stopwatch.StartNew();
-            
-            for (int fi = 0; fi < frames.Count; fi++)
-            {
-                // Update loading screen periodically during frame processing
-                if (fi % FRAMES_PER_UPDATE == 0 || lastFrameUpdateTime.ElapsedMilliseconds > MAX_MS_BETWEEN_UPDATES)
-                {
-                    RenderLoadingScreen();
-                    lastFrameUpdateTime.Restart();
-                }
-                
-                int frameCount = fi < def.Data.Count ? def.Data[fi].FrameCount : 1;
-                // Peek PNG dimensions without full decode to decide split strategy
-                int pngW = 0, pngH = 0;
-                if (frames[fi].Length > 24)
-                {
-                    // Read dimensions as big-endian signed integers (PNG standard format)
-                    // PNG uses signed 32-bit integers, so negative values are theoretically possible
-                    // but in practice indicate corrupt/unusual headers
-                    int signedW = (frames[fi][16] << 24) | (frames[fi][17] << 16) | (frames[fi][18] << 8) | frames[fi][19];
-                    int signedH = (frames[fi][20] << 24) | (frames[fi][21] << 16) | (frames[fi][22] << 8) | frames[fi][23];
-                    
-                    // Accept any non-zero dimension (including negative, which we'll convert to positive)
-                    // Negative values often indicate byte order issues or unusual PNG encoders
-                    if (signedW != 0) pngW = Math.Abs(signedW);
-                    if (signedH != 0) pngH = Math.Abs(signedH);
-                    
-                    // Sanity check: reject dimensions over 65536 (likely corrupted)
-                    if (pngW > 65536) pngW = 0;
-                    if (pngH > 65536) pngH = 0;
-                }
-
-                // Skip corrupt/empty PNGs (zero dimensions or empty bytes)
-                // Note: pngW/pngH from header peek may be wrong for unusual PNG formats.
-                // If the file has data, always try ImageSharp first — it handles edge cases.
-                if (frames[fi].Length == 0)
-                {
-                    Console.WriteLine($"[Texture] {name}[{fi}]: skipped — empty file");
-                    var dummy = new Texture2D(GraphicsDevice, 1, 1);
-                    dummy.SetData(new[] { Color.Transparent });
-                    textures.Add(dummy);
-                    continue;
-                }
-
-                // If header peek gives invalid dimensions, try to load anyway and let ImageSharp decide
-                bool headerInvalid = pngW <= 0 || pngH <= 0;
-                if (headerInvalid)
-                {
-                    Console.WriteLine($"[Texture] {name}[{fi}]: header invalid ({pngW}x{pngH}), attempting ImageSharp load...");
-                    
-                    // Update loading screen to show we're fixing invalid sprite
-                    if (_loadingScreen != null)
-                    {
-                        _loadingScreen.CurrentStep = $"Fixing invalid sprite: {name}";
-                        RenderLoadingScreen();
-                    }
-                    
-                    try
-                    {
-                        using var msProbe = new MemoryStream(frames[fi]);
-                        using var imgProbe = SixLabors.ImageSharp.Image
-                            .Load<SixLabors.ImageSharp.PixelFormats.Rgba32>(msProbe);
-                        // Got dimensions from ImageSharp
-                        int imgSharpW = imgProbe.Width;
-                        int imgSharpH = imgProbe.Height;
-                        Console.WriteLine($"[Texture] {name}[{fi}]: ImageSharp resolved to {imgSharpW}x{imgSharpH}");
-                        
-                        // Validate ImageSharp dimensions against expected frame width
-                        // If ImageSharp reports width that doesn't make sense with frameCount,
-                        // calculate real width from frameCount instead
-                        if (frameCount > 1)
-                        {
-                            int expectedFrameWidth = imgSharpW / frameCount;
-                            // If frame width is unreasonably large (>16K), ImageSharp dimensions are corrupt too
-                            if (expectedFrameWidth > 16384)
-                            {
-                                Console.WriteLine($"[Texture] {name}[{fi}]: ImageSharp width {imgSharpW} seems corrupt (frame would be {expectedFrameWidth}px wide). Using XML to calculate real width.");
-                                // Assume height is correct but width is corrupt
-                                // Calculate real width as frameCount * reasonable_frame_width
-                                // We'll detect real frame width when we actually load the image data
-                                pngW = imgSharpW;  // Keep for now, will recalculate after loading
-                                pngH = imgSharpH;
-                            }
-                            else
-                            {
-                                pngW = imgSharpW;
-                                pngH = imgSharpH;
-                            }
-                        }
-                        else
-                        {
-                            pngW = imgSharpW;
-                            pngH = imgSharpH;
-                        }
-                    }
-                    catch (Exception exProbe)
-                    {
-                        Console.WriteLine($"[Texture] {name}[{fi}]: skipped — ImageSharp also failed: {exProbe.Message}");
-                        var dummy = new Texture2D(GraphicsDevice, 1, 1);
-                        dummy.SetData(new[] { Color.Transparent });
-                        textures.Add(dummy);
-                        continue;
-                    }
-                }
-
-                // Validate frame count vs PNG width
-                int actualFrameCount = frameCount;
-                int fw0 = frameCount > 1 ? pngW / frameCount : pngW;
-                
-                // Detect if frame width is unreasonably small (likely corrupted XML)
-                if (frameCount > 1 && fw0 < 10)
-                {
-                    Console.WriteLine($"[Texture] {name}[{fi}]: WARNING - XML says {frameCount} frames but PNG is only {pngW}px wide ({fw0}px per frame). Treating as 1 frame.");
-                    actualFrameCount = 1;
-                    fw0 = pngW;  // Use full width as single frame
-                }
-                bool isCharSprite = def.Type == 1.0f || (def.Type == 0.0f && usedByChar);
-
-                // ── Oversized sprite strategy ─────────────────────────────────
-                // The key question is whether the INDIVIDUAL FRAME fits in GPU:
-                //   fw0 = pngW / frameCount  (width of one frame)
-                //
-                // Case A: fw0 > maxTexSize OR pngH > maxTexSize — frame dimensions exceed GPU limit
-                //   → Downscale to fit within maxTexSize x maxTexSize
-                //   → Sets DownscaleCompensation so the sprite draws at original visual size.
-                //
-                // Case B: fw0 <= maxTexSize AND pngH <= maxTexSize but pngW > maxTexSize (many frames, strip too wide).
-                //   → Split per-frame (char) or into chunks (bg). Each frame loads fine.
-                //
-                // Case B2: bg single-frame, pngW > maxTexSize — tile into maxTexSize-wide chunks.
-                //   → Full quality, no downscale. SpriteAnimator uses chunk mode to draw.
-                //
-                // Case C: pngW <= maxTexSize AND pngH <= maxTexSize — texture fits as-is. Load normally.
-                bool needsDownscale = (fw0 > maxTexSize || pngH > maxTexSize);
-                bool needsBgTile    = isBgSprite && actualFrameCount == 1 && pngW > maxTexSize;
-                // Apply splitting to ALL sprites that exceed GPU limits, not just bg/char
-                bool needsSplit     = !needsDownscale && !needsBgTile && pngW > maxTexSize && actualFrameCount > 1;
-                
-                // Log when texture exceeds limits
-                if (needsDownscale)
-                {
-                    Console.WriteLine($"[Texture] {name}[{fi}]: Needs downscale - frame size {fw0}x{pngH}px exceeds GPU limit {maxTexSize}px");
-                }
-                else if (needsSplit)
-                {
-                    Console.WriteLine($"[Texture] {name}[{fi}]: Needs split - total width {pngW}px exceeds GPU limit {maxTexSize}px");
-                }
-
-                Texture2D? fullTex = null;
-                if (!needsSplit && !needsBgTile)
-                {
-                    try
-                    {
-#if BLAZORGL
-                        // BlazorGL/WebGL has a 4096px texture limit - downscale if needed
-                        const int BLAZOR_MAX_TEX = 4096;
-                        if (pngW > BLAZOR_MAX_TEX || pngH > BLAZOR_MAX_TEX)
-                        {
-                            using var msDownscale = new MemoryStream(frames[fi]);
-                            using var imgDownscale = SixLabors.ImageSharp.Image
-                                .Load<SixLabors.ImageSharp.PixelFormats.Rgba32>(msDownscale);
-                            
-                            float scale = Math.Min((float)BLAZOR_MAX_TEX / pngW, (float)BLAZOR_MAX_TEX / pngH);
-                            int newW = (int)(pngW * scale);
-                            int newH = (int)(pngH * scale);
-                            
-                            Console.WriteLine($"[Texture] {name}[{fi}]: WebGL downscale {pngW}x{pngH}→{newW}x{newH}");
-                            
-                            imgDownscale.Mutate(ctx => ctx.Resize(newW, newH,
-                                SixLabors.ImageSharp.Processing.KnownResamplers.Lanczos3));
-                            
-                            var pixels = new Color[newW * newH];
-                            imgDownscale.ProcessPixelRows(acc =>
-                            {
-                                for (int y = 0; y < newH; y++)
-                                {
-                                    var row = acc.GetRowSpan(y);
-                                    int rb = y * newW;
-                                    for (int x = 0; x < newW; x++)
-                                    {
-                                        var p = row[x];
-                                        pixels[rb + x] = Color.FromNonPremultiplied(p.R, p.G, p.B, p.A);
-                                    }
-                                }
-                            });
-                            
-                            fullTex = new Texture2D(GraphicsDevice, newW, newH);
-                            fullTex.SetData(pixels);
-                            
-                            // Set compensation so sprite draws at original size
-                            if (fi < def.Data.Count)
-                                def.Data[fi].DownscaleCompensation = 1.0f / scale;
-                        }
-                        else
-                        {
-                            fullTex = LoadTextureViaImageSharp(GraphicsDevice, frames[fi]);
-                        }
-#else
-                        fullTex = LoadTextureViaImageSharp(GraphicsDevice, frames[fi]);
-#endif
-                        
-                        // Update loading screen after each texture load (especially important for heavy textures)
-#if ANDROID
-                        RenderLoadingScreen();
-#endif
-                    }
-                    catch (Exception ex)
-                    {
-                        Console.WriteLine($"[Texture] Failed to load {name}[{fi}]: {ex.Message}");
-                    }
-                }
-
-                // Character atlas packing: frame is too wide for GPU — pack into 2D atlas
-                // instead of downscaling to preserve full quality (same as backgrounds)
-                if (fullTex == null && needsDownscale)
-                {
-                    try
-                    {
-                        int fw = fw0;
-                        int fh = pngH;
-                        Console.WriteLine($"[Texture] {name}[{fi}]: {pngW}x{pngH} (character atlas packing → {actualFrameCount} frames, fw={fw})");
-                        var packResults = AtlasPacker.PackHorizontalStrip(
-                            frames[fi], actualFrameCount, fw, fh, maxTexSize, GraphicsDevice,
-                            (currentFrame, totalFrames) =>
-                            {
-                                // Update loading screen during atlas packing
-                                if (_loadingScreen != null)
-                                {
-                                    _loadingScreen.CurrentStep = $"Packing atlas: {name} ({currentFrame}/{totalFrames} frames)";
-                                    RenderLoadingScreen();
-                                }
-                            });
-                        
-                        if (packResults.Count > 0)
-                        {
-                            int splitStart = textures.Count;
-                            
-                            // Add packed atlas textures
-                            foreach (var pack in packResults)
-                            {
-                                textures.Add(pack.AtlasTexture);
-                            }
-                            
-                            // Configure sprite to use packed atlas (NO downscale compensation needed)
-                            if (fi < def.Data.Count)
-                            {
-                                def.Data[fi].SplitOffset       = splitStart;
-                                def.Data[fi].UsesPackedAtlas   = true;
-                                def.Data[fi].AtlasFrameRects   = packResults[0].FrameCoordinates;
-                                def.Data[fi].FrameWidth        = fw;
-                                // No DownscaleCompensation — atlas uses original size
-                            }
-                        }
-                        else
-                        {
-                            Console.WriteLine($"[Texture] {name}[{fi}]: Atlas packing failed for character");
-                        }
-                        
-                        // Update loading screen after atlas packing
-#if ANDROID
-                        RenderLoadingScreen();
-#endif
-                    }
-                    catch (Exception ex2)
-                    {
-                        Console.WriteLine($"[Texture] {name}[{fi}]: character atlas packing failed: {ex2.Message}");
-                    }
-                }
-
-                if (fullTex == null && !needsSplit)
-                {
-                    var dummy = new Texture2D(GraphicsDevice, 1, 1);
-                    dummy.SetData(new[] { Color.Transparent });
-                    textures.Add(dummy);
-                    continue;
-                }
-
-                if (needsSplit)
-                {
-                    // Too wide for GPU — split into chunks (bg sprites) or per-frame (characters)
-                    int fw = fw0;
-                    int fh = pngH;
-                    if (isBgSprite)
-                    {
-                        // Use AtlasPacker to create 2D atlas instead of horizontal chunks
-                        Console.WriteLine($"[Texture] {name}[{fi}]: {pngW}x{pngH} (atlas packing → {actualFrameCount} frames)");
-                        var packResults = AtlasPacker.PackHorizontalStrip(
-                            frames[fi], actualFrameCount, fw, fh, maxTexSize, GraphicsDevice,
-                            (currentFrame, totalFrames) =>
-                            {
-                                // Update loading screen during atlas packing
-                                if (_loadingScreen != null)
-                                {
-                                    _loadingScreen.CurrentStep = $"Packing atlas: {name} ({currentFrame}/{totalFrames} frames)";
-                                    RenderLoadingScreen();
-                                }
-                            });
-                        
-                        if (packResults.Count > 0)
-                        {
-                            int splitStart = textures.Count;
-                            
-                            // Add packed atlas textures
-                            foreach (var pack in packResults)
-                            {
-                                textures.Add(pack.AtlasTexture);
-                            }
-                            
-                            // Configure sprite to use packed atlas
-                            if (fi < def.Data.Count)
-                            {
-                                def.Data[fi].SplitOffset       = splitStart;
-                                def.Data[fi].UsesPackedAtlas   = true;
-                                def.Data[fi].AtlasFrameRects   = packResults[0].FrameCoordinates;
-                                def.Data[fi].FrameWidth        = fw;
-                            }
-                            
-                            // Update loading screen after atlas packing
-#if ANDROID
-                            RenderLoadingScreen();
-#endif
-                        }
-                        else
-                        {
-                            Console.WriteLine($"[Texture] {name}[{fi}]: Atlas packing failed, falling back to chunks");
-                            // Fallback to old chunk method
-                            int framesPerChunk = Math.Max(1, maxTexSize / Math.Max(1, fw));
-                            int splitStart = textures.Count;
-                            SplitPngIntoChunks(frames[fi], actualFrameCount, fw, fh, framesPerChunk, textures);
-                            if (fi < def.Data.Count)
-                            {
-                                def.Data[fi].SplitOffset  = splitStart;
-                                def.Data[fi].ChunkFrames  = framesPerChunk;
-                                def.Data[fi].FrameWidth   = fw;
-                            }
-                            
-                            // Update loading screen after chunking
-#if ANDROID
-                            RenderLoadingScreen();
-#endif
-                        }
-                    }
-                    else
-                    {
-                        // Characters: use atlas packing instead of per-frame split to preserve quality
-                        Console.WriteLine($"[Texture] {name}[{fi}]: {pngW}x{pngH} (character atlas packing → {actualFrameCount} frames)");
-                        var packResults = AtlasPacker.PackHorizontalStrip(
-                            frames[fi], actualFrameCount, fw, fh, maxTexSize, GraphicsDevice,
-                            (currentFrame, totalFrames) =>
-                            {
-                                // Update loading screen during atlas packing
-                                if (_loadingScreen != null)
-                                {
-                                    _loadingScreen.CurrentStep = $"Packing atlas: {name} ({currentFrame}/{totalFrames} frames)";
-                                    RenderLoadingScreen();
-                                }
-                            });
-                        
-                        if (packResults.Count > 0)
-                        {
-                            int splitStart = textures.Count;
-                            
-                            // Add packed atlas textures
-                            foreach (var pack in packResults)
-                            {
-                                textures.Add(pack.AtlasTexture);
-                            }
-                            
-                            // Configure sprite to use packed atlas
-                            if (fi < def.Data.Count)
-                            {
-                                def.Data[fi].SplitOffset       = splitStart;
-                                def.Data[fi].UsesPackedAtlas   = true;
-                                def.Data[fi].AtlasFrameRects   = packResults[0].FrameCoordinates;
-                                def.Data[fi].FrameWidth        = fw;
-                            }
-                            
-                            // Update loading screen after character atlas packing
-#if ANDROID
-                            RenderLoadingScreen();
-#endif
-                        }
-                        else
-                        {
-                            Console.WriteLine($"[Texture] {name}[{fi}]: Atlas packing failed for character, using fallback");
-                            // Fallback: per-frame split (old behavior)
-                            int splitStart = textures.Count;
-                            SplitPngIntoFrames(frames[fi], actualFrameCount, fw, fh, textures);
-                            if (fi < def.Data.Count)
-                            {
-                                def.Data[fi].SplitOffset  = splitStart;
-                                def.Data[fi].ChunkFrames  = 0;
-                                def.Data[fi].FrameWidth   = fw;
-                            }
-                            
-                            // Update loading screen after frame splitting
-#if ANDROID
-                            RenderLoadingScreen();
-#endif
-                        }
-                    }
-                    continue;
-                }
-
-                if (needsBgTile)
-                {
-                    // Single-frame bg too wide for GPU — tile into maxTexSize-wide chunks.
-                    // Full quality: no downscale. SpriteAnimator chunk mode draws them in sequence.
-                    int tileW      = maxTexSize;
-                    int tileCount  = (int)Math.Ceiling((double)pngW / tileW);
-                    Console.WriteLine($"[Texture] {name}[{fi}]: {pngW}x{pngH} (bg tile → {tileCount} tiles of up to {tileW}px)");
-                    int splitStart = textures.Count;
-                    SplitBgIntoTiles(frames[fi], pngW, pngH, tileW, textures);
-                    if (fi < def.Data.Count)
-                    {
-                        def.Data[fi].SplitOffset = splitStart;
-                        def.Data[fi].ChunkFrames = 1;
-                        def.Data[fi].FrameWidth  = tileW;
-                    }
-                    
-                    // Update loading screen after tiling
-#if ANDROID
-                    RenderLoadingScreen();
-#endif
-                    continue;
-                }
-
-                Console.WriteLine($"[Texture] {name}[{fi}]: {fullTex!.Width}x{fullTex.Height}, frames={frameCount}");
-                // GPU split for oversized bg strips
-                if (isBgSprite && fullTex.Width > maxTexSize && frameCount > 1)
-                {
-                    int fw = fullTex.Width / frameCount;
-                    int fh = fullTex.Height;
-                    Console.WriteLine($"[SplitGpu] Splitting {name}[{fi}] into {frameCount} frames of {fw}x{fh}");
-                    int splitStart = textures.Count;
-                    SplitTextureGpu(fullTex, frameCount, fw, fh, textures);
-                    fullTex.Dispose();
-                    if (fi < def.Data.Count)
-                        def.Data[fi].SplitOffset = splitStart;
-                }
-                else
-                {
-                    // Record the texture index for this animation so DrawStrip can find it
-                    if (fi < def.Data.Count)
-                        def.Data[fi].TextureIndex = textures.Count;
-                    textures.Add(fullTex);
-                }
-            }
-
-            texCache[name] = textures;
-            
-            // Save to persistent cache for next restart
-            for (int fi = 0; fi < frames.Count; fi++)
-            {
-                if (fi < def.Data.Count)
-                {
-                    var cached = new SpriteTextureCache
-                    {
-                        Textures = new List<Texture2D>(),
-                        SplitOffset = def.Data[fi].SplitOffset,
-                        ChunkFrames = def.Data[fi].ChunkFrames,
-                        FrameWidth = def.Data[fi].FrameWidth,
-                        TextureIndex = def.Data[fi].TextureIndex,
-                        DownscaleCompensation = def.Data[fi].DownscaleCompensation,
-                        AtlasFrameRects = def.Data[fi].AtlasFrameRects
-                    };
-                    
-                    // Add textures for this frame
-                    if (def.Data[fi].SplitOffset >= 0)
-                    {
-                        // Split frames: collect chunk textures
-                        int startIdx = def.Data[fi].SplitOffset;
-                        int endIdx = fi + 1 < def.Data.Count ? def.Data[fi + 1].SplitOffset : textures.Count;
-                        if (endIdx < 0) endIdx = textures.Count;
-                        for (int t = startIdx; t < endIdx && t < textures.Count; t++)
-                            cached.Textures.Add(textures[t]);
-                    }
-                    else if (def.Data[fi].TextureIndex >= 0 && def.Data[fi].TextureIndex < textures.Count)
-                    {
-                        // Single texture
-                        cached.Textures.Add(textures[def.Data[fi].TextureIndex]);
-                    }
-                    
-                    spriteCache[fi] = cached;
-                }
-            }
-            
-            Console.WriteLine($"[Cache] Saved {name} to cache ({spriteCache.Count} frames)");
-        }
-
-        // GPU texture creation complete
         if (_loadingScreen != null)
         {
             _loadingScreen.LoadingProgress = 0.80f;
             _loadingScreen.CurrentStep = "Textures loaded!";
-            RenderLoadingScreen();  // Force render
+            RenderLoadingScreen();
         }
 
-        // ── Build one animator per scene object (index 0-74) ─────────────────
+        // ── Build one animator per scene object ──────────────────────────────
         if (_loadingScreen != null)
         {
             _loadingScreen.LoadingProgress = 0.85f;
             _loadingScreen.CurrentStep = "Initializing scene objects...";
-            RenderLoadingScreen();  // Force render
+            RenderLoadingScreen();
         }
-        
-        // Each object has a current sprite name that can change via ObjectSpriteSet.
-        // The animator is keyed by object index, not sprite name.
+
         var objs = _level.Scene.Objects;
-        _objAnimators = new SpriteAnimator?[objs.Count];
-
-        for (int i = 0; i < objs.Count; i++)
-        {
-            try
-            {
-                var obj = objs[i];
-                Console.WriteLine($"[Scene] Loading object {i}: spr={obj.Spr}, visible={obj.Visible}, transform={(obj.Transform != null ? obj.Transform.Count : 0)}");
-                
-                if (!_level.Sprites.TryGetValue(obj.Spr, out var sprData))
-                {
-                    Console.WriteLine($"[Scene] Object {i} sprite '{obj.Spr}' not found in level.Sprites!");
-                    continue;
-                }
-                
-                if (!texCache.TryGetValue(obj.Spr, out var textures))
-                {
-                    Console.WriteLine($"[Scene] Object {i} sprite '{obj.Spr}' not found in texCache!");
-                    continue;
-                }
-                
-                if (textures == null || textures.Count == 0)
-                {
-                    Console.WriteLine($"[Scene] Object {i} sprite '{obj.Spr}' has no textures!");
-                    continue;  // Skip if no textures
-                }
-
-                var pos = obj.GetPosition();
-                var scale = obj.GetScale();
-                
-                Console.WriteLine($"[Scene] Object {i} pos=({pos.X}, {pos.Y}), scale=({scale.X}, {scale.Y}), textures={textures.Count}");
-                
-                // CRITICAL FIX: For Fixed objects with Transform array, use Transform[0] as initial position
-                // This ensures the first ObjectPositionSet tween starts from the EXACT position specified in events
-                if (obj.Fixed && obj.Transform != null && obj.Transform.Count > 0)
-                {
-                    // Use Transform[0] as the initial position for Fixed objects
-                    var transform0 = obj.Transform[0];
-                    bool isNormalized = transform0.Position.X >= 0f && transform0.Position.X <= 1f && 
-                                       transform0.Position.Y >= 0f && transform0.Position.Y <= 1f;
-                    
-                    if (isNormalized)
-                    {
-                        // Convert from normalized to pixels
-                        pos = new Vec2
-                        {
-                            X = transform0.Position.X * rtW,
-                            Y = transform0.Position.Y * rtH
-                        };
-                        Console.WriteLine($"[Scene] Object {i} (Fixed): Using Transform[0].Position converted to pixels: ({pos.X:F1}, {pos.Y:F1})");
-                    }
-                    else
-                    {
-                        // Use Transform[0] directly (already in pixels)
-                        pos = new Vec2
-                        {
-                            X = transform0.Position.X,
-                            Y = transform0.Position.Y
-                        };
-                        Console.WriteLine($"[Scene] Object {i} (Fixed): Using Transform[0].Position as-is: ({pos.X:F1}, {pos.Y:F1})");
-                    }
-                }
-                
-                Console.WriteLine($"[Scene] Object {i} pos=({pos.X}, {pos.Y}), scale=({scale.X}, {scale.Y}), textures={textures.Count}");
-
-                // Debug: Log sprite offset from first animation
-                if (sprData.Def.Data != null && sprData.Def.Data.Count > 0)
-                {
-                    var firstAnim = sprData.Def.Data[0];
-                    Console.WriteLine($"[Scene] Object {i} ({obj.Spr}) first anim offset: ({firstAnim.Offset.X}, {firstAnim.Offset.Y}), scale: {firstAnim.Scale}");
-                }
-
-                _objAnimators[i] = new SpriteAnimator(obj.Spr, sprData.Def, textures,
-                    new Vector2(pos.X, pos.Y),
-                    new Vector2(scale.X, scale.Y))
-                {
-                    Bpm          = _level.Data.EffectiveBpm,
-                    Visible      = obj.Visible,
-                    IsCharacter  = obj.StrumLine >= 0f,
-                    IsBG         = sprData.Def.Type == 2.0f,
-                    LevelVersion = _level.Data.Version,
-                    IsFixed      = obj.Fixed,
-                    RenderWidth  = rtW,
-                    RenderHeight = rtH,
-                };
-                
-                Console.WriteLine($"[Scene] Object {i} animator created successfully!");
-
-                // Apply color and opacity from v3 format
-                if (obj.Color != null)
-                {
-                    _objAnimators[i]!.TintColor = new Color(
-                        (byte)obj.Color.R,
-                        (byte)obj.Color.G,
-                        (byte)obj.Color.B
-                    );
-                }
-                if (obj.Opacity.HasValue)
-                {
-                    _objAnimators[i]!.Opacity = obj.Opacity.Value;
-                }
-
-                // Apply initial animation if specified in scene.json
-                if (obj.Anim.HasValue)
-                {
-                    _objAnimators[i]!.SetAnimation((int)obj.Anim.Value);
-                    Console.WriteLine($"[Scene] Object {i} set to animation {obj.Anim.Value} from scene.json");
-                }
-                // For characters (strumLine >= 0): initialize with idle animation
-                // This ensures characters always have an active animation, even without ObjectAnimationSet events
-                else if (obj.StrumLine >= 0f && obj.Visible && sprData.Def.Data.Count > 0)
-                {
-                    // If anim 0 is a 1-frame placeholder, use anim 1 (proper idle)
-                    // Otherwise use anim 0 (idle animation with multiple frames)
-                    int idleAnim = (sprData.Def.Data.Count > 1 && sprData.Def.Data[0].FrameCount == 1) ? 1 : 0;
-                    if (_objAnimators[i] != null && idleAnim < sprData.Def.Data.Count)
-                    {
-                        _objAnimators[i]!.SetAnimation(idleAnim);
-                        var animData = sprData.Def.Data[idleAnim]!;
-                        Console.WriteLine($"[Scene] Character object {i} '{obj.Spr}' (strumLine={obj.StrumLine}) initialized with animation {idleAnim} ({animData.FrameCount} frames, loop={animData.Loop})");
-                    }
-                }
-            }
-            catch (Exception exObj)
-            {
-                Console.WriteLine($"[SetupLevel] Failed to create animator for object {i}: {exObj.Message}");
-                _objAnimators[i] = null;  // Skip this object
-            }
-        }
+        _objAnimators = FnmmSceneRenderer.CreateAnimators(_level, texCache, rtW, rtH);
 
         // ── Health icons ─────────────────────────────────────────────────────
         if (_loadingScreen != null)
@@ -2263,11 +1882,27 @@ public partial class Game1 : Game
             }
 #endif
             
-            // Opponent strumline (index 1): always semi-transparent so player doesn't confuse it with theirs
-            // In multiplayer, always show opponent regardless of HideOpponentStrumline setting
-            if (i == 1)
+            // Player strumline (index 0): respect HidePlayerStrumline setting in single-player
+            if (i == 0 && NoteRenderer.HidePlayerStrumline && !_isMultiplayerMatch)
             {
-                renderer.Alpha = (_isMultiplayerMatch || !HideOpponentStrumline) ? 0.5f : 0f;
+                renderer.Alpha = 0f;
+            }
+            // Opponent strumline (index 1): respect GhostTransparency & ShowOpponentNotes in multiplayer
+            else if (i == 1)
+            {
+                if (_isMultiplayerMatch)
+                {
+                    var mp = Multiplayer.MultiplayerSettings.Instance;
+                    renderer.Alpha = mp.ShowOpponentNotes ? mp.GhostTransparency / 100f : 0f;
+                }
+                else
+                {
+                    renderer.Alpha = !HideOpponentStrumline ? 0.5f : 0f;
+                }
+            }
+            else if (i >= 2 && HideExtraStrumlines)
+            {
+                renderer.Alpha = 0f;
             }
             // With 3+ strumlines: extras (2+) hide when idle
             if (strumlineCount >= 3 && i >= 2) renderer.HideWhenIdle = true;
@@ -2394,16 +2029,15 @@ public partial class Game1 : Game
                     int missAnim = anim.AnimCount > 5 ? 5 : anim.AnimCount - 1;
                     anim.SetAnimation(missAnim, setByEvent: false);
                 }
-                ShowJudgement("Miss", new Color(255, 80, 80));
             };
 
             // Wire judgement display - FNF style stacked popups (max 3)
             _noteRenderers[myStrumlineIndex].OnJudgement = j => 
             {
                 // Add judgement popup using overlay
-                if (_judgementOverlay != null)
+                var hud = HudSettings.Instance;
+                if (_judgementOverlay != null && ShowCombo && hud.MasterHudVisible && hud.JudgementVisible && _events?.HudVisible != false)
                 {
-                    var hud = HudSettings.Instance;
                     _judgementOverlay.AddJudgement(j, new Point(hud.JudgementPosition.X, hud.JudgementPosition.Y));
                 }
                 
@@ -2430,12 +2064,12 @@ public partial class Game1 : Game
                 if (newCombo <= 0) return;  // Don't show combo = 0
                 if (_judgementOverlay == null) return;  // Safety check
                 
-                _lastCombo = newCombo;
-                _comboTimer = COMBO_SHOW;
-                
                 // Show combo using overlay
                 var hud = HudSettings.Instance;
-                _judgementOverlay.ShowCombo(newCombo, new Point(hud.ComboPosition.X, hud.ComboPosition.Y));
+                if (ShowCombo && hud.MasterHudVisible && hud.ComboVisible && _events?.HudVisible != false)
+                {
+                    _judgementOverlay.ShowCombo(newCombo, new Point(hud.ComboPosition.X, hud.ComboPosition.Y));
+                }
             };
             
             // Wire key press callback for multiplayer real-time animation
@@ -2465,20 +2099,17 @@ public partial class Game1 : Game
                 if (NoteRenderer.Autoplay) return;
                 if (_healthBar != null)
                     _healthBar.Health = MathHelper.Clamp(_healthBar.Health - damage, 0f, 1f);
-                ShowJudgement("Damage!", new Color(255, 60, 60));
             };
             _noteRenderers[myStrumlineIndex].OnInstakillNoteHit = () =>
             {
                 if (NoteRenderer.Autoplay) return;
                 if (_healthBar != null)
                     _healthBar.Health = 0f;
-                ShowJudgement("INSTAKILL", new Color(180, 0, 255));
             };
             _noteRenderers[myStrumlineIndex].OnHealNoteHit = () =>
             {
                 if (_healthBar != null)
                     _healthBar.Health = MathHelper.Clamp(_healthBar.Health + 0.15f, 0f, 1f);
-                ShowJudgement("Heal!", new Color(0, 230, 80));
             };
         }
 
@@ -2563,7 +2194,22 @@ public partial class Game1 : Game
             RenderLoadingScreen();  // Force render
         }
         
-        if (_level.MusicData != null)
+        if (_preloadedPlaytestPcm is { Pcm: var cachedPcm, SampleRate: var cachedSr, Channels: var cachedCh })
+        {
+            _musicInst?.Dispose();
+            _music?.Dispose();
+            _musicSampleRate = cachedSr;
+            _musicChannels   = cachedCh;
+            _musicPcm        = cachedPcm;
+            _music           = OggLoader.CreateFromPcm(cachedPcm, cachedSr, cachedCh);
+            _musicInst       = _music.CreateInstance();
+            _musicInst.Volume = MusicVolume;
+            _musicInst.IsLooped = false;
+            _musicDurationSeconds = _music.Duration.TotalSeconds > 0.1
+                ? (float)_music.Duration.TotalSeconds
+                : float.MaxValue;
+        }
+        else if (_level.MusicData != null)
         {
             _musicInst?.Dispose();
             _music?.Dispose();
@@ -2580,6 +2226,13 @@ public partial class Game1 : Game
             _musicInst = _music.CreateInstance();
             _musicInst.Volume = MusicVolume;
             _musicInst.IsLooped = false;
+            _musicDurationSeconds = _music.Duration.TotalSeconds > 0.1
+                ? (float)_music.Duration.TotalSeconds
+                : float.MaxValue;
+        }
+        else
+        {
+            _musicDurationSeconds = float.MaxValue;
         }
 
         Window.Title = $"Funky Maker Player — {_level.LevelName}";
@@ -2591,6 +2244,8 @@ public partial class Game1 : Game
                 foreach (var note in lane)
                     _songEndTime = Math.Max(_songEndTime,
                         _level.Data.ToSeconds(note.Start) + _level.Data.ToSeconds(note.Duration));
+        if (_songEndTime < 1f)
+            _songEndTime = _musicDurationSeconds < float.MaxValue ? _musicDurationSeconds : 30f;
 
         // Mark setup complete
         if (_loadingScreen != null)
@@ -2693,12 +2348,7 @@ public partial class Game1 : Game
         var kb  = Keyboard.GetState();
         
 #if ANDROID
-        // Merge touch controls with keyboard input (Android only)
-        kb = MergeTouchWithKeyboard(kb);
-#endif
-        
-#if ANDROID
-        // Update touch controls
+        // Update touch controls before merging virtual keys with physical keyboard state
         _touchControls?.Update();
         
         // Auto-switch touch control mode based on game state
@@ -2717,11 +2367,8 @@ public partial class Game1 : Game
                 _touchControls.SetMode(targetMode);
             }
             
-            // Hide pause button in multiplayer
-            if (_isMultiplayerMatch)
-            {
-                _touchControls.SetHidePauseButton(true);
-            }
+            // Allow pause button even in multiplayer (Minecraft-style non-blocking pause/settings)
+            _touchControls.SetHidePauseButton(false);
         }
         
         // Merge touch input into keyboard state for seamless integration
@@ -2731,106 +2378,201 @@ public partial class Game1 : Game
         float dt = Math.Min((float)gameTime.ElapsedGameTime.TotalSeconds, 0.1f);  // clamp to 100ms max to prevent camera jumps on first frame
         _lastDt  = gameTime.ElapsedGameTime.TotalSeconds;
 
+        // Keep SignalR ping, time-sync, and auto-reconnect active across all states (menus, pause, gameplay)
+        Multiplayer.NetworkManager.Instance.Update(gameTime);
+
+        var ms = Mouse.GetState();
+        var prevMs = _prevMouse;
+        _prevMouse = ms;
+
+        HandlePendingOpponentDisconnect();
+
+        // Always handle active error / disconnect overlay before menus, pause, or gameplay so the player is never trapped
+        if (_errorMsg != null)
+        {
+            if (_errorDismissGrace > 0f)
+                _errorDismissGrace = Math.Max(0f, _errorDismissGrace - dt);
+
+            bool escPressed     = kb.IsKeyDown(Keys.Escape) && !_prevKb.IsKeyDown(Keys.Escape);
+            bool pErrPressed    = kb.IsKeyDown(Keys.P)      && !_prevKb.IsKeyDown(Keys.P);
+            bool confirmPressed = (kb.IsKeyDown(Keys.Enter) && !_prevKb.IsKeyDown(Keys.Enter)) ||
+                                  (kb.IsKeyDown(Keys.Space) && !_prevKb.IsKeyDown(Keys.Space));
+            bool clicked        = IsActive && ms.LeftButton == ButtonState.Pressed && prevMs.LeftButton == ButtonState.Released;
+
+            if (escPressed || pErrPressed || (_errorDismissGrace <= 0f && (confirmPressed || clicked)))
+                DismissErrorToMenu();
+
+            _prevKb = kb;
+            base.Update(gameTime);
+            return;
+        }
+
+        if (_volumeToastTimer > 0f)
+            _volumeToastTimer = Math.Max(0f, _volumeToastTimer - dt);
+
+        // Global FNF-style volume hotkeys (- / +) everywhere except text-entry or keybinding capture
+        bool allowVolumeHotkeys = !_keyBindOverlay.IsActive && !_inEditor && !_inLevelSelector && !_inMultiplayer;
+        if (allowVolumeHotkeys)
+        {
+            bool volUp = (kb.IsKeyDown(Keys.OemPlus) && !_prevKb.IsKeyDown(Keys.OemPlus)) ||
+                         (kb.IsKeyDown(Keys.Add)     && !_prevKb.IsKeyDown(Keys.Add));
+            bool volDown = (kb.IsKeyDown(Keys.OemMinus) && !_prevKb.IsKeyDown(Keys.OemMinus)) ||
+                           (kb.IsKeyDown(Keys.Subtract) && !_prevKb.IsKeyDown(Keys.Subtract));
+            if (volUp || volDown)
+            {
+                float step = volUp ? 0.05f : -0.05f;
+                MusicVolume = MathF.Round(Math.Clamp(MusicVolume + step, 0f, 1f), 2);
+                if (_musicInst != null) _musicInst.Volume = MusicVolume;
+                _volumeToastTimer = VOLUME_TOAST_DURATION;
+                Settings.Save(_graphics.SynchronizeWithVerticalRetrace);
+            }
+        }
+
         // ESC opens pause menu (or settings if no level loaded)
         // Skip if in arrows or splash menu (they handle ESC themselves)
         // P key also pauses (for touch controls)
         bool escPressedForPause = kb.IsKeyDown(Keys.Escape) && !_prevKb.IsKeyDown(Keys.Escape);
         bool pPressed = kb.IsKeyDown(Keys.P) && !_prevKb.IsKeyDown(Keys.P);
+
+        if (_playtestingFromEditor && _suspendedChartEditor != null && !_inPauseMenu &&
+            !(_settingsManager?.IsActive ?? false) && !_keyBindOverlay.IsActive && escPressedForPause)
+        {
+            ReturnFromPlaytest();
+            _prevKb = kb;
+            base.Update(gameTime);
+            return;
+        }
         
         if ((escPressedForPause || pPressed) && 
             !(_arrowsMenu?.IsActive ?? false) && !(_splashMenu?.IsActive ?? false) &&
-            !(_countdownMenu?.IsActive ?? false) && !(_fontMenu?.IsActive ?? false))
+            !(_countdownMenu?.IsActive ?? false) && !(_fontMenu?.IsActive ?? false) &&
+            !_inMainSettings && !_inHudEditor && !_inMultiplayer &&
+            !_inEditorPicker && !_inLevelSelector && !_inEditor && !_keyBindOverlay.IsActive)
         {
-            // If on error screen, ESC/Enter goes back to freeplay
-            if (_errorMsg != null && _level == null)
+            // Allow pause in both singleplayer and multiplayer (Minecraft-style live pause in MP)
+            if (_settingsManager?.IsActive == true)
             {
-                _errorMsg   = null;
-                _musicInst?.Stop();  // Stop any background music
-                _inFreeplay = true;
-                ResetWindowTitle();  // Reset title when returning to menu
-                _freeplay?.Refresh();
-                _freeplay?.ResetInputCooldown();
-                _prevKb = kb;
-                base.Update(gameTime);
-                return;
-            }
+                // If focused on a numeric/adjustable setting, ESC releases focus first
+                if (_settingsManager.IsFocused)
+                {
+                    _settingsManager.Unfocus();
+                    AdvanceLiveMultiplayerIfActive(gameTime, dt);
+                    _prevKb = kb;
+                    base.Update(gameTime);
+                    return;
+                }
 
-            // Disable pause during multiplayer matches
-            if (_isMultiplayerMatch && _level != null)
-            {
-                Console.WriteLine("[Game1] Pause disabled during multiplayer match");
+                // Exit settings back to pause menu (or menu if no level loaded)
+                _settingsManager.IsActive = false;
+                ExitSettingsMenu();
+                if (_inFreeplay || _inMultiplayer)
+                {
+                    _prevKb = kb;
+                    base.Update(gameTime);
+                    return;
+                }
             }
             else if (_level == null)
             {
-                // No level loaded - ESC = settings (credits handled inside FreeplayMenu)
-                if (!_inFreeplay && _settingsManager != null)
+                // No level loaded - ESC = settings (when not in FreeplayMenu/MultiplayerMenu)
+                if (!_inFreeplay && !_inMultiplayer && _settingsManager != null)
                     _settingsManager.IsActive = !_settingsManager.IsActive;
             }
-            else if (_settingsManager?.IsActive == true)
+            else
             {
-                // In settings - go back to pause menu (disabled in multiplayer)
-                if (_settingsManager != null) _settingsManager.IsActive = false;
-#if ANDROID
-                // Hide Q and E buttons when leaving settings
-                _touchControls?.SetSettingsButtonsVisible(false);
-#endif
+                // Toggle pause menu (singleplayer pauses audio; multiplayer keeps gameplay & audio live!)
+                _inPauseMenu = !_inPauseMenu;
+                if (_inPauseMenu && _pauseMenu != null)
+                {
+                    _pauseMenu.IsMultiplayer = _isMultiplayerMatch;
+                    _pauseMenu.Selection = 0;
+                }
                 if (!_isMultiplayerMatch)
                 {
-                    _inPauseMenu = true;
-                    // Never auto-resume when going back to pause menu — user stays paused
-                    _pausedByTimeskip = false;
+                    if (_inPauseMenu && _started && !_paused)
+                        PauseSong();
+                    else if (!_inPauseMenu && _paused)
+                        ResumeSong();
                 }
-            }
-            else if (!_isMultiplayerMatch)  // Pause only allowed in single player
-            {
-                // Toggle pause menu
-                _inPauseMenu = !_inPauseMenu;
-                if (_inPauseMenu && _started && !_paused)
-                    PauseSong();
-                else if (!_inPauseMenu && _paused)
-                    ResumeSong();
             }
         }
 
         // ── Pause menu ───────────────────────────────────────────────────────
-        if (_inPauseMenu && _level != null)
-        if (_pauseMenu != null)
+        if (_inPauseMenu && _level != null && _pauseMenu != null)
         {
-            // Handle input and get action
+            _pauseMenu.IsMultiplayer = _isMultiplayerMatch;
             var action = _pauseMenu.HandleInput(kb, _prevKb);
-            
+
             switch (action)
             {
                 case PauseMenu.PauseAction.Resume:
                     _inPauseMenu = false;
-                    ResumeSong();
+                    _pauseMenu.Selection = 0;
+                    if (!_isMultiplayerMatch)
+                        ResumeSong();
                     break;
-                    
+
                 case PauseMenu.PauseAction.RestartSong:
-                    RestartSong();
-                    _inPauseMenu = false;
+                    if (!_isMultiplayerMatch)
+                    {
+                        RestartSong();
+                        _inPauseMenu = false;
+                    }
                     break;
-                    
+
+                case PauseMenu.PauseAction.OpenHudEditor:
+                    if (!_isMultiplayerMatch)
+                    {
+                        _inPauseMenu = false;
+                        _hudEditorReturnTarget = HudEditorReturnTarget.PauseMenu;
+                        HudSettings.ForceReload();
+                        _hudEditor = new HudEditor(_pixel!, _font!, _rtWidth, _rtHeight, GraphicsDevice);
+                        _inHudEditor = true;
+                    }
+                    break;
+
                 case PauseMenu.PauseAction.OpenSettings:
                     _inPauseMenu = false;
                     if (_settingsManager != null) _settingsManager.IsActive = true;
                     break;
-                    
+
                 case PauseMenu.PauseAction.ExitToMenu:
+                    if (_playtestingFromEditor)
+                    {
+                        ReturnFromPlaytest();
+                        break;
+                    }
                     _musicInst?.Stop();
                     _started = false;
-                    
-                    // Clean up gameplay state before returning to menu
-                    _level = null;
-                    
-                    _inFreeplay = true;
+                    _paused = false;
                     _inPauseMenu = false;
-                    ResetWindowTitle();  // Reset title when returning to menu
-                    _freeplay?.Refresh();
-                    _freeplay?.ResetInputCooldown();
+                    _pauseMenu.Selection = 0;
+                    _level = null;
+                    _songTransition = null;
+                    _songEndDelay = 0f;
+
+                    if (_isMultiplayerMatch)
+                    {
+                        Multiplayer.NetworkManager.Instance.LeaveMatch(notifyOpponent: true);
+                        ResetMultiplayerMatchState();
+                        _inMultiplayer = true;
+                        _multiplayerMenu?.ResetAfterMatch();
+                        _multiplayerMenu?.ResetInputCooldown();
+                    }
+                    else
+                    {
+                        _inFreeplay = true;
+                        _freeplay?.Refresh();
+                        _freeplay?.ResetInputCooldown();
+                    }
+                    ResetWindowTitle();
+                    DiscordRpc.SetMenu();
                     break;
             }
-            
+
+            if (_level != null && _inPauseMenu)
+                AdvanceLiveMultiplayerIfActive(gameTime, dt);
+
             _prevKb = kb;
             base.Update(gameTime);
             return;
@@ -2856,6 +2598,7 @@ public partial class Game1 : Game
                 if (_settingsManager != null) _settingsManager.IsActive = true;
             }
             
+            AdvanceLiveMultiplayerIfActive(gameTime, dt);
             _prevKb = kb;
             base.Update(gameTime);
             return;
@@ -2870,6 +2613,7 @@ public partial class Game1 : Game
             if (!_splashMenu.IsActive && _settingsManager != null)
                 _settingsManager.IsActive = true;
             
+            AdvanceLiveMultiplayerIfActive(gameTime, dt);
             _prevKb = kb;
             base.Update(gameTime);
             return;
@@ -2885,6 +2629,7 @@ public partial class Game1 : Game
             if (!_countdownMenu.IsActive && _settingsManager != null)
                 _settingsManager.IsActive = true;
             
+            AdvanceLiveMultiplayerIfActive(gameTime, dt);
             _prevKb = kb;
             base.Update(gameTime);
             return;
@@ -2904,6 +2649,9 @@ public partial class Game1 : Game
                     try
                     {
                         _fontRenderer = new FontRenderer(GraphicsDevice, newFontPath);
+                        _freeplay?.SetFontRenderer(_fontRenderer);
+                        _mainSettingsMenu?.SetFontRenderer(_fontRenderer);
+                        _multiplayerMenu?.SetFontRenderer(_fontRenderer);
                         Console.WriteLine($"[Game1] Font changed to: {newFontPath}");
                     }
                     catch (Exception ex)
@@ -2916,6 +2664,17 @@ public partial class Game1 : Game
                     _settingsManager.IsActive = true;
             }
             
+            AdvanceLiveMultiplayerIfActive(gameTime, dt);
+            _prevKb = kb;
+            base.Update(gameTime);
+            return;
+        }
+
+        // ── Key binding overlay (when opened from Settings in Main Menu or Pause) ──
+        if (_keyBindOverlay.IsActive)
+        {
+            _keyBindOverlay.Update(kb, _prevKb);
+            AdvanceLiveMultiplayerIfActive(gameTime, dt);
             _prevKb = kb;
             base.Update(gameTime);
             return;
@@ -2928,159 +2687,68 @@ public partial class Game1 : Game
             // Show Q and E buttons for tab navigation on Android
             _touchControls?.SetSettingsButtonsVisible(true);
 #endif
-            
-            // Tab navigation with Q/E
+
+            // Tab navigation with Q/E (also used by Android virtual buttons)
             if (kb.IsKeyDown(Keys.Q) && !_prevKb.IsKeyDown(Keys.Q))
                 _settingsManager.PrevTab();
-            
+
             if (kb.IsKeyDown(Keys.E) && !_prevKb.IsKeyDown(Keys.E))
                 _settingsManager.NextTab();
-            
-            // Navigation
-            int itemCount = _settingsManager.GetItemCount();
+
+            // Up/Down navigation (releases focus cleanly when switching option)
+            int itemCount = _settingsManager.GetItemCount(this);
             if (kb.IsKeyDown(Keys.Up) && !_prevKb.IsKeyDown(Keys.Up))
+            {
+                _settingsManager.Unfocus();
+                _settingsManager.NotifySelectionMoved();
                 _settingsManager.Selection = (_settingsManager.Selection - 1 + itemCount) % itemCount;
-            
+            }
+
             if (kb.IsKeyDown(Keys.Down) && !_prevKb.IsKeyDown(Keys.Down))
+            {
+                _settingsManager.Unfocus();
+                _settingsManager.NotifySelectionMoved();
                 _settingsManager.Selection = (_settingsManager.Selection + 1) % itemCount;
-            
-            // Selection with Enter or Space
+            }
+
+            // Enter or Space: executes toggle/action OR focuses/unfocuses adjustable option
             if ((kb.IsKeyDown(Keys.Enter) && !_prevKb.IsKeyDown(Keys.Enter)) ||
                 (kb.IsKeyDown(Keys.Space) && !_prevKb.IsKeyDown(Keys.Space)))
             {
                 var result = _settingsManager.HandleSelectAction(this);
-                
-                // Apply side effects based on result
-                if (result.NeedsStrumlineReposition && _level != null)
-                    RepositionStrumlines();
-                
-                if (result.NeedsCameraReset)
-                    _cameraManager?.ResetScaleOverride();
-                
-                if (result.OpenKeyBind)
-                {
-                    _keyBindOverlay.IsActive = true;
-                    _keyBindOverlay.OnComplete += () => {
-                        if (_settingsManager != null) _settingsManager.IsActive = true;
-                    };
-                    _keyBindOverlay.OnCancel += () => {
-                        if (_settingsManager != null) _settingsManager.IsActive = true;
-                    };
-                }
-                
-                if (result.OpenArrowsMenu)
-                {
-                    string? assetsRoot = FindAssetsRoot();
-                    _arrowsMenu?.Open(GraphicsDevice, assetsRoot);
-                }
-                
-                if (result.OpenSplashMenu)
-                    _splashMenu?.Open(GraphicsDevice);
-                
-                if (result.OpenCountdownMenu)
-                {
-                    string? assetsRoot = FindAssetsRoot();
-                    _countdownMenu?.Open(GraphicsDevice, assetsRoot);
-                }
-                
-                if (result.OpenFontMenu)
-                {
-                    string? assetsRoot = FindAssetsRoot();
-                    _fontMenu?.Open(GraphicsDevice, assetsRoot);
-                }
-                
-                if (result.ExitMenu)
-                {
-#if ANDROID
-                    // Hide Q and E buttons when exiting settings menu
-                    _touchControls?.SetSettingsButtonsVisible(false);
-#endif
-                    // Return to pause menu only if not in multiplayer
-                    if (_level != null && !_isMultiplayerMatch)
-                        _inPauseMenu = true;
-                    if (_pausedByTimeskip && _paused && _started && _level != null)
-                    {
-                        ResumeSong();
-                        _pausedByTimeskip = false;
-                    }
-                }
-                
-                if (result.ToggleVSync)
-                {
-                    _graphics.SynchronizeWithVerticalRetrace = !_graphics.SynchronizeWithVerticalRetrace;
-                    _graphics.ApplyChanges();
-                }
-                
-                if (result.ToggleFullscreen)
-                {
-                    _isFullscreen = !_isFullscreen;
-                    _graphics.HardwareModeSwitch = false;
-                    _graphics.IsFullScreen = _isFullscreen;
-                    if (_isFullscreen)
-                    {
-                        var dm = GraphicsDevice.Adapter.CurrentDisplayMode;
-                        _graphics.PreferredBackBufferWidth  = dm.Width;
-                        _graphics.PreferredBackBufferHeight = dm.Height;
-                    }
-                    else
-                    {
-                        _graphics.PreferredBackBufferWidth  = 1280;
-                        _graphics.PreferredBackBufferHeight = 720;
-                    }
-                    _graphics.ApplyChanges();
-                }
-                
-                if (result.NeedsStrumlineAlphaUpdate)
-                {
-                    for (int si = 2; si < _noteRenderers.Count; si++)
-                        _noteRenderers[si].Alpha = HideExtraStrumlines ? 0f : 1f;
-                }
-                
-                if (result.NeedsOpponentAlphaUpdate && _noteRenderers.Count > 1)
-                {
-                    _noteRenderers[1].Alpha = (HideOpponentStrumline && !_isMultiplayerMatch) ? 0f : _notesAlpha;
-                }
-                
-                if (result.NeedsSave)
-                    Settings.Save(_graphics.SynchronizeWithVerticalRetrace);
+                ApplySettingsSelectResult(result);
             }
-            
-            // Left/Right adjustments for various settings
+
+            // Left/Right: when focused adjusts value; when unfocused switches tabs
             bool leftPressed = kb.IsKeyDown(Keys.Left) && !_prevKb.IsKeyDown(Keys.Left);
             bool rightPressed = kb.IsKeyDown(Keys.Right) && !_prevKb.IsKeyDown(Keys.Right);
-            
             if (leftPressed || rightPressed)
             {
-                var result = _settingsManager.HandleAdjustment(this, leftPressed);
-                
-                // Apply side effects
-                if (result.AdjustCameraZoom != 0 && _events != null && !_events.HasCameraEvents)
+                if (_settingsManager.IsFocused)
                 {
-                    if (result.AdjustCameraZoom < 0)
-                        _cameraManager?.IncreaseZoom(_events.Camera.Scale);
-                    else
-                        _cameraManager?.DecreaseZoom(_events.Camera.Scale);
+                    var adj = _settingsManager.HandleAdjustment(this, leftPressed);
+                    ApplySettingsAdjustmentResult(adj);
                 }
-                
-                if (result.AdjustVolume != 0f)
+                else
                 {
-                    MusicVolume = MathF.Round(Math.Clamp(MusicVolume + result.AdjustVolume * 0.05f, 0f, 1f), 2);
-                    if (_musicInst != null) _musicInst.Volume = MusicVolume;
+                    if (leftPressed) _settingsManager.PrevTab();
+                    else _settingsManager.NextTab();
                 }
-                
-                if (result.SeekSong != 0f && _started)
-                {
-                    SeekSong(_songTime + result.SeekSong);
-                    if (!_paused)
-                    {
-                        PauseSong();
-                        _pausedByTimeskip = true;
-                    }
-                }
-                
-                if (result.NeedsSave)
-                    Settings.Save(_graphics.SynchronizeWithVerticalRetrace);
             }
+
+            // Full mouse interaction (hover, click tabs, toggle rows, click < / > arrows, wheel scroll)
+            var mouseSelect = _settingsManager.UpdateMouse(this, ms, prevMs, out var mouseAdj, out bool exitClicked);
+            if (exitClicked)
+            {
+                _settingsManager.IsActive = false;
+                ExitSettingsMenu();
+            }
+            if (mouseSelect != null)
+                ApplySettingsSelectResult(mouseSelect);
+            if (mouseAdj != null)
+                ApplySettingsAdjustmentResult(mouseAdj);
+
+            AdvanceLiveMultiplayerIfActive(gameTime, dt);
             _prevKb = kb;
             base.Update(gameTime);
             return;
@@ -3115,25 +2783,41 @@ public partial class Game1 : Game
             }
             #endif
             
-            var winBounds = _graphics.GraphicsDevice.Viewport.Bounds;
-            _freeplay.Update(dt, kb, _rtWidth, _rtHeight, winBounds.Width, winBounds.Height);
+            var winBounds = Window.ClientBounds;
+            _freeplay.Update(dt, kb, winBounds.Width, winBounds.Height, winBounds.Width, winBounds.Height);
             
+            // Check if user pressed ESC in main menu root to open Settings
+            if (_freeplay.SettingsRequested)
+            {
+                _freeplay.ConsumeSettingsRequest();
+                if (_settingsManager != null)
+                {
+                    _settingsManager.IsActive = true;
+                }
+            }
+
             // Check if user pressed "7" to open Editor Picker
             if (_freeplay.EditorPickerRequested)
             {
                 _freeplay.ConsumeEditorPickerRequest();
                 EnterEditorPicker();
             }
+
+            // Check if user requested creating a brand-new chart from Freeplay panel
+            if (_freeplay.NewChartRequested)
+            {
+                _freeplay.ConsumeNewChartRequest();
+                _inFreeplay = false;
+                _inLevelSelector = true;
+                _levelSelectorReturnTarget = ChartEditorReturnTarget.Freeplay;
+                _levelSelector = new Editors.Chart.LevelSelector(_pixel!, _font!, _fontRenderer, startCreateModal: true);
+            }
             
-            // Check if user pressed "7" while viewing level list to open Chart Editor directly
+            // Check if user requested editing a chart from Freeplay panel ("7" or EDIT button)
             if (_freeplay.ChartEditorRequested)
             {
                 _freeplay.ConsumeChartEditorRequest();
-                string levelPath = _freeplay.LevelPath;
-                Console.WriteLine($"[Game1] Opening Chart Editor directly for: {levelPath}");
-                _activeEditor = new Editors.Chart.ChartEditor(levelPath, _pixel!, _font, _fontRenderer, _noteStyle);
-                _inEditor = true;
-                _inFreeplay = false;
+                OpenChartEditor(_freeplay.LevelPath, ChartEditorReturnTarget.Freeplay);
             }
             
             if (_freeplay.LevelChosen)
@@ -3146,6 +2830,7 @@ public partial class Game1 : Game
             if (_freeplay.MenuAction == 1)
             {
                 _inFreeplay = false;
+                _hudEditorReturnTarget = HudEditorReturnTarget.Freeplay;
                 _inMainSettings = true;
                 _mainSettingsMenu?.ResetInputCooldown(); // Prevent immediate ENTER detection
                 _freeplay.MenuAction = -1;
@@ -3204,7 +2889,8 @@ public partial class Game1 : Game
         // ── Editor Picker ─────────────────────────────────────────────────────
         if (_inEditorPicker && _editorPicker != null)
         {
-            _editorPicker.Update(dt, kb, _rtWidth, _rtHeight);
+            var winBounds = Window.ClientBounds;
+            _editorPicker.Update(dt, kb, Math.Max(1, winBounds.Width), Math.Max(1, winBounds.Height));
             
             if (_editorPicker.BackPressed)
             {
@@ -3223,7 +2909,8 @@ public partial class Game1 : Game
         // ── Level Selector (for Chart Editor) ────────────────────────────────
         if (_inLevelSelector && _levelSelector != null)
         {
-            _levelSelector.Update(dt, kb);
+            var winBounds = Window.ClientBounds;
+            _levelSelector.Update(dt, kb, Math.Max(1, winBounds.Width), Math.Max(1, winBounds.Height));
             
             if (_levelSelector.BackPressed)
             {
@@ -3231,7 +2918,7 @@ public partial class Game1 : Game
             }
             else if (_levelSelector.LevelSelected && _levelSelector.SelectedLevelPath != null)
             {
-                OpenChartEditor(_levelSelector.SelectedLevelPath);
+                OpenChartEditor(_levelSelector.SelectedLevelPath, _levelSelectorReturnTarget);
             }
             
             _prevKb = kb;
@@ -3242,7 +2929,23 @@ public partial class Game1 : Game
         // ── Active Editor (Chart Editor, etc.) ───────────────────────────────
         if (_inEditor && _activeEditor != null)
         {
-            _activeEditor.Update(dt, kb);
+            var winBounds = Window.ClientBounds;
+            if (_activeEditor is Editors.Chart.ChartEditor ce)
+            {
+                ce.Update(dt, kb, Math.Max(1, winBounds.Width), Math.Max(1, winBounds.Height));
+                if (ce.PlaytestRequested)
+                {
+                    ce.ConsumePlaytestRequest();
+                    BeginEditorPlaytest(ce);
+                    _prevKb = kb;
+                    base.Update(gameTime);
+                    return;
+                }
+            }
+            else
+            {
+                _activeEditor.Update(dt, kb);
+            }
             
             if (_activeEditor.BackPressed)
             {
@@ -3254,18 +2957,43 @@ public partial class Game1 : Game
             return;
         }
         
-        // ── Main Settings menu ───────────────────────────────────────────────
+        // ── Main Settings menu / HUD Editor launcher ─────────────────────────
         if (_inMainSettings && _mainSettingsMenu != null)
         {
-            _mainSettingsMenu.Update(dt, _rtWidth, _rtHeight);
+            var winBounds = Window.ClientBounds;
+            _mainSettingsMenu.Update(dt, kb, winBounds.Width, winBounds.Height);
             
             if (_mainSettingsMenu.BackPressed)
             {
                 _inMainSettings = false;
-                _musicInst?.Stop();  // Stop any background music
-                _inFreeplay = true;
-                ResetWindowTitle();  // Reset title when returning to menu
-                _freeplay?.ResetInputCooldown();
+                switch (_hudEditorReturnTarget)
+                {
+                    case HudEditorReturnTarget.EditorPicker:
+                        EnterEditorPicker();
+                        break;
+                    case HudEditorReturnTarget.FreeplaySettings:
+                        _inFreeplay = true;
+                        _freeplay?.ResetInputCooldown();
+                        if (_settingsManager != null) _settingsManager.IsActive = true;
+                        break;
+                    case HudEditorReturnTarget.MultiplayerSettings:
+                        _inMultiplayer = true;
+                        _multiplayerMenu?.ResetInputCooldown();
+                        if (_settingsManager != null) _settingsManager.IsActive = true;
+                        break;
+                    case HudEditorReturnTarget.GameplaySettings:
+                        if (_settingsManager != null) _settingsManager.IsActive = true;
+                        break;
+                    case HudEditorReturnTarget.PauseMenu:
+                        _inPauseMenu = true;
+                        break;
+                    default:
+                        _musicInst?.Stop();
+                        _inFreeplay = true;
+                        ResetWindowTitle();
+                        _freeplay?.ResetInputCooldown();
+                        break;
+                }
             }
             
             if (_mainSettingsMenu.OpenHudEditor)
@@ -3291,13 +3019,18 @@ public partial class Game1 : Game
             if (_hudEditor.BackPressed)
             {
                 _inHudEditor = false;
-                _inMainSettings = true;
-                _mainSettingsMenu?.ResetInputCooldown(); // Prevent immediate ENTER detection when returning
                 _hudEditor = null; // Clean up
                 
-                // Don't reload settings here - the singleton already has the current state
-                // If the user saved (S key), settings are on disk
-                // If they didn't save, their edits are preserved in memory until they decide to save or reset
+                if (_hudEditorReturnTarget == HudEditorReturnTarget.PauseMenu)
+                {
+                    _inPauseMenu = true;
+                    _prevKb = kb;
+                }
+                else
+                {
+                    _inMainSettings = true;
+                    _mainSettingsMenu?.ResetInputCooldown(); // Prevent immediate ENTER detection when returning
+                }
             }
             
             // Don't update _prevKb here - let HudEditor handle it
@@ -3309,6 +3042,13 @@ public partial class Game1 : Game
         if (_inMultiplayer && _multiplayerMenu != null)
         {
             _multiplayerMenu.Update(gameTime);
+
+            if (_multiplayerMenu.GameplaySettingsRequested)
+            {
+                _multiplayerMenu.ConsumeGameplaySettingsRequest();
+                if (_settingsManager != null)
+                    _settingsManager.IsActive = true;
+            }
             
             // Check if returning to freeplay
             if (_multiplayerMenu.ShouldExitToFreeplay())
@@ -3342,15 +3082,21 @@ public partial class Game1 : Game
             return;
         }
 
-        // "7" opens Chart Editor with current level (only if not in multiplayer and level is loaded)
+        // "7" opens Chart Editor with current level (or returns during playtest)
         if (kb.IsKeyDown(Keys.D7) && !_prevKb.IsKeyDown(Keys.D7))
         {
+            if (_playtestingFromEditor)
+            {
+                ReturnFromPlaytest();
+                _prevKb = kb;
+                base.Update(gameTime);
+                return;
+            }
             if (!_isMultiplayerMatch && _level != null && !string.IsNullOrEmpty(FnmmPath))
             {
                 Console.WriteLine($"[Game1] Opening Chart Editor from gameplay with level: {FnmmPath}");
-                _activeEditor = new Editors.Chart.ChartEditor(FnmmPath, _pixel!, _font, _fontRenderer, _noteStyle);
-                _inEditor = true;
                 PauseSong(); // Pause the song while in editor
+                OpenChartEditor(FnmmPath, ChartEditorReturnTarget.Gameplay);
             }
         }
 
@@ -3367,31 +3113,60 @@ public partial class Game1 : Game
             }
         }
 
-        // Ctrl+Right = timeskip forward, Ctrl+Left = timeskip backward (if enabled in settings)
+        // Timeskip: Ctrl+Left/Right OR hold/press T (Shift+T backward) when T is not bound to a note lane
         bool ctrlHeld = kb.IsKeyDown(Keys.LeftControl) || kb.IsKeyDown(Keys.RightControl);
-        if (ctrlHeld && TimeskipEnabled && _started && !_paused)
+        bool shiftHeld = kb.IsKeyDown(Keys.LeftShift) || kb.IsKeyDown(Keys.RightShift);
+        if (TimeskipEnabled && _started && !_paused)
         {
-            if (kb.IsKeyDown(Keys.Right) && !_prevKb.IsKeyDown(Keys.Right))
-                SeekSong(_songTime + TimeskipSeconds);
-            if (kb.IsKeyDown(Keys.Left) && !_prevKb.IsKeyDown(Keys.Left))
-                SeekSong(_songTime - TimeskipSeconds);
+            if (ctrlHeld)
+            {
+                if (kb.IsKeyDown(Keys.Right) && !_prevKb.IsKeyDown(Keys.Right))
+                    SeekSong(_songTime + TimeskipSeconds);
+                if (kb.IsKeyDown(Keys.Left) && !_prevKb.IsKeyDown(Keys.Left))
+                    SeekSong(_songTime - TimeskipSeconds);
+            }
+
+            bool tBoundToLane = NoteRenderer.PlayerKeys.Contains(Keys.T);
+            if (!tBoundToLane && kb.IsKeyDown(Keys.T))
+            {
+                float dir = shiftHeld ? -1f : 1f;
+                if (!_prevKb.IsKeyDown(Keys.T))
+                {
+                    SeekSong(_songTime + dir * TimeskipSeconds);
+                    _timeskipRepeatTimer = 0.35f;
+                }
+                else
+                {
+                    _timeskipRepeatTimer -= dt;
+                    if (_timeskipRepeatTimer <= 0f)
+                    {
+                        SeekSong(_songTime + dir * TimeskipSeconds);
+                        _timeskipRepeatTimer = 0.20f;
+                    }
+                }
+            }
+            else
+            {
+                _timeskipRepeatTimer = 0f;
+            }
         }
 
-        // PageUp/PageDown adjust visual scroll speed (no timing impact)
-        // Also support numpad + / - and regular + / -
-        bool plusPressed =
-            (kb.IsKeyDown(Keys.PageUp)    && !_prevKb.IsKeyDown(Keys.PageUp))    ||
-            (kb.IsKeyDown(Keys.Add)       && !_prevKb.IsKeyDown(Keys.Add))       ||
-            (kb.IsKeyDown(Keys.OemPlus)   && !_prevKb.IsKeyDown(Keys.OemPlus));
-        bool minusPressed =
-            (kb.IsKeyDown(Keys.PageDown)  && !_prevKb.IsKeyDown(Keys.PageDown))  ||
-            (kb.IsKeyDown(Keys.Subtract)  && !_prevKb.IsKeyDown(Keys.Subtract))  ||
-            (kb.IsKeyDown(Keys.OemMinus)  && !_prevKb.IsKeyDown(Keys.OemMinus));
-
-        if (plusPressed)
-            NoteRenderer.ScrollMultiplier = MathF.Round(Math.Min(5.0f, NoteRenderer.ScrollMultiplier + 0.25f), 2);
-        if (minusPressed)
-            NoteRenderer.ScrollMultiplier = MathF.Round(Math.Max(0.25f, NoteRenderer.ScrollMultiplier - 0.25f), 2);
+        // PageUp/PageDown adjust visual scroll speed in gameplay (-/+ are dedicated to Master Volume)
+        if (_level != null && _started && !_paused)
+        {
+            bool speedUp = kb.IsKeyDown(Keys.PageUp) && !_prevKb.IsKeyDown(Keys.PageUp);
+            bool speedDown = kb.IsKeyDown(Keys.PageDown) && !_prevKb.IsKeyDown(Keys.PageDown);
+            if (speedUp)
+            {
+                NoteRenderer.ScrollMultiplier = MathF.Round(Math.Min(5.0f, NoteRenderer.ScrollMultiplier + 0.25f), 2);
+                Settings.Save(_graphics.SynchronizeWithVerticalRetrace);
+            }
+            if (speedDown)
+            {
+                NoteRenderer.ScrollMultiplier = MathF.Round(Math.Max(0.25f, NoteRenderer.ScrollMultiplier - 0.25f), 2);
+                Settings.Save(_graphics.SynchronizeWithVerticalRetrace);
+            }
+        }
 
         // Key binding: delegate to overlay
         _keyBindOverlay.Update(kb, _prevKb);
@@ -3416,113 +3191,11 @@ public partial class Game1 : Game
                     _loadState    = LoadState.Done;
                     try
                     {
-                        SetupLevel();
-                        _songTime        = 0f;
-                        _songBeats       = 0f;
-                        _started         = false;
-                        _paused          = false;
-                        if (_healthBar != null)
-                            _healthBar.Health = 0.5f;
-                        _gameOverOverlay?.Hide();
-                        _countdownOverlay?.Reset();
-                        _judgementText   = null;
-                        
-                        // Start FNF-style receptor intro animation (pop-in effect)
-                        // Only if HUD is visible (respects chart events that hide receptors)
-                        if (_events?.HudVisible != false)
-                        {
-                            foreach (var renderer in _noteRenderers)
-                            {
-                                renderer?.StartReceptorIntro(0.0f, 0.05f);
-                            }
-                        }
-                        
-                        // Reset camera manager
-                        _cameraManager?.Reset();
-                        
-                        // Reset icon bounce
-                        _healthBar?.ResetBounce();
-                        
-                        _songStopwatch.Reset();
-                        _pausedTime      = 0.0;
-                        
-                        // Update loading screen with real level name
-                        // In multiplayer, show loading screen normally and send Ready when done
-                        _loadingScreen = new LoadingScreen(
-                            _level.LevelName, _pixel!, _font,
-                            FindAssetsRoot(), GraphicsDevice, _isMultiplayerMatch);
-                        _loadingComplete = true;
-                        
-                        // Initialize multiplayer state in loading screen
-                        if (_isMultiplayerMatch)
-                        {
-                            _loadingScreen.MyPlayerRole = _multiplayerPlayerRole;
-                            // Initialize ready states: I'm not ready yet, opponent status unknown
-                            if (_multiplayerPlayerRole == 1)
-                            {
-                                _loadingScreen.Player1Ready = false;  // Me
-                                _loadingScreen.Player2Ready = false;  // Opponent
-                            }
-                            else if (_multiplayerPlayerRole == 2)
-                            {
-                                _loadingScreen.Player1Ready = false;  // Opponent
-                                _loadingScreen.Player2Ready = false;  // Me
-                            }
-                        }
-                        
-                        // Multiplayer: Send Ready signal to server now that level is loaded
-                        if (_isMultiplayerMatch)
-                        {
-                            Console.WriteLine("[Game1] Level loaded! Sending Ready to server...");
-                            Multiplayer.NetworkManager.Instance.SendReady(true);
-                            
-                            // Update MY ready state in LoadingScreen
-                            if (_loadingScreen != null)
-                            {
-                                if (_multiplayerPlayerRole == 1)
-                                {
-                                    _loadingScreen.Player1Ready = true;  // I'm Player 1, so I'm ready
-                                    Console.WriteLine("[Game1] Set Player1Ready=true (I am Player 1)");
-                                }
-                                else if (_multiplayerPlayerRole == 2)
-                                {
-                                    _loadingScreen.Player2Ready = true;  // I'm Player 2, so I'm ready
-                                    Console.WriteLine("[Game1] Set Player2Ready=true (I am Player 2)");
-                                }
-                                
-                                // Apply stored opponent ready state if it was received before LoadingScreen existed
-                                if (_opponentReadyState.HasValue)
-                                {
-                                    Console.WriteLine($"[Game1] Applying stored opponent ready state: {_opponentReadyState.Value}");
-                                    if (_multiplayerPlayerRole == 1)
-                                    {
-                                        _loadingScreen.Player2Ready = _opponentReadyState.Value;
-                                        Console.WriteLine($"[Game1] Set Player2Ready={_opponentReadyState.Value} (from stored state)");
-                                    }
-                                    else if (_multiplayerPlayerRole == 2)
-                                    {
-                                        _loadingScreen.Player1Ready = _opponentReadyState.Value;
-                                        Console.WriteLine($"[Game1] Set Player1Ready={_opponentReadyState.Value} (from stored state)");
-                                    }
-                                }
-                            }
-                            
-                            Console.WriteLine("[Game1] Waiting for opponent to be ready...");
-                        }
+                        FinalizeLoadedLevelForGameplay(showReadyScreen: true);
                     }
                     catch (Exception ex)
                     {
-                        _errorMsg        = ex.Message;
-                        _loadingComplete = true;
-                        _loadState       = LoadState.Done;
-                        // Keep loading screen alive so the error can be shown to the user.
-                        // The loading screen will transition to error state and let user press ESC/Enter.
-                        // Don't null out _loadingScreen here — DrawError handles it via _errorMsg.
-                        _loadingScreen   = null;  // clear loading screen, error shown via DrawError
-                        _level           = null;  // clear level so DrawError path is taken
-                        Console.Error.WriteLine($"[FunkyMakerPlayer] SetupLevel failed: {ex}");
-                        // Don't go to freeplay immediately — show error screen first
-                        // User can press ESC or Enter to go back
+                        HandleSetupLevelFailure(ex);
                     }
                 }
             }
@@ -3539,7 +3212,15 @@ public partial class Game1 : Game
             if (_loadingScreen?.CurrentPhase == LoadingScreen.Phase.Done)
             {
                 _loadingScreen = null;
-                // Cats cleared — countdown starts naturally next frame (_started is false)
+                if (_playtestingFromEditor && _level != null)
+                {
+                    _started = true;
+                    _musicInst?.Play();
+                    _songStopwatch.Restart();
+                    _pausedTime = 0.0;
+                    if (_playtestStartSeconds > 0.1f)
+                        SeekSong(_playtestStartSeconds);
+                }
             }
             _prevKb = kb;
             base.Update(gameTime);
@@ -3557,16 +3238,7 @@ public partial class Game1 : Game
                 Console.WriteLine("[Game1] Results screen done - cleaning up multiplayer state");
                 
                 // Clear multiplayer state
-                _resultsScreen = null;
-                _isMultiplayerMatch = false;
-                _multiplayerPlayerRole = 0;
-                _multiplayerStartTimestamp = 0;
-                _countdownSignalReceived = false;
-                _opponentName = null;
-                _opponentScore = 0;
-                _opponentHealth = 0.5f;
-                _opponentReadyState = null;
-                _stateUpdateTimer = 0f;
+                ResetMultiplayerMatchState();
                 
                 // Disconnect from match (but stay connected to server)
                 Console.WriteLine("[Game1] Player left match, returning to multiplayer menu");
@@ -3588,7 +3260,14 @@ public partial class Game1 : Game
             // In multiplayer, skip game over entirely (continue until song ends)
             if (_gameOverOverlay != null && _gameOverOverlay.IsActive && !_isMultiplayerMatch)
             {
-                var decision = _gameOverOverlay.Update(dt, kb, _prevKb);
+                var winBounds = Window.ClientBounds;
+                var (goDst, goScale) = ComputeLetterbox(winBounds.Width, winBounds.Height);
+                Point rtMouse = goScale > 0.001f
+                    ? new Point((int)((ms.X - goDst.X) / goScale), (int)((ms.Y - goDst.Y) / goScale))
+                    : new Point(-9999, -9999);
+                bool mouseClicked = ms.LeftButton == ButtonState.Pressed && prevMs.LeftButton == ButtonState.Released;
+
+                var decision = _gameOverOverlay.Update(dt, kb, _prevKb, rtMouse, mouseClicked);
                 
                 if (decision == true)  // Retry
                 {
@@ -3596,12 +3275,20 @@ public partial class Game1 : Game
                 }
                 else if (decision == false)  // Back to menu
                 {
-                    _musicInst?.Stop();
-                    _started = false;
-                    _freeplay?.ResetInputCooldown();
-                    _songTransition = new SongTransition(_catTex, _pixel!);
-                    _songTransition.Start(_rtWidth, _rtHeight);
-                    _transitionToFreeplay = true;
+                    if (_playtestingFromEditor)
+                    {
+                        ReturnFromPlaytest();
+                    }
+                    else
+                    {
+                        _gameOverOverlay.Hide();
+                        _musicInst?.Stop();
+                        _started = false;
+                        _freeplay?.ResetInputCooldown();
+                        _songTransition = new SongTransition(_catTex, _pixel!);
+                        _songTransition.Start(_rtWidth, _rtHeight);
+                        _transitionToFreeplay = true;
+                    }
                 }
                 
                 _prevKb = kb;
@@ -3616,309 +3303,8 @@ public partial class Game1 : Game
                 Console.WriteLine("[Game1] Game over overlay hidden (multiplayer mode)");
             }
 
-            // ── Countdown before music ───────────────────────────────────────
-            if (!_started)
-            {
-                // Multiplayer: Skip countdown, start immediately at synchronized timestamp
-                if (_isMultiplayerMatch && _multiplayerStartTimestamp > 0)
-                {
-                    // Use synchronized server time, NOT local client time
-                    long now = Multiplayer.TimeSyncManager.Instance.GetServerTime();
-                    
-                    // Calculate time until start with microsecond precision
-                    long timeUntilStart = _multiplayerStartTimestamp - now;
-                    
-                    if (timeUntilStart <= 0)
-                    {
-                        // Time has passed - start immediately
-                        Console.WriteLine($"[Game1] 🚀 Multiplayer: Starting NOW! (delay: {-timeUntilStart}ms)");
-                        _countdownOverlay?.MarkAsDone();
-                        _started       = true;
-                        _musicInst?.Play();
-                        
-                        // Update Discord RPC for multiplayer
-                        string levelName = System.IO.Path.GetFileNameWithoutExtension(FnmmPath);
-                        DiscordRpc.SetPlayingMultiplayer(levelName);
-                        _songStopwatch.Restart();
-                        _pausedTime = 0.0;
-                        _songTime = 0f;
-                        _songBeats = 0f;
-
-                    }
-                    else if (timeUntilStart <= 50)
-                    {
-                        // Within 50ms of start time - pre-start the music so it's ready
-                        // This compensates for audio latency and frame timing
-                        Console.WriteLine($"[Game1] [♪] Multiplayer: Pre-starting music ({timeUntilStart}ms early for sync)");
-                        _countdownOverlay?.MarkAsDone();
-                        _started       = true;
-                        _musicInst?.Play();
-                        
-                        // Update Discord RPC for multiplayer
-                        string levelName = System.IO.Path.GetFileNameWithoutExtension(FnmmPath);
-                        DiscordRpc.SetPlayingMultiplayer(levelName);
-                        _songStopwatch.Restart();
-                        _pausedTime = 0.0;
-                        _songTime = 0f;
-                        _songBeats = 0f;
-
-                    }
-                    else
-                    {
-                        // Wait for synchronized start time
-                        float waitTime = timeUntilStart / 1000.0f;
-                        
-                        // Only log every ~300ms to avoid spam
-                        if ((int)(now / 300) != (int)((now - 16) / 300))
-                        {
-                            Console.WriteLine($"[Game1] ⏳ Multiplayer: Waiting {waitTime:F3}s for synchronized start...");
-                        }
-                    }
-                }
-                else
-                {
-                    // Normal single-player countdown
-                    if (_countdownOverlay != null)
-                    {
-                        bool countdownComplete = _countdownOverlay.Update(dt, _level.Data.EffectiveBpm);
-                        
-                        // songTime is negative during countdown, reaches 0 when music starts
-                        _songTime = _countdownOverlay.GetSongTime(_level.Data.EffectiveBpm);
-                        _songBeats = _songTime / 60f * _level.Data.EffectiveBpm;
-
-                        if (countdownComplete && !_started)
-                        {
-                            _started = true;
-                            _musicInst?.Play();
-                            
-                            // Update Discord RPC
-                            string levelName = System.IO.Path.GetFileNameWithoutExtension(FnmmPath);
-                            if (_isMultiplayerMatch)
-                                DiscordRpc.SetPlayingMultiplayer(levelName);
-                            else
-                                DiscordRpc.SetPlaying(levelName);
-                            _songStopwatch.Restart();
-                            _pausedTime = 0.0;
-                        }
-                    }
-                }
-            }
-            else
-            {
-                // ── High-precision timing using Stopwatch ────────────────────
-                // Stopwatch starts at 0 when music starts, so _songTime = real music position.
-                if (!_paused)
-                {
-                    double elapsedSeconds = _songStopwatch.Elapsed.TotalSeconds - _pausedTime;
-                    _songTime = (float)elapsedSeconds;
-                }
-                // If paused, _songTime stays frozen
-
-                _songBeats = _songTime / 60f * _level.Data.EffectiveBpm;
-                
-                // ── Camera zoom on beat (FNF style) ──────────────────────────
-                int currentBeat = (int)Math.Floor(_songBeats);
-                _cameraManager?.UpdateBeatZoom(currentBeat, dt);
-                
-                // Update Extended Camera (for scrollFactor parallax support)
-                if (_cameraManager?.UseExtendedCamera == true && _events?.Camera != null)
-                {
-                    var winBounds = Window.ClientBounds;
-                    _cameraManager.UpdateExtendedCamera(_events.Camera, _rtWidth, _rtHeight, _events.HasCameraEvents);
-                }
-                
-                // ── Cornered Exclusive Events ────────────────────────────────
-                // Update Cornered-specific events (time-based triggers from hard.json)
-                if (_corneredEvents != null)
-                {
-                    _corneredEvents.Update(_songTime, currentBeat);
-                }
-                
-                // Audio recovery: if music stopped unexpectedly, try to restart
-                // BUT NOT if the song has naturally ended (past song end time)
-                bool songHasEnded = _songTime >= _songEndTime;
-                if (_musicInst?.State == SoundState.Stopped && _songTime > 0.5f && !songHasEnded)
-                {
-                    Console.WriteLine($"[Audio Recovery] Music stopped unexpectedly at {_songTime:F2}s, restarting...");
-                    if (_audioDeviceReset)
-                    {
-                        // Device changed → fully reload
-                        Console.WriteLine("[Audio Recovery] Device reset detected, reloading music...");
-                        if (_level?.MusicData != null)
-                        {
-                            _musicInst?.Dispose();
-                            _music?.Dispose();
-                            
-                            _music = OggLoader.LoadWithPcm(_level.MusicData,
-                                out byte[] pcm, out int sr, out int ch);
-                            
-                            _musicSampleRate = sr;
-                            _musicChannels = ch;
-                            _musicPcm = pcm;
-                            
-                            _musicInst = _music.CreateInstance();
-                            _musicInst.Volume = MusicVolume;
-                            _musicInst.IsLooped = false;
-                        }
-                        _audioDeviceReset = false;
-                    }
-                    // Seek to current position and resume
-                    if (_musicPcm != null)
-                    {
-                        var seeked = OggLoader.SeekPcm(_musicPcm, _musicSampleRate, _musicChannels, _songTime);
-                        if (seeked != null)
-                        {
-                            _musicInst?.Dispose();
-                            _music?.Dispose();
-                            _music = seeked;
-                            _musicInst = _music.CreateInstance();
-                            _musicInst.Volume = MusicVolume;
-                            _musicInst.IsLooped = false;
-                            if (!_paused) _musicInst.Play();
-                        }
-                    }
-                }
-                else if (songHasEnded && _musicInst?.State == SoundState.Stopped)
-                {
-                    Console.WriteLine($"[Audio] Song ended naturally at {_songTime:F2}s (end time: {_songEndTime:F2}s)");
-                }
-            }
-
-            // ── Judgement timer ──────────────────────────────────────────────
-            if (_judgementTimer > 0f)
-                _judgementTimer -= dt;
-            
-            // ── Combo timer ──────────────────────────────────────────────────
-            if (_noteRenderers.Count > 0 && _comboTimer > 0f)
-                _comboTimer -= dt;
-            
-            // ── Update judgement overlay (popups and combo digits) ───────────
-            _judgementOverlay?.Update(dt);
-
-            // ── Note renderers (fires OnNoteHit → SetAnimation + NotifyNoteHit) ──
-            foreach (var renderer in _noteRenderers)
-                renderer.Update(_songTime, dt, kb, _prevKb);
-            
-            // ── Update particle notesplash system (if active) ────────────────
-            _particleNoteSplash?.Update(gameTime);
-
-            // ── Events and Animators: Only update AFTER countdown finishes ──
-            // This prevents background animations and events from triggering during countdown
-            if (_started)
-            {
-                // ── Events (CameraSet uses updated NotifyNoteHit target from above) ──
-                _events?.Update(_songTime, dt);
-
-                // ── Animators (decrements sing timers, advances frames) ──────
-                foreach (var anim in _objAnimators)
-                    anim?.Update(dt, _songTime);
-                
-                // Update health bar (icons, beat bounce, etc.)
-                _healthBar?.Update(dt, _songTime, _level.Data.EffectiveBpm);
-            }
-
-            // ── Notes alpha fade (GUI event HudVisible controls arrows visibility) ──
-            float notesTarget = (_events?.HudVisible ?? true) ? 1.0f : 0.0f;
-            _notesAlpha = MathHelper.Lerp(_notesAlpha, notesTarget,
-                1f - MathF.Exp(-NOTES_FADE_SPEED * dt));
-
-            // ── Health checks ────────────────────────────────────────────────
-            // Disable game over in multiplayer (continue until song ends)
-            if (_healthBar != null && _healthBar.Health <= 0f && _gameOverOverlay != null && !_gameOverOverlay.IsActive && !_isMultiplayerMatch)
-            {
-                _gameOverOverlay.Show();
-                _musicInst?.Stop();
-                Console.WriteLine("[Game1] Game over triggered: health <= 0");
-            }
-            else if (_healthBar != null && _healthBar.Health <= 0f && _isMultiplayerMatch)
-            {
-                // Debug: Log when health hits 0 in multiplayer but game over is blocked
-                Console.WriteLine($"[Game1] Health at 0 in multiplayer - game over BLOCKED (Match: {_isMultiplayerMatch}, Role: {_multiplayerPlayerRole})");
-            }
-
-            // ── Song end ─────────────────────────────────────────────────────
-            // Wait for the music to actually stop playing, then return to menu.
-            // Only use the chart end time as a fallback (e.g. levels with no music).
-            bool musicDone = _musicInst?.State != SoundState.Playing;
-            bool chartDone = _started && _songTime > _songEndTime;
-
-            if (chartDone && musicDone && _songTransition == null)
-            {
-                // Wait a bit after song ends so end-of-song stickers/animations can finish
-                _songEndDelay += dt;
-                if (_songEndDelay >= 1.5f)
-                {
-                    _events?.FlushUnknownLog(_level?.LevelName ?? "unknown");
-                    _started = false;
-                    _songEndDelay = 0f;
-                    // Stop music explicitly before transition (prevents ghost audio on menu)
-                    _musicInst?.Stop();
-                    
-                    // Multiplayer: Show results screen instead of going to menu
-                    if (_isMultiplayerMatch)
-                    {
-                        // Calculate player stats
-                        var playerRenderer = _noteRenderers.Count > 0 ? _noteRenderers[0] : null;
-                        if (playerRenderer != null)
-                        {
-                            int totalNotes = playerRenderer.Sicks + playerRenderer.Goods + 
-                                           playerRenderer.Bads + playerRenderer.Shits + playerRenderer.Misses;
-                            float playerAccuracy = 100f;
-                            if (totalNotes > 0)
-                            {
-                                float weightedHits = (playerRenderer.Sicks * 1.0f) + (playerRenderer.Goods * 0.75f) + 
-                                                    (playerRenderer.Bads * 0.5f) + (playerRenderer.Shits * 0.25f);
-                                playerAccuracy = (weightedHits / totalNotes) * 100f;
-                            }
-                            
-                            // Calculate opponent accuracy (estimate based on score differential)
-                            float opponentAccuracy = 100f;  // Default if no data
-                            if (_opponentScore > 0)
-                            {
-                                // Rough estimate: opponent accuracy based on score comparison
-                                // This is imperfect but works until we get full opponent stats from server
-                                float scoreRatio = (float)_opponentScore / Math.Max(1, playerRenderer.Score);
-                                opponentAccuracy = playerAccuracy * scoreRatio;
-                                opponentAccuracy = Math.Clamp(opponentAccuracy, 0f, 100f);
-                            }
-                            
-                            bool playerWon = playerRenderer.Score > _opponentScore;
-                            
-                            // Create results screen
-                            _resultsScreen = new MultiplayerResultsScreen(
-                                _pixel!,
-                                _catTex,
-                                "You",  // Player name
-                                _opponentName ?? "Opponent",
-                                playerRenderer.Score,
-                                _opponentScore,
-                                playerAccuracy,
-                                opponentAccuracy,
-                                playerRenderer.Sicks,
-                                playerRenderer.Goods,
-                                playerRenderer.Bads,
-                                playerRenderer.Shits,
-                                playerRenderer.Misses,
-                                playerWon
-                            );
-                            
-                            Console.WriteLine($"[Game1] Multiplayer match ended - showing results (Player: {playerRenderer.Score}, Opponent: {_opponentScore})");
-                        }
-                    }
-                    else
-                    {
-                        // Single player: Normal transition to freeplay
-                        // Trigger AnkushCat transition
-                        _songTransition = new SongTransition(_catTex, _pixel!);
-                        _songTransition.Start(_rtWidth, _rtHeight);
-                        _transitionToFreeplay = true;
-                    }
-                }
-            }
-            else if (!chartDone || !musicDone)
-            {
-                _songEndDelay = 0f;  // reset if song isn't done yet
-            }
+            if (_songTransition == null)
+                UpdateGameplayWorld(gameTime, dt, kb, _prevKb);
         } // end if (_level != null)
 
         // ── Song transition update (only used for end-of-song → freeplay/multiplayer) ─────
@@ -3948,8 +3334,8 @@ public partial class Game1 : Game
                     _musicInst?.Stop();
                     _inMultiplayer = true;
                     ResetWindowTitle();
+                    _multiplayerMenu?.ResetAfterMatch();
                     _multiplayerMenu?.ResetInputCooldown();
-                    // Multiplayer state reset removed - Game1 no longer handles multiplayer
                     Console.WriteLine("[Game1] Returned to multiplayer menu after match");
                     DiscordRpc.SetMenu();
                     _level = null;
@@ -3974,49 +3360,567 @@ public partial class Game1 : Game
             if (_discordUpdateTimer >= 1f)
             {
                 _discordUpdateTimer = 0f;
-                var pr = _noteRenderers[0];
-                // Note: UpdateScore is obsolete - causes issues with Discord RPC
-                // DiscordRpc.UpdateScore(_level.LevelName, pr.Score, pr.Combo, pr.Misses);
             }
         }
         
-        // ── Update NetworkManager ────────────────────────────────────────────
-        Multiplayer.NetworkManager.Instance.Update(gameTime);
-        
-        // ── Update Multiplayer Components ────────────────────────────────────
-        if (_isMultiplayerMatch && _started && !_paused)
-        {
-            // Update interpolator with current server time
-            long currentServerTime = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
-            // Multiplayer UI removed: null?.Update(dt, currentServerTime);
-            
-            // Send state updates to opponent every 200ms (5 times per second)
-            _stateUpdateTimer += dt;
-            if (_stateUpdateTimer >= 0.2f && _noteRenderers.Count > 0)
-            {
-                _stateUpdateTimer = 0f;
-                
-                var playerRenderer = _noteRenderers[0];
-                float health = _healthBar?.Health ?? 0.5f;
-                
-                // Send current state to opponent
-                Multiplayer.NetworkManager.Instance.SendStateUpdate(
-                    playerRenderer.Score,
-                    playerRenderer.Combo,
-                    health,
-                    playerRenderer.Sicks,
-                    playerRenderer.Goods,
-                    playerRenderer.Bads,
-                    playerRenderer.Shits,
-                    playerRenderer.Misses
-                );
-            }
-            
-            // Update HUD animations
-            // Multiplayer UI removed: null?.Update(dt);
-        }
+        UpdateLiveMultiplayerSync(dt);
         
         base.Update(gameTime);
+    }
+
+    private void CloseAllInMatchOverlays()
+    {
+        _inPauseMenu = false;
+        if (_pauseMenu != null) _pauseMenu.Selection = 0;
+        _settingsManager?.Reset();
+        _keyBindOverlay.Reset();
+        if (_arrowsMenu != null) _arrowsMenu.IsActive = false;
+        if (_splashMenu != null) _splashMenu.IsActive = false;
+        if (_countdownMenu != null) _countdownMenu.IsActive = false;
+        if (_fontMenu != null) _fontMenu.IsActive = false;
+    }
+
+    private void ResetMultiplayerMatchState()
+    {
+        _resultsScreen = null;
+        _isMultiplayerMatch = false;
+        _multiplayerPlayerRole = 0;
+        _multiplayerStartTimestamp = 0;
+        _countdownSignalReceived = false;
+        _opponentName = null;
+        _opponentPlayerId = null;
+        _opponentColorHue = 180;
+        _opponentScore = 0;
+        _opponentHealth = 0.5f;
+        _opponentTargetHealth = 0.5f;
+        _opponentReadyState = null;
+        _multiplayerMatchId = "";
+        _stateUpdateTimer = 0f;
+    }
+
+    private void HandlePendingOpponentDisconnect()
+    {
+        if (!_pendingOpponentDisconnect) return;
+        _pendingOpponentDisconnect = false;
+        string reason = _pendingDisconnectReason;
+
+        if (!_isMultiplayerMatch || _resultsScreen != null)
+            return;
+
+        Console.WriteLine($"[Game1] Opponent disconnected: {reason}");
+
+        _musicInst?.Stop();
+
+        if (_noteRenderers != null && _noteRenderers.Count > 0)
+        {
+            var playerRend = _noteRenderers[0];
+            int totalNotes = playerRend.Sicks + playerRend.Goods + playerRend.Bads + playerRend.Shits + playerRend.Misses;
+            float acc = 100f;
+            if (totalNotes > 0)
+            {
+                float weightedHits = (playerRend.Sicks * 1.0f) + (playerRend.Goods * 0.75f) +
+                                     (playerRend.Bads * 0.5f) + (playerRend.Shits * 0.25f);
+                acc = (weightedHits / totalNotes) * 100f;
+            }
+
+            Console.WriteLine($"[Game1] Match ended due to disconnect");
+            Console.WriteLine($"  Your Score: {playerRend.Score} | Accuracy: {acc:F1}%");
+            Console.WriteLine($"  Sicks: {playerRend.Sicks} | Goods: {playerRend.Goods} | Bads: {playerRend.Bads} | Shits: {playerRend.Shits} | Misses: {playerRend.Misses}");
+
+            RecordMultiplayerMatchResult(playerRend, opponentDisconnected: true);
+        }
+
+        CloseAllInMatchOverlays();
+        _loadingScreen = null;
+        _songTransition = null;
+        _songEndDelay = 0f;
+        _level = null;
+        _pendingLevel = null;
+        _started = false;
+        _paused = false;
+        _loadState = LoadState.Done;
+        _loadingComplete = false;
+        _inMultiplayer = false;
+        _inFreeplay = false;
+        ResetMultiplayerMatchState();
+
+        _errorReturnToMultiplayer = true;
+        _errorDismissGrace = 0.25f;
+        _errorMsg = $"Opponent Disconnected\n{reason}\n\nPress ENTER, ESC, or click to return to menu";
+    }
+
+    private void DismissErrorToMenu()
+    {
+        if (_playtestingFromEditor)
+        {
+            _errorMsg = null;
+            _errorReturnToMultiplayer = false;
+            _errorDismissGrace = 0f;
+            _pendingOpponentDisconnect = false;
+            ReturnFromPlaytest();
+            return;
+        }
+        bool toMultiplayer = _errorReturnToMultiplayer && _multiplayerMenu != null;
+        _errorMsg = null;
+        _errorReturnToMultiplayer = false;
+        _errorDismissGrace = 0f;
+        _pendingOpponentDisconnect = false;
+
+        _musicInst?.Stop();
+        CloseAllInMatchOverlays();
+        _loadingScreen = null;
+        _songTransition = null;
+        _songEndDelay = 0f;
+        _level = null;
+        _pendingLevel = null;
+        _started = false;
+        _paused = false;
+        _loadState = LoadState.Done;
+        _loadingComplete = false;
+        ResetMultiplayerMatchState();
+
+        if (toMultiplayer)
+        {
+            _inFreeplay = false;
+            _inMultiplayer = true;
+            _multiplayerMenu!.ResetAfterMatch();
+            _multiplayerMenu.ResetInputCooldown();
+        }
+        else
+        {
+            _inMultiplayer = false;
+            _inFreeplay = true;
+            _freeplay?.Refresh();
+            _freeplay?.ResetInputCooldown();
+        }
+
+        ResetWindowTitle();
+        DiscordRpc.SetMenu();
+    }
+
+    private void AdvanceLiveMultiplayerIfActive(GameTime gameTime, float dt)
+    {
+        if (!_isMultiplayerMatch || _level == null || _errorMsg != null ||
+            _loadingScreen != null || _resultsScreen != null || _songTransition != null)
+            return;
+
+        var emptyKb = default(KeyboardState);
+        UpdateGameplayWorld(gameTime, dt, emptyKb, emptyKb);
+        UpdateLiveMultiplayerSync(dt);
+
+        if (_resultsScreen != null || _songTransition != null || _errorMsg != null)
+            CloseAllInMatchOverlays();
+    }
+
+    private void UpdateLiveMultiplayerSync(float dt)
+    {
+        if (!_isMultiplayerMatch || !_started || _paused)
+            return;
+
+        var mp = Multiplayer.MultiplayerSettings.Instance;
+
+        // Smoothly interpolate opponent health if enabled
+        if (mp.EnableInterpolation)
+            _opponentHealth = MathHelper.Lerp(_opponentHealth, _opponentTargetHealth, 1f - MathF.Exp(-12f * dt));
+        else
+            _opponentHealth = _opponentTargetHealth;
+
+        // Send state updates to opponent according to configured UpdateRate
+        _stateUpdateTimer += dt;
+        if (_stateUpdateTimer >= mp.GetStateSyncIntervalSeconds() && _noteRenderers.Count > 0)
+        {
+            _stateUpdateTimer = 0f;
+
+            var playerRenderer = _noteRenderers[0];
+            float health = _healthBar?.Health ?? 0.5f;
+
+            Multiplayer.NetworkManager.Instance.SendStateUpdate(
+                playerRenderer.Score,
+                playerRenderer.Combo,
+                health,
+                playerRenderer.Sicks,
+                playerRenderer.Goods,
+                playerRenderer.Bads,
+                playerRenderer.Shits,
+                playerRenderer.Misses
+            );
+        }
+    }
+
+    private void UpdateGameplayWorld(GameTime gameTime, float dt, KeyboardState gameplayKb, KeyboardState gameplayPrevKb)
+    {
+        if (_level == null) return;
+
+        // ── Countdown before music ───────────────────────────────────────
+        if (!_started)
+        {
+            // Multiplayer: Skip countdown, start immediately at synchronized timestamp
+            if (_isMultiplayerMatch && _multiplayerStartTimestamp > 0)
+            {
+                long now = Multiplayer.TimeSyncManager.Instance.GetServerTime();
+                long timeUntilStart = _multiplayerStartTimestamp - now;
+
+                if (timeUntilStart <= 0)
+                {
+                    Console.WriteLine($"[Game1] 🚀 Multiplayer: Starting NOW! (delay: {-timeUntilStart}ms)");
+                    _countdownOverlay?.MarkAsDone();
+                    _started       = true;
+                    _musicInst?.Play();
+
+                    string levelName = System.IO.Path.GetFileNameWithoutExtension(FnmmPath);
+                    DiscordRpc.SetPlayingMultiplayer(levelName);
+                    _songStopwatch.Restart();
+                    _pausedTime = 0.0;
+                    _songTime = 0f;
+                    _songBeats = 0f;
+                }
+                else if (timeUntilStart <= 50)
+                {
+                    Console.WriteLine($"[Game1] [♪] Multiplayer: Pre-starting music ({timeUntilStart}ms early for sync)");
+                    _countdownOverlay?.MarkAsDone();
+                    _started       = true;
+                    _musicInst?.Play();
+
+                    string levelName = System.IO.Path.GetFileNameWithoutExtension(FnmmPath);
+                    DiscordRpc.SetPlayingMultiplayer(levelName);
+                    _songStopwatch.Restart();
+                    _pausedTime = 0.0;
+                    _songTime = 0f;
+                    _songBeats = 0f;
+                }
+                else
+                {
+                    float waitTime = timeUntilStart / 1000.0f;
+                    if ((int)(now / 300) != (int)((now - 16) / 300))
+                        Console.WriteLine($"[Game1] ⏳ Multiplayer: Waiting {waitTime:F3}s for synchronized start...");
+                }
+            }
+            else if (_countdownOverlay != null)
+            {
+                bool countdownComplete = _countdownOverlay.Update(dt, _level.Data.EffectiveBpm);
+                _songTime = _countdownOverlay.GetSongTime(_level.Data.EffectiveBpm);
+                _songBeats = _songTime / 60f * _level.Data.EffectiveBpm;
+
+                if (countdownComplete && !_started)
+                {
+                    _started = true;
+                    _musicInst?.Play();
+
+                    string levelName = System.IO.Path.GetFileNameWithoutExtension(FnmmPath);
+                    if (_isMultiplayerMatch)
+                        DiscordRpc.SetPlayingMultiplayer(levelName);
+                    else
+                        DiscordRpc.SetPlaying(levelName);
+                    _songStopwatch.Restart();
+                    _pausedTime = 0.0;
+                }
+            }
+        }
+        else
+        {
+            // ── High-precision timing using Stopwatch ────────────────────
+            if (!_paused)
+            {
+                double elapsedSeconds = _songStopwatch.Elapsed.TotalSeconds - _pausedTime;
+                _songTime = (float)elapsedSeconds;
+            }
+
+            _songBeats = _songTime / 60f * _level.Data.EffectiveBpm;
+
+            // ── Camera zoom on beat (FNF style) ──────────────────────────
+            int currentBeat = (int)Math.Floor(_songBeats);
+            _cameraManager?.UpdateBeatZoom(currentBeat, dt);
+
+            if (_cameraManager?.UseExtendedCamera == true && _events?.Camera != null)
+            {
+                _cameraManager.UpdateExtendedCamera(_events.Camera, _rtWidth, _rtHeight, _events.HasCameraEvents);
+            }
+
+            if (_corneredEvents != null)
+            {
+                _corneredEvents.Update(_songTime, currentBeat);
+            }
+
+            // Audio recovery: if music stopped unexpectedly, try to restart
+            // BUT NOT if the song or audio buffer has naturally ended
+            bool audioFileEnded = _music != null && _songTime >= _musicDurationSeconds - 0.1f;
+            bool songHasEnded = _songTime >= _songEndTime || audioFileEnded;
+            if (_musicInst?.State == SoundState.Stopped && _songTime > 0.5f && !songHasEnded)
+            {
+                Console.WriteLine($"[Audio Recovery] Music stopped unexpectedly at {_songTime:F2}s, restarting...");
+                if (_audioDeviceReset)
+                {
+                    Console.WriteLine("[Audio Recovery] Device reset detected, reloading music...");
+                    if (_level?.MusicData != null)
+                    {
+                        _musicInst?.Dispose();
+                        _music?.Dispose();
+
+                        _music = OggLoader.LoadWithPcm(_level.MusicData,
+                            out byte[] pcm, out int sr, out int ch);
+
+                        _musicSampleRate = sr;
+                        _musicChannels = ch;
+                        _musicPcm = pcm;
+
+                        _musicInst = _music.CreateInstance();
+                        _musicInst.Volume = MusicVolume;
+                        _musicInst.IsLooped = false;
+                    }
+                    _audioDeviceReset = false;
+                }
+                if (_musicPcm != null)
+                {
+                    var seeked = OggLoader.SeekPcm(_musicPcm, _musicSampleRate, _musicChannels, _songTime);
+                    if (seeked != null)
+                    {
+                        _musicInst?.Dispose();
+                        _music?.Dispose();
+                        _music = seeked;
+                        _musicInst = _music.CreateInstance();
+                        _musicInst.Volume = MusicVolume;
+                        _musicInst.IsLooped = false;
+                        if (!_paused) _musicInst.Play();
+                    }
+                }
+            }
+            else if (songHasEnded && _musicInst?.State == SoundState.Stopped)
+            {
+                Console.WriteLine($"[Audio] Song ended naturally at {_songTime:F2}s (end time: {_songEndTime:F2}s)");
+            }
+        }
+
+        // ── Update judgement overlay (popups and combo digits) ───────────
+        _judgementOverlay?.Update(dt);
+
+        // ── Note renderers ───────────────────────────────────────────────
+        foreach (var renderer in _noteRenderers)
+            renderer.Update(_songTime, dt, gameplayKb, gameplayPrevKb);
+
+        if (_noteRenderers.Count > 0)
+            _playerMaxCombo = Math.Max(_playerMaxCombo, _noteRenderers[0].Combo);
+
+        _particleNoteSplash?.Update(gameTime);
+
+        if (_started)
+        {
+            _events?.Update(_songTime, dt);
+
+            foreach (var anim in _objAnimators)
+                anim?.Update(dt, _songTime);
+
+            _healthBar?.Update(dt, _songTime, _level.Data.EffectiveBpm);
+        }
+
+        // ── Notes alpha fade ─────────────────────────────────────────────
+        float notesTarget = (_events?.HudVisible ?? true) ? 1.0f : 0.0f;
+        _notesAlpha = MathHelper.Lerp(_notesAlpha, notesTarget,
+            1f - MathF.Exp(-NOTES_FADE_SPEED * dt));
+
+        // ── Health checks ────────────────────────────────────────────────
+        if (_healthBar != null && _healthBar.Health <= 0f && _gameOverOverlay != null && !_gameOverOverlay.IsActive && !_isMultiplayerMatch)
+        {
+            _gameOverOverlay.Show();
+            _musicInst?.Stop();
+            Console.WriteLine("[Game1] Game over triggered: health <= 0");
+        }
+
+        // ── Song end ─────────────────────────────────────────────────────
+        bool musicDone = _musicInst?.State != SoundState.Playing;
+        bool chartDone = _started && (_songTime > _songEndTime || (_music != null && _songTime >= _musicDurationSeconds - 0.1f));
+
+        if (chartDone && musicDone && _songTransition == null)
+        {
+            _songEndDelay += dt;
+            if (_songEndDelay >= 1.5f)
+            {
+                _events?.FlushUnknownLog(_level?.LevelName ?? "unknown");
+                _started = false;
+                _songEndDelay = 0f;
+                _musicInst?.Stop();
+
+                if (_isMultiplayerMatch)
+                {
+                    var playerRenderer = _noteRenderers.Count > 0 ? _noteRenderers[0] : null;
+                    if (playerRenderer != null)
+                    {
+                        var mp = Multiplayer.MultiplayerSettings.Instance;
+                        float playerAccuracy = ComputeAccuracy(
+                            playerRenderer.Sicks, playerRenderer.Goods,
+                            playerRenderer.Bads, playerRenderer.Shits, playerRenderer.Misses);
+                        float opponentAccuracy = ComputeOpponentAccuracy(playerAccuracy, playerRenderer.Score);
+
+                        RecordMultiplayerMatchResult(playerRenderer, opponentDisconnected: false);
+
+                        string playerDisplayName = string.IsNullOrWhiteSpace(mp.Username) ? "Player" : mp.Username.Trim();
+                        string opponentDisplayName = string.IsNullOrWhiteSpace(_opponentName) ? "Opponent" : _opponentName;
+                        bool isDraw = playerRenderer.Score == _opponentScore;
+                        bool playerWon = playerRenderer.Score > _opponentScore;
+
+                        _resultsScreen = new MultiplayerResultsScreen(
+                            _pixel!,
+                            _catTex,
+                            playerDisplayName,
+                            opponentDisplayName,
+                            playerRenderer.Score,
+                            _opponentScore,
+                            playerAccuracy,
+                            opponentAccuracy,
+                            playerRenderer.Sicks,
+                            playerRenderer.Goods,
+                            playerRenderer.Bads,
+                            playerRenderer.Shits,
+                            playerRenderer.Misses,
+                            playerWon,
+                            Color.Lerp(mp.GetPlayerColor(), Color.White, 0.25f),
+                            Color.Lerp(Multiplayer.MultiplayerSettings.ColorFromHue(_opponentColorHue), Color.White, 0.25f),
+                            isDraw
+                        );
+
+                        Console.WriteLine($"[Game1] Multiplayer match ended - showing results ({playerDisplayName}: {playerRenderer.Score}, {opponentDisplayName}: {_opponentScore})");
+                    }
+                }
+                else if (_playtestingFromEditor)
+                {
+                    ReturnFromPlaytest();
+                    return;
+                }
+                else
+                {
+                    _songTransition = new SongTransition(_catTex, _pixel!);
+                    _songTransition.Start(_rtWidth, _rtHeight);
+                    _transitionToFreeplay = true;
+                }
+            }
+        }
+        else if (!chartDone || !musicDone)
+        {
+            _songEndDelay = 0f;
+        }
+    }
+
+    private static float ComputeAccuracy(int sicks, int goods, int bads, int shits, int misses)
+    {
+        int totalNotes = sicks + goods + bads + shits + misses;
+        if (totalNotes <= 0) return 100f;
+        float weightedHits = (sicks * 1.0f) + (goods * 0.75f) + (bads * 0.5f) + (shits * 0.25f);
+        return (weightedHits / totalNotes) * 100f;
+    }
+
+    private float ComputeOpponentAccuracy(float playerAccuracy, int playerScore)
+    {
+        int oppTotal = _opponentSicks + _opponentGoods + _opponentBads + _opponentShits + _opponentMisses;
+        if (oppTotal > 0)
+            return ComputeAccuracy(_opponentSicks, _opponentGoods, _opponentBads, _opponentShits, _opponentMisses);
+
+        if (_opponentScore > 0)
+        {
+            float scoreRatio = (float)_opponentScore / Math.Max(1, playerScore);
+            return Math.Clamp(playerAccuracy * scoreRatio, 0f, 100f);
+        }
+        return 100f;
+    }
+
+    private void RecordMultiplayerMatchResult(NoteRenderer playerRenderer, bool opponentDisconnected)
+    {
+        if (_multiplayerMatchRecorded) return;
+        _multiplayerMatchRecorded = true;
+
+        var mp = Multiplayer.MultiplayerSettings.Instance;
+        string playerName = string.IsNullOrWhiteSpace(mp.Username) ? "Player" : mp.Username.Trim();
+        string opponentName = string.IsNullOrWhiteSpace(_opponentName) ? "Opponent" : _opponentName;
+        string opponentId = !string.IsNullOrWhiteSpace(_opponentPlayerId)
+            ? _opponentPlayerId!
+            : $"opp_{opponentName}";
+
+        float playerAccuracy = ComputeAccuracy(
+            playerRenderer.Sicks, playerRenderer.Goods,
+            playerRenderer.Bads, playerRenderer.Shits, playerRenderer.Misses);
+        float opponentAccuracy = ComputeOpponentAccuracy(playerAccuracy, playerRenderer.Score);
+
+        var localInfo = new Multiplayer.PlayerMatchInfo
+        {
+            PlayerId = mp.PlayerId,
+            Username = playerName,
+            AvatarIndex = 0,
+            ColorHue = mp.PlayerColorHue,
+            Score = playerRenderer.Score,
+            Accuracy = playerAccuracy,
+            MaxCombo = _playerMaxCombo,
+            Misses = playerRenderer.Misses,
+            Disconnected = false
+        };
+
+        var oppInfo = new Multiplayer.PlayerMatchInfo
+        {
+            PlayerId = opponentId,
+            Username = opponentName,
+            AvatarIndex = 0,
+            ColorHue = _opponentColorHue,
+            Score = _opponentScore,
+            Accuracy = opponentAccuracy,
+            MaxCombo = _opponentMaxCombo,
+            Misses = _opponentMisses,
+            Disconnected = opponentDisconnected
+        };
+
+        bool iAmP1 = _multiplayerPlayerRole != 2;
+        var p1 = iAmP1 ? localInfo : oppInfo;
+        var p2 = iAmP1 ? oppInfo : localInfo;
+
+        int winner = opponentDisconnected
+            ? (iAmP1 ? 1 : 2)
+            : (p1.Score > p2.Score ? 1 : (p2.Score > p1.Score ? 2 : 0));
+
+        string matchId = !string.IsNullOrWhiteSpace(_multiplayerMatchId)
+            ? _multiplayerMatchId
+            : Guid.NewGuid().ToString("N");
+        string levelName = !string.IsNullOrWhiteSpace(_level?.LevelName)
+            ? _level.LevelName
+            : (!string.IsNullOrEmpty(FnmmPath) ? Path.GetFileNameWithoutExtension(FnmmPath) : "Unknown");
+        int durationSec = (int)Math.Max(0, _songTime);
+
+        var localEntry = new Multiplayer.MatchHistoryEntry
+        {
+            MatchId = matchId,
+            LevelName = levelName,
+            Player1 = p1,
+            Player2 = p2,
+            Winner = winner,
+            DurationSeconds = durationSec,
+            Timestamp = DateTimeOffset.UtcNow.ToUnixTimeSeconds()
+        };
+
+        Multiplayer.LeaderboardManager.Instance.RecordMatch(localEntry);
+
+        // Submit once per match from Role 1 on normal completion, or from the remaining player if opponent disconnected,
+        // because server LeaderboardService does not deduplicate MatchId.
+        if (Multiplayer.NetworkManager.Instance.IsConnected && (iAmP1 || opponentDisconnected))
+        {
+            static Multiplayer.PlayerMatchData ToPacket(Multiplayer.PlayerMatchInfo info) => new()
+            {
+                PlayerId = info.PlayerId,
+                Username = info.Username,
+                AvatarIndex = info.AvatarIndex,
+                ColorHue = info.ColorHue,
+                Score = info.Score,
+                Accuracy = info.Accuracy,
+                MaxCombo = info.MaxCombo,
+                Misses = info.Misses,
+                Disconnected = info.Disconnected
+            };
+
+            Multiplayer.NetworkManager.Instance.SubmitMatchResult(new Multiplayer.MatchHistoryPacket
+            {
+                MatchId = matchId,
+                LevelName = levelName,
+                Player1 = ToPacket(p1),
+                Player2 = ToPacket(p2),
+                Winner = winner,
+                DurationSeconds = durationSec,
+                Timestamp = localEntry.Timestamp
+            });
+        }
     }
 
     /// <summary>
@@ -4099,7 +4003,6 @@ public partial class Game1 : Game
             _healthBar.Health = 0.5f;
         _gameOverOverlay?.Hide();
         _countdownOverlay?.Reset();
-        _judgementText   = null;
         
         // Start FNF-style receptor intro animation (pop-in effect)
         // Only if HUD is visible (respects chart events that hide receptors)
@@ -4113,7 +4016,7 @@ public partial class Game1 : Game
         
         // Reset camera zoom
         _cameraManager?.Reset();
-        _judgementTimer  = 0f;
+        _songTransition  = null;
         _songEndDelay    = 0f;
         _keyBindOverlay.Reset();
         _settingsManager?.Reset();
@@ -4301,6 +4204,200 @@ public partial class Game1 : Game
         }
     }
 
+    private void ExitSettingsMenu()
+    {
+#if ANDROID
+        _touchControls?.SetSettingsButtonsVisible(false);
+#endif
+        if (_level != null)
+        {
+            _inPauseMenu = true;
+            if (_pauseMenu != null)
+            {
+                _pauseMenu.IsMultiplayer = _isMultiplayerMatch;
+                _pauseMenu.Selection = 0;
+            }
+            _pausedByTimeskip = false;
+        }
+        else if (_inMultiplayer)
+        {
+            _multiplayerMenu?.ResetInputCooldown();
+        }
+        else if (_inFreeplay)
+        {
+            _freeplay?.ResetInputCooldown();
+        }
+        else if (_pausedByTimeskip && _paused && _started && _level != null)
+        {
+            ResumeSong();
+            _pausedByTimeskip = false;
+        }
+    }
+
+    private void ApplySettingsSelectResult(SettingsActionResult result)
+    {
+        if (result.NeedsStrumlineReposition && _level != null)
+            RepositionStrumlines();
+
+        if (result.NeedsCameraReset)
+            _cameraManager?.ResetScaleOverride();
+
+        if (result.OpenKeyBind)
+        {
+            _keyBindOverlay.IsActive = true;
+            if (!_keyBindCallbacksWired)
+            {
+                _keyBindCallbacksWired = true;
+                _keyBindOverlay.OnComplete += () => {
+                    if (_settingsManager != null) _settingsManager.IsActive = true;
+                };
+                _keyBindOverlay.OnCancel += () => {
+                    if (_settingsManager != null) _settingsManager.IsActive = true;
+                };
+            }
+        }
+
+        if (result.OpenArrowsMenu)
+        {
+            string? assetsRoot = FindAssetsRoot();
+            _arrowsMenu?.Open(GraphicsDevice, assetsRoot);
+        }
+
+        if (result.OpenSplashMenu)
+            _splashMenu?.Open(GraphicsDevice);
+
+        if (result.OpenCountdownMenu)
+        {
+            string? assetsRoot = FindAssetsRoot();
+            _countdownMenu?.Open(GraphicsDevice, assetsRoot);
+        }
+
+        if (result.OpenFontMenu)
+        {
+            string? assetsRoot = FindAssetsRoot();
+            _fontMenu?.Open(GraphicsDevice, assetsRoot);
+        }
+
+        if (result.OpenHudEditor)
+        {
+#if ANDROID
+            _touchControls?.SetSettingsButtonsVisible(false);
+#endif
+            _hudEditorReturnTarget = _inFreeplay
+                ? HudEditorReturnTarget.FreeplaySettings
+                : (_inMultiplayer
+                    ? HudEditorReturnTarget.MultiplayerSettings
+                    : HudEditorReturnTarget.GameplaySettings);
+            _inFreeplay = false;
+            _inMultiplayer = false;
+            _inMainSettings = true;
+            _mainSettingsMenu?.ResetInputCooldown();
+        }
+
+        if (result.ExitMenu)
+        {
+            if (_settingsManager != null) _settingsManager.IsActive = false;
+            bool openedSubmenu = result.OpenKeyBind || result.OpenArrowsMenu ||
+                                 result.OpenSplashMenu || result.OpenCountdownMenu ||
+                                 result.OpenFontMenu || result.OpenHudEditor;
+            if (openedSubmenu)
+            {
+#if ANDROID
+                _touchControls?.SetSettingsButtonsVisible(false);
+#endif
+            }
+            else
+            {
+                ExitSettingsMenu();
+            }
+        }
+
+        if (result.ToggleVSync)
+        {
+            _graphics.SynchronizeWithVerticalRetrace = !_graphics.SynchronizeWithVerticalRetrace;
+            _graphics.ApplyChanges();
+        }
+
+        if (result.ToggleFullscreen)
+        {
+            _isFullscreen = !_isFullscreen;
+            _graphics.HardwareModeSwitch = false;
+            _graphics.IsFullScreen = _isFullscreen;
+            if (_isFullscreen)
+            {
+                var dm = GraphicsDevice.Adapter.CurrentDisplayMode;
+                _graphics.PreferredBackBufferWidth = dm.Width;
+                _graphics.PreferredBackBufferHeight = dm.Height;
+            }
+            else
+            {
+                _graphics.PreferredBackBufferWidth = 1280;
+                _graphics.PreferredBackBufferHeight = 720;
+            }
+            _graphics.ApplyChanges();
+        }
+
+        if (result.NeedsStrumlineAlphaUpdate)
+        {
+            if (_noteRenderers.Count > 0)
+                _noteRenderers[0].Alpha = (NoteRenderer.HidePlayerStrumline && !_isMultiplayerMatch) ? 0f : _notesAlpha;
+            if (_noteRenderers.Count > 1)
+                _noteRenderers[1].Alpha = GetOpponentStrumlineAlpha();
+            for (int si = 2; si < _noteRenderers.Count; si++)
+                _noteRenderers[si].Alpha = HideExtraStrumlines ? 0f : _notesAlpha;
+        }
+
+        if (result.NeedsOpponentAlphaUpdate && _noteRenderers.Count > 1)
+        {
+            _noteRenderers[1].Alpha = GetOpponentStrumlineAlpha();
+        }
+
+        if (result.NeedsSave)
+            Settings.Save(_graphics.SynchronizeWithVerticalRetrace);
+    }
+
+    private float GetOpponentStrumlineAlpha()
+    {
+        if (_isMultiplayerMatch)
+        {
+            var mp = Multiplayer.MultiplayerSettings.Instance;
+            return mp.ShowOpponentNotes ? _notesAlpha * (mp.GhostTransparency / 100f) : 0f;
+        }
+        return HideOpponentStrumline ? 0f : _notesAlpha;
+    }
+
+    private void ApplySettingsAdjustmentResult(SettingsActionResult result)
+    {
+        if (result.AdjustCameraZoom != 0 && _events != null && !_events.HasCameraEvents)
+        {
+            if (result.AdjustCameraZoom < 0)
+                _cameraManager?.IncreaseZoom(_events.Camera.Scale);
+            else
+                _cameraManager?.DecreaseZoom(_events.Camera.Scale);
+        }
+
+        if (result.AdjustVolume != 0f)
+        {
+            MusicVolume = MathF.Round(Math.Clamp(MusicVolume + result.AdjustVolume * 0.05f, 0f, 1f), 2);
+            if (_musicInst != null) _musicInst.Volume = MusicVolume;
+            _volumeToastTimer = VOLUME_TOAST_DURATION;
+            Settings.Save(_graphics.SynchronizeWithVerticalRetrace);
+        }
+
+        if (result.SeekSong != 0f && _started)
+        {
+            SeekSong(_songTime + result.SeekSong);
+            if (!_paused)
+            {
+                PauseSong();
+                _pausedByTimeskip = true;
+            }
+        }
+
+        if (result.NeedsSave)
+            Settings.Save(_graphics.SynchronizeWithVerticalRetrace);
+    }
+
     // ── Draw ─────────────────────────────────────────────────────────────────
     protected override void Draw(GameTime gameTime)
     {
@@ -4363,91 +4460,41 @@ public partial class Game1 : Game
                 _spriteBatch.End();
             }
 #pragma warning restore CS8602
+
+            DrawSettingsAndSubOverlays(winBounds.Width, winBounds.Height, includeKeyBindOverlay: true);
             
             // Draw touch controls LAST before present
             DrawTouchControls();
             return;
         }
         
-        // ── Editor Picker (direct to screen - no render target) ──────────────
-        if (_inEditorPicker && _editorPicker != null)
-        {
-            // Draw directly to window for crisp UI
-            var winBounds = Window.ClientBounds;
-            GraphicsDevice.SetRenderTarget(null);
-            GraphicsDevice.Clear(Color.Black);
-            
-            _spriteBatch.Begin(samplerState: SamplerState.LinearClamp);
-            _editorPicker.Draw(_spriteBatch, winBounds.Width, winBounds.Height);
-            _spriteBatch.End();
-            
-            // Draw touch controls LAST before present
-            DrawTouchControls();
-            return;
-        }
+        // ── Direct-to-screen UI views (IDirectScreen) ────────────────────────
+        if (_inEditorPicker && _editorPicker != null)   { DrawDirectScreen(_editorPicker); return; }
+        if (_inLevelSelector && _levelSelector != null) { DrawDirectScreen(_levelSelector); return; }
+        if (_inEditor && _activeEditor != null)         { DrawDirectScreen(_activeEditor); return; }
+        if (_inMainSettings && _mainSettingsMenu != null) { DrawDirectScreen(_mainSettingsMenu); return; }
         
-        // ── Level Selector (direct to screen - no render target) ─────────────
-        if (_inLevelSelector && _levelSelector != null)
-        {
-            // Draw directly to window for crisp UI
-            var winBounds = Window.ClientBounds;
-            GraphicsDevice.SetRenderTarget(null);
-            GraphicsDevice.Clear(Color.Black);
-            
-            _spriteBatch.Begin(samplerState: SamplerState.LinearClamp);
-            _levelSelector.Draw(_spriteBatch, winBounds.Width, winBounds.Height);
-            _spriteBatch.End();
-            
-            // Draw touch controls LAST before present
-            DrawTouchControls();
-            return;
-        }
-        
-        // ── Active Editor (direct to screen - no render target) ──────────────
-        if (_inEditor && _activeEditor != null)
-        {
-            // Draw directly to window for crisp UI
-            var winBounds = Window.ClientBounds;
-            GraphicsDevice.SetRenderTarget(null);
-            GraphicsDevice.Clear(Color.Black);
-            
-            _spriteBatch.Begin(samplerState: SamplerState.LinearClamp);
-            _activeEditor.Draw(_spriteBatch, winBounds.Width, winBounds.Height);
-            _spriteBatch.End();
-            
-            // Draw touch controls LAST before present
-            DrawTouchControls();
-            return;
-        }
-        
-        // ── Main Settings menu (direct to screen - no render target) ─────────
-        if (_inMainSettings && _mainSettingsMenu != null)
-        {
-            // Draw directly to window for crisp UI
-            var winBounds = Window.ClientBounds;
-            GraphicsDevice.SetRenderTarget(null);
-            GraphicsDevice.Clear(Color.Black);
-            
-            _spriteBatch.Begin(samplerState: SamplerState.LinearClamp);
-            if (_mainSettingsMenu != null)
-                _mainSettingsMenu.Draw(_spriteBatch, winBounds.Width, winBounds.Height);
-            _spriteBatch.End();
-            
-            // Draw touch controls LAST before present
-            DrawTouchControls();
-            return;
-        }
-        
-        // ── HUD Editor (direct to screen - no render target) ─────────────────
+        // ── HUD Editor (rendered to target for exact aspect ratio) ──────────
         if (_inHudEditor && _hudEditor != null)
         {
             // Render to target (like gameplay) for correct aspect ratio
             GraphicsDevice.SetRenderTarget(_renderTarget);
             GraphicsDevice.Clear(Color.Black);
             
+            bool hasLiveScene = _level != null && _errorMsg == null;
+            if (hasLiveScene)
+            {
+                var hudCamMatrix = BuildCameraMatrix(sw, sh);
+                _lastCamMatrix = hudCamMatrix;
+                DrawSceneOrdered(sw, sh, hudCamMatrix);
+                _spriteBatch.Begin(SpriteSortMode.Deferred, BlendState.NonPremultiplied, SamplerState.LinearClamp);
+                DrawNotes();
+                _spriteBatch.End();
+            }
+            
             _spriteBatch.Begin(samplerState: SamplerState.PointClamp);
             if (_hudEditor != null)
-                _hudEditor.Draw(_spriteBatch, _rtWidth, _rtHeight);
+                _hudEditor.Draw(_spriteBatch, _rtWidth, _rtHeight, hasLiveScene);
             _spriteBatch.End();
             
             // Blit to screen with letterboxing
@@ -4482,6 +4529,8 @@ public partial class Game1 : Game
                 _spriteBatch.End();
             }
 #pragma warning restore CS8602
+
+            DrawSettingsAndSubOverlays(winBounds.Width, winBounds.Height, includeKeyBindOverlay: true);
             
             // Draw touch controls LAST before present
             DrawTouchControls();
@@ -4527,9 +4576,9 @@ public partial class Game1 : Game
         {
             _spriteBatch.Begin();
             if (_errorMsg != null) 
-                DrawError(_errorMsg);
+                ErrorOverlay.DrawError(_spriteBatch, _font, _pixel, sw, sh, _errorMsg);
             else                   
-                DrawDropHint();
+                ErrorOverlay.DrawDropHint(_spriteBatch, _font, sw, sh);
             _spriteBatch.End();
             BlitToScreen();
             
@@ -4546,21 +4595,33 @@ public partial class Game1 : Game
 
         // ── HUD: health bar, icons, stats (drawn before notes) ───────────────
         _spriteBatch.Begin(SpriteSortMode.Deferred, BlendState.NonPremultiplied, SamplerState.LinearClamp);
-        DrawHUD(sw, sh);
+        GameplayHudOverlay.DrawHUD(
+            _spriteBatch, _font, _pixel, sw, sh, _rtWidth, _rtHeight,
+            _level, _events, _cameraManager, _healthBar, _timerBar,
+            _keyBindOverlay, _noteStyle, _noteRenderers,
+            _isMultiplayerMatch, _opponentName, _opponentScore, _opponentHealth,
+            _songTime, _songEndTime, _songBeats, _started, _paused, _lastDt,
+            _graphics.SynchronizeWithVerticalRetrace);
         _spriteBatch.End();
 
         // ── Notes: arrows and receptors (drawn on top of everything) ─────────
         _spriteBatch.Begin(SpriteSortMode.Deferred, BlendState.NonPremultiplied, SamplerState.LinearClamp);
         DrawNotes();
         
-        // Draw particle notesplash effects (MonoGame.Extended particles)
-        _particleNoteSplash?.Draw(_spriteBatch);
+        // Draw particle notesplash effects (MonoGame.Extended particles) only when player strumline is visible
+        if (HudSettings.Instance.MasterHudVisible &&
+            NoteRenderer.ShowStrumlines &&
+            !NoteRenderer.HidePlayerStrumline &&
+            _notesAlpha > 0.01f)
+        {
+            _particleNoteSplash?.Draw(_spriteBatch);
+        }
         
         _spriteBatch.End();
 
         // Menus use PointClamp for crisp text rendering (FontStashSharp)
         _spriteBatch.Begin(samplerState: SamplerState.PointClamp);
-        DrawScreenFlashes(sw, sh);
+        GameplayHudOverlay.DrawScreenFlashes(_spriteBatch, _pixel, _events, sw, sh);
         DrawCountdown(sw, sh);
         DrawJudgement(sw, sh);
         
@@ -4583,103 +4644,22 @@ public partial class Game1 : Game
         // ── Letterbox blit to screen ──────────────────────────────────────────
         BlitToScreen();
 
-        // ── Settings menu overlay (drawn AFTER blit for crisp text) ───────────
-        if (_settingsManager?.IsActive == true)
-        {
-            var winBounds = Window.ClientBounds;
-            GraphicsDevice.SetRenderTarget(null);
-            
-            _spriteBatch.Begin(samplerState: SamplerState.LinearClamp);
-            _settingsManager.Draw(this, _spriteBatch, _font!, _pixel!, winBounds.Width, winBounds.Height, _fontRenderer);
-            _spriteBatch.End();
-        }
-
         // ── Pause menu overlay (drawn AFTER blit for crisp text) ──────────────
         if (_inPauseMenu && _pauseMenu != null)
         {
             var winBounds = Window.ClientBounds;
             GraphicsDevice.SetRenderTarget(null);
-            
-            // Calculate letterbox area (same as BlitToScreen)
-            int winW = winBounds.Width;
-            int winH = winBounds.Height;
-            float scaleX = (float)winW / _rtWidth;
-            float scaleY = (float)winH / _rtHeight;
-            float scale  = Math.Min(scaleX, scaleY);
-            int   dstW   = (int)(_rtWidth  * scale);
-            int   dstH   = (int)(_rtHeight * scale);
-            int   dstX   = (winW - dstW) / 2;
-            int   dstY   = (winH - dstH) / 2;
-            
-            // Get stats from player renderer
-            int score = 0, misses = 0, combo = 0;
-            int sicks = 0, goods = 0, bads = 0, shits = 0;
-            if (_noteRenderers.Count > 0 && _noteRenderers[0] != null)
-            {
-                var r = _noteRenderers[0];
-                score = r.Score;
-                misses = r.Misses;
-                combo = r.Combo;
-                sicks = r.Sicks;
-                goods = r.Goods;
-                bads = r.Bads;
-                shits = r.Shits;
-            }
-            
-            // Calculate accuracy
-            int totalNotes = sicks + goods + bads + shits + misses;
-            float accuracy = 100f;
-            if (totalNotes > 0)
-            {
-                float weightedHits = (sicks * 1.0f) + (goods * 0.75f) + (bads * 0.5f) + (shits * 0.25f);
-                accuracy = (weightedHits / totalNotes) * 100f;
-            }
-            
+            var (dst, scale) = ComputeLetterbox(winBounds.Width, winBounds.Height);
+            var stats = GameplayHudOverlay.CalculateStats(_noteRenderers.Count > 0 ? _noteRenderers[0] : null);
+
             _spriteBatch.Begin(samplerState: SamplerState.LinearClamp);
-            _pauseMenu.Draw(_spriteBatch, dstX, dstY, dstW, dstH, scale, _rtWidth, _rtHeight, gameTime,
-                score, accuracy, combo, misses, sicks, goods, bads, shits);
+            _pauseMenu.Draw(_spriteBatch, dst.X, dst.Y, dst.Width, dst.Height, scale, _rtWidth, _rtHeight, gameTime,
+                stats.Score, stats.Accuracy, stats.Combo, stats.Misses, stats.Sicks, stats.Goods, stats.Bads, stats.Shits);
             _spriteBatch.End();
         }
 
-        // ── Arrows menu overlay (drawn AFTER blit for crisp text) ─────────────
-        if (_arrowsMenu?.IsActive == true)
-        {
-            var winBounds = Window.ClientBounds;
-            
-            _spriteBatch.Begin(samplerState: SamplerState.LinearClamp);
-            _arrowsMenu.Draw(_spriteBatch, winBounds.Width, winBounds.Height);
-            _spriteBatch.End();
-        }
-
-        // ── NoteSplash menu overlay (drawn AFTER blit for crisp text) ─────────
-        if (_splashMenu?.IsActive == true)
-        {
-            var winBounds = Window.ClientBounds;
-            
-            _spriteBatch.Begin(samplerState: SamplerState.LinearClamp);
-            _splashMenu.Draw(_spriteBatch, winBounds.Width, winBounds.Height);
-            _spriteBatch.End();
-        }
-
-        // ── Countdown menu overlay (drawn AFTER blit for crisp text) ──────────
-        if (_countdownMenu?.IsActive == true)
-        {
-            var winBounds = Window.ClientBounds;
-            
-            _spriteBatch.Begin(samplerState: SamplerState.LinearClamp);
-            _countdownMenu.Draw(_spriteBatch, winBounds.Width, winBounds.Height);
-            _spriteBatch.End();
-        }
-
-        // ── Font menu overlay (drawn AFTER blit for crisp text) ───────────────
-        if (_fontMenu?.IsActive == true)
-        {
-            var winBounds = Window.ClientBounds;
-            
-            _spriteBatch.Begin(samplerState: SamplerState.LinearClamp);
-            _fontMenu.Draw(_spriteBatch, winBounds.Width, winBounds.Height);
-            _spriteBatch.End();
-        }
+        // ── Settings & sub-menu overlays (drawn AFTER blit for crisp text) ────
+        DrawSettingsAndSubOverlays(Window.ClientBounds.Width, Window.ClientBounds.Height, includeKeyBindOverlay: false);
 
         // ── Touch controls (Android only) - drawn LAST on top of everything ───
         DrawTouchControls();
@@ -4727,6 +4707,118 @@ public partial class Game1 : Game
     }
 
     /// <summary>
+    /// Renders a full-window <see cref="IDirectScreen"/> straight to the backbuffer, then draws touch controls.
+    /// </summary>
+    private void DrawDirectScreen(IDirectScreen screen)
+    {
+        var winBounds = Window.ClientBounds;
+        GraphicsDevice.SetRenderTarget(null);
+        GraphicsDevice.Clear(Color.Black);
+
+        _spriteBatch.Begin(samplerState: SamplerState.LinearClamp);
+        screen.Draw(_spriteBatch, winBounds.Width, winBounds.Height);
+        _spriteBatch.End();
+
+        DrawVolumeToastOverlay(winBounds.Width);
+        DrawTouchControls();
+    }
+
+    /// <summary>
+    /// Renders active Settings menu and any open modal customization overlays (<see cref="IScreenOverlay"/>).
+    /// </summary>
+    private void DrawSettingsAndSubOverlays(int winW, int winH, bool includeKeyBindOverlay)
+    {
+        if (_settingsManager?.IsActive == true && _font != null && _pixel != null)
+        {
+            GraphicsDevice.SetRenderTarget(null);
+            _spriteBatch.Begin(samplerState: SamplerState.LinearClamp);
+            _settingsManager.Draw(this, _spriteBatch, _font, _pixel, winW, winH, _fontRenderer);
+            _spriteBatch.End();
+        }
+
+        IScreenOverlay?[] overlays = { _arrowsMenu, _splashMenu, _countdownMenu, _fontMenu };
+        foreach (var overlay in overlays)
+        {
+            if (overlay?.IsActive != true) continue;
+            GraphicsDevice.SetRenderTarget(null);
+            _spriteBatch.Begin(samplerState: SamplerState.LinearClamp);
+            overlay.Draw(_spriteBatch, winW, winH);
+            _spriteBatch.End();
+        }
+
+        if (includeKeyBindOverlay && _keyBindOverlay.IsActive && _font != null && _pixel != null)
+        {
+            GraphicsDevice.SetRenderTarget(null);
+            _spriteBatch.Begin(samplerState: SamplerState.LinearClamp);
+            _keyBindOverlay.Draw(_spriteBatch, _font, _pixel, winW, winH, _noteStyle);
+            _spriteBatch.End();
+        }
+
+        DrawVolumeToastOverlay(winW);
+    }
+
+    private void DrawVolumeToastOverlay(int winW)
+    {
+        if (_volumeToastTimer <= 0f || _pixel == null || (_font == null && _fontRenderer == null)) return;
+
+        float alpha = Math.Clamp(_volumeToastTimer / 0.35f, 0f, 1f);
+        int boxW = 240;
+        int boxH = 54;
+        int boxX = (winW - boxW) / 2;
+        int boxY = 14;
+
+        GraphicsDevice.SetRenderTarget(null);
+        _spriteBatch.Begin(samplerState: SamplerState.LinearClamp);
+
+        _spriteBatch.Draw(_pixel, new Rectangle(boxX, boxY, boxW, boxH), new Color(16, 18, 28) * (0.90f * alpha));
+        _spriteBatch.Draw(_pixel, new Rectangle(boxX, boxY, boxW, 2), new Color(0xFF, 0x44, 0x88) * (0.85f * alpha));
+        _spriteBatch.Draw(_pixel, new Rectangle(boxX, boxY + boxH - 2, boxW, 2), new Color(0xFF, 0x44, 0x88) * (0.45f * alpha));
+
+        int bars = 10;
+        int barGap = 4;
+        int barW = 14;
+        int totalBarsW = bars * barW + (bars - 1) * barGap;
+        int barsStartX = boxX + (boxW - totalBarsW) / 2;
+        int barsY = boxY + 10;
+        int activeBars = (int)MathF.Round(MusicVolume * bars);
+        for (int i = 0; i < bars; i++)
+        {
+            int bx = barsStartX + i * (barW + barGap);
+            Color bCol = i < activeBars ? Color.White * alpha : Color.White * (0.2f * alpha);
+            _spriteBatch.Draw(_pixel, new Rectangle(bx, barsY, barW, 12), bCol);
+        }
+
+        int pct = (int)Math.Round(MusicVolume * 100);
+        string volTxt = pct == 0 ? "VOLUME: MUTED" : $"VOLUME: {pct}%";
+        if (_fontRenderer != null)
+        {
+            var sz = _fontRenderer.MeasureString(volTxt, 16);
+            _fontRenderer.DrawString(_spriteBatch, volTxt,
+                new Vector2(boxX + (boxW - sz.X) / 2f, boxY + 27), Color.White * alpha, 16);
+        }
+        else if (_font != null)
+        {
+            float scale = 16f / Math.Max(16f, (float)_font.LineSpacing);
+            var sz = _font.MeasureString(volTxt) * scale;
+            _spriteBatch.DrawString(_font, volTxt,
+                new Vector2(boxX + (boxW - sz.X) / 2f, boxY + 27), Color.White * alpha,
+                0f, Vector2.Zero, scale, SpriteEffects.None, 0f);
+        }
+
+        _spriteBatch.End();
+    }
+
+    private (Rectangle bounds, float scale) ComputeLetterbox(int targetW, int targetH)
+    {
+        float scale = Math.Min((float)targetW / _rtWidth, (float)targetH / _rtHeight);
+        int dstW = (int)(_rtWidth * scale);
+        int dstH = (int)(_rtHeight * scale);
+        int dstX = (targetW - dstW) / 2;
+        int dstY = (targetH - dstH) / 2;
+        return (new Rectangle(dstX, dstY, dstW, dstH), scale);
+    }
+
+    /// <summary>
     /// Blits the render target to the actual window with letterboxing (black bars).
     /// Call this at the end of every Draw path, after all rendering to _renderTarget is done.
     /// </summary>
@@ -4734,23 +4826,15 @@ public partial class Game1 : Game
     {
         if (_renderTarget == null) return;
         GraphicsDevice.SetRenderTarget(null);
-        int winW = GraphicsDevice.PresentationParameters.BackBufferWidth;
-        int winH = GraphicsDevice.PresentationParameters.BackBufferHeight;
-
-        // Letterbox: scale to fit while preserving aspect ratio
-        float scaleX = (float)winW / _rtWidth;
-        float scaleY = (float)winH / _rtHeight;
-        float scale  = Math.Min(scaleX, scaleY);
-        int   dstW   = (int)(_rtWidth  * scale);
-        int   dstH   = (int)(_rtHeight * scale);
-        int   dstX   = (winW - dstW) / 2;
-        int   dstY   = (winH - dstH) / 2;
+        var (dst, _) = ComputeLetterbox(
+            GraphicsDevice.PresentationParameters.BackBufferWidth,
+            GraphicsDevice.PresentationParameters.BackBufferHeight);
 
         GraphicsDevice.Clear(Color.Black);
         
         // No shader here - draw render target as-is
         _spriteBatch.Begin(samplerState: SamplerState.LinearClamp);
-        _spriteBatch.Draw(_renderTarget, new Rectangle(dstX, dstY, dstW, dstH), Color.White);
+        _spriteBatch.Draw(_renderTarget, dst, Color.White);
         _spriteBatch.End();
     }
 
@@ -4764,347 +4848,40 @@ public partial class Game1 : Game
     // BASE_W is derived from the level: the width of the world the author designed for.
     // Funky Maker landscape levels use 2160px wide world (standard GameMaker room).
     //
-    // ── GPU Capabilities ──────────────────────────────────────────────────────
-    
-    // MonoGame internal limit (regardless of GPU capability)
-    private const int MONOGAME_MAX_TEXTURE_SIZE = 16384;
-    
-    // P/Invoke para OpenGL (Windows/Linux/Android)
-    [System.Runtime.InteropServices.DllImport("opengl32.dll", EntryPoint = "glGetIntegerv")]
-    private static extern void glGetIntegerv_Windows(int pname, out int value);
-    
-    [System.Runtime.InteropServices.DllImport("libGL.so.1", EntryPoint = "glGetIntegerv")]
-    private static extern void glGetIntegerv_Linux(int pname, out int value);
-    
-    [System.Runtime.InteropServices.DllImport("libGLESv2.so", EntryPoint = "glGetIntegerv")]
-    private static extern void glGetIntegerv_Android(int pname, out int value);
-    
-    private const int GL_MAX_TEXTURE_SIZE = 0x0D33;
-    
+    // ── GPU Capabilities & Texture Helpers ─────────────────────────────────
+    private int GetGpuMaxTextureSize() => FnmmSceneRenderer.GetGpuMaxTextureSize();
+
     /// <summary>
-    /// Gets the maximum texture size supported by the device.
-    /// Returns the MINIMUM of GPU limit and MonoGame internal limit (16384px).
+    /// Decodes PNG bytes via ImageSharp (delegates to shared <see cref="FnmmSceneRenderer"/>).
     /// </summary>
-    private int GetGpuMaxTextureSize()
+    internal static Texture2D? LoadTextureViaImageSharp(GraphicsDevice gd, byte[] pngBytes)
+        => FnmmSceneRenderer.LoadTextureViaImageSharp(gd, pngBytes);
+
+    private Dictionary<string, Texture2D> LoadMultiplayerIcons(string? assetsRoot)
     {
-        try
+        var icons = new Dictionary<string, Texture2D>();
+        if (string.IsNullOrEmpty(assetsRoot)) return icons;
+
+        string dir = Path.Combine(assetsRoot, "images", "ui", "multiplayer");
+        string[] keys = { "connect", "leaderboard", "settings", "back", "lock", "create", "join", "quickplay" };
+        foreach (string key in keys)
         {
-            int gpuMaxSize = 0;
-            
-            // Try to query OpenGL directly based on platform
+            string filePath = Path.Combine(dir, key + ".png");
+            if (!File.Exists(filePath)) continue;
             try
             {
-#if ANDROID
-                glGetIntegerv_Android(GL_MAX_TEXTURE_SIZE, out gpuMaxSize);
-                Console.WriteLine($"[GPU] Device GPU reports max texture size: {gpuMaxSize}px");
-#elif WINDOWS
-                glGetIntegerv_Windows(GL_MAX_TEXTURE_SIZE, out gpuMaxSize);
-                Console.WriteLine($"[GPU] Device GPU reports max texture size: {gpuMaxSize}px");
-#else
-                // Try Linux first, fallback to Windows
-                try
-                {
-                    glGetIntegerv_Linux(GL_MAX_TEXTURE_SIZE, out gpuMaxSize);
-                    Console.WriteLine($"[GPU] Device GPU reports max texture size: {gpuMaxSize}px");
-                }
-                catch
-                {
-                    glGetIntegerv_Windows(GL_MAX_TEXTURE_SIZE, out gpuMaxSize);
-                    Console.WriteLine($"[GPU] Device GPU reports max texture size: {gpuMaxSize}px");
-                }
-#endif
+                Texture2D? iconTex = LoadTextureViaImageSharp(GraphicsDevice, File.ReadAllBytes(filePath));
+                if (iconTex != null)
+                    icons[key] = iconTex;
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"[GPU] Failed to query GPU limit via OpenGL: {ex.Message}");
+                Console.WriteLine($"[Multiplayer] Failed to load icon {key}: {ex.Message}");
             }
-            
-            // Validate GPU query result (sanity check)
-            if (gpuMaxSize <= 0 || gpuMaxSize > 65536)
-            {
-                Console.WriteLine($"[GPU] Invalid GPU limit ({gpuMaxSize}px), using safe fallback");
-#if ANDROID
-                gpuMaxSize = 4096;  // Conservative Android fallback
-#else
-                gpuMaxSize = 16384; // Desktop fallback (MonoGame max)
-#endif
-            }
-            
-            // Apply MonoGame internal limit - never exceed 16384px
-            int finalLimit = Math.Min(gpuMaxSize, MONOGAME_MAX_TEXTURE_SIZE);
-            
-            if (gpuMaxSize > MONOGAME_MAX_TEXTURE_SIZE)
-            {
-                Console.WriteLine($"[GPU] GPU supports {gpuMaxSize}px but MonoGame max is {MONOGAME_MAX_TEXTURE_SIZE}px");
-                Console.WriteLine($"[GPU] Capping at MonoGame limit to prevent issues: {finalLimit}px");
-            }
-            else
-            {
-                Console.WriteLine($"[GPU] Using GPU limit: {finalLimit}px");
-            }
-            
-            return finalLimit;
         }
-        catch (Exception ex)
-        {
-            Console.WriteLine($"[GPU] Error detecting max texture size: {ex.Message}");
-#if ANDROID
-            return 4096;  // Safe Android fallback
-#else
-            return 16384; // Safe desktop fallback (MonoGame max)
-#endif
-        }
-    }
-    
-    // ── Texture splitting ────────────────────────────────────────────────────
-    /// <summary>
-    /// Splits a wide texture strip into individual frame textures using the GPU.
-    /// Each frame is copied via RenderTarget2D + SpriteBatch for perfect quality.
-    /// The source texture is NOT disposed here — caller handles that.
-    /// </summary>
-    private void SplitTextureGpu(Texture2D source, int frameCount, int fw, int fh,
-                                  List<Texture2D> output)
-    {
-        var sb = new SpriteBatch(GraphicsDevice);
-        for (int f = 0; f < frameCount; f++)
-        {
-            var rt = new RenderTarget2D(GraphicsDevice, fw, fh,
-                false, SurfaceFormat.Color, DepthFormat.None,
-                0, RenderTargetUsage.PreserveContents);
-
-            GraphicsDevice.SetRenderTarget(rt);
-            GraphicsDevice.Clear(Color.Transparent);
-
-            sb.Begin(samplerState: SamplerState.PointClamp);
-            sb.Draw(source,
-                destinationRectangle: new Rectangle(0, 0, fw, fh),
-                sourceRectangle:      new Rectangle(f * fw, 0, fw, fh),
-                color:                Color.White);
-            sb.End();
-
-            GraphicsDevice.SetRenderTarget(null);
-            output.Add(rt);
-        }
-        sb.Dispose();
-        Console.WriteLine($"[SplitGpu] Split {frameCount} frames of {fw}x{fh}");
+        return icons;
     }
 
-    /// <summary>
-    /// Splits a wide PNG strip into chunk textures using ImageSharp for high-quality decoding.
-    /// Each chunk holds framesPerChunk frames, keeping textures under GPU size limits.
-    /// </summary>
-    private void SplitPngIntoChunks(byte[] pngBytes, int frameCount, int fw, int fh,
-                                     int framesPerChunk, List<Texture2D> output)
-    {
-        try
-        {
-            using var img = SixLabors.ImageSharp.Image.Load<SixLabors.ImageSharp.PixelFormats.Rgba32>(pngBytes);
-            int chunkCount = (frameCount + framesPerChunk - 1) / framesPerChunk;
-
-            for (int c = 0; c < chunkCount; c++)
-            {
-                int firstFrame    = c * framesPerChunk;
-                int framesInChunk = Math.Min(framesPerChunk, frameCount - firstFrame);
-                int chunkW        = framesInChunk * fw;
-
-                // Crop the chunk region from the full strip
-                var cropRect = new SixLabors.ImageSharp.Rectangle(firstFrame * fw, 0, chunkW, fh);
-                using var chunk = img.Clone(ctx => ctx.Crop(cropRect));
-
-                var chunkTex    = new Texture2D(GraphicsDevice, chunkW, fh);
-                var chunkPixels = new Color[chunkW * fh];
-
-                chunk.ProcessPixelRows(accessor =>
-                {
-                    for (int row = 0; row < accessor.Height; row++)
-                    {
-                        var rowSpan = accessor.GetRowSpan(row);
-                        int rowBase = row * chunkW;
-                        for (int x = 0; x < chunkW; x++)
-                        {
-                            var p = rowSpan[x];
-                            chunkPixels[rowBase + x] = Color.FromNonPremultiplied(p.R, p.G, p.B, p.A);
-                        }
-                    }
-                });
-
-                chunkTex.SetData(chunkPixels);
-                output.Add(chunkTex);
-            }
-            Console.WriteLine($"[SplitChunk] ImageSharp: {chunkCount} chunks, {framesPerChunk} frames each ({fw * framesPerChunk}px wide)");
-        }
-        catch (Exception ex)
-        {
-            Console.WriteLine($"[SplitChunk] ImageSharp failed: {ex.Message}");
-        }
-    }
-
-    /// <summary>
-    /// Splits a wide PNG strip into individual frame textures using ImageSharp.
-    /// Fallback for non-chunk split paths.
-    /// </summary>
-    private void SplitPngIntoFrames(byte[] pngBytes, int frameCount, int fw, int fh,
-                                     List<Texture2D> output)
-    {
-        try
-        {
-            using var img = SixLabors.ImageSharp.Image.Load<SixLabors.ImageSharp.PixelFormats.Rgba32>(pngBytes);
-            for (int f = 0; f < frameCount; f++)
-            {
-                var cropRect = new SixLabors.ImageSharp.Rectangle(f * fw, 0, fw, fh);
-                using var frame = img.Clone(ctx => ctx.Crop(cropRect));
-
-                var frameTex    = new Texture2D(GraphicsDevice, fw, fh);
-                var framePixels = new Color[fw * fh];
-
-                frame.ProcessPixelRows(accessor =>
-                {
-                    for (int row = 0; row < accessor.Height; row++)
-                    {
-                        var rowSpan = accessor.GetRowSpan(row);
-                        int rowBase = row * fw;
-                        for (int x = 0; x < fw; x++)
-                        {
-                            var p = rowSpan[x];
-                            framePixels[rowBase + x] = Color.FromNonPremultiplied(p.R, p.G, p.B, p.A);
-                        }
-                    }
-                });
-
-                frameTex.SetData(framePixels);
-                output.Add(frameTex);
-            }
-            Console.WriteLine($"[SplitPng] ImageSharp: {frameCount} frames of {fw}x{fh}");
-        }
-        catch (Exception ex)
-        {
-            Console.WriteLine($"[SplitPng] ImageSharp failed: {ex.Message}");
-        }
-    }
-
-    /// <summary>
-    /// Splits a single-frame oversized bg PNG into maxTexSize-wide tiles at full quality.
-    /// The last tile may be narrower than tileW if pngW is not a multiple of tileW.
-    /// SpriteAnimator uses ChunkFrames=1 + FrameWidth=tileW to reconstruct the image.
-    /// </summary>
-    private void SplitBgIntoTiles(byte[] pngBytes, int pngW, int pngH, int tileW,
-                                   List<Texture2D> output)
-    {
-        try
-        {
-            using var img = SixLabors.ImageSharp.Image
-                .Load<SixLabors.ImageSharp.PixelFormats.Rgba32>(pngBytes);
-
-            int tileCount = (int)Math.Ceiling((double)pngW / tileW);
-            for (int t = 0; t < tileCount; t++)
-            {
-                int x0          = t * tileW;
-                int actualW     = Math.Min(tileW, pngW - x0);
-                var cropRect    = new SixLabors.ImageSharp.Rectangle(x0, 0, actualW, pngH);
-                using var tile  = img.Clone(ctx => ctx.Crop(cropRect));
-
-                var tileTex     = new Texture2D(GraphicsDevice, actualW, pngH);
-                var tilePixels  = new Color[actualW * pngH];
-                tile.ProcessPixelRows(accessor =>
-                {
-                    for (int row = 0; row < accessor.Height; row++)
-                    {
-                        var rowSpan = accessor.GetRowSpan(row);
-                        int rowBase = row * actualW;
-                        for (int x = 0; x < actualW; x++)
-                        {
-                            var p = rowSpan[x];
-                            tilePixels[rowBase + x] = Color.FromNonPremultiplied(p.R, p.G, p.B, p.A);
-                        }
-                    }
-                });
-                tileTex.SetData(tilePixels);
-                output.Add(tileTex);
-            }
-            Console.WriteLine($"[BgTile] ImageSharp: {tileCount} tiles of {tileW}px (last={Math.Min(tileW, pngW - (tileCount-1)*tileW)}px)");
-        }
-        catch (Exception ex)
-        {
-            Console.WriteLine($"[BgTile] ImageSharp failed: {ex.Message}");
-        }
-    }
-
-    /// <summary>
-    /// Loads a PNG from raw bytes using ImageSharp (handles all PNG variants),
-    /// then uploads the decoded RGBA32 pixels to a MonoGame Texture2D.
-    /// This avoids DirectX's limited PNG format support.
-    /// </summary>
-    private Texture2D? LoadTextureViaImageSharp(GraphicsDevice gd, byte[] pngBytes)
-    {
-        using var ms  = new MemoryStream(pngBytes);
-        // Use DecoderOptions to ignore color profiles that can cause incorrect colors
-        var decoderOptions = new SixLabors.ImageSharp.Formats.DecoderOptions
-        {
-            SkipMetadata = true,
-        };
-        using var img = SixLabors.ImageSharp.Image
-            .Load<SixLabors.ImageSharp.PixelFormats.Rgba32>(decoderOptions, ms);
-
-        int srcW = img.Width;
-        int srcH = img.Height;
-        if (srcW <= 0 || srcH <= 0) return null;
-        if (srcW > 16384 || srcH > 16384) return null;
-        // DirectX requires width to be a multiple of 4.
-        // If not, pad the image to the next multiple of 4 using ImageSharp,
-        // so tex.Width stays consistent with what SpriteAnimator expects.
-        int texW = (srcW + 3) & ~3;
-        int texH = srcH;
-
-        SixLabors.ImageSharp.Image<SixLabors.ImageSharp.PixelFormats.Rgba32> source = img;
-        SixLabors.ImageSharp.Image<SixLabors.ImageSharp.PixelFormats.Rgba32>? padded = null;
-
-        if (texW != srcW)
-        {
-            // Pad right side with transparent pixels — copy manually for reliability
-            padded = new SixLabors.ImageSharp.Image<SixLabors.ImageSharp.PixelFormats.Rgba32>(texW, texH);
-            img.ProcessPixelRows(padded, (srcAcc, dstAcc) =>
-            {
-                for (int y = 0; y < srcH; y++)
-                {
-                    var srcRow = srcAcc.GetRowSpan(y);
-                    var dstRow = dstAcc.GetRowSpan(y);
-                    srcRow.CopyTo(dstRow);
-                    // Remaining pixels in dstRow are already default (transparent)
-                }
-            });
-            source = padded;
-        }
-
-        var pixels = new Microsoft.Xna.Framework.Color[texW * texH];
-        source.ProcessPixelRows(accessor =>
-        {
-            for (int y = 0; y < texH; y++)
-            {
-                var row     = accessor.GetRowSpan(y);
-                int rowBase = y * texW;
-                for (int x = 0; x < texW; x++)
-                {
-                    var p = row[x];
-                    pixels[rowBase + x] = Microsoft.Xna.Framework.Color.FromNonPremultiplied(p.R, p.G, p.B, p.A);
-                }
-            }
-        });
-
-        padded?.Dispose();
-
-        var tex = new Texture2D(gd, texW, texH, false, Microsoft.Xna.Framework.Graphics.SurfaceFormat.Color);
-        try
-        {
-            tex.SetData(pixels);
-        }
-        catch (Exception ex)
-        {
-            tex.Dispose();
-            Console.WriteLine($"[Texture] SetData failed {texW}x{texH} (src {srcW}x{srcH}): {ex.Message}");
-            return null;
-        }
-        return tex;
-    }
     private static string? FindAssetsRoot()
     {
 #if ANDROID
@@ -5177,6 +4954,7 @@ public partial class Game1 : Game
         // Look for the Assets folder relative to exe or working directory
         string[] candidates =
         {
+            Path.Combine(PlatformPaths.GetAppBaseDirectory(), "Assets"),
             Path.Combine(AppContext.BaseDirectory, "Assets"),
             Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "Assets"),
             Path.Combine(Directory.GetCurrentDirectory(), "Assets"),
@@ -5575,19 +5353,12 @@ public partial class Game1 : Game
 
     /// <summary>
     /// Draws ALL scene objects in their index order, switching camera transform
-    /// per-object. This preserves the author's intended layering — fixed objects
-    /// can appear above or below world objects.
+    /// per-object via the shared <see cref="FnmmSceneRenderer"/> pipeline.
     /// </summary>
     private void DrawSceneOrdered(int sw, int sh, Matrix camMatrix)
     {
         if (_level == null) return;
-        var objs = _level.Scene.Objects;
 
-        Matrix fixedWorldMatrix = BuildFixedMatrix(sw, sh);
-        int  currentMode     = -1;
-        bool currentBilinear = true;
-
-        // Apply color grading shader parameters if enabled (FNF Erect-style - Subtle!)
         Effect? activeEffect = null;
         if (ColorGradeEnabled && _colorGradeShader != null)
         {
@@ -5602,184 +5373,13 @@ public partial class Game1 : Game
                 ColorGradeShadowTintG,
                 ColorGradeShadowTintB
             ));
-            
-            // Set technique
             if (_colorGradeShader.Techniques.Count > 0)
-            {
                 _colorGradeShader.CurrentTechnique = _colorGradeShader.Techniques[0];
-            }
         }
 
-        for (int i = 0; i < objs.Count; i++)
-        {
-            var obj  = objs[i];
-            var anim = i < _objAnimators.Length ? _objAnimators[i] : null;
-            if (anim == null)
-            {
-                if (i < objs.Count && !string.IsNullOrEmpty(objs[i].Spr))
-                    Console.WriteLine($"[Scene] Object {i} ({objs[i].Spr}) has no animator — sprite missing from level?");
-                continue;
-            }
-
-            // Use bilinear from JSON if sprite specifies it, otherwise use global setting
-            bool wantBilinear = anim?.CurrentBilinear ?? false;
-            int  wantMode;
-
-            var pos = obj.GetPosition();
-            var scale = obj.GetScale();
-
-            // Check if object has Transform array (for scrollFactor)
-            // scrollFactor applies to all objects with Transform array, regardless of count
-            bool hasTransformArray = obj.Transform != null && obj.Transform.Count > 0;
-            bool hasPositionEvents = hasTransformArray && _events != null && _events.HasPositionEvents(i);
-
-            // Log first 3 visible objects once at start
-            // Removed spammy debug log
-
-            if (!obj.Fixed)
-                wantMode = 0;
-            else
-            {
-                // Use initial coordinates (obj.X/Y) to determine if normalized, not current position
-                bool normalized = obj.X >= 0f && obj.X <= 1f && obj.Y >= 0f && obj.Y <= 1f;
-                wantMode = normalized ? 1 : 2;
-            }
-
-            // For Fixed objects with position events using pixel coords (wantMode 2),
-            // use null matrix (like wantMode 1) to avoid fixedWorldMatrix transformation
-            int matrixMode = wantMode;
-            if (obj.Fixed && wantMode == 2 && hasPositionEvents)
-            {
-                matrixMode = 1; // Use null matrix for rendering
-            }
-
-            if (matrixMode != currentMode || wantBilinear != currentBilinear)
-            {
-                if (currentMode >= 0) _spriteBatch.End();
-                Matrix? matrix = matrixMode == 0 ? camMatrix
-                               : matrixMode == 2 ? fixedWorldMatrix
-                               : (Matrix?)null;
-                var sampler = wantBilinear ? SamplerState.LinearClamp : SamplerState.PointClamp;
-                // Apply shader effect here (only to scene objects, not to HUD/arrows)
-                _spriteBatch.Begin(SpriteSortMode.Immediate, BlendState.AlphaBlend,
-                    sampler, null, null, activeEffect, matrix);
-                currentMode     = matrixMode;
-                currentBilinear = wantBilinear;
-            }
-
-            // Check for active tween
-            bool hasActiveTween = _events != null && _events.HasActiveTween(i);
-            
-            // Update position and scale if NOT controlled by active tween
-            if (!hasActiveTween)
-            {
-                if (obj.Fixed && wantMode == 2 && hasPositionEvents)
-                {
-                    // Fixed pixel-coordinate objects with position events:
-                    // EventProcessor controls position/scale via tweens - don't override
-                    // Position is already set by EventProcessor in anim.Position
-                }
-                else if (!hasPositionEvents || hasTransformArray)
-                {
-                    Vector2 finalPos = new Vector2(pos.X, pos.Y);
-                    
-                    // Apply scrollFactor for parallax depth effect (FNF/HaxeFlixel style)
-                    // FunkyMaker behavior:
-                    //   - Objects with scrollFactor < 1.0 appear to move slower (parallax background)
-                    //   - BUT they must arrive at their final position when camera transition completes
-                    //   - The parallax effect is visual only - not a timing delay
-                    //
-                    // Formula: finalPos = objectWorldPos - (cameraCurrentPos * (scrollFactor - 1.0))
-                    // This ensures objects reach their final screen position in sync with camera,
-                    // but appear to move at different speeds during transition.
-                    if (hasTransformArray)
-                    {
-                        Vec2 scrollFactor = obj.GetScrollFactor();
-                        var cam = _events?.Camera;
-                        
-                        if (cam != null && anim != null && (Math.Abs(scrollFactor.X - 1f) > 0.001f || Math.Abs(scrollFactor.Y - 1f) > 0.001f))
-                        {
-                            // Clamp scrollFactor to valid range [0.01, 4.0]
-                            float clampedFactorX = Math.Clamp(scrollFactor.X, 0.01f, 4.0f);
-                            float clampedFactorY = Math.Clamp(scrollFactor.Y, 0.01f, 4.0f);
-                            
-                            // FunkyMaker scrollFactor formula:
-                            // scrollFactor determines what PERCENTAGE of camera movement affects the object
-                            // - scrollFactor = 1.0: object moves 100% with camera (normal, no parallax)
-                            // - scrollFactor = 0.7: object moves 70% with camera (slower background)
-                            // - scrollFactor = 0.5: object moves 50% with camera (much slower background)
-                            // 
-                            // Formula: finalPos = worldPos + (cameraPos * (1.0 - scrollFactor))
-                            // This makes the object appear to move slower by offsetting it based on camera movement
-                            finalPos.X = pos.X + cam.X * (1.0f - clampedFactorX);
-                            finalPos.Y = pos.Y + cam.Y * (1.0f - clampedFactorY);
-                            
-                            // Debug log once per level (prevent spam)
-                            if (!_parallaxLoggedOnce && i < 3)
-                            {
-                                Console.WriteLine($"[FunkyMaker-Parallax] Obj{i}: world=({pos.X:F0},{pos.Y:F0}) cam=({cam.X:F0},{cam.Y:F0}) scroll=({clampedFactorX:F2},{clampedFactorY:F2}) offset=({cam.X * (1.0f - clampedFactorX):F0},{cam.Y * (1.0f - clampedFactorY):F0}) → final=({finalPos.X:F0},{finalPos.Y:F0})");
-                                if (i == 2) _parallaxLoggedOnce = true;  // Mark as logged after 3rd object
-                            }
-                        }
-                    }
-                    
-                    if (anim != null)
-                    {
-                        anim.Position = finalPos;
-                        anim.Scale = new Vector2(scale.X, scale.Y);
-                    }
-                }
-            }
-            
-            // Ensure anim is not null before continuing
-            if (anim == null) continue;
-            
-            // Set FixedPixelScale for Fixed objects (using Blazor logic)
-            if (obj.Fixed)
-            {
-                if (wantMode == 1)
-                {
-                    // Normalized coordinates (0-1): scale to screen pixels and apply FixedPixelScale
-                    // Only update position if no active tween (EventProcessor controls during tweens)
-                    if (!hasActiveTween)
-                    {
-                        anim.Position = new Vector2(pos.X * sw, pos.Y * sh);
-                    }
-                    const float CAM_W = 1920f;
-                    const float CAM_H = 1080f;
-                    float camScale = _events?.Camera.Scale ?? 1f;
-                    float actual = Math.Min((float)sw / (CAM_W * camScale), (float)sh / (CAM_H * camScale));
-                    float basePs = Math.Min((float)sw / CAM_W, (float)sh / CAM_H);
-                    anim.FixedPixelScale = Math.Min(actual, basePs);
-                }
-                else // wantMode == 2
-                {
-                    // Fixed world coordinates (mode 2): use same FixedPixelScale formula as mode 1
-                    // Only update position if no position events AND no active tween
-                    if (!hasPositionEvents && !hasActiveTween)
-                    {
-                        // No position events: update position from Transform
-                        anim.Position = new Vector2(pos.X, pos.Y);
-                    }
-                    // else: EventProcessor controls position via tweens, keep current anim.Position
-                    
-                    const float CAM_W = 1920f;
-                    const float CAM_H = 1080f;
-                    float camScale = _events?.Camera.Scale ?? 1f;
-                    float actual = Math.Min((float)sw / (CAM_W * camScale), (float)sh / (CAM_H * camScale));
-                    float basePs = Math.Min((float)sw / CAM_W, (float)sh / CAM_H);
-                    anim.FixedPixelScale = Math.Min(actual, basePs);
-                }
-            }
-            else
-            {
-                anim.FixedPixelScale = 0f;
-            }
-
-            anim.Draw(_spriteBatch);
-        }
-
-        if (currentMode >= 0) _spriteBatch.End();
+        FnmmSceneRenderer.DrawSceneOrdered(
+            _spriteBatch, _level, _objAnimators, _events, _cameraManager,
+            sw, sh, camMatrix, activeEffect, includeFixedOverlays: true);
     }
 
     /// <summary>
@@ -5850,13 +5450,6 @@ public partial class Game1 : Game
                 transformMatrix: worldOnly ? _lastCamMatrix : (Matrix?)null,
                 samplerState: SamplerState.LinearClamp);
         }
-    }
-
-    private void ShowJudgement(string text, Color color)
-    {
-        _judgementText  = text;
-        _judgementColor = color;
-        _judgementTimer = JUDGEMENT_SHOW;
     }
 
     // ── Notes drawing ────────────────────────────────────────────────────────
@@ -5935,6 +5528,13 @@ public partial class Game1 : Game
             }
         }
 
+        if (!HudSettings.Instance.MasterHudVisible || !NoteRenderer.ShowStrumlines)
+        {
+            for (int i = 0; i < count; i++)
+                _noteRenderers[i].Draw(_spriteBatch, _songTime, _font);
+            return;
+        }
+
         // Draw all strumlines — opponent first, player on top
         for (int i = count - 1; i >= 0; i--)
         {
@@ -5943,8 +5543,13 @@ public partial class Game1 : Game
             {
                 _noteRenderers[i].Alpha = 0f;
             }
-            // Opponent strumline (1): ALWAYS show during multiplayer, respect setting otherwise
-            else if (i == 1 && HideOpponentStrumline && !_isMultiplayerMatch)
+            // Opponent strumline (1): use multiplayer ghost/visibility settings when in multiplayer
+            else if (i == 1)
+            {
+                _noteRenderers[i].Alpha = GetOpponentStrumlineAlpha();
+            }
+            // Player strumline (0): respect HidePlayerStrumline setting in single-player
+            else if (i == 0 && NoteRenderer.HidePlayerStrumline && !_isMultiplayerMatch)
             {
                 _noteRenderers[i].Alpha = 0f;
             }
@@ -5956,528 +5561,9 @@ public partial class Game1 : Game
         }
     }
 
-    // ── HUD ──────────────────────────────────────────────────────────────────
+    // ── HUD, screen flashes & error overlays (extracted to UI/GameplayHudOverlay.cs & UI/ErrorOverlay.cs) ──
 
-    /// <summary>
-    /// Draws a health bar icon using its SpriteAnimator.
-    /// destX/destY/size define the bounding square in screen-space pixels.
-    /// The icon is scaled to fit while preserving aspect ratio, centered in the square.
-    /// flipX=true mirrors the icon (player icon faces left in FNF).
-    /// bounceScale applies additional scaling for beat bounce animation.
-    /// </summary>
-    private void DrawIcon(SpriteAnimator? anim, int destX, int destY, int size, bool flipX, float bounceScale = 1.0f)
-    {
-        if (anim == null) return;
-        var (tex, src) = anim.GetCurrentFrameTexture();
-        if (tex == null || src.Width <= 0 || src.Height <= 0) return;
-
-        // Scale to fit the bounding square, preserving aspect ratio
-        float scaleX = (float)size / src.Width;
-        float scaleY = (float)size / src.Height;
-        float scale  = Math.Min(scaleX, scaleY) * bounceScale;  // Apply bounce scale
-
-        int drawW = (int)(src.Width  * scale);
-        int drawH = (int)(src.Height * scale);
-
-        // Center within the bounding square (bounce scales from center)
-        int drawX = destX + (size - drawW) / 2;
-        int drawY = destY + (size - drawH) / 2;
-
-        var dest = new Rectangle(drawX, drawY, drawW, drawH);
-        var fx   = flipX ? SpriteEffects.FlipHorizontally : SpriteEffects.None;
-
-        // Use bilinear filtering for icons if the animator requests it
-        var sampler = anim.CurrentBilinear
-            ? SamplerState.LinearClamp
-            : SamplerState.PointClamp;
-
-        // SpriteBatch is already open — we can't change sampler mid-batch.
-        // DrawIcon is called inside the HUD spriteBatch.Begin(PointClamp) block,
-        // so we just draw normally; bilinear is a nice-to-have, not critical here.
-        _spriteBatch.Draw(tex, dest, src, Color.White, 0f, Vector2.Zero, fx, 0f);
-    }
-
-    private void DrawHUD(int sw, int sh)
-    {
-        // GUI event can hide the entire engine HUD (health bar, score, timer, etc.)
-        if (_events?.HudVisible == false) return;
-
-        // Get HUD settings (adjust for downscroll if needed)
-        var hudSettings = NoteRenderer.Downscroll 
-            ? HudSettings.Instance.GetDownscrollAdjusted(sh) 
-            : HudSettings.Instance;
-
-        // ── Health bar (FNF style) ───────────────────────────────────────────
-        // If the level has its own "barra" sprite object, it handles the bar visually.
-        // We still draw the engine bar so health is always visible, but skip it
-        // when the level provides its own UI layer.
-        bool levelHasOwnBar = _level != null &&
-            _level.Scene.Objects.Exists(o => o.Spr == "barra" && o.Fixed);
-
-        if (!levelHasOwnBar && _healthBar != null)
-        {
-            _healthBar.Draw(sh, NoteRenderer.Downscroll);
-        }
-        
-        if (_font == null || _noteRenderers.Count == 0 || _level == null) return;
-
-        // Get player renderer (strumline 0)
-        var playerRenderer = _noteRenderers.Count > 0 ? _noteRenderers[0] : null;
-        if (playerRenderer == null) return;
-
-        // ── Stats below health bar (FNF style) ───────────────────────────────
-        if (!levelHasOwnBar)
-        {
-            // ── MULTIPLAYER HUD ──────────────────────────────────────────────
-            if (_isMultiplayerMatch && _font != null && _pixel != null && _noteRenderers.Count >= 2)
-            {
-                float statsScale = 0.75f;
-                var playerRend = _noteRenderers[0];
-                
-                // ── SPLIT HEALTH BARS (Left: Opponent, Right: Player) ────────
-                int barWidth = 300;
-                int barHeight = 20;
-                int barY = sh - 100; // Position near bottom
-                
-                // Left side: Opponent health bar
-                int opponentBarX = sw / 4 - barWidth / 2; // Center of left quarter
-                
-                // Opponent bar background
-                DrawRect(opponentBarX - 3, barY - 3, barWidth + 6, barHeight + 6, Color.Black * 0.6f);
-                DrawRect(opponentBarX - 2, barY - 2, barWidth + 4, barHeight + 4, Color.Black);
-                DrawRect(opponentBarX, barY, barWidth, barHeight, new Color(30, 30, 30));
-                
-                // Opponent health fill (full = 100%, empty = 0%)
-                int opponentHealthW = (int)(_opponentHealth * barWidth);
-                for (int i = 0; i < opponentHealthW; i++)
-                {
-                    float t = (float)i / barWidth;
-                    Color opponentColor = _healthBar?.OpponentBarColor ?? new Color(0xFF, 0x00, 0x00);
-                    Color c = Color.Lerp(opponentColor * 0.7f, opponentColor * 1.1f, t);
-                    DrawRect(opponentBarX + i, barY, 1, barHeight, c);
-                }
-                
-                // Opponent icon above bar
-                int iconSize = 80;
-                int opponentIconX = opponentBarX + barWidth / 2 - iconSize / 2;
-                int opponentIconY = barY - iconSize - 10;
-                if (_healthBar?.OpponentIcon != null)
-                {
-                    var (tex, src) = _healthBar.OpponentIcon.GetCurrentFrameTexture();
-                    if (tex != null && src.Width > 0 && src.Height > 0)
-                    {
-                        float scale = (float)iconSize / Math.Max(src.Width, src.Height);
-                        int drawW = (int)(src.Width * scale);
-                        int drawH = (int)(src.Height * scale);
-                        int drawX = opponentIconX + (iconSize - drawW) / 2;
-                        int drawY = opponentIconY + (iconSize - drawH) / 2;
-                        _spriteBatch.Draw(tex, new Rectangle(drawX, drawY, drawW, drawH), src, Color.White);
-                    }
-                }
-                
-                // Opponent stats below bar
-                string opponentStats = $"{_opponentName ?? "Opponent"}\nScore: {_opponentScore}\nHealth: {(_opponentHealth * 100):F0}%";
-                Vector2 opponentStatsSize = _font.MeasureString(opponentStats) * statsScale;
-                Vector2 opponentStatsPos = new Vector2(opponentBarX + barWidth / 2 - opponentStatsSize.X / 2, barY + barHeight + 8);
-                
-                _spriteBatch.DrawString(_font, opponentStats,
-                    opponentStatsPos + new Vector2(2, 2), Color.Black * 0.7f, 
-                    0f, Vector2.Zero, statsScale, SpriteEffects.None, 0f);
-                _spriteBatch.DrawString(_font, opponentStats,
-                    opponentStatsPos, new Color(255, 100, 100), 
-                    0f, Vector2.Zero, statsScale, SpriteEffects.None, 0f);
-                
-                // Right side: Player health bar
-                int playerBarX = (sw * 3) / 4 - barWidth / 2; // Center of right quarter
-                
-                // Player bar background
-                DrawRect(playerBarX - 3, barY - 3, barWidth + 6, barHeight + 6, Color.Black * 0.6f);
-                DrawRect(playerBarX - 2, barY - 2, barWidth + 4, barHeight + 4, Color.Black);
-                DrawRect(playerBarX, barY, barWidth, barHeight, new Color(30, 30, 30));
-                
-                // Player health fill
-                float playerHealth = _healthBar?.Health ?? 0.5f;
-                int playerHealthW = (int)(playerHealth * barWidth);
-                for (int i = 0; i < playerHealthW; i++)
-                {
-                    float t = (float)i / barWidth;
-                    Color playerColor = _healthBar?.PlayerBarColor ?? new Color(0x66, 0xFF, 0x66);
-                    Color c = Color.Lerp(playerColor * 0.7f, playerColor * 1.1f, t);
-                    DrawRect(playerBarX + i, barY, 1, barHeight, c);
-                }
-                
-                // Player icon above bar
-                int playerIconX = playerBarX + barWidth / 2 - iconSize / 2;
-                int playerIconY = barY - iconSize - 10;
-                if (_healthBar?.PlayerIcon != null)
-                {
-                    var (tex, src) = _healthBar.PlayerIcon.GetCurrentFrameTexture();
-                    if (tex != null && src.Width > 0 && src.Height > 0)
-                    {
-                        float scale = (float)iconSize / Math.Max(src.Width, src.Height);
-                        int drawW = (int)(src.Width * scale);
-                        int drawH = (int)(src.Height * scale);
-                        int drawX = playerIconX + (iconSize - drawW) / 2;
-                        int drawY = playerIconY + (iconSize - drawH) / 2;
-                        _spriteBatch.Draw(tex, new Rectangle(drawX, drawY, drawW, drawH), src, Color.White);
-                    }
-                }
-                
-                // Player stats below bar
-                int totalPlayerNotes = playerRend.Sicks + playerRend.Goods + playerRend.Bads + 
-                                     playerRend.Shits + playerRend.Misses;
-                float playerAccuracy = 100f;
-                if (totalPlayerNotes > 0)
-                {
-                    float weightedHits = (playerRend.Sicks * 1.0f) + (playerRend.Goods * 0.75f) + 
-                                        (playerRend.Bads * 0.5f) + (playerRend.Shits * 0.25f);
-                    playerAccuracy = (weightedHits / totalPlayerNotes) * 100f;
-                }
-                
-                string playerStats = $"You\nScore: {playerRend.Score}\nAccuracy: {playerAccuracy:F0}%\nCombo: x{playerRend.Combo}";
-                Vector2 playerStatsSize = _font.MeasureString(playerStats) * statsScale;
-                Vector2 playerStatsPos = new Vector2(playerBarX + barWidth / 2 - playerStatsSize.X / 2, barY + barHeight + 8);
-                
-                _spriteBatch.DrawString(_font, playerStats,
-                    playerStatsPos + new Vector2(2, 2), Color.Black * 0.7f, 
-                    0f, Vector2.Zero, statsScale, SpriteEffects.None, 0f);
-                _spriteBatch.DrawString(_font, playerStats,
-                    playerStatsPos, new Color(100, 255, 100), 
-                    0f, Vector2.Zero, statsScale, SpriteEffects.None, 0f);
-                
-                // ── CENTER INFO (Accuracy & Score comparison) ─────────────────
-                float centerScale = 0.9f;
-                int centerY = sh - 180;
-                
-                // Accuracy comparison
-                string accuracyText = $"Accuracy: {playerAccuracy:F1}%";
-                Vector2 accuracySize = _font.MeasureString(accuracyText) * centerScale;
-                Vector2 accuracyPos = new Vector2(sw / 2 - accuracySize.X / 2, centerY);
-                
-                _spriteBatch.DrawString(_font, accuracyText,
-                    accuracyPos + new Vector2(2, 2), Color.Black * 0.7f, 
-                    0f, Vector2.Zero, centerScale, SpriteEffects.None, 0f);
-                _spriteBatch.DrawString(_font, accuracyText,
-                    accuracyPos, Color.White, 
-                    0f, Vector2.Zero, centerScale, SpriteEffects.None, 0f);
-                
-                // Score comparison
-                int scoreDiff = playerRend.Score - _opponentScore;
-                string scoreText = scoreDiff >= 0 ? $"+{scoreDiff}" : $"{scoreDiff}";
-                Color scoreColor = scoreDiff >= 0 ? new Color(100, 255, 100) : new Color(255, 100, 100);
-                
-                Vector2 scoreSize = _font.MeasureString(scoreText) * centerScale;
-                Vector2 scorePos = new Vector2(sw / 2 - scoreSize.X / 2, centerY + 30);
-                
-                _spriteBatch.DrawString(_font, scoreText,
-                    scorePos + new Vector2(2, 2), Color.Black * 0.7f, 
-                    0f, Vector2.Zero, centerScale, SpriteEffects.None, 0f);
-                _spriteBatch.DrawString(_font, scoreText,
-                    scorePos, scoreColor, 
-                    0f, Vector2.Zero, centerScale, SpriteEffects.None, 0f);
-                
-                // ── PING INDICATOR ────────────────────────────────────────────
-                int ping = Multiplayer.NetworkManager.Instance.Ping;
-                var quality = Multiplayer.NetworkManager.Instance.Quality;
-                
-                // Determine color based on ping quality
-                Color pingColor = quality switch
-                {
-                    Multiplayer.ConnectionQuality.Excellent => new Color(100, 255, 100),  // Green
-                    Multiplayer.ConnectionQuality.Good => new Color(150, 255, 150),       // Light green
-                    Multiplayer.ConnectionQuality.Fair => Color.Yellow,                   // Yellow
-                    Multiplayer.ConnectionQuality.Poor => new Color(255, 150, 0),         // Orange
-                    Multiplayer.ConnectionQuality.Critical => new Color(255, 50, 50),     // Red
-                    _ => Color.Gray                                                        // Unknown
-                };
-                
-                string pingText = ping > 0 ? $"{ping}ms" : "...";
-                float pingScale = 0.7f;
-                Vector2 pingSize = _font.MeasureString(pingText) * pingScale;
-                Vector2 pingPos = new Vector2(sw / 2 - pingSize.X / 2, centerY + 65);
-                
-                // Ping background (subtle)
-                DrawRect((int)(pingPos.X - 5), (int)(pingPos.Y - 2), (int)(pingSize.X + 10), (int)(pingSize.Y + 4), 
-                         Color.Black * 0.5f);
-                
-                // Ping shadow
-                _spriteBatch.DrawString(_font, pingText,
-                    pingPos + new Vector2(1, 1), Color.Black * 0.7f, 
-                    0f, Vector2.Zero, pingScale, SpriteEffects.None, 0f);
-                
-                // Ping text
-                _spriteBatch.DrawString(_font, pingText,
-                    pingPos, pingColor, 
-                    0f, Vector2.Zero, pingScale, SpriteEffects.None, 0f);
-            }
-            // ── SINGLEPLAYER HUD ─────────────────────────────────────────────
-            else
-            {
-                // DOWNSCROLL MODE: stats positioned relative to healthbar
-                float statsScale = 0.85f;
-                
-                // Calculate accuracy using FNF rating system
-                int totalNotes = playerRenderer.Sicks + playerRenderer.Goods + playerRenderer.Bads + 
-                               playerRenderer.Shits + playerRenderer.Misses;
-                float accuracy = 100f;
-                if (totalNotes > 0)
-                {
-                    float weightedHits = (playerRenderer.Sicks * 1.0f) + (playerRenderer.Goods * 0.75f) + 
-                                        (playerRenderer.Bads * 0.5f) + (playerRenderer.Shits * 0.25f);
-                    accuracy = (weightedHits / totalNotes) * 100f;
-                }
-                
-                // Score (using HudSettings position)
-                string scoreText = $"Score: {playerRenderer.Score}";
-                Vector2 scorePos = new Vector2(hudSettings.ScorePosition.X, hudSettings.ScorePosition.Y);
-                // Shadow
-                _spriteBatch.DrawString(_font!, Safe(scoreText),
-                    scorePos + new Vector2(2, 2), Color.Black * 0.7f, 0f, Vector2.Zero, statsScale, SpriteEffects.None, 0f);
-                // Main text
-                _spriteBatch.DrawString(_font!, Safe(scoreText),
-                    scorePos, Color.White, 0f, Vector2.Zero, statsScale, SpriteEffects.None, 0f);
-                
-                // Misses (using HudSettings position)
-                string missesText = $"Misses: {playerRenderer.Misses}";
-                Vector2 missesPos = new Vector2(hudSettings.MissesPosition.X, hudSettings.MissesPosition.Y);
-                Color missesColor = playerRenderer.Misses > 0 ? new Color(255, 100, 100) : Color.White;
-                // Shadow
-                _spriteBatch.DrawString(_font!, Safe(missesText),
-                    missesPos + new Vector2(2, 2), Color.Black * 0.7f, 0f, Vector2.Zero, statsScale, SpriteEffects.None, 0f);
-                // Main text
-                _spriteBatch.DrawString(_font!, Safe(missesText),
-                    missesPos, missesColor, 0f, Vector2.Zero, statsScale, SpriteEffects.None, 0f);
-                
-                // Accuracy (using HudSettings position)
-                string accuracyText = $"Accuracy: {accuracy:F1}%";
-                Color accColor = accuracy >= 95f ? new Color(100, 255, 100) : 
-                               accuracy >= 80f ? Color.Yellow : 
-                               accuracy >= 60f ? new Color(255, 200, 100) : 
-                               new Color(255, 100, 100);
-                Vector2 accPos = new Vector2(hudSettings.AccuracyPosition.X, hudSettings.AccuracyPosition.Y);
-                // Shadow
-                _spriteBatch.DrawString(_font!, Safe(accuracyText),
-                    accPos + new Vector2(2, 2), Color.Black * 0.7f, 0f, Vector2.Zero, statsScale, SpriteEffects.None, 0f);
-                // Main text
-                _spriteBatch.DrawString(_font!, Safe(accuracyText),
-                    accPos, accColor, 0f, Vector2.Zero, statsScale, SpriteEffects.None, 0f);
-            }
-        }
-
-        // ── Song timer bar ──────────────────────────────────────────────────────
-        if (_timerBar != null)
-        {
-            // Sync configuration from Game1 static fields
-            _timerBar.ShowTimer = ShowTimer;
-            _timerBar.Preset = TimerPreset;
-            _timerBar.TextMode = TimerTextMode;
-            _timerBar.ForceTop = TimerForceTop;
-            _timerBar.ColorPreset = TimerColorPreset;
-            _timerBar.Position = new Point(hudSettings.TimerBarPosition.X, hudSettings.TimerBarPosition.Y);
-            _timerBar.Size = new Point(hudSettings.TimerBarSize.X, hudSettings.TimerBarSize.Y);
-            
-            // Draw timer bar
-            _timerBar.Draw(sw, sh, _songTime, _songEndTime, NoteRenderer.Downscroll, 
-                         _level?.LevelName, _healthBar?.PlayerBarColor, _healthBar?.OpponentBarColor, _started);
-        }
-
-        // Song info (using HudSettings position) with shadow
-        Vector2 songInfoPos = new Vector2(hudSettings.SongInfoPosition.X, hudSettings.SongInfoPosition.Y);
-        float songScale = 1.0f;
-        string songTitle = Safe(_level.LevelName);
-        
-        // Shadow for better readability
-        _spriteBatch.DrawString(_font, songTitle,
-            songInfoPos + new Vector2(2, 2), Color.Black * 0.7f, 0f, Vector2.Zero, songScale, SpriteEffects.None, 0f);
-        
-        // Main text
-        _spriteBatch.DrawString(_font, songTitle,
-            songInfoPos, Color.White, 0f, Vector2.Zero, songScale, SpriteEffects.None, 0f);
-        
-        
-        // Debug Info: Level technical details (always top-left below song title and FPS)
-        if (ShowDebugInfo)
-        {
-            float debugInfoY = 48; // Fixed position below song title
-            _spriteBatch.DrawString(_font,
-                Safe($"BPM: {_level.Data.EffectiveBpm}  Beat: {_songBeats:F1}"),
-                new Vector2(20, debugInfoY), Color.White * 0.5f);
-            if (_events != null)
-            {
-                float debugCamY = 58; // Fixed position
-                float worldW   = _level?.Scene.Landscape == true ? 2160f : 1920f;
-                float worldH   = _level?.Scene.Landscape == true ? 1920f : 2160f;
-                float dbgScale = _cameraManager?.GetEffectiveScale(_events.Camera) ?? 1f;
-                float dbgPx    = Math.Min((float)_rtWidth  / (worldW * dbgScale),
-                                          (float)_rtHeight / (worldH * dbgScale));
-                float dbgSx = (_events.Camera.X) * dbgPx;
-                float dbgSy = (_events.Camera.Y) * dbgPx;
-                _spriteBatch.DrawString(_font,
-                    Safe($"Cam: ({_events.Camera.X:F0},{_events.Camera.Y:F0}) zoom={_events.Camera.Scale:F3} base={_events.Camera.BaseScale:F3} px={dbgPx:F3}" +
-                         (_cameraManager?.HasManualOverride == true ? $" [manual:{_cameraManager.ScaleOverride:F2}]" : "") +
-                         (_events.HasCameraEvents ? " [EVENT]" : $" [AUTO→({_events.AutoCamTargetX:F0},{_events.AutoCamTargetY:F0})]")),
-                    new Vector2(20, debugCamY), Color.Cyan * 0.7f);
-
-                // Show unknown event types encountered so far — helps identify missing implementations
-                var unknown = _events.UnknownEventTypes;
-                if (unknown.Count > 0)
-                {
-                    string unknownStr = "UNKNOWN EVENTS: " + string.Join(", ", unknown);
-                    _spriteBatch.DrawString(_font, Safe(unknownStr),
-                        new Vector2(20, 76), new Color(255, 80, 80) * 0.9f);
-                }
-            }
-        }
-        
-        // FPS Counter: Platform-adaptive display (if enabled)
-        if (ShowFpsCounter)
-        {
-            float fps = (float)(1.0 / Math.Max(0.0001, _lastDt));
-            
-#if ANDROID
-            // Mobile: Top-right corner with background for better visibility
-            string fpsText = Safe($"FPS: {fps:F0}");
-            Vector2 textSize = _font.MeasureString(fpsText);
-            Vector2 fpsPos = new Vector2(sw - textSize.X - 20, 20);
-            
-            // Background box for contrast
-            Rectangle bgBox = new Rectangle(
-                (int)(fpsPos.X - 8),
-                (int)(fpsPos.Y - 4),
-                (int)(textSize.X + 16),
-                (int)(textSize.Y + 8)
-            );
-            _spriteBatch.Draw(_pixel, bgBox, Color.Black * 0.7f);
-            
-            // Color-coded FPS (green = good, yellow = ok, red = bad)
-            Color fpsColor = fps >= 55 ? Color.LimeGreen : (fps >= 30 ? Color.Yellow : Color.Red);
-            
-            // Shadow for mobile readability
-            _spriteBatch.DrawString(_font, fpsText,
-                fpsPos + new Vector2(2, 2), Color.Black * 0.8f);
-            
-            // Main text
-            _spriteBatch.DrawString(_font, fpsText,
-                fpsPos, fpsColor);
-#else
-            // PC: Below song title with VSYNC info
-            Vector2 fpsPos = new Vector2(songInfoPos.X, songInfoPos.Y + 28);
-            string fpsText = Safe($"FPS: {fps:F0}  {(_graphics.SynchronizeWithVerticalRetrace ? "VSYNC" : "UNCAPPED")}");
-            
-            // Shadow
-            _spriteBatch.DrawString(_font, fpsText,
-                fpsPos + new Vector2(2, 2), Color.Black * 0.6f);
-            
-            // Main text
-            _spriteBatch.DrawString(_font, fpsText,
-                fpsPos, Color.White * 0.7f);
-#endif
-        }
-
-        // Controls status (always visible — useful info for the player)
-        string autoStr  = NoteRenderer.Autoplay   ? "[AUTO]"  : "[MANUAL]";
-        string scrollStr= NoteRenderer.Downscroll ? "[DOWN]"  : "[UP]";
-        string pauseStr = _paused                 ? "[PAUSED]": "";
-        string speedStr = Safe($"Speed:x{NoteRenderer.ScrollMultiplier:F2}");
-        _spriteBatch.DrawString(_font,
-            Safe($"{autoStr} {scrollStr} {speedStr} {pauseStr}"),
-            new Vector2(20, sh - 28),
-            NoteRenderer.Autoplay ? Color.Yellow * 0.8f : Color.White * 0.4f);
-
-        // Unknown event types — only shown in debug mode to avoid being intrusive for normal players
-        // (also shown in the debug overlay above when ShowDebugInfo is on)
-
-        // Key binding overlay
-        _keyBindOverlay.Draw(_spriteBatch, _font!, _pixel!, sw, sh, _noteStyle);
-    }
-
-    // ── Screen flashes ───────────────────────────────────────────────────────
-    private void DrawScreenFlashes(int sw, int sh)
-    {
-        if (_events == null) return;
-        foreach (var flash in _events.ActiveFlashes)
-        {
-            Color c = flash.Color * flash.Alpha;
-            DrawRect(0, 0, sw, sh, c);
-        }
-    }
-
-    // ── Helpers ──────────────────────────────────────────────────────────────
-    private void DrawRect(int x, int y, int w, int h, Color color)
-        => _spriteBatch.Draw(_pixel!, new Rectangle(x, y, w, h), color);
-
-    private void DrawDropHint()
-    {
-        if (_font == null) return;
-        int sw = _rtWidth;
-        int sh = _rtHeight;
-        string[] lines = { "Funky Maker Player", "", "Drag a .FNMM or .rar file here", "", "[ESC] Settings" };
-        int lineH = (int)_font.MeasureString("A").Y + 6;
-        int totalH = lines.Length * lineH;
-        int y = sh / 2 - totalH / 2;
-        foreach (var line in lines)
-        {
-            if (line.Length == 0) { y += lineH; continue; }
-            var sz = _font.MeasureString(line);
-            _spriteBatch.DrawString(_font, line,
-                new Vector2(sw / 2f - sz.X / 2f, y),
-                line == "Funky Maker Player" ? Color.Yellow : Color.White * 0.7f);
-            y += lineH;
-        }
-    }
-
-    private void DrawError(string msg)
-    {
-        if (_font == null) return;
-        int sw = _rtWidth;
-        int sh = _rtHeight;
-
-        // Dark background
-        DrawRect(0, 0, sw, sh, new Color(10, 5, 5) * 0.95f);
-        DrawRect(0, 0, sw, 4, new Color(0xFF, 0x22, 0x22));
-
-        // Header
-        _spriteBatch.DrawString(_font, "LEVEL LOAD ERROR",
-            new Vector2(20, 14), new Color(0xFF, 0x44, 0x44), 0f, Vector2.Zero, 1.1f, SpriteEffects.None, 0f);
-
-        // Error message
-        int lineH = (int)(_font.MeasureString("A").Y * 0.8f) + 4;
-        int y = 52;
-        foreach (var line in WrapText(Safe(msg), 90))
-        {
-            _spriteBatch.DrawString(_font, line, new Vector2(20, y), Color.White * 0.85f, 0f, Vector2.Zero, 0.8f, SpriteEffects.None, 0f);
-            y += lineH;
-        }
-
-        // Hint
-        string hint = "ENTER / ESC  Back to menu";
-        var hintSz = _font.MeasureString(hint) * 0.65f;
-        _spriteBatch.DrawString(_font, hint,
-            new Vector2(sw / 2f - hintSz.X / 2f, sh - 28f),
-            Color.White * 0.35f, 0f, Vector2.Zero, 0.65f, SpriteEffects.None, 0f);
-    }
-
-    private static string Safe(string? s)
-    {
-        if (s == null) return "";
-        // Keep only printable ASCII (32–126) that the default SpriteFont supports
-        var sb = new System.Text.StringBuilder(s.Length);
-        foreach (char c in s)
-            sb.Append(c >= 32 && c <= 126 ? c : '?');
-        return sb.ToString();
-    }
-
-    private static IEnumerable<string> WrapText(string text, int maxLen)
-    {
-        while (text.Length > maxLen)
-        {
-            int cut = text.LastIndexOf(' ', maxLen);
-            if (cut < 0) cut = maxLen;
-            yield return text[..cut];
-            text = text[cut..].TrimStart();
-        }
-        if (text.Length > 0) yield return text;
-    }
+    // Screen flashes, DropHint, DrawError, Safe & WrapText extracted to UI/GameplayHudOverlay.cs & UI/ErrorOverlay.cs
 
     // ── Countdown overlay ─────────────────────────────────────────────────────
     private void DrawCountdown(int sw, int sh)
@@ -6489,41 +5575,13 @@ public partial class Game1 : Game
     // ── Judgement overlay ─────────────────────────────────────────────────────
     private void DrawJudgement(int sw, int sh)
     {
+        if (_events?.HudVisible == false || !HudSettings.Instance.MasterHudVisible) return;
         // Draw judgement popups and combo digits using overlay
         _judgementOverlay?.Draw();
     }
 
     // Game over overlay has been extracted to UI/GameOverOverlay.cs
 
-    
-    /// <summary>
-    /// <summary>
-    /// Helper method to draw a stat label and value in the stats panel.
-    /// </summary>
-    private void DrawStat(string label, string value, float x, float y, Color valueColor, float scale = 1.0f)
-    {
-        if (_font == null) return;
-        
-        float labelScale = 0.65f * scale;
-        float valueScale = 1.1f * scale;
-        
-        // Label
-        _spriteBatch.DrawString(_font, label,
-            new Vector2(x, y),
-            Color.White * 0.5f, 0f, Vector2.Zero, labelScale, SpriteEffects.None, 0f);
-        
-        // Value
-        float valueY = y + _font.MeasureString(label).Y * labelScale + 3f;
-        _spriteBatch.DrawString(_font, value,
-            new Vector2(x, valueY),
-            valueColor, 0f, Vector2.Zero, valueScale, SpriteEffects.None, 0f);
-    }
-
-    // ══════════════════════════════════════════════════════════════════════════
-    // Multiplayer Event Handlers
-    // ══════════════════════════════════════════════════════════════════════════
-
-    /// <summary>
 #if ANDROID
     // ══════════════════════════════════════════════════════════════════════════
     // Android-specific: File Picker for Mods
@@ -6608,6 +5666,8 @@ public partial class Game1 : Game
             catch (Exception ex)
             {
                 Console.WriteLine($"[Game1] Error loading file from picker: {ex.Message}");
+                _errorReturnToMultiplayer = false;
+                _errorDismissGrace = 0.25f;
                 _errorMsg = $"Failed to load {fileName}:\n{ex.Message}";
             }
             finally
@@ -6643,8 +5703,8 @@ public partial class Game1 : Game
             
             Console.WriteLine($"[Game1] Level saved to: {destPath}");
             
-            // Refresh the freeplay menu to show the new level
-            _freeplay.Refresh();
+            // Refresh the freeplay menu, select the imported level, and show toast notification
+            _freeplay.OnLevelsImported(new[] { destPath });
             
             // Show success message
             _errorMsg = null; // Clear any previous error
@@ -6655,6 +5715,8 @@ public partial class Game1 : Game
         catch (Exception ex)
         {
             Console.WriteLine($"[Game1] Error loading level from stream: {ex.Message}");
+            _errorReturnToMultiplayer = false;
+            _errorDismissGrace = 0.25f;
             _errorMsg = $"Failed to load {fileName}:\n{ex.Message}";
         }
     }

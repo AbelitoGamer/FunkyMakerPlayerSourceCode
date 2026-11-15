@@ -28,13 +28,33 @@ namespace FunkyMakerPlayer.Multiplayer
                     using (var stream = File.OpenRead(filePath))
                     {
                         byte[] hashBytes = sha256.ComputeHash(stream);
-                        return BitConverter.ToString(hashBytes).Replace("-", "").ToLowerInvariant();
+                        return Convert.ToHexString(hashBytes).ToLowerInvariant();
                     }
                 }
             }
             catch (Exception ex)
             {
                 Console.WriteLine($"[LevelHasher] Error calculating hash: {ex.Message}");
+                return "";
+            }
+        }
+
+        /// <summary>
+        /// Calculate SHA256 hash of an in-memory level payload without touching disk.
+        /// </summary>
+        public static string CalculateHash(byte[] data)
+        {
+            if (data == null || data.Length == 0)
+                return "";
+
+            try
+            {
+                byte[] hashBytes = SHA256.HashData(data);
+                return Convert.ToHexString(hashBytes).ToLowerInvariant();
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[LevelHasher] Error calculating byte hash: {ex.Message}");
                 return "";
             }
         }

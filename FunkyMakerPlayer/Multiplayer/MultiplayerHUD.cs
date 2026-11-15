@@ -161,9 +161,6 @@ namespace FunkyMakerPlayer.Multiplayer
                 Color c = Color.Lerp(_playerBarColor, _playerBarColor * 0.7f, t);
                 DrawRect(sb, pixel, barX + enemyW + i, barY, 1, barH, c * opacity);
             }
-            
-            // Center divider (white line)
-            DrawRect(sb, pixel, barX + enemyW - 2, barY - 4, 4, barH + 8, Color.White * opacity);
         }
         
         private void DrawAvatars(SpriteBatch sb, SpriteFont font, int sw, int sh, bool downscroll, float opacity)

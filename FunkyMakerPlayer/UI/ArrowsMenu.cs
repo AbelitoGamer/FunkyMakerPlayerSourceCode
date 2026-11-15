@@ -9,7 +9,7 @@ namespace FunkyMakerPlayer.UI;
 /// <summary>
 /// Arrows/NoteStyle selector menu with preview.
 /// </summary>
-public class ArrowsMenu
+public class ArrowsMenu : IScreenOverlay
 {
     private readonly Texture2D _pixel;
     private readonly SpriteFont _font;

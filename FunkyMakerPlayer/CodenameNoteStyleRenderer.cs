@@ -101,120 +101,102 @@ namespace FunkyMakerPlayer
             var pieceFrame = _holdPieceFrames[lane];
             var endFrame = _holdEndFrames[lane];
             
-            if (pieceFrame == null || endFrame == null)
-            {
-                Console.WriteLine($"[CodenameRenderer] ERROR: NULL frames for lane {lane}! piece={pieceFrame == null}, end={endFrame == null}");
-                return;
-            }
+            if (pieceFrame == null || endFrame == null) return;
             
-            // Get source rectangles from atlas frames
-            var pieceSrc = pieceFrame.Source;
-            var endSrc = endFrame.Source;
+            float sx = laneWidth > 0f ? laneWidth / NoteRenderer.LANE_WIDTH : 1f;
+            float noteScale = _style.NoteScale * sx;
             
-            float noteScale = _style.NoteScale;
-            
-            // Codename Engine: hold starts from arrow center + half arrow height
-            // Note.hx line 227: daNote.y += daNote.height * 0.5
-            float arrowHeight = pieceSrc.Height * noteScale;
-            float holdStartY = arrowY + (arrowHeight * 0.5f);
-            
-            // Draw hold using Codename Engine's approach - one stretched sprite
-            DrawCodenameHold(sb, pieceFrame, endFrame, lane, centerX, holdStartY, 
-                           holdLengthPx, noteScale, alpha * 0.6f, scrollSpeed);
+            DrawCodenameHold(sb, pieceFrame, endFrame, lane, centerX, arrowY, 
+                           holdLengthPx, noteScale, alpha * 0.7f, scrollSpeed);
         }
         
-        /// <summary>
-        /// C# translation of Codename Engine Note.hx updateSustain() method (lines 237-243)
-        /// 
-        /// Key insight from investigation:
-        /// - Codename Engine divides long holds into multiple Note OBJECTS in StrumLine.hx spawnNote()
-        /// - Each Note object has its own strumTime (base + offset) so they appear staggered
-        /// - Each Note object renders ITSELF as one stretched sprite via scale.y
-        /// - We receive complete holds, so we render them as single stretched sprites
-        /// 
-        /// Original Haxe (Note.hx lines 237-243):
-        ///   scale.y = (sustainLength * 0.45 * Math.abs(scrollSpeed)) / frameHeight;
-        ///   updateHitbox();
-        ///   scale.y += gapFix / frameHeight;
-        /// 
-        /// gapFix creates overlap to prevent gaps. The body extends BY gapFix pixels.
-        /// The endcap should start where the body ACTUALLY ends (after gapFix extension).
-        /// </summary>
         private void DrawCodenameHold(SpriteBatch sb, AtlasFrame pieceFrame, AtlasFrame endFrame,
                                      int lane, float centerX, float holdStartY, float holdLengthPx,
                                      float noteScale, float alphaTint, float scrollSpeed)
         {
+            if (holdLengthPx <= 0.5f) return;
+
             var pieceSrc = pieceFrame.Source;
             var endSrc = endFrame.Source;
             
-            // Width and height for piece (body)
-            float scaledWidth = pieceSrc.Width * noteScale;
+            // Trim 1px top/bottom of pieceSrc so anti-aliased edge rows (e.g. row 43 with Alpha=127
+            // in Cornered/Avulsion/Haunted) are never stretched into a dark horizontal seam above the endcap.
+            var cleanPieceSrc = pieceSrc.Height > 4
+                ? new Rectangle(pieceSrc.X, pieceSrc.Y + 1, pieceSrc.Width, pieceSrc.Height - 2)
+                : pieceSrc;
+            var cleanEndSrc = endSrc.Height > 4
+                ? new Rectangle(endSrc.X, endSrc.Y + 1, endSrc.Width, endSrc.Height - 1)
+                : endSrc;
             
-            // End cap has its own dimensions (often taller than piece)
-            float scaledEndWidth = endSrc.Width * noteScale;
-            float scaledEndHeight = endSrc.Height * noteScale;
+            // Width for piece (body)
+            float scaledWidth = cleanPieceSrc.Width * noteScale;
             
-            // Note.hx line 224-226: gapFix = 1 when antialiasing enabled
-            // This extends the body by gapFix pixels to create overlap with endcap
-            float gapFix = 1f;
+            // End cap has its own natural dimensions (preserve 1:1 scaled aspect ratio, never squish)
+            float scaledEndWidth = cleanEndSrc.Width * noteScale;
+            float fullCapHeight = cleanEndSrc.Height * noteScale;
             
-            float frameHeight = pieceSrc.Height;
+            // Reserve full 1:1 endcap height so the endcap stays 100% intact while body > 0,
+            // and smoothly clips from the top at 1:1 scale as the final pixels enter the receptor.
+            float partHeight = holdLengthPx - fullCapHeight;
             
-            // Calculate scale.y INCLUDING gapFix (Note.hx line 237-243)
-            // scale.y = sustainLength / frameHeight + gapFix / frameHeight
-            // The body stretches to: frameHeight * scale.y * noteScale
-            // = frameHeight * (holdLengthPx / frameHeight + gapFix / frameHeight) * noteScale
-            // = (holdLengthPx + gapFix) * noteScale
-            float scaleY = (holdLengthPx / frameHeight) + (gapFix / frameHeight);
-            float stretchedBodyHeight = frameHeight * scaleY * noteScale;
+            float consumedRatio = partHeight >= 0f
+                ? 0f
+                : 1f - (holdLengthPx / Math.Max(1f, fullCapHeight));
+            consumedRatio = Math.Clamp(consumedRatio, 0f, 1f);
+            
+            int capClipY = (int)Math.Round(consumedRatio * cleanEndSrc.Height);
+            int capClipH = cleanEndSrc.Height - capClipY;
+            if (capClipH <= 0) return;
+            
+            var clippedEndSrc = new Rectangle(cleanEndSrc.X, cleanEndSrc.Y + capClipY, cleanEndSrc.Width, capClipH);
+            int capHeight = (int)Math.Round(capClipH * noteScale);
+            if (capHeight <= 0) return;
             
             Color tint = Color.White * alphaTint;
             
-            // Body piece dimensions
-            int intX = (int)(centerX - scaledWidth / 2f);
-            int intWidth = (int)Math.Ceiling(scaledWidth);
-            int bodyHeight = (int)Math.Ceiling(stretchedBodyHeight);
+            int intX = (int)Math.Round(centerX - scaledWidth / 2f);
+            int intWidth = (int)Math.Round(scaledWidth);
             
-            // End cap dimensions (use its own width to preserve aspect ratio)
-            int endX = (int)(centerX - scaledEndWidth / 2f);
-            int endWidth = (int)Math.Ceiling(scaledEndWidth);
-            int capHeight = (int)Math.Ceiling(scaledEndHeight);
+            int endX = (int)Math.Round(centerX - scaledEndWidth / 2f);
+            int endWidth = (int)Math.Round(scaledEndWidth);
             
-            if (!_downscroll)
+            bool downscroll = NoteRenderer.Downscroll;
+            
+            if (!downscroll)
             {
-                // UPSCROLL: hold extends downward
-                int bodyTop = (int)holdStartY;
+                // UPSCROLL: body from startIntY to joinY, end cap from joinY to joinY + capHeight (0 gap, 0 overlap)
+                int startIntY = (int)Math.Round(holdStartY);
+                int joinY = partHeight > 0f ? (int)Math.Round(holdStartY + partHeight) : startIntY;
+                int bodyH = joinY - startIntY;
                 
-                // Draw stretched body piece
-                // It extends from holdStartY to (holdStartY + stretchedBodyHeight)
-                // stretchedBodyHeight = (holdLengthPx + gapFix) * noteScale
-                sb.Draw(pieceFrame.Texture,
-                    new Rectangle(intX, bodyTop, intWidth, bodyHeight),
-                    pieceSrc, tint);
+                if (bodyH > 0)
+                {
+                    sb.Draw(pieceFrame.Texture,
+                        new Rectangle(intX, startIntY, intWidth, bodyH),
+                        cleanPieceSrc, tint);
+                }
                 
-                // Draw endcap with slight overlap to prevent gap
-                // Position it slightly before body ends to create seamless connection
-                int capY = bodyTop + bodyHeight - (int)(gapFix * noteScale);
                 sb.Draw(endFrame.Texture,
-                    new Rectangle(endX, capY, endWidth, capHeight),
-                    endSrc, tint);
+                    new Rectangle(endX, joinY, endWidth, capHeight),
+                    clippedEndSrc, tint);
             }
             else
             {
-                // DOWNSCROLL: hold extends upward (flipped)
-                int bodyBottom = (int)holdStartY;
-                int bodyTop = bodyBottom - bodyHeight;
+                // DOWNSCROLL: body from joinY to startIntY, end cap from joinY - capHeight to joinY (0 gap, 0 overlap)
+                int startIntY = (int)Math.Round(holdStartY);
+                int joinY = partHeight > 0f ? (int)Math.Round(holdStartY - partHeight) : startIntY;
+                int bodyH = startIntY - joinY;
                 
-                // Draw stretched body piece (flipped)
-                sb.Draw(pieceFrame.Texture,
-                    new Rectangle(intX, bodyTop, intWidth, bodyHeight),
-                    pieceSrc, tint, 0f, Vector2.Zero, SpriteEffects.FlipVertically, 0f);
+                if (bodyH > 0)
+                {
+                    sb.Draw(pieceFrame.Texture,
+                        new Rectangle(intX, joinY, intWidth, bodyH),
+                        cleanPieceSrc, tint, 0f, Vector2.Zero, SpriteEffects.FlipVertically, 0f);
+                }
                 
-                // Draw endcap with overlap (flipped)
-                int capY = bodyTop - capHeight + (int)(gapFix * noteScale);
                 sb.Draw(endFrame.Texture,
-                    new Rectangle(endX, capY, endWidth, capHeight),
-                    endSrc, tint, 0f, Vector2.Zero, SpriteEffects.FlipVertically, 0f);
+                    new Rectangle(endX, joinY - capHeight, endWidth, capHeight),
+                    clippedEndSrc, tint, 0f, Vector2.Zero, SpriteEffects.FlipVertically, 0f);
             }
         }
         
@@ -226,25 +208,11 @@ namespace FunkyMakerPlayer
             
             if (pieceFrame == null || endFrame == null) return;
             
-            float noteScale = _style.NoteScale;
-            var pieceSrc = pieceFrame.Source;
+            float sx = laneWidth > 0f ? laneWidth / NoteRenderer.LANE_WIDTH : 1f;
+            float noteScale = _style.NoteScale * sx;
             
-            // Active holds: use SAME rendering as upcoming holds for visual consistency
-            // Calculate holdStartY the same way as DrawUpcomingHold
-            float arrowHeight = pieceSrc.Height * noteScale;
-            float holdStartY = strumY + (arrowHeight * 0.5f);
-            
-            // REMOVED HARDCODED scrollSpeed = 1.0f
-            // The scrollSpeed parameter in DrawCodenameHold is not actually used in the function
-            // (it was a leftover parameter from earlier code). The holdLengthPx already comes
-            // pre-scaled by EffSpeed from NoteRenderer, so we just pass 1.0 as a dummy value.
-            // The visual "consumption speed" is controlled by how fast holdLengthPx decreases,
-            // which is determined by the songTime update rate, not by this parameter.
-            float scrollSpeed = 1.0f;
-            
-            // Use same DrawCodenameHold to ensure visual consistency
-            DrawCodenameHold(sb, pieceFrame, endFrame, lane, centerX, holdStartY, 
-                           holdLengthPx, noteScale, alpha, scrollSpeed);
+            DrawCodenameHold(sb, pieceFrame, endFrame, lane, centerX, strumY, 
+                           holdLengthPx, noteScale, alpha * 0.7f, 1.0f);
         }
     }
 }

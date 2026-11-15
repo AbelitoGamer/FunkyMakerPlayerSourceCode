@@ -10,7 +10,7 @@ namespace FunkyMakerPlayer.UI;
 /// <summary>
 /// Font selector menu with live preview.
 /// </summary>
-public class FontMenu
+public class FontMenu : IScreenOverlay
 {
     private readonly Texture2D _pixel;
     private readonly SpriteFont _font;

@@ -84,20 +84,28 @@ namespace FunkyMakerPlayer.Multiplayer
         }
         
         /// <summary>
-        /// Get player stats by ID
+        /// Get player stats by ID (or username fallback)
         /// </summary>
-        public LeaderboardEntry? GetPlayerStats(string playerId)
+        public LeaderboardEntry? GetPlayerStats(string playerId, string? username = null)
         {
-            return _leaderboard.FirstOrDefault(e => e.PlayerId == playerId);
+            return _leaderboard.FirstOrDefault(e =>
+                (!string.IsNullOrWhiteSpace(playerId) && e.PlayerId == playerId) ||
+                (!string.IsNullOrWhiteSpace(username) &&
+                 string.Equals(e.Username, username, StringComparison.OrdinalIgnoreCase)));
         }
         
         /// <summary>
         /// Get match history for a specific player
         /// </summary>
-        public List<MatchHistoryEntry> GetPlayerMatchHistory(string playerId, int count = 10)
+        public List<MatchHistoryEntry> GetPlayerMatchHistory(string playerId, int count = 10, string? username = null)
         {
             return _matchHistory
-                .Where(m => m.Player1.PlayerId == playerId || m.Player2.PlayerId == playerId)
+                .Where(m =>
+                    (!string.IsNullOrWhiteSpace(playerId) &&
+                     (m.Player1.PlayerId == playerId || m.Player2.PlayerId == playerId)) ||
+                    (!string.IsNullOrWhiteSpace(username) &&
+                     (string.Equals(m.Player1.Username, username, StringComparison.OrdinalIgnoreCase) ||
+                      string.Equals(m.Player2.Username, username, StringComparison.OrdinalIgnoreCase))))
                 .OrderByDescending(m => m.Timestamp)
                 .Take(count)
                 .ToList();
@@ -141,14 +149,17 @@ namespace FunkyMakerPlayer.Multiplayer
         /// </summary>
         public void RecordMatch(MatchHistoryEntry match)
         {
+            if (!string.IsNullOrEmpty(match.MatchId) && _matchHistory.Any(m => m.MatchId == match.MatchId))
+                return;
+
             // Add to history
             _matchHistory.Add(match);
             
             // Update player 1 stats
-            UpdatePlayerStatsFromMatch(match.Player1, match.Winner == 1);
+            UpdatePlayerStatsFromMatch(match.Player1, match.Winner == 1, match.Winner == 0);
             
             // Update player 2 stats
-            UpdatePlayerStatsFromMatch(match.Player2, match.Winner == 2);
+            UpdatePlayerStatsFromMatch(match.Player2, match.Winner == 2, match.Winner == 0);
             
             // Update rankings
             UpdateRankings();
@@ -156,24 +167,37 @@ namespace FunkyMakerPlayer.Multiplayer
             Save();
         }
         
-        private void UpdatePlayerStatsFromMatch(PlayerMatchInfo playerInfo, bool won)
+        private void UpdatePlayerStatsFromMatch(PlayerMatchInfo playerInfo, bool won, bool draw)
         {
-            var entry = _leaderboard.FirstOrDefault(e => e.PlayerId == playerInfo.PlayerId);
+            var entry = _leaderboard.FirstOrDefault(e =>
+                (!string.IsNullOrWhiteSpace(playerInfo.PlayerId) && e.PlayerId == playerInfo.PlayerId) ||
+                (!string.IsNullOrWhiteSpace(playerInfo.Username) &&
+                 string.Equals(e.Username, playerInfo.Username, StringComparison.OrdinalIgnoreCase)));
             
             if (entry == null)
             {
                 entry = new LeaderboardEntry
                 {
-                    PlayerId = playerInfo.PlayerId,
+                    PlayerId = string.IsNullOrWhiteSpace(playerInfo.PlayerId) ? playerInfo.Username : playerInfo.PlayerId,
                     Username = playerInfo.Username,
                     AvatarIndex = playerInfo.AvatarIndex,
                     ColorHue = playerInfo.ColorHue
                 };
                 _leaderboard.Add(entry);
             }
+            else
+            {
+                if (!string.IsNullOrWhiteSpace(playerInfo.PlayerId))
+                    entry.PlayerId = playerInfo.PlayerId;
+                if (!string.IsNullOrWhiteSpace(playerInfo.Username))
+                    entry.Username = playerInfo.Username;
+                entry.ColorHue = playerInfo.ColorHue;
+            }
             
             // Update match count
-            if (won)
+            if (draw)
+                entry.Draws++;
+            else if (won)
                 entry.Wins++;
             else
                 entry.Losses++;
@@ -191,11 +215,123 @@ namespace FunkyMakerPlayer.Multiplayer
             if (playerInfo.Accuracy > entry.BestAccuracy)
                 entry.BestAccuracy = playerInfo.Accuracy;
             
-            // Simple ELO calculation (can be refined)
+            // Simple ELO calculation
             if (won)
                 entry.EloRating += 25;
-            else
+            else if (!draw)
                 entry.EloRating = Math.Max(0, entry.EloRating - 15);
+        }
+
+        /// <summary>
+        /// Merge global leaderboard entries received from server without losing offline records.
+        /// </summary>
+        public void ApplyServerLeaderboard(IEnumerable<LeaderboardEntryPacket> serverEntries)
+        {
+            bool changed = false;
+            foreach (var pkt in serverEntries)
+            {
+                var existing = _leaderboard.FirstOrDefault(e =>
+                    (!string.IsNullOrWhiteSpace(pkt.PlayerId) && e.PlayerId == pkt.PlayerId) ||
+                    (!string.IsNullOrWhiteSpace(pkt.Username) &&
+                     string.Equals(e.Username, pkt.Username, StringComparison.OrdinalIgnoreCase)));
+
+                int serverMatches = pkt.Wins + pkt.Losses + pkt.Draws;
+                if (existing == null)
+                {
+                    _leaderboard.Add(new LeaderboardEntry
+                    {
+                        PlayerId = pkt.PlayerId,
+                        Username = pkt.Username,
+                        AvatarIndex = pkt.AvatarIndex,
+                        ColorHue = pkt.ColorHue,
+                        TotalScore = pkt.TotalScore,
+                        Wins = pkt.Wins,
+                        Losses = pkt.Losses,
+                        Draws = pkt.Draws,
+                        HighestScore = pkt.HighestScore,
+                        HighestCombo = pkt.HighestCombo,
+                        BestAccuracy = pkt.BestAccuracy,
+                        EloRating = pkt.EloRating,
+                        LastPlayedTimestamp = pkt.LastPlayedTimestamp,
+                        CreatedTimestamp = pkt.CreatedTimestamp
+                    });
+                    changed = true;
+                }
+                else if (serverMatches >= existing.TotalMatches)
+                {
+                    if (!string.IsNullOrWhiteSpace(pkt.PlayerId))
+                        existing.PlayerId = pkt.PlayerId;
+                    if (!string.IsNullOrWhiteSpace(pkt.Username))
+                        existing.Username = pkt.Username;
+                    existing.ColorHue = pkt.ColorHue;
+                    existing.TotalScore = Math.Max(existing.TotalScore, pkt.TotalScore);
+                    existing.Wins = pkt.Wins;
+                    existing.Losses = pkt.Losses;
+                    existing.Draws = pkt.Draws;
+                    existing.HighestScore = Math.Max(existing.HighestScore, pkt.HighestScore);
+                    existing.HighestCombo = Math.Max(existing.HighestCombo, pkt.HighestCombo);
+                    existing.BestAccuracy = Math.Max(existing.BestAccuracy, pkt.BestAccuracy);
+                    existing.EloRating = pkt.EloRating;
+                    existing.LastPlayedTimestamp = Math.Max(existing.LastPlayedTimestamp, pkt.LastPlayedTimestamp);
+                    changed = true;
+                }
+            }
+
+            if (changed)
+            {
+                UpdateRankings();
+                Save();
+            }
+        }
+
+        /// <summary>
+        /// Merge match history received from server deduplicating by MatchId.
+        /// </summary>
+        public void ApplyServerMatchHistory(IEnumerable<MatchHistoryPacket> serverMatches)
+        {
+            bool changed = false;
+            foreach (var pkt in serverMatches)
+            {
+                if (!string.IsNullOrEmpty(pkt.MatchId) && _matchHistory.Any(m => m.MatchId == pkt.MatchId))
+                    continue;
+
+                _matchHistory.Add(new MatchHistoryEntry
+                {
+                    MatchId = pkt.MatchId,
+                    LevelName = pkt.LevelName,
+                    Winner = pkt.Winner,
+                    DurationSeconds = pkt.DurationSeconds,
+                    Timestamp = pkt.Timestamp,
+                    Player1 = new PlayerMatchInfo
+                    {
+                        PlayerId = pkt.Player1.PlayerId,
+                        Username = pkt.Player1.Username,
+                        AvatarIndex = pkt.Player1.AvatarIndex,
+                        ColorHue = pkt.Player1.ColorHue,
+                        Score = pkt.Player1.Score,
+                        Accuracy = pkt.Player1.Accuracy,
+                        MaxCombo = pkt.Player1.MaxCombo,
+                        Misses = pkt.Player1.Misses,
+                        Disconnected = pkt.Player1.Disconnected
+                    },
+                    Player2 = new PlayerMatchInfo
+                    {
+                        PlayerId = pkt.Player2.PlayerId,
+                        Username = pkt.Player2.Username,
+                        AvatarIndex = pkt.Player2.AvatarIndex,
+                        ColorHue = pkt.Player2.ColorHue,
+                        Score = pkt.Player2.Score,
+                        Accuracy = pkt.Player2.Accuracy,
+                        MaxCombo = pkt.Player2.MaxCombo,
+                        Misses = pkt.Player2.Misses,
+                        Disconnected = pkt.Player2.Disconnected
+                    }
+                });
+                changed = true;
+            }
+
+            if (changed)
+                Save();
         }
         
         /// <summary>
@@ -238,6 +374,12 @@ namespace FunkyMakerPlayer.Multiplayer
         // Save / Load
         // ══════════════════════════════════════════════════════════════════════
         
+        private static string GetLeaderboardPath() =>
+            Path.Combine(MultiplayerSettings.GetStorageDirectory(), LEADERBOARD_FILE);
+
+        private static string GetMatchHistoryPath() =>
+            Path.Combine(MultiplayerSettings.GetStorageDirectory(), MATCH_HISTORY_FILE);
+
         /// <summary>
         /// Save all data to JSON files.
         /// </summary>
@@ -248,12 +390,12 @@ namespace FunkyMakerPlayer.Multiplayer
                 var options = new JsonSerializerOptions { WriteIndented = true };
                 
                 // Save leaderboard
-                string leaderboardPath = Path.Combine(AppContext.BaseDirectory, LEADERBOARD_FILE);
+                string leaderboardPath = GetLeaderboardPath();
                 string leaderboardJson = JsonSerializer.Serialize(_leaderboard, options);
                 File.WriteAllText(leaderboardPath, leaderboardJson);
                 
                 // Save match history
-                string historyPath = Path.Combine(AppContext.BaseDirectory, MATCH_HISTORY_FILE);
+                string historyPath = GetMatchHistoryPath();
                 string historyJson = JsonSerializer.Serialize(_matchHistory, options);
                 File.WriteAllText(historyPath, historyJson);
                 
@@ -272,34 +414,46 @@ namespace FunkyMakerPlayer.Multiplayer
         {
             try
             {
-                // Load leaderboard
-                string leaderboardPath = Path.Combine(AppContext.BaseDirectory, LEADERBOARD_FILE);
-                if (File.Exists(leaderboardPath))
+                // Load leaderboard (with legacy BaseDirectory migration fallback)
+                string leaderboardPath = GetLeaderboardPath();
+                string legacyLeaderboardPath = Path.Combine(AppContext.BaseDirectory, LEADERBOARD_FILE);
+                string? lbSource = File.Exists(leaderboardPath) ? leaderboardPath
+                    : (File.Exists(legacyLeaderboardPath) ? legacyLeaderboardPath : null);
+                if (lbSource != null)
                 {
-                    string json = File.ReadAllText(leaderboardPath);
+                    string json = File.ReadAllText(lbSource);
                     var loaded = JsonSerializer.Deserialize<List<LeaderboardEntry>>(json);
                     if (loaded != null)
                     {
                         _leaderboard = loaded;
-                        Console.WriteLine($"[Leaderboard] Loaded {_leaderboard.Count} entries");
+                        Console.WriteLine($"[Leaderboard] Loaded {_leaderboard.Count} entries from {lbSource}");
                     }
                 }
                 
-                // Load match history
-                string historyPath = Path.Combine(AppContext.BaseDirectory, MATCH_HISTORY_FILE);
-                if (File.Exists(historyPath))
+                // Load match history (with legacy BaseDirectory migration fallback)
+                string historyPath = GetMatchHistoryPath();
+                string legacyHistoryPath = Path.Combine(AppContext.BaseDirectory, MATCH_HISTORY_FILE);
+                string? histSource = File.Exists(historyPath) ? historyPath
+                    : (File.Exists(legacyHistoryPath) ? legacyHistoryPath : null);
+                if (histSource != null)
                 {
-                    string json = File.ReadAllText(historyPath);
+                    string json = File.ReadAllText(histSource);
                     var loaded = JsonSerializer.Deserialize<List<MatchHistoryEntry>>(json);
                     if (loaded != null)
                     {
                         _matchHistory = loaded;
-                        Console.WriteLine($"[Leaderboard] Loaded {_matchHistory.Count} matches");
+                        Console.WriteLine($"[Leaderboard] Loaded {_matchHistory.Count} matches from {histSource}");
                     }
                 }
                 
                 // Update rankings after load
                 UpdateRankings();
+
+                if ((lbSource == legacyLeaderboardPath || histSource == legacyHistoryPath) &&
+                    (_leaderboard.Count > 0 || _matchHistory.Count > 0))
+                {
+                    Save();
+                }
             }
             catch (Exception ex)
             {

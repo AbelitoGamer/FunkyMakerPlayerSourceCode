@@ -586,8 +586,177 @@ public static class Updater
         return true;
     }
 
+    /// <summary>
+    /// Downloads and applies an update in the background without blocking startup or spawning Win32 log windows.
+    /// Reports download progress (0..1) and status text to the in-game UI.
+    /// </summary>
+    public static async Task<bool> DownloadAndApplyUpdateAsync(
+        string url,
+        string version,
+        Action<float, string>? onProgress = null,
+        Action<string>? onError = null)
+    {
+        try
+        {
+            if (string.IsNullOrWhiteSpace(url))
+            {
+                onError?.Invoke("No download URL available for this platform.");
+                return false;
+            }
+
+            if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
+            {
+                string exeDir = AppContext.BaseDirectory;
+                string updaterPath = Path.Combine(exeDir, "Assets", "updater", "FunkyMakerUpdater.exe");
+
+                if (File.Exists(updaterPath))
+                {
+                    onProgress?.Invoke(0.95f, "Launching FunkyMakerUpdater...");
+                    var startInfo = new ProcessStartInfo
+                    {
+                        FileName = updaterPath,
+                        Arguments = $"\"{url}\" {Process.GetCurrentProcess().Id} \"{version}\"",
+                        UseShellExecute = true,
+                        WorkingDirectory = Path.Combine(exeDir, "Assets", "updater")
+                    };
+                    await Task.Delay(300);
+                    Process.Start(startInfo);
+                    onProgress?.Invoke(1.0f, "Restarting...");
+                    await Task.Delay(300);
+                    Environment.Exit(0);
+                    return true;
+                }
+
+                string tmpDir = Path.Combine(Path.GetTempPath(), "FMPUpdate_" + Path.GetRandomFileName());
+                string zipPath = tmpDir + ".zip";
+                Directory.CreateDirectory(tmpDir);
+
+                onProgress?.Invoke(0.02f, "Connecting to GitHub...");
+                await DownloadWithProgress(url, zipPath, onProgress);
+
+                onProgress?.Invoke(0.94f, "Extracting update files...");
+                await Task.Run(() => ZipFile.ExtractToDirectory(zipPath, tmpDir, overwriteFiles: true));
+                try { File.Delete(zipPath); } catch { }
+
+                onProgress?.Invoke(0.99f, "Applying update & restarting...");
+                LaunchWindowsBatchUpdater(exeDir, tmpDir);
+                await Task.Delay(400);
+                Environment.Exit(0);
+                return true;
+            }
+            else
+            {
+                string exeDir = AppContext.BaseDirectory;
+                string tmpDir = Path.Combine(exeDir, ".fmp_update_" + Path.GetRandomFileName());
+                string zipPath = tmpDir + ".zip";
+                Directory.CreateDirectory(tmpDir);
+
+                onProgress?.Invoke(0.02f, "Connecting to GitHub...");
+                await DownloadWithProgress(url, zipPath, onProgress);
+
+                onProgress?.Invoke(0.94f, "Extracting update files...");
+                await Task.Run(() => ZipFile.ExtractToDirectory(zipPath, tmpDir, overwriteFiles: true));
+                try { File.Delete(zipPath); } catch { }
+
+                onProgress?.Invoke(0.99f, "Applying update & restarting...");
+                LaunchLinuxShellUpdater(exeDir, tmpDir);
+                Environment.Exit(0);
+                return true;
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[Updater] In-menu update failed: {ex.Message}");
+            onError?.Invoke(ex.Message);
+            return false;
+        }
+    }
+
+    private static void LaunchWindowsBatchUpdater(string exeDir, string tmpDir)
+    {
+        string exePath = Path.Combine(exeDir, "FunkyMakerPlayer.exe");
+        string batPath = Path.Combine(Path.GetTempPath(), "fmp_update_" + Path.GetRandomFileName() + ".bat");
+        string logPath = Path.Combine(exeDir, "update.log");
+
+        string bat =
+            "@echo off\r\n" +
+            "title Funky Maker Player - Updating...\r\n" +
+            $"set LOGFILE=\"{logPath}\"\r\n" +
+            $"set EXEPATH=\"{exePath}\"\r\n" +
+            $"set TMPDIR=\"{tmpDir}\"\r\n" +
+            $"set EXEDIR=\"{exeDir}\"\r\n" +
+            "echo [update.bat] Waiting for game to exit... > %LOGFILE%\r\n" +
+            "timeout /t 3 /nobreak >nul\r\n" +
+            "for %%F in (%EXEPATH%) do set OLD_SIZE=%%~zF\r\n" +
+            $"robocopy \"%TMPDIR%\" \"%EXEDIR%\" /E /IS /IT /NP /XD mods >> %LOGFILE% 2>&1\r\n" +
+            "set ROBO_ERR=%ERRORLEVEL%\r\n" +
+            "if %ROBO_ERR% GEQ 8 (\r\n" +
+            $"  for /D %%D in (\"%TMPDIR%\\*\") do (\r\n" +
+            "    if /I not \"%%~nxD\"==\"mods\" (\r\n" +
+            $"      xcopy /E /Y /I \"%%D\" \"%EXEDIR%\\%%~nxD\\\" >> %LOGFILE% 2>&1\r\n" +
+            "    )\r\n" +
+            "  )\r\n" +
+            $"  for %%F in (\"%TMPDIR%\\*\") do (\r\n" +
+            "    if not \"%%~xF\"==\"\" (\r\n" +
+            $"      copy /Y \"%%F\" \"%EXEDIR%\\\" >> %LOGFILE% 2>&1\r\n" +
+            "    )\r\n" +
+            "  )\r\n" +
+            ")\r\n" +
+            $"rmdir /S /Q \"{tmpDir}\"\r\n" +
+            "timeout /t 2 /nobreak >nul\r\n" +
+            $"start \"\" \"{exePath}\"\r\n" +
+            "del \"%~f0\"\r\n";
+
+        File.WriteAllText(batPath, bat);
+        Process.Start(new ProcessStartInfo
+        {
+            FileName = "cmd.exe",
+            Arguments = $"/c \"\"{batPath}\"\"",
+            UseShellExecute = true,
+            WindowStyle = ProcessWindowStyle.Normal,
+        });
+    }
+
+    private static void LaunchLinuxShellUpdater(string exeDir, string tmpDir)
+    {
+        string exePath = Path.Combine(exeDir, "FunkyMakerPlayer");
+        string shPath = Path.Combine(exeDir, "update.sh");
+        string logPath = Path.Combine(exeDir, "update.log");
+
+        string sh =
+            "#!/bin/bash\n" +
+            $"exec > \"{logPath}\" 2>&1\n" +
+            "sleep 3\n" +
+            $"rsync -av --exclude='mods' \"{tmpDir}/\" \"{exeDir}/\" || " +
+            $"(find \"{tmpDir}\" -mindepth 1 -maxdepth 1 ! -name 'mods' -exec cp -r {{}} \"{exeDir}/\" \\;)\n" +
+            $"chmod +x \"{exePath}\"\n" +
+            $"rm -rf \"{tmpDir}\"\n" +
+            $"export DOTNET_BUNDLE_EXTRACT_BASE_DIR=\"{exeDir}/.fmp_runtime\"\n" +
+            $"mkdir -p \"$DOTNET_BUNDLE_EXTRACT_BASE_DIR\"\n" +
+            $"nohup \"{exePath}\" </dev/null >>\"{logPath}\" 2>&1 &\n" +
+            "rm -- \"$0\"\n";
+
+        File.WriteAllText(shPath, sh);
+        try { Process.Start("chmod", $"+x \"{shPath}\"")?.WaitForExit(2000); } catch { }
+
+        string launcher = File.Exists("/usr/bin/setsid") ? "/usr/bin/setsid"
+                        : File.Exists("/bin/setsid")     ? "/bin/setsid"
+                        : "/bin/bash";
+        string launcherArgs = launcher.EndsWith("setsid")
+            ? $"/bin/bash \"{shPath}\""
+            : $"\"{shPath}\"";
+
+        Process.Start(new ProcessStartInfo
+        {
+            FileName = launcher,
+            Arguments = launcherArgs,
+            UseShellExecute = false,
+            CreateNoWindow = true,
+        });
+    }
+
     // ── Download helper ───────────────────────────────────────────────────────
-    private static async Task DownloadWithProgress(string url, string destPath)
+    private static async Task DownloadWithProgress(string url, string destPath, Action<float, string>? onProgress = null)
     {
         using var client = new HttpClient();
         client.DefaultRequestHeaders.Add("User-Agent", "FunkyMakerPlayer-Updater");
@@ -633,12 +802,14 @@ public static class Updater
                     string eta = remainingSec < 60 
                         ? $"{remainingSec}s" 
                         : $"{remainingSec / 60}m {remainingSec % 60}s";
-                    status = $"Downloading... {downloaded / 1048576}MB / {total.Value / 1048576}MB ({pct}%) - {speedMB:F1} MB/s - ETA: {eta}";
+                    status = $"Downloading... {downloaded / 1048576f:F1} MB / {total.Value / 1048576f:F1} MB ({pct}%) - {speedMB:F1} MB/s - ETA: {eta}";
                 }
                 else
                 {
-                    status = $"Downloading... {downloaded / 1048576}MB / {total.Value / 1048576}MB ({pct}%)";
+                    status = $"Downloading... {downloaded / 1048576f:F1} MB / {total.Value / 1048576f:F1} MB ({pct}%)";
                 }
+
+                onProgress?.Invoke(Math.Clamp((float)downloaded / total.Value * 0.90f, 0f, 0.90f), status);
                 
 #if !DEBUG
                 _logWin?.SetProgress(pct);
