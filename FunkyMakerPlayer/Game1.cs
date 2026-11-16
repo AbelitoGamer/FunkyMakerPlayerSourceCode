@@ -2273,26 +2273,8 @@ public partial class Game1 : Game
                 r.OnNoteMissEvent  = eventId => _events?.FireActionPack(eventId);
             }
 
-            // Fallback mechanics for notes WITHOUT onPressEvent.
-            // If the level defines onPressEvent, it handles health via action_packs.
-            // These callbacks only fire when no event is defined (legacy levels).
-            _noteRenderers[myStrumlineIndex].OnDamageNoteHit = damage =>
-            {
-                if (NoteRenderer.Autoplay) return;
-                if (_healthBar != null)
-                    _healthBar.Health = MathHelper.Clamp(_healthBar.Health - damage, 0f, 1f);
-            };
-            _noteRenderers[myStrumlineIndex].OnInstakillNoteHit = () =>
-            {
-                if (NoteRenderer.Autoplay) return;
-                if (_healthBar != null)
-                    _healthBar.Health = 0f;
-            };
-            _noteRenderers[myStrumlineIndex].OnHealNoteHit = () =>
-            {
-                if (_healthBar != null)
-                    _healthBar.Health = MathHelper.Clamp(_healthBar.Health + 0.15f, 0f, 1f);
-            };
+            // No skin-based fallback effects: note skins are visual only and any
+            // damage/instakill/heal comes from the note's action packs (NoteSkins).
         }
 
         // ── Events ───────────────────────────────────────────────────────────

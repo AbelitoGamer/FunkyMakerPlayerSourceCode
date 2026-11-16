@@ -19,19 +19,17 @@ public class NoteProps
     [JsonPropertyName("onPressEvent")] public float OnPressEvent { get; set; } = -1f;
     [JsonPropertyName("onMissEvent")]  public float OnMissEvent  { get; set; } = -1f;
     
-    // Skin values:
-    //   0 = normal note
-    //   1 = damage note  (hitting it drains health)
-    //   2 = instakill    (hitting it = instant game over)
-    //   3 = heal note    (hitting it restores health)
+    // Skin values are purely visual (see NoteSkins):
+    //   0 = default note
+    //   1 = negative note (X)
+    //   2 = positive note (O)
+    // Gameplay effects come only from OnPressEvent / OnMissEvent (-1 = none).
     [System.Text.Json.Serialization.JsonIgnore]
-    public bool IsNormal   => Skin == 0f;
+    public int  VisualSkin  => NoteSkins.Normalize(Skin);
     [System.Text.Json.Serialization.JsonIgnore]
-    public bool IsDamage   => Skin == 1f;
+    public bool IsNegative  => VisualSkin == NoteSkins.Negative;
     [System.Text.Json.Serialization.JsonIgnore]
-    public bool IsInstakill => Skin == 2f;
-    [System.Text.Json.Serialization.JsonIgnore]
-    public bool IsHeal     => Skin == 3f;
+    public bool IsPositive  => VisualSkin == NoteSkins.Positive;
 }
 
 public class FnmmNote

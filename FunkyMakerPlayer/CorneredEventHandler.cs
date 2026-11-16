@@ -271,7 +271,7 @@ public class CorneredEventHandler
                         Duration = durationBeats,
                         Props = new NoteProps
                         {
-                            Skin = laneId, // Default: same lane
+                            Skin = NoteSkins.Default, // skins are visual (0/1/2), not lane ids
                             OnPressEvent = -1,
                             OnMissEvent = -1
                         }
