@@ -415,7 +415,9 @@ public partial class FreeplayMenu
         foreach (var f in files)
         {
             _paths.Add(f);
-            _names.Add(Path.GetFileNameWithoutExtension(f));
+            // Directories are unpacked levels: show the folder name as-is
+            // (Path.GetFileNameWithoutExtension would strip a dot in the name).
+            _names.Add(Directory.Exists(f) ? Path.GetFileName(f) : Path.GetFileNameWithoutExtension(f));
             Console.WriteLine($"[FreeplayMenu]   - {Path.GetFileName(f)}");
         }
 

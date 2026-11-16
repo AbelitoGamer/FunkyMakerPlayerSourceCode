@@ -29,6 +29,16 @@ public static class FnmmSaver
     {
         try
         {
+            // FnmmSaver always writes a ZIP container. A .rar path is a legacy
+            // read-only source for us, so redirect to a sibling .fnmm file to
+            // keep the extension matching the actual format.
+            if (string.Equals(Path.GetExtension(outputPath), ".rar", StringComparison.OrdinalIgnoreCase))
+            {
+                string fnmmPath = Path.ChangeExtension(outputPath, ".fnmm");
+                Console.WriteLine($"[FnmmSaver] .rar is a read-only legacy container; saving ZIP content to {fnmmPath}");
+                outputPath = fnmmPath;
+            }
+
             Console.WriteLine($"[FnmmSaver] Saving level to: {outputPath}");
             
             // Create temp file, then replace atomically

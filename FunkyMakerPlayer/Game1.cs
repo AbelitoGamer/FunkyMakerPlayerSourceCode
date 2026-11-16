@@ -1368,7 +1368,9 @@ public partial class Game1 : Game
             }
             catch (Exception ex)
             {
-                _errorMsg        = ex.Message;
+                _errorMsg        = ex.Message == "PSYCH_ENGINE_MOD"
+                    ? "Psych Engine mods are not supported. Export the level as a .FNMM (ZIP) and try again."
+                    : ex.Message;
                 _loadingComplete = true;
                 _loadState       = LoadState.Done;
                 Console.Error.WriteLine($"[FunkyMakerPlayer] {ex}");
