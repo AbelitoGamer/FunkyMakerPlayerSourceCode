@@ -122,6 +122,7 @@ namespace FunkyMakerPlayer.Multiplayer
         private Rectangle _backButtonRect = Rectangle.Empty;
         private Rectangle _refreshButtonRect = Rectangle.Empty;
         private Rectangle _gameplaySettingsRect = Rectangle.Empty;
+        private Rectangle _shareButtonRect = Rectangle.Empty;
         private int _hoveredButton = -1;
         private Point _lastMousePos = Point.Zero;
         private bool _mouseMovedThisFrame = false;
@@ -204,6 +205,8 @@ namespace FunkyMakerPlayer.Multiplayer
         private const float TRANSITION_DURATION = 0.3f;
         private float _errorMessageTimer = 0f;
         private string _errorMessage = "";
+        private float _infoMessageTimer = 0f;
+        private string _infoMessage = "";
         private float _connectionRetryTimer = 0f;
         private int _connectionAttempts = 0;
         private const int MAX_CONNECTION_ATTEMPTS = 5;
@@ -555,6 +558,12 @@ namespace FunkyMakerPlayer.Multiplayer
                 if (_errorMessageTimer <= 0f)
                     _errorMessage = "";
             }
+            if (_infoMessageTimer > 0f)
+            {
+                _infoMessageTimer -= dt;
+                if (_infoMessageTimer <= 0f)
+                    _infoMessage = "";
+            }
 
             // Marshal SignalR connection lifecycle notifications onto the main update thread
             string? pendingDisconnect = Interlocked.Exchange(ref _pendingDisconnectReason, null);
@@ -692,6 +701,7 @@ namespace FunkyMakerPlayer.Multiplayer
             _backButtonRect = Rectangle.Empty;
             _refreshButtonRect = Rectangle.Empty;
             _gameplaySettingsRect = Rectangle.Empty;
+            _shareButtonRect = Rectangle.Empty;
             _hoveredButton = -1;
             _isSettingFocused = false;
             _isEditingText = false;
@@ -1123,6 +1133,16 @@ namespace FunkyMakerPlayer.Multiplayer
                 _inputCooldown = INPUT_COOLDOWN_TIME;
             }
             
+            // S key or the SHARE button on the selected card: share the level file (Local mode only).
+            // Checked before the card click, since the button sits inside the card.
+            if (_selectedSource == LevelSource.Local && (IsKeyPressed(kb, Keys.S) || IsRectClicked(mouse, _shareButtonRect)))
+            {
+                if (_availableLevels.Count > 0 && _levelSelection < _availableLevels.Count)
+                    ShareLevel(_availableLevels[_levelSelection]);
+                _inputCooldown = INPUT_COOLDOWN_TIME;
+                return;
+            }
+
             // Click on level items to select and start
             for (int i = 2; i < _clickableAreas.Count; i++)
             {
@@ -1147,14 +1167,6 @@ namespace FunkyMakerPlayer.Multiplayer
                     NetworkManager.Instance.RequestOfficialLevels();
                 _inputCooldown = INPUT_COOLDOWN_TIME;
                 return;
-            }
-
-            // S key: Share level (Local mode only)
-            if (IsKeyPressed(kb, Keys.S) && _selectedSource == LevelSource.Local)
-            {
-                if (_availableLevels.Count > 0 && _levelSelection < _availableLevels.Count)
-                    ShareLevel(_availableLevels[_levelSelection]);
-                _inputCooldown = INPUT_COOLDOWN_TIME;
             }
 
             // Back
@@ -1802,6 +1814,17 @@ namespace FunkyMakerPlayer.Multiplayer
             _errorMessageTimer = 5f; // Show for 5 seconds
             Console.WriteLine($"[Multiplayer Error] {message}");
         }
+
+        /// <summary>
+        /// Show a non-error notice (green toast) to the user.
+        /// </summary>
+        private void ShowInfo(string message, float seconds = 6f)
+        {
+            _infoMessage = message;
+            _infoMessageTimer = seconds;
+            UiSfx.Play(UiSound.Notice);
+            Console.WriteLine($"[Multiplayer] {message}");
+        }
         
         /// <summary>
         /// Trigger a smooth state transition and clear stale input/hitboxes.
@@ -1911,29 +1934,39 @@ namespace FunkyMakerPlayer.Multiplayer
         }
         
         /// <summary>
-        /// Share a local level (show path for manual sharing).
+        /// Share a local level: reveal it in the file manager and copy its path (desktop), or open the
+        /// share sheet (Android). In Local mode players are matched by file hash, so the opponent needs
+        /// this exact file in their levels folder; the short ID lets both players check that.
         /// </summary>
         private void ShareLevel(string levelFilename)
         {
             string levelPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(_levelsFolder, levelFilename));
-            
-            Console.WriteLine("==============================================");
-            Console.WriteLine("[MULTIPLAYER] SHARE THIS LEVEL:");
-            Console.WriteLine($"File: {levelPath}");
-            Console.WriteLine("");
-            Console.WriteLine("HOW TO SHARE:");
-            Console.WriteLine("1. Upload this file to Discord/Google Drive/Dropbox");
-            Console.WriteLine("2. Send the download link to your friend");
-            Console.WriteLine("3. Friend downloads and puts in their levels/ folder");
-            Console.WriteLine("4. Both search for match with this level!");
-            Console.WriteLine("==============================================");
-            
-            // Also calculate and show hash for verification
-            string hash = LevelHasher.CalculateHash(levelPath);
-            if (!string.IsNullOrEmpty(hash))
+            if (!System.IO.File.Exists(levelPath))
             {
-                Console.WriteLine($"[INFO] Level Hash: {hash[..16]}... (for verification)");
+                ShowError($"Level file not found: {levelFilename}");
+                return;
             }
+
+            var result = PlatformShare.ShareFile(levelPath);
+#if ANDROID
+            if (!result.Opened)
+            {
+                ShowError("Could not open the share menu.");
+                return;
+            }
+            string what = "Pick an app to send the level file.";
+#else
+            string what = (result.Opened, result.PathCopied) switch
+            {
+                (true, true) => "Level file shown in your file manager, path copied.",
+                (true, false) => "Level file shown in your file manager.",
+                (false, true) => "Level file path copied to the clipboard.",
+                _ => $"Level file: {levelPath}",
+            };
+#endif
+            string hash = LevelHasher.CalculateHash(levelPath);
+            string id = string.IsNullOrEmpty(hash) ? "" : $" (ID {hash[..8].ToUpperInvariant()})";
+            ShowInfo($"{what} Your opponent needs this exact file{id}.");
         }
 
         /// <summary>
@@ -2178,6 +2211,7 @@ namespace FunkyMakerPlayer.Multiplayer
             _backButtonRect = Rectangle.Empty;
             _refreshButtonRect = Rectangle.Empty;
             _gameplaySettingsRect = Rectangle.Empty;
+            _shareButtonRect = Rectangle.Empty;
 
             float uiScale = GetUiScale(screenWidth, screenHeight);
 
@@ -2236,7 +2270,14 @@ namespace FunkyMakerPlayer.Multiplayer
             // Draw error toast overlay if present
             if (_errorMessageTimer > 0f && !string.IsNullOrEmpty(_errorMessage))
             {
-                DrawErrorMessage(sb, font, pixel, screenWidth, screenHeight);
+                DrawToast(sb, font, pixel, screenWidth, screenHeight, _errorMessage, _errorMessageTimer, ACCENT_ERROR, new Color(36, 16, 24), "!", 0);
+            }
+            if (_infoMessageTimer > 0f && !string.IsNullOrEmpty(_infoMessage))
+            {
+                // Stack below the error toast when both are visible
+                bool errorShown = _errorMessageTimer > 0f && !string.IsNullOrEmpty(_errorMessage);
+                int offset = errorShown ? Px(84, GetUiScale(screenWidth, screenHeight)) : 0;
+                DrawToast(sb, font, pixel, screenWidth, screenHeight, _infoMessage, _infoMessageTimer, ACCENT_SUCCESS, new Color(14, 34, 26), "i", offset);
             }
             
 #if ANDROID
@@ -2640,39 +2681,40 @@ namespace FunkyMakerPlayer.Multiplayer
         }
         
         /// <summary>
-        /// Draw error message toast at the top of the screen.
+        /// Draw a toast (error or notice) at the top of the screen.
         /// </summary>
-        private void DrawErrorMessage(SpriteBatch sb, SpriteFont font, Texture2D pixel, int screenWidth, int screenHeight)
+        private void DrawToast(SpriteBatch sb, SpriteFont font, Texture2D pixel, int screenWidth, int screenHeight,
+            string message, float timer, Color accent, Color background, string glyph, int yOffset)
         {
             float uiScale = GetUiScale(screenWidth, screenHeight);
-            float alpha = Math.Min(1f, _errorMessageTimer / 0.35f);
-            if (_errorMessageTimer < 0.5f) alpha = Math.Min(alpha, _errorMessageTimer / 0.5f);
+            float alpha = Math.Min(1f, timer / 0.35f);
+            if (timer < 0.5f) alpha = Math.Min(alpha, timer / 0.5f);
 
             int fontSize = FontPx(16, uiScale, 12, 24);
             int maxW = Math.Clamp(Px(620, uiScale), 280, Math.Max(280, screenWidth - 48));
-            string wrapped = WrapTextToWidth(font, _errorMessage, maxW - Px(72, uiScale), fontSize);
+            string wrapped = WrapTextToWidth(font, message, maxW - Px(72, uiScale), fontSize);
             Vector2 textSz = MeasureText(font, wrapped, fontSize);
 
-            int errorW = Math.Clamp((int)MathF.Ceiling(textSz.X) + Px(84, uiScale), Px(340, uiScale), maxW);
-            int errorH = Math.Max(Px(54, uiScale), (int)MathF.Ceiling(textSz.Y) + Px(24, uiScale));
-            int errorX = screenWidth / 2 - errorW / 2;
-            int errorY = Px(20, uiScale, 12);
+            int toastW = Math.Clamp((int)MathF.Ceiling(textSz.X) + Px(84, uiScale), Px(340, uiScale), maxW);
+            int toastH = Math.Max(Px(54, uiScale), (int)MathF.Ceiling(textSz.Y) + Px(24, uiScale));
+            int toastX = screenWidth / 2 - toastW / 2;
+            int toastY = Px(20, uiScale, 12) + yOffset;
 
-            sb.Draw(pixel, new Rectangle(errorX + 3, errorY + 4, errorW, errorH), Color.Black * (0.4f * alpha));
-            sb.Draw(pixel, new Rectangle(errorX, errorY, errorW, errorH), new Color(36, 16, 24) * (0.95f * alpha));
-            DrawBorder(sb, pixel, errorX, errorY, errorW, errorH, ACCENT_ERROR * alpha, 2);
-            sb.Draw(pixel, new Rectangle(errorX, errorY, 4, errorH), ACCENT_ERROR * alpha);
+            sb.Draw(pixel, new Rectangle(toastX + 3, toastY + 4, toastW, toastH), Color.Black * (0.4f * alpha));
+            sb.Draw(pixel, new Rectangle(toastX, toastY, toastW, toastH), background * (0.95f * alpha));
+            DrawBorder(sb, pixel, toastX, toastY, toastW, toastH, accent * alpha, 2);
+            sb.Draw(pixel, new Rectangle(toastX, toastY, 4, toastH), accent * alpha);
 
-            // Alert badge
+            // Badge ("!" for errors, "i" for notices)
             int badgeSize = Px(26, uiScale, 18);
-            int badgeX = errorX + Px(16, uiScale);
-            int badgeY = errorY + (errorH - badgeSize) / 2;
-            sb.Draw(pixel, new Rectangle(badgeX, badgeY, badgeSize, badgeSize), ACCENT_ERROR * (0.25f * alpha));
-            DrawBorder(sb, pixel, badgeX, badgeY, badgeSize, badgeSize, ACCENT_ERROR * alpha, 1);
-            Vector2 bangSz = MeasureText(font, "!", fontSize);
-            DrawText(sb, font, "!", new Vector2(badgeX + (badgeSize - bangSz.X) / 2f, badgeY + (badgeSize - bangSz.Y) / 2f), ACCENT_ERROR * alpha, fontSize);
+            int badgeX = toastX + Px(16, uiScale);
+            int badgeY = toastY + (toastH - badgeSize) / 2;
+            sb.Draw(pixel, new Rectangle(badgeX, badgeY, badgeSize, badgeSize), accent * (0.25f * alpha));
+            DrawBorder(sb, pixel, badgeX, badgeY, badgeSize, badgeSize, accent * alpha, 1);
+            Vector2 glyphSz = MeasureText(font, glyph, fontSize);
+            DrawText(sb, font, glyph, new Vector2(badgeX + (badgeSize - glyphSz.X) / 2f, badgeY + (badgeSize - glyphSz.Y) / 2f), accent * alpha, fontSize);
 
-            Vector2 textPos = new Vector2(badgeX + badgeSize + Px(14, uiScale), errorY + (errorH - textSz.Y) / 2f);
+            Vector2 textPos = new Vector2(badgeX + badgeSize + Px(14, uiScale), toastY + (toastH - textSz.Y) / 2f);
             DrawText(sb, font, wrapped, textPos, TEXT_PRIMARY * alpha, fontSize, shadow: true);
         }
 
@@ -3238,7 +3280,7 @@ namespace FunkyMakerPlayer.Multiplayer
                 DrawPillBadge(sb, font, pixel, marginX + sidePad + Px(12, uiScale), infoY + Px(12, uiScale), Px(22, uiScale, 18), badgeTitle, badgeAccent, FontPx(11, uiScale, 10, 16), 10, true);
 
                 string line1 = officialSelected ? "Auto-download to RAM" : "Share file with opponent";
-                string line2 = officialSelected ? "Safe multiplayer charts" : "Press S on selected level";
+                string line2 = officialSelected ? "Safe multiplayer charts" : "SHARE on the selected level";
                 int infoFont = FontPx(13, uiScale, 10, 18);
                 DrawText(sb, font, line1, new Vector2(marginX + sidePad + Px(12, uiScale), infoY + Px(46, uiScale)), TEXT_PRIMARY * _fadeAlpha, infoFont);
                 DrawText(sb, font, line2, new Vector2(marginX + sidePad + Px(12, uiScale), infoY + Px(68, uiScale)), TEXT_SECONDARY * _fadeAlpha, FontPx(12, uiScale, 10, 16));
@@ -3381,16 +3423,31 @@ namespace FunkyMakerPlayer.Multiplayer
                         int infoX = cardX + Px(14, uiScale) + badgeW + Px(14, uiScale);
                         int nameFont = FontPx(18, uiScale, 13, 26);
                         int ctaFont = FontPx(13, uiScale, 10, 18);
-                        string cta = "S: Share   |   ENTER: Play  >";
-                        float ctaReserve = selected ? (MeasureText(font, cta, ctaFont).X + Px(24, uiScale)) : 0f;
+                        // Selected card: "[SHARE (S)]   ENTER: Play >" — the SHARE pill is clickable / tappable.
+                        string cta = "ENTER: Play  >";
+#if ANDROID
+                        string shareLabel = "SHARE";
+#else
+                        string shareLabel = "SHARE (S)";
+#endif
+                        int sharePadX = Px(12, uiScale);
+                        int shareH = Math.Max(Px(26, uiScale, 20), cardH - Px(22, uiScale));
+                        int shareW = (int)MathF.Ceiling(MeasureText(font, shareLabel, ctaFont).X) + sharePadX * 2;
+                        Vector2 ctaSz = MeasureText(font, cta, ctaFont);
+                        float ctaReserve = selected ? (ctaSz.X + shareW + Px(14, uiScale) + Px(24, uiScale)) : 0f;
                         string displayName = TruncateToWidth(font, filename, Math.Max(80f, cardX + cardW - Px(16, uiScale) - ctaReserve - infoX), nameFont);
                         Vector2 nSz = MeasureText(font, displayName, nameFont);
                         DrawText(sb, font, displayName, new Vector2(infoX, cardY + (cardH - nSz.Y) / 2f), (selected ? TEXT_PRIMARY : TEXT_SECONDARY) * _fadeAlpha, nameFont, shadow: selected);
 
                         if (selected)
                         {
-                            Vector2 ctaSz = MeasureText(font, cta, ctaFont);
-                            DrawText(sb, font, cta, new Vector2(cardX + cardW - Px(16, uiScale) - ctaSz.X, cardY + (cardH - ctaSz.Y) / 2f), ACCENT_SECONDARY * _fadeAlpha, ctaFont);
+                            float ctaX = cardX + cardW - Px(16, uiScale) - ctaSz.X;
+                            DrawText(sb, font, cta, new Vector2(ctaX, cardY + (cardH - ctaSz.Y) / 2f), ACCENT_SECONDARY * _fadeAlpha, ctaFont);
+
+                            _shareButtonRect = new Rectangle((int)ctaX - Px(14, uiScale) - shareW, cardY + (cardH - shareH) / 2, shareW, shareH);
+                            bool shareHovered = _shareButtonRect.Contains(_lastMousePos);
+                            DrawPillBadge(sb, font, pixel, _shareButtonRect.X, _shareButtonRect.Y, shareH, shareLabel,
+                                shareHovered ? ACCENT_SUCCESS : ACCENT_SECONDARY, ctaFont, sharePadX, filledStrong: shareHovered);
                         }
                     }
                 }
