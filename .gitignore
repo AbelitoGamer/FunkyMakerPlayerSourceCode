@@ -39,6 +39,8 @@ Docs/
 docs/
 *.md
 !README.md
+# Local-only project context doc (kept out of the repo on purpose)
+Context.md
 *.txt
 !version.txt
 !**/notestyles/README.txt
@@ -64,7 +66,9 @@ Haxe/
 
 # Test/Development folders
 no sirve/
-notesplashes/
+
+# Packaged Windows build (release output, not source)
+FunkyMakerPlayer_win/
 
 # Temporary and backup files
 *.tmp
@@ -91,5 +95,10 @@ desktop.ini
 *.keystore
 *.jks
 keystore.properties
-events/
 .agents/
+
+# Required build inputs: events/*.json are EmbeddedResources in the csproj and
+# notesplashes/ is copied to the output, so they must not be ignored.
+!FunkyMakerPlayer/events/
+!FunkyMakerPlayer/events/**
+!notesplashes/**
