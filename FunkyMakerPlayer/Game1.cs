@@ -3082,45 +3082,33 @@ public partial class Game1 : Game
                 StartLoadingLevel(_freeplay.LevelPath);
                 _freeplay.LevelChosen = false;
             }
-            // Check if user selected HUD Editor
-            if (_freeplay.MenuAction == 1)
-            {
-                _inFreeplay = false;
-                _hudEditorReturnTarget = HudEditorReturnTarget.Freeplay;
-                _inMainSettings = true;
-                _mainSettingsMenu?.ResetInputCooldown(); // Prevent immediate ENTER detection
-                _freeplay.MenuAction = -1;
-                RefreshActiveDiscordPresence(immediate: true);
-            }
+            // Main-menu actions (HUD Editor is reached via EDITORS / Settings, not MenuAction)
+            int menuAction = _freeplay.ConsumeMenuAction();
             // Check if user selected Multiplayer
-            if (_freeplay.MenuAction == 3)
+            if (menuAction == 3)
             {
                 _inFreeplay = false;
                 _inMultiplayer = true;
                 _multiplayerMenu?.ResetInputCooldown();
-                _freeplay.MenuAction = -1;
                 RefreshActiveDiscordPresence(immediate: true);
             }
             #if ANDROID
             // Check if user selected IMPORT FILE (Android only)
-            if (_freeplay.MenuAction == 4)
+            if (menuAction == 4)
             {
                 OpenAndroidFilePicker();
-                _freeplay.MenuAction = -1;
             }
             // Check if user selected OPEN MODS (Android only)
-            if (_freeplay.MenuAction == 5)
+            if (menuAction == 5)
             {
                 OpenAndroidModsFolder();
-                _freeplay.MenuAction = -1;
             }
             // Check if user selected GRANT FOLDER ACCESS (Android only)
-            if (_freeplay.MenuAction == 6)
+            if (menuAction == 6)
             {
                 // Show help screen first
                 _modsHelpScreen?.Show();
-                _freeplay.MenuAction = -1;
-                
+
                 // Hide touch controls while help screen is visible
                 _touchControls?.SetAllControlsVisible(false);
             }
