@@ -40,7 +40,8 @@ namespace FunkyMakerPlayer.Platforms.Android
                 string name = Path.GetFileName(path);
                 File.Copy(path, Path.Combine(shareDir, name), true);
 
-                var uri = global::Android.Net.Uri.Parse($"content://{AUTHORITY}/{global::Android.Net.Uri.Encode(name)}");
+                string encodedName = global::Android.Net.Uri.Encode(name);
+                var uri = global::Android.Net.Uri.Parse($"content://{AUTHORITY}/{encodedName}");
                 var send = new Intent(Intent.ActionSend);
                 send.SetType(MIME);
                 send.PutExtra(Intent.ExtraStream, uri);
