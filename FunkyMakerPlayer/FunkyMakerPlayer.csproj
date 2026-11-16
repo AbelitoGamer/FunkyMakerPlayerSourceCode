@@ -173,6 +173,7 @@
     <PackageReference Include="MonoGame.Framework.Android" Version="3.8.*" Condition="$(TargetFramework.Contains('android'))" />
     <PackageReference Include="MonoGame.Content.Builder.Task" Version="3.8.*" />
     <PackageReference Include="NVorbis" Version="0.10.5" />
+    <PackageReference Include="NLayer" Version="1.16.0" /> <!-- MP3 decoding for menu music -->
     <PackageReference Include="Obfuscar" Version="2.2.50">
       <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
       <PrivateAssets>all</PrivateAssets>

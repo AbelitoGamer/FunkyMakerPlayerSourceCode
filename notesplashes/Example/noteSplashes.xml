@@ -1,0 +1,49 @@
+<?xml version="1.0" encoding="utf-8"?>
+<TextureAtlas imagePath="noteSplashes.png">
+	<!-- ═══════════════════════════════════════════════════════════════════ -->
+	<!-- EJEMPLO DE NOTESPLASH XML                                            -->
+	<!-- ═══════════════════════════════════════════════════════════════════ -->
+	<!-- 
+	Este es un EJEMPLO de cómo estructurar tu archivo XML.
+	
+	IMPORTANTE:
+	- Necesitas crear noteSplashes.png con las texturas reales
+	- Ajusta los valores x, y, width, height según tu spritesheet
+	- Los números al final (0000, 0001, etc.) indican frames de animación
+	- Puedes tener tantos frames como quieras por lane
+	-->
+	
+	<!-- Lane IZQUIERDA (purple) -->
+	<SubTexture name="noteLeft splash0000" x="0" y="0" width="200" height="200" frameX="0" frameY="0" frameWidth="200" frameHeight="200"/>
+	<SubTexture name="noteLeft splash0001" x="200" y="0" width="200" height="200" frameX="0" frameY="0" frameWidth="200" frameHeight="200"/>
+	<SubTexture name="noteLeft splash0002" x="400" y="0" width="200" height="200" frameX="0" frameY="0" frameWidth="200" frameHeight="200"/>
+	<SubTexture name="noteLeft splash0003" x="600" y="0" width="200" height="200" frameX="0" frameY="0" frameWidth="200" frameHeight="200"/>
+	
+	<!-- Lane ABAJO (blue) -->
+	<SubTexture name="noteDown splash0000" x="0" y="200" width="200" height="200" frameX="0" frameY="0" frameWidth="200" frameHeight="200"/>
+	<SubTexture name="noteDown splash0001" x="200" y="200" width="200" height="200" frameX="0" frameY="0" frameWidth="200" frameHeight="200"/>
+	<SubTexture name="noteDown splash0002" x="400" y="200" width="200" height="200" frameX="0" frameY="0" frameWidth="200" frameHeight="200"/>
+	<SubTexture name="noteDown splash0003" x="600" y="200" width="200" height="200" frameX="0" frameY="0" frameWidth="200" frameHeight="200"/>
+	
+	<!-- Lane ARRIBA (green) -->
+	<SubTexture name="noteUp splash0000" x="0" y="400" width="200" height="200" frameX="0" frameY="0" frameWidth="200" frameHeight="200"/>
+	<SubTexture name="noteUp splash0001" x="200" y="400" width="200" height="200" frameX="0" frameY="0" frameWidth="200" frameHeight="200"/>
+	<SubTexture name="noteUp splash0002" x="400" y="400" width="200" height="200" frameX="0" frameY="0" frameWidth="200" frameHeight="200"/>
+	<SubTexture name="noteUp splash0003" x="600" y="400" width="200" height="200" frameX="0" frameY="0" frameWidth="200" frameHeight="200"/>
+	
+	<!-- Lane DERECHA (red) -->
+	<SubTexture name="noteRight splash0000" x="0" y="600" width="200" height="200" frameX="0" frameY="0" frameWidth="200" frameHeight="200"/>
+	<SubTexture name="noteRight splash0001" x="200" y="600" width="200" height="200" frameX="0" frameY="0" frameWidth="200" frameHeight="200"/>
+	<SubTexture name="noteRight splash0002" x="400" y="600" width="200" height="200" frameX="0" frameY="0" frameWidth="200" frameHeight="200"/>
+	<SubTexture name="noteRight splash0003" x="600" y="600" width="200" height="200" frameX="0" frameY="0" frameWidth="200" frameHeight="200"/>
+	
+	<!-- 
+	NOTAS:
+	- x, y: Posición del frame en el spritesheet (en píxeles)
+	- width, height: Tamaño del frame (en píxeles)
+	- frameX, frameY: Offset si el sprite tiene padding/margen
+	- frameWidth, frameHeight: Tamaño total del frame incluyendo padding
+	
+	Si tu spritesheet no tiene padding, frameX/Y = 0 y frameWidth/Height = width/height
+	-->
+</TextureAtlas>

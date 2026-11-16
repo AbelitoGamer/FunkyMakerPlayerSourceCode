@@ -124,8 +124,16 @@ public class HudSettings
     {
         get
         {
-            // Save in Assets/data folder for better organization
-            string assetsPath = Path.Combine(AppContext.BaseDirectory, "Assets", "data");
+            // Save in Assets/data folder for better organization.
+            // Desktop: use the real executable folder. In single-file builds
+            // AppContext.BaseDirectory is a temp extraction folder, so the layout
+            // would not persist next to the exe.
+#if ANDROID
+            string baseDir = AppContext.BaseDirectory;
+#else
+            string baseDir = PlatformPaths.GetAppBaseDirectory();
+#endif
+            string assetsPath = Path.Combine(baseDir, "Assets", "data");
             
             // Create directory if it doesn't exist
             if (!Directory.Exists(assetsPath))

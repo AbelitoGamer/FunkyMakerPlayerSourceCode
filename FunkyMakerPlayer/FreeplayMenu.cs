@@ -295,6 +295,7 @@ public partial class FreeplayMenu
     {
         _toastMessage = message;
         _toastTimer   = TOAST_DURATION;
+        UI.UiSfx.Play(UI.UiSound.Notice);
         Console.WriteLine($"[FreeplayMenu] Toast: {message}");
     }
 
@@ -415,7 +416,9 @@ public partial class FreeplayMenu
         foreach (var f in files)
         {
             _paths.Add(f);
-            _names.Add(Path.GetFileNameWithoutExtension(f));
+            // Directories are unpacked levels: show the folder name as-is
+            // (Path.GetFileNameWithoutExtension would strip a dot in the name).
+            _names.Add(Directory.Exists(f) ? Path.GetFileName(f) : Path.GetFileNameWithoutExtension(f));
             Console.WriteLine($"[FreeplayMenu]   - {Path.GetFileName(f)}");
         }
 
@@ -430,6 +433,57 @@ public partial class FreeplayMenu
     }
     
     public void Update(float dt, KeyboardState kb, int screenWidth, int screenHeight, int windowWidth = 0, int windowHeight = 0)
+    {
+        // Compare against the state seen at the end of the previous frame (so changes made between
+        // frames, e.g. the update prompt opened from a background thread, are heard too), then
+        // run the update. If the menu was not updated last frame, start from the current state.
+        var b = _sfxPrevFrame == UI.UiSfx.Frame - 1 ? _sfxPrev : CaptureSfxState();
+
+        UpdateCore(dt, kb, screenWidth, screenHeight, windowWidth, windowHeight);
+        QueueSfx(b);
+        _sfxPrev = CaptureSfxState();
+        _sfxPrevFrame = UI.UiSfx.Frame;
+    }
+
+    private readonly record struct SfxState(
+        int _menuSel, int _selected, bool _panelOpen, bool _creditsOpen, TransitionState _transition,
+        bool _importModalOpen, int _importModalSelection, bool _updateModalOpen, int _updateModalSel,
+        bool _updateDownloading, bool HasUpdateError);
+
+    private SfxState _sfxPrev;
+    private long _sfxPrevFrame = -10;
+
+    private SfxState CaptureSfxState() => new(
+        _menuSel, _selected, _panelOpen, _creditsOpen, _transition, _importModalOpen, _importModalSelection,
+        _updateModalOpen, _updateModalSel, _updateDownloading, _updateError != null);
+
+    /// <summary>Queues UI sounds for what changed since <paramref name="b"/>.</summary>
+    private void QueueSfx(SfxState b)
+    {
+        if (LevelChosen) UI.UiSfx.Play(UI.UiSound.StartSong);
+        if (EditorPickerRequested || ChartEditorRequested || NewChartRequested || SettingsRequested || MenuAction >= 0)
+            UI.UiSfx.Play(UI.UiSound.Confirm);
+
+        if (_menuSel != b._menuSel) UI.UiSfx.Play(UI.UiSound.Move);
+        if (_selected != b._selected && _panelOpen) UI.UiSfx.Play(UI.UiSound.MoveList);
+        if (_panelOpen != b._panelOpen) UI.UiSfx.Play(_panelOpen ? UI.UiSound.Confirm : UI.UiSound.Back);
+        if (_transition == TransitionState.CreditsIn && b._transition != TransitionState.CreditsIn) UI.UiSfx.Play(UI.UiSound.Confirm);
+        if (b._creditsOpen && !_creditsOpen && !LevelChosen) UI.UiSfx.Play(UI.UiSound.Back);
+        if (b._transition == TransitionState.CreditsIn && _transition == TransitionState.None && !_creditsOpen) UI.UiSfx.Play(UI.UiSound.Back);
+
+        // Import "play now?" modal
+        if (_importModalOpen && b._importModalOpen && _importModalSelection != b._importModalSelection) UI.UiSfx.Play(UI.UiSound.Move);
+        if (b._importModalOpen && !_importModalOpen && !LevelChosen) UI.UiSfx.Play(UI.UiSound.Back);
+
+        // Update prompt (opened from a background thread → detected here on the main thread)
+        if (_updateModalOpen && !b._updateModalOpen) UI.UiSfx.Play(UI.UiSound.Receive);
+        if (_updateModalOpen && b._updateModalOpen && _updateModalSel != b._updateModalSel) UI.UiSfx.Play(UI.UiSound.Move);
+        if (b._updateModalOpen && !_updateModalOpen) UI.UiSfx.Play(UI.UiSound.Back);
+        if (_updateDownloading && !b._updateDownloading) UI.UiSfx.Play(UI.UiSound.Wait);
+        if (_updateError != null && !b.HasUpdateError) UI.UiSfx.Play(UI.UiSound.Error);
+    }
+
+    private void UpdateCore(float dt, KeyboardState kb, int screenWidth, int screenHeight, int windowWidth, int windowHeight)
     {
         // Use window dimensions if provided, otherwise use screen dimensions
         if (windowWidth == 0) windowWidth = screenWidth;

@@ -43,14 +43,14 @@ namespace FunkyMakerPlayer.Editors.Chart
         private bool _showPreview = true;
         private int _snapDivisor = 16;       // 1/4, 1/8, 1/12, 1/16 (1 step square), 1/24, 1/32
         private float _defaultHoldBeats = 0.5f;
-        private float _activeNoteSkin = 0f;  // 0=Normal, 1=Damage, 2=Instakill, 3=Heal
+        private NotePreset _activePreset = NotePreset.Normal;  // brush preset (skin + action pack)
 
         // ── Undo/Redo, Selection, Clipboard & Drag state ─────────────────────
         private readonly UndoManager _undoManager = new();
         private FnmmNote? _selectedNote;
         private int _selectedNoteLane = -1;
         private int _selectedNoteStrumline = 0;
-        private readonly List<(int lane, float relBeat, float duration, float skin)> _clipboardNotes = new();
+        private readonly List<(int lane, float relBeat, float duration, float skin, float onPress, float onMiss)> _clipboardNotes = new();
 
         private enum DragMode { None, Scrubber, MoveNote, ResizeHold, NewHoldTail }
         private DragMode _dragMode = DragMode.None;
@@ -694,6 +694,7 @@ namespace FunkyMakerPlayer.Editors.Chart
             if (JustPressed(kb, Keys.V))
             {
                 _showPreview = !_showPreview;
+                UI.UiSfx.Play(UI.UiSound.Toggle);
                 ShowToast(_showPreview ? "Stage Preview shown" : "Stage Preview hidden");
             }
 
@@ -716,12 +717,12 @@ namespace FunkyMakerPlayer.Editors.Chart
             if (!ctrl && JustPressed(kb, Keys.C)) CyclePreviewCamera();
             if (!ctrl && JustPressed(kb, Keys.H))
             {
-                _hitsoundsEnabled = !_hitsoundsEnabled;
+                _hitsoundsEnabled = !_hitsoundsEnabled; UI.UiSfx.Play(UI.UiSound.Toggle);
                 ShowToast(_hitsoundsEnabled ? "Hitsounds ON" : "Hitsounds OFF");
             }
             if (!ctrl && JustPressed(kb, Keys.N))
             {
-                _metronomeEnabled = !_metronomeEnabled;
+                _metronomeEnabled = !_metronomeEnabled; UI.UiSfx.Play(UI.UiSound.Toggle);
                 ShowToast(_metronomeEnabled ? "Metronome ON" : "Metronome OFF");
             }
             if (!ctrl && JustPressed(kb, Keys.M)) MirrorCurrentMeasure();
@@ -734,17 +735,18 @@ namespace FunkyMakerPlayer.Editors.Chart
             if (JustPressed(kb, Keys.OemOpenBrackets)) AdjustHoldDuration(-1);
             if (JustPressed(kb, Keys.OemCloseBrackets)) AdjustHoldDuration(1);
 
-            // Note skin cycle T
+            // Note preset cycle T (Normal → Hurt → Instakill → Heal)
             if (JustPressed(kb, Keys.T))
             {
                 if (_selectedNote != null)
                 {
-                    CycleSelectedNoteSkin();
+                    CycleSelectedNotePreset();
                 }
                 else
                 {
-                    _activeNoteSkin = (_activeNoteSkin + 1f) % 4f;
-                    ShowToast($"Brush Skin: {GetSkinName(_activeNoteSkin)}");
+                    _activePreset = NextPreset(_activePreset);
+                    UI.UiSfx.Play(UI.UiSound.Toggle);
+                    ShowToast($"Brush: {PresetName(_activePreset)}");
                 }
             }
 
@@ -887,7 +889,7 @@ namespace FunkyMakerPlayer.Editors.Chart
                 float dur = _currentTool == EditorTool.PlaceHold
                     ? BeatsToTimeUnits(Math.Max(GetSnapStepBeats(), _defaultHoldBeats))
                     : 0f;
-                var created = CreateAndAddNote(_selectedStrumline, lane, targetUnits, dur, _activeNoteSkin);
+                var created = CreateAndAddNote(_selectedStrumline, lane, targetUnits, dur, BuildPresetProps(_activePreset));
                 if (created != null)
                     SelectNote(created, _selectedStrumline, lane);
             }
@@ -909,6 +911,7 @@ namespace FunkyMakerPlayer.Editors.Chart
             int offset = (_leftStrumline - 1 + dir + extraCount * 4) % extraCount;
             _leftStrumline = 1 + offset;
             _selectedStrumline = _leftStrumline;
+            UI.UiSfx.Play(UI.UiSound.SubTab);
             _selectedNote = null;
             ShowToast($"Left Track: SL{_leftStrumline} ({CountStrumNotes(_leftStrumline)} notes)");
         }
@@ -926,6 +929,7 @@ namespace FunkyMakerPlayer.Editors.Chart
                 _previewCameraMode = -1;
 
             _previewNeedsSeek = true;
+            UI.UiSfx.Play(UI.UiSound.SubTab);
             ShowToast($"Preview Cam: {GetPreviewCameraLabel()}");
         }
 
@@ -952,10 +956,11 @@ namespace FunkyMakerPlayer.Editors.Chart
                 {
                     float b = TimeUnitsToBeats(n.Start);
                     if (b >= barStart - 0.002f && b < barEnd - 0.002f)
-                        _clipboardNotes.Add((lane, Math.Max(0f, b - barStart), n.Duration, n.Props.Skin));
+                        _clipboardNotes.Add((lane, Math.Max(0f, b - barStart), n.Duration, n.Props.Skin, n.Props.OnPressEvent, n.Props.OnMissEvent));
                 }
             }
 
+            UI.UiSfx.Play((_clipboardNotes.Count > 0 ? UI.UiSound.Confirm : UI.UiSound.Error));
             ShowToast(_clipboardNotes.Count > 0
                 ? $"Copied {_clipboardNotes.Count} notes (Bar #{barIdx + 1})"
                 : $"No notes in Bar #{barIdx + 1} (SL{_selectedStrumline})");
@@ -965,6 +970,7 @@ namespace FunkyMakerPlayer.Editors.Chart
         {
             if (_level == null || _clipboardNotes.Count == 0)
             {
+                UI.UiSfx.Play(UI.UiSound.Error);
                 ShowToast("Clipboard empty (Ctrl+C inside a measure first)");
                 return;
             }
@@ -986,16 +992,18 @@ namespace FunkyMakerPlayer.Editors.Chart
                 {
                     Start = destUnits,
                     Duration = item.duration,
-                    Props = new NoteProps { Skin = item.skin }
+                    Props = new NoteProps { Skin = item.skin, OnPressEvent = item.onPress, OnMissEvent = item.onMiss }
                 }));
             }
 
             if (added.Count == 0)
             {
+                UI.UiSfx.Play(UI.UiSound.AlreadyInUse);
                 ShowToast("All copied notes already present at target bar");
                 return;
             }
 
+            UI.UiSfx.Play(UI.UiSound.Confirm);
             _undoManager.Do(new DelegateEditorAction(
                 () =>
                 {
@@ -1034,10 +1042,12 @@ namespace FunkyMakerPlayer.Editors.Chart
 
             if (moves.Count == 0)
             {
+                UI.UiSfx.Play(UI.UiSound.Error);
                 ShowToast($"No notes to mirror in Bar #{barIdx + 1}");
                 return;
             }
 
+            UI.UiSfx.Play(UI.UiSound.CycleNext);
             _undoManager.Do(new DelegateEditorAction(
                 () =>
                 {
@@ -1206,7 +1216,7 @@ namespace FunkyMakerPlayer.Editors.Chart
                     }
                     else
                     {
-                        var created = CreateAndAddNote(strumIdx, lane, snappedTime, 0f, _activeNoteSkin);
+                        var created = CreateAndAddNote(strumIdx, lane, snappedTime, 0f, BuildPresetProps(_activePreset));
                         if (created != null) SelectNote(created, strumIdx, lane);
                     }
                     break;
@@ -1221,7 +1231,7 @@ namespace FunkyMakerPlayer.Editors.Chart
                     {
                         float initBeats = Math.Max(GetSnapStepBeats(), _defaultHoldBeats);
                         float initDur = BeatsToTimeUnits(initBeats);
-                        var createdHold = CreateAndAddNote(strumIdx, lane, snappedTime, initDur, _activeNoteSkin);
+                        var createdHold = CreateAndAddNote(strumIdx, lane, snappedTime, initDur, BuildPresetProps(_activePreset));
                         if (createdHold != null)
                         {
                             SelectNote(createdHold, strumIdx, lane);
@@ -1340,7 +1350,7 @@ namespace FunkyMakerPlayer.Editors.Chart
         }
 
         // ── Chart Editing Actions (with Undo/Redo) ───────────────────────────
-        private FnmmNote? CreateAndAddNote(int strumIdx, int lane, float start, float duration, float skin)
+        private FnmmNote? CreateAndAddNote(int strumIdx, int lane, float start, float duration, NoteProps props)
         {
             if (_level == null || strumIdx < 0 || strumIdx >= _level.Data.Strumlines.Count) return null;
             var strum = _level.Data.Strumlines[strumIdx];
@@ -1348,6 +1358,7 @@ namespace FunkyMakerPlayer.Editors.Chart
 
             if (strum[lane].Any(n => MathF.Abs(n.Start - start) < 0.005f))
             {
+                UI.UiSfx.Play(UI.UiSound.Error);
                 ShowToast("Note already exists at that beat");
                 return null;
             }
@@ -1356,7 +1367,7 @@ namespace FunkyMakerPlayer.Editors.Chart
             {
                 Start = start,
                 Duration = duration,
-                Props = new NoteProps { Skin = skin }
+                Props = props
             };
 
             _undoManager.Do(new DelegateEditorAction(
@@ -1382,6 +1393,7 @@ namespace FunkyMakerPlayer.Editors.Chart
             var strum = _level.Data.Strumlines[strumIdx];
             if (lane < 0 || lane >= strum.Count) return;
 
+            UI.UiSfx.Play(UI.UiSound.Delete);
             _undoManager.Do(new DelegateEditorAction(
                 () =>
                 {
@@ -1403,6 +1415,7 @@ namespace FunkyMakerPlayer.Editors.Chart
             float oldStart = note.Start;
             var srcList = _level.Data.Strumlines[fromStrum][fromLane];
             var dstList = _level.Data.Strumlines[toStrum][toLane];
+            UI.UiSfx.Play(UI.UiSound.Release);
 
             _undoManager.Do(new DelegateEditorAction(
                 () =>
@@ -1484,6 +1497,7 @@ namespace FunkyMakerPlayer.Editors.Chart
         // ── Quick Controls & Actions ─────────────────────────────────────────
         private void SetTool(EditorTool tool)
         {
+            if (_currentTool != tool) UI.UiSfx.Play(UI.UiSound.Focus);
             _currentTool = tool;
         }
 
@@ -1491,6 +1505,7 @@ namespace FunkyMakerPlayer.Editors.Chart
         {
             if (_level == null || idx < 0 || idx >= _level.Data.Strumlines.Count) return;
             if (idx > 0 && idx != _rightStrumline) _leftStrumline = idx;
+            if (_selectedStrumline != idx) UI.UiSfx.Play(UI.UiSound.Tab);
             _selectedStrumline = idx;
             _selectedNote = null;
         }
@@ -1507,13 +1522,16 @@ namespace FunkyMakerPlayer.Editors.Chart
         {
             int idx = Array.IndexOf(SNAP_VALUES, _snapDivisor);
             if (idx < 0) idx = 0;
-            idx = Math.Clamp(idx + dir, 0, SNAP_VALUES.Length - 1);
+            int newIdx = Math.Clamp(idx + dir, 0, SNAP_VALUES.Length - 1);
+            UI.UiSfx.Play((newIdx == idx ? UI.UiSound.SliderEnd : dir < 0 ? UI.UiSound.SliderDown : UI.UiSound.SliderUp));
+            idx = newIdx;
             _snapDivisor = SNAP_VALUES[idx];
             ShowToast($"Snap: 1/{_snapDivisor}");
         }
 
         private void AdjustHoldDuration(int dir)
         {
+            UI.UiSfx.Play((dir < 0 ? UI.UiSound.SliderDown : UI.UiSound.SliderUp));
             float stepBeats = GetSnapStepBeats();
             if (_selectedNote != null)
             {
@@ -1535,17 +1553,159 @@ namespace FunkyMakerPlayer.Editors.Chart
             }
         }
 
-        private void CycleSelectedNoteSkin()
+        private void CycleSelectedNotePreset()
         {
-            if (_selectedNote == null) return;
+            if (_selectedNote == null || _level == null) return;
             var target = _selectedNote;
-            float oldSkin = target.Props.Skin;
-            float newSkin = (oldSkin + 1f) % 4f;
+            NotePreset? current = DetectPreset(target.Props);
+            // Custom notes (skin/events not matching a preset) restart the cycle at Normal.
+            NotePreset next = current.HasValue ? NextPreset(current.Value) : NotePreset.Normal;
+
+            var old = (target.Props.Skin, target.Props.OnPressEvent, target.Props.OnMissEvent);
+            var built = BuildPresetProps(next);
+            var neu = (built.Skin, built.OnPressEvent, built.OnMissEvent);
+
+            UI.UiSfx.Play(UI.UiSound.Toggle);
             _undoManager.Do(new DelegateEditorAction(
-                () => { target.Props.Skin = newSkin; MarkPreviewDirty(); },
-                () => { target.Props.Skin = oldSkin; MarkPreviewDirty(); }
+                () => { (target.Props.Skin, target.Props.OnPressEvent, target.Props.OnMissEvent) = neu; MarkPreviewDirty(); },
+                () => { (target.Props.Skin, target.Props.OnPressEvent, target.Props.OnMissEvent) = old; MarkPreviewDirty(); }
             ));
-            ShowToast($"Note Skin: {GetSkinName(newSkin)}");
+            ShowToast(current.HasValue
+                ? $"Note: {PresetName(next)}"
+                : $"Note: {PresetName(next)} (custom skin/events replaced, Ctrl+Z to undo)");
+        }
+
+        // ── Note presets ─────────────────────────────────────────────────────
+        // Skins are purely visual (see NoteSkins). A preset = a skin + the
+        // onPressEvent action pack that actually gives the note its effect:
+        //   Normal    → skin 0, no events
+        //   Hurt      → skin 1 (negative), onPressEvent = pack { PlayerHealth remove 6 }   (20%)
+        //   Instakill → skin 1 (negative), onPressEvent = pack { PlayerHealth remove 30 }  (100%)
+        //   Heal      → skin 2 (positive), onPressEvent = pack { PlayerHealth add 5 }      (~17%)
+        // Values use the FunkyMaker health scale (30 = full bar, NoteSkins.FmmMaxHealth).
+        // Matching packs are reused; otherwise one is appended to events.action_packs.
+        // Enum order = toolbar button order.
+        private enum NotePreset { Normal, Hurt, Instakill, Heal }
+
+        // FunkyMaker health points (0..30 scale, 30 = 100%)
+        private const float HURT_PRESET_AMOUNT      = 6f;
+        private const float INSTAKILL_PRESET_AMOUNT = NoteSkins.FmmMaxHealth;
+        private const float HEAL_PRESET_AMOUNT      = 5f;
+
+        private static NotePreset NextPreset(NotePreset p) => p switch
+        {
+            NotePreset.Normal    => NotePreset.Hurt,
+            NotePreset.Hurt      => NotePreset.Instakill,
+            NotePreset.Instakill => NotePreset.Heal,
+            _                    => NotePreset.Normal,
+        };
+
+        private static string PresetName(NotePreset p) => p switch
+        {
+            NotePreset.Hurt      => "Hurt (negative skin)",
+            NotePreset.Instakill => "Instakill (negative skin)",
+            NotePreset.Heal      => "Heal (positive skin)",
+            _                    => "Normal",
+        };
+
+        private static int PresetSkin(NotePreset p) => p switch
+        {
+            NotePreset.Hurt      => NoteSkins.Negative,
+            NotePreset.Instakill => NoteSkins.Negative,
+            NotePreset.Heal      => NoteSkins.Positive,
+            _                    => NoteSkins.Default,
+        };
+
+        private NoteProps BuildPresetProps(NotePreset p) => p switch
+        {
+            NotePreset.Hurt => new NoteProps
+            {
+                Skin = NoteSkins.Negative,
+                OnPressEvent = EnsureHealthPack("remove", HURT_PRESET_AMOUNT),
+                OnMissEvent = -1f,
+            },
+            NotePreset.Instakill => new NoteProps
+            {
+                Skin = NoteSkins.Negative,
+                OnPressEvent = EnsureHealthPack("remove", INSTAKILL_PRESET_AMOUNT),
+                OnMissEvent = -1f,
+            },
+            NotePreset.Heal => new NoteProps
+            {
+                Skin = NoteSkins.Positive,
+                OnPressEvent = EnsureHealthPack("add", HEAL_PRESET_AMOUNT),
+                OnMissEvent = -1f,
+            },
+            _ => new NoteProps { Skin = NoteSkins.Default, OnPressEvent = -1f, OnMissEvent = -1f },
+        };
+
+        /// <summary>Returns the index of an action pack that only does "PlayerHealth op value", creating it if needed.</summary>
+        private int EnsureHealthPack(string operation, float value)
+        {
+            if (_level == null) return -1;
+            var packs = _level.Events.ActionPacks;
+            for (int i = 0; i < packs.Count; i++)
+                if (IsHealthPack(packs[i], operation, value))
+                    return i;
+
+            packs.Add(new ActionPack
+            {
+                Actions =
+                {
+                    new EventAction
+                    {
+                        Type = "PlayerHealth",
+                        Props = new EventActionProps
+                        {
+                            Operation = operation,
+                            MinHealth = 0f,
+                            ValueRaw = System.Text.Json.JsonSerializer.SerializeToElement((double)value),
+                        }
+                    }
+                }
+            });
+            _manualModified = true;
+            ShowToast($"Added action pack #{packs.Count - 1}: PlayerHealth {operation} {value:0}");
+            return packs.Count - 1;
+        }
+
+        private static bool IsHealthPack(ActionPack pack, string operation, float value)
+        {
+            if (pack.Actions.Count != 1) return false;
+            var a = pack.Actions[0];
+            return a.Type == "PlayerHealth"
+                && a.Props.Operation == operation
+                && MathF.Abs((a.Props.ValueFloat ?? float.NaN) - value) < 0.001f
+                && (a.Props.MinHealth ?? 0f) == 0f;
+        }
+
+        private bool PackIs(int packIndex, string operation, float value)
+            => _level != null && packIndex >= 0 && packIndex < _level.Events.ActionPacks.Count
+               && IsHealthPack(_level.Events.ActionPacks[packIndex], operation, value);
+
+        /// <summary>Which preset a note matches, or null if it uses a custom skin/event combination.</summary>
+        private NotePreset? DetectPreset(NoteProps props)
+        {
+            int skin = props.VisualSkin;
+            int press = (int)props.OnPressEvent;
+            int miss = (int)props.OnMissEvent;
+            if (skin == NoteSkins.Default && press < 0 && miss < 0) return NotePreset.Normal;
+            if (miss >= 0) return null;
+            if (skin == NoteSkins.Negative && PackIs(press, "remove", HURT_PRESET_AMOUNT)) return NotePreset.Hurt;
+            if (skin == NoteSkins.Negative && PackIs(press, "remove", INSTAKILL_PRESET_AMOUNT)) return NotePreset.Instakill;
+            if (skin == NoteSkins.Positive && PackIs(press, "add", HEAL_PRESET_AMOUNT)) return NotePreset.Heal;
+            return null;
+        }
+
+        /// <summary>Inspector text: the preset name, or skin + linked action packs for custom notes.</summary>
+        private string DescribeNote(NoteProps props)
+        {
+            var preset = DetectPreset(props);
+            if (preset.HasValue) return PresetName(preset.Value);
+            string s = $"{NoteSkins.GetName(props.Skin)} skin";
+            if (props.OnPressEvent >= 0) s += $" | press AP{(int)props.OnPressEvent}";
+            if (props.OnMissEvent >= 0) s += $" | miss AP{(int)props.OnMissEvent}";
+            return s;
         }
 
         private void ChangeBpm(float delta)
@@ -1553,7 +1713,8 @@ namespace FunkyMakerPlayer.Editors.Chart
             if (_level == null) return;
             float oldBpm = _level.Data.EffectiveBpm;
             float newBpm = Math.Clamp(MathF.Round((oldBpm + delta) * 10f) / 10f, 30f, 400f);
-            if (MathF.Abs(newBpm - oldBpm) < 0.01f) return;
+            if (MathF.Abs(newBpm - oldBpm) < 0.01f) { UI.UiSfx.Play(UI.UiSound.SliderEnd); return; }
+            UI.UiSfx.Play((delta < 0 ? UI.UiSound.SliderDown : UI.UiSound.SliderUp));
             _undoManager.Do(new DelegateEditorAction(
                 () => { _level.Data.Bpm = newBpm; MarkPreviewDirty(); },
                 () => { _level.Data.Bpm = oldBpm; MarkPreviewDirty(); }
@@ -1562,7 +1723,9 @@ namespace FunkyMakerPlayer.Editors.Chart
 
         private void ChangeZoom(float delta)
         {
-            _zoom = Math.Clamp(_zoom + delta, 0.50f, 2.50f);
+            float newZoom = Math.Clamp(_zoom + delta, 0.50f, 2.50f);
+            UI.UiSfx.Play((newZoom == _zoom ? UI.UiSound.SliderEnd : delta < 0 ? UI.UiSound.SliderDown : UI.UiSound.SliderUp));
+            _zoom = newZoom;
             ShowToast($"Grid Zoom: {_zoom:F2}x");
         }
 
@@ -1571,7 +1734,8 @@ namespace FunkyMakerPlayer.Editors.Chart
             if (_level == null) return;
             float oldSpd = _level.Data.Speed;
             float newSpd = Math.Clamp(MathF.Round((oldSpd + delta) * 20f) / 20f, 0.2f, 8.0f);
-            if (MathF.Abs(newSpd - oldSpd) < 0.005f) return;
+            if (MathF.Abs(newSpd - oldSpd) < 0.005f) { UI.UiSfx.Play(UI.UiSound.SliderEnd); return; }
+            UI.UiSfx.Play((delta < 0 ? UI.UiSound.SliderDown : UI.UiSound.SliderUp));
             _undoManager.Do(new DelegateEditorAction(
                 () => _level.Data.Speed = newSpd,
                 () => _level.Data.Speed = oldSpd
@@ -1581,7 +1745,8 @@ namespace FunkyMakerPlayer.Editors.Chart
 
         private void Undo()
         {
-            if (!_undoManager.CanUndo) return;
+            if (!_undoManager.CanUndo) { UI.UiSfx.Play(UI.UiSound.Error); return; }
+            UI.UiSfx.Play(UI.UiSound.Undo);
             _undoManager.Undo();
             _selectedNote = null;
             MarkPreviewDirty();
@@ -1590,7 +1755,8 @@ namespace FunkyMakerPlayer.Editors.Chart
 
         private void Redo()
         {
-            if (!_undoManager.CanRedo) return;
+            if (!_undoManager.CanRedo) { UI.UiSfx.Play(UI.UiSound.Error); return; }
+            UI.UiSfx.Play(UI.UiSound.Undo);
             _undoManager.Redo();
             MarkPreviewDirty();
             ShowToast("Redo");
@@ -1607,6 +1773,7 @@ namespace FunkyMakerPlayer.Editors.Chart
         private void TogglePlayPause()
         {
             _isPlaying = !_isPlaying;
+            UI.UiSfx.Play(UI.UiSound.Toggle);
             if (_isPlaying)
             {
                 float startSec = TimeUnitsToSeconds(_scrollY);
@@ -1662,6 +1829,7 @@ namespace FunkyMakerPlayer.Editors.Chart
             PausePlayback();
             PlaytestStartSeconds = fromStart ? 0f : Math.Max(0f, TimeUnitsToSeconds(_scrollY));
             PlaytestRequested = true;
+            UI.UiSfx.Play(UI.UiSound.StartSong);
         }
 
         private void SaveLevel()
@@ -1689,10 +1857,12 @@ namespace FunkyMakerPlayer.Editors.Chart
                 _undoManager.MarkAsSaved();
                 _manualModified = false;
                 SavedInSession = true;
+                UI.UiSfx.Play(UI.UiSound.Save);
                 ShowToast($"Saved {Path.GetFileName(savePath)}");
             }
             catch (Exception ex)
             {
+                UI.UiSfx.Play(UI.UiSound.Error);
                 ShowToast($"Save failed: {ex.Message}");
                 Console.WriteLine($"[ChartEditor] Save error: {ex.Message}");
             }
@@ -2134,7 +2304,7 @@ namespace FunkyMakerPlayer.Editors.Chart
             DrawButton(sb, _playtestBtnRect, "PLAYTEST", new Color(22, 82, 108), Color.White, btnFont, ACCENT_CYAN, () => TriggerPlaytest(false));
             DrawButton(sb, _undoBtnRect, "UNDO", _undoManager.CanUndo ? BG_CARD : new Color(24, 24, 34), _undoManager.CanUndo ? Color.White : Color.Gray, smallBtnFont, Color.White * 0.2f, Undo);
             DrawButton(sb, _redoBtnRect, "REDO", _undoManager.CanRedo ? BG_CARD : new Color(24, 24, 34), _undoManager.CanRedo ? Color.White : Color.Gray, smallBtnFont, Color.White * 0.2f, Redo);
-            DrawButton(sb, _previewToggleRect, _showPreview ? "PREV ON" : "PREV OFF", _showPreview ? new Color(46, 54, 88) : BG_CARD, _showPreview ? ACCENT_GOLD : Color.Gray, smallBtnFont, _showPreview ? ACCENT_GOLD * 0.6f : Color.White * 0.15f, () => _showPreview = !_showPreview);
+            DrawButton(sb, _previewToggleRect, _showPreview ? "PREV ON" : "PREV OFF", _showPreview ? new Color(46, 54, 88) : BG_CARD, _showPreview ? ACCENT_GOLD : Color.Gray, smallBtnFont, _showPreview ? ACCENT_GOLD * 0.6f : Color.White * 0.15f, () => { _showPreview = !_showPreview; UI.UiSfx.Play(UI.UiSound.Toggle); });
             DrawButton(sb, _saveBtnRect, IsModified ? "SAVE*" : "SAVE", IsModified ? new Color(150, 50, 88) : BG_CARD, Color.White, btnFont, IsModified ? ACCENT_PINK : Color.White * 0.2f, SaveLevel);
         }
 
@@ -2238,24 +2408,25 @@ namespace FunkyMakerPlayer.Editors.Chart
             DrawButton(sb, _holdPlusBtn, "+", BG_CARD, Color.White, labelFont, Color.White * 0.14f, () => AdjustHoldDuration(1));
             y += ctrlH + UiScale.Px(10, s);
 
-            // Note Type (synced with NoteStyle tints: 1=Red DMG, 2=Cyan KILL, 3=Green HEAL)
+            // Note preset brush (skin is visual; the preset also links the effect action pack).
+            // Colors match NoteStyle tints: negative = red X, positive = cyan O.
             int skinH = UiScale.Px(26, s);
             int skinStepY = UiScale.Px(30, s);
             if (y + hdrStep + skinStepY * 2 <= _toolbarRect.Bottom)
             {
-                DrawText(sb, "NOTE TYPE", new Vector2(_toolbarRect.X + padX, y), ACCENT_GOLD, hdrFont);
+                DrawText(sb, "NOTE PRESET", new Vector2(_toolbarRect.X + padX, y), ACCENT_GOLD, hdrFont);
                 y += hdrStep;
-                string[] skinLabels = { "NORM", "DMG X", "KILL O", "HEAL" };
-                Color[] skinCols = { ACCENT_CYAN, new(255, 50, 50), new(0, 200, 255), new(0, 230, 80) };
+                string[] presetLabels = { "NORMAL", "HURT X", "KILL X", "HEAL O" };
+                Color[] presetCols = { ACCENT_CYAN, new(255, 140, 60), new(255, 50, 50), new(0, 200, 255) };
                 for (int i = 0; i < 4; i++)
                 {
                     int row = i / 2;
                     int col = i % 2;
                     var sr = new Rectangle(_toolbarRect.X + padX + col * (halfW + halfGap), y + row * skinStepY, halfW, skinH);
                     _skinBtnRects[i] = sr;
-                    bool sel = (int)_activeNoteSkin == i;
-                    float capturedSkin = i;
-                    DrawButton(sb, sr, skinLabels[i], sel ? skinCols[i] * 0.28f : BG_CARD, sel ? Color.White : Color.Gray, smallFont, sel ? skinCols[i] : Color.White * 0.1f, () => _activeNoteSkin = capturedSkin);
+                    var preset = (NotePreset)i;
+                    bool sel = _activePreset == preset;
+                    DrawButton(sb, sr, presetLabels[i], sel ? presetCols[i] * 0.28f : BG_CARD, sel ? Color.White : Color.Gray, smallFont, sel ? presetCols[i] : Color.White * 0.1f, () => { if (_activePreset != preset) UI.UiSfx.Play(UI.UiSound.Toggle); _activePreset = preset; });
                 }
                 y += skinStepY * 2 + UiScale.Px(8, s);
             }
@@ -2269,10 +2440,10 @@ namespace FunkyMakerPlayer.Editors.Chart
                 _metronomeBtnRect = new Rectangle(_toolbarRect.X + padX + halfW + halfGap, y, halfW, ctrlH);
                 DrawButton(sb, _hitsoundBtnRect, "SND (H)", _hitsoundsEnabled ? new Color(24, 88, 62) : BG_CARD,
                     _hitsoundsEnabled ? Color.White : Color.Gray, smallFont, _hitsoundsEnabled ? ACCENT_GREEN : Color.White * 0.12f,
-                    () => { _hitsoundsEnabled = !_hitsoundsEnabled; ShowToast(_hitsoundsEnabled ? "Hitsounds ON" : "Hitsounds OFF"); });
+                    () => { _hitsoundsEnabled = !_hitsoundsEnabled; UI.UiSfx.Play(UI.UiSound.Toggle); ShowToast(_hitsoundsEnabled ? "Hitsounds ON" : "Hitsounds OFF"); });
                 DrawButton(sb, _metronomeBtnRect, "MET (N)", _metronomeEnabled ? new Color(92, 72, 22) : BG_CARD,
                     _metronomeEnabled ? Color.White : Color.Gray, smallFont, _metronomeEnabled ? ACCENT_GOLD : Color.White * 0.12f,
-                    () => { _metronomeEnabled = !_metronomeEnabled; ShowToast(_metronomeEnabled ? "Metronome ON" : "Metronome OFF"); });
+                    () => { _metronomeEnabled = !_metronomeEnabled; UI.UiSfx.Play(UI.UiSound.Toggle); ShowToast(_metronomeEnabled ? "Metronome ON" : "Metronome OFF"); });
             }
             else
             {
@@ -2465,9 +2636,9 @@ namespace FunkyMakerPlayer.Editors.Chart
                 {
                     float gBeats = Math.Max(GetSnapStepBeats(), _defaultHoldBeats);
                     int gh = Math.Max(4, (int)MathF.Round(gBeats * beatH));
-                    DrawHoldTrail(sb, _hoverLane, _activeNoteSkin, gCenterX, gCenterY, gh, 0.35f, highlighted: false);
+                    DrawHoldTrail(sb, _hoverLane, PresetSkin(_activePreset), gCenterX, gCenterY, gh, 0.35f, highlighted: false);
                 }
-                DrawSingleNote(sb, _hoverLane, _activeNoteSkin, gCenterX, gCenterY, 0.42f, highlighted: false);
+                DrawSingleNote(sb, _hoverLane, PresetSkin(_activePreset), gCenterX, gCenterY, 0.42f, highlighted: false);
             }
 
             // Restore normal batch
@@ -2566,8 +2737,8 @@ namespace FunkyMakerPlayer.Editors.Chart
         {
             if (holdH <= 1 || lane < 0 || lane >= LANE_COUNT) return;
 
-            int skinType = (int)MathF.Round(skin);
-            bool hasDedicatedFrame = _noteStyle != null && _noteStyle.NoteFrames[lane, Math.Clamp(skinType, 0, 3)] != null;
+            int skinType = NoteSkins.Normalize(skin);
+            bool hasDedicatedFrame = _noteStyle != null && _noteStyle.NoteFrames[lane, skinType] != null;
             Color skinTint = _noteStyle != null ? _noteStyle.GetSkinTint(skinType) : GetSkinDefaultTint(skinType);
             Color baseTint = skinType == 0
                 ? (_noteStyle != null && _noteStyle.ColorizeByLane ? LANE_COLORS[lane] : Color.White)
@@ -2676,37 +2847,14 @@ namespace FunkyMakerPlayer.Editors.Chart
             sb.Draw(_pixel, new Rectangle(fbRect.X - capPad, fbRect.Bottom - capPxH / 2, fbRect.Width + capPad * 2, capPxH), highlighted ? ACCENT_GOLD : fbCol);
         }
 
-        private float AnalyzePackBenefit(int packIndex)
-        {
-            if (_level == null || packIndex < 0) return 0f;
-            var packs = _level.Events.ActionPacks;
-            if (packIndex >= packs.Count) return 0f;
-            float netHealth = 0f;
-            foreach (var action in packs[packIndex].Actions)
+        // Same as the player: the X / O overlay is purely visual and follows the skin.
+        private static string? GetNoteSymbol(int skinType, int pressPackIdx, int missPackIdx)
+            => NoteSkins.Normalize(skinType) switch
             {
-                if (action.Type != "PlayerHealth") continue;
-                float val = action.Props.ValueFloat ?? 0f;
-                string op = action.Props.Operation ?? "remove";
-                netHealth += op == "add" ? val : -val;
-            }
-            return netHealth;
-        }
-
-        private string? GetNoteSymbol(int skinType, int pressPackIdx, int missPackIdx)
-        {
-            if (skinType == 0) return null;
-            if (pressPackIdx >= 0 || missPackIdx >= 0)
-            {
-                float pressB = pressPackIdx >= 0 ? AnalyzePackBenefit(pressPackIdx) : 0f;
-                float missB = missPackIdx >= 0 ? AnalyzePackBenefit(missPackIdx) : 0f;
-                if (pressB > missB) return "O";
-                if (missB > pressB) return "X";
-                if (pressB == 0f && missB == 0f)
-                    return skinType switch { 1 => "X", 2 => "O", 3 => "O", _ => null };
-                return "O";
-            }
-            return skinType switch { 1 => "X", 2 => "O", 3 => "O", _ => null };
-        }
+                NoteSkins.Negative => "X",
+                NoteSkins.Positive => "O",
+                _ => null,
+            };
 
         private void DrawNoteSymbol(SpriteBatch sb, string symbol, float cx, float cy, float visualSize, Color laneColor, float alpha)
         {
@@ -2750,7 +2898,7 @@ namespace FunkyMakerPlayer.Editors.Chart
             float cellFitH = Math.Min(_laneWidth, Math.Max(14f * s, stepH));
             float maxW = _laneWidth * 0.76f;
             float maxH = cellFitH * 0.76f;
-            int skinType = Math.Clamp((int)MathF.Round(skin), 0, 3);
+            int skinType = NoteSkins.Normalize(skin);
 
             if (highlighted)
             {
@@ -2878,7 +3026,7 @@ namespace FunkyMakerPlayer.Editors.Chart
                 y += rowStep;
 
                 string sideTag = _selectedNoteStrumline == _rightStrumline ? "BF" : (_level.Data.Strumlines.Count > 2 ? $"SL{_selectedNoteStrumline}" : "FOE");
-                DrawText(sb, $"{sideTag} {GetLaneName(_selectedNoteLane)} | {GetSkinName(_selectedNote.Props.Skin)}", new Vector2(x, y), Color.White * 0.85f, smallFont);
+                DrawText(sb, $"{sideTag} {GetLaneName(_selectedNoteLane)} | {DescribeNote(_selectedNote.Props)}", new Vector2(x, y), Color.White * 0.85f, smallFont);
                 y += UiScale.Px(22, s);
 
                 // Hold Duration row
@@ -2899,7 +3047,7 @@ namespace FunkyMakerPlayer.Editors.Chart
                 _inspDeleteBtn = new Rectangle(x + (bw + actionGap) * 2, y, bw, actH);
                 string leftSwapTag = _level.Data.Strumlines.Count > 2 ? $"-> SL{_leftStrumline}" : "-> FOE";
                 string swapLbl = _selectedNoteStrumline == _rightStrumline ? leftSwapTag : "-> BF";
-                DrawButton(sb, _inspSkinBtn, "SKIN (T)", BG_CARD, Color.White, smallFont, ACCENT_CYAN * 0.5f, CycleSelectedNoteSkin);
+                DrawButton(sb, _inspSkinBtn, "PRESET (T)", BG_CARD, Color.White, smallFont, ACCENT_CYAN * 0.5f, CycleSelectedNotePreset);
                 DrawButton(sb, _inspSwapStrumBtn, swapLbl, BG_CARD, ACCENT_GOLD, smallFont, ACCENT_GOLD * 0.5f, SwapSelectedNoteStrumline);
                 DrawButton(sb, _inspDeleteBtn, "DEL", new Color(110, 32, 48), Color.White, smallFont, ACCENT_PINK, () =>
                 {
@@ -3251,28 +3399,18 @@ namespace FunkyMakerPlayer.Editors.Chart
             return total;
         }
 
-        private static Color GetSkinDefaultTint(int skinType) => skinType switch
+        private static Color GetSkinDefaultTint(int skinType) => NoteSkins.Normalize(skinType) switch
         {
-            1 => new Color(255, 50, 50),
-            2 => new Color(0, 200, 255),
-            3 => new Color(0, 230, 80),
+            NoteSkins.Negative => new Color(255, 50, 50),
+            NoteSkins.Positive => new Color(0, 200, 255),
             _ => Color.White,
         };
 
-        private static Color GetNoteColor(int lane, float skin) => ((int)MathF.Round(skin)) switch
+        private static Color GetNoteColor(int lane, float skin) => NoteSkins.Normalize(skin) switch
         {
-            1 => new Color(255, 50, 50),
-            2 => new Color(0, 200, 255),
-            3 => new Color(0, 230, 80),
+            NoteSkins.Negative => new Color(255, 50, 50),
+            NoteSkins.Positive => new Color(0, 200, 255),
             _ => LANE_COLORS[Math.Clamp(lane, 0, LANE_COLORS.Length - 1)],
-        };
-
-        private static string GetSkinName(float skin) => skin switch
-        {
-            1f => "Damage",
-            2f => "Instakill",
-            3f => "Heal",
-            _ => "Normal",
         };
 
         private static string GetLaneName(int lane) => lane switch

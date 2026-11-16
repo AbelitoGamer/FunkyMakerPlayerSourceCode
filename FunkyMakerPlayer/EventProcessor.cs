@@ -1836,12 +1836,12 @@ public class EventProcessor
                 case "PlayerHealth":
                 {
                     // operation: "add", "remove", or "set"
-                    // value: 0..100 (percentage points) → convert to 0..1
-                    // minHealth: minimum health floor (0..100) → convert to 0..1
+                    // value / minHealth use the FunkyMaker scale 0..30 (30 = full bar)
+                    // → convert to the engine's 0..1
                     string op  = action.Props.Operation ?? "remove";
-                    float  val = (action.Props.ValueFloat ?? 0f) / 100f;
+                    float  val = (action.Props.ValueFloat ?? 0f) / NoteSkins.FmmMaxHealth;
                     float  minH = action.Props.MinHealth.HasValue
-                        ? action.Props.MinHealth.Value / 100f
+                        ? action.Props.MinHealth.Value / NoteSkins.FmmMaxHealth
                         : 0f;
                     float delta = op switch
                     {

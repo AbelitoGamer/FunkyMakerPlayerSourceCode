@@ -221,14 +221,15 @@ public class TextureAtlas
 
 public class NoteStyle
 {
-    // Note arrow frames: [lane 0-3, skinType 0-3]
-    // skinType: 0=normal, 1=damage, 2=instakill, 3=heal
-    // If a skin doesn't define frames for a specific type, falls back to type 0.
-    public AtlasFrame?[,] NoteFrames { get; } = new AtlasFrame?[4, 4];
+    // Note arrow frames: [lane 0-3, skinType 0-2]
+    // skinType (visual only, see NoteSkins): 0=default, 1=negative (X), 2=positive (O)
+    // If a style doesn't define frames for a specific type, falls back to type 0.
+    public AtlasFrame?[,] NoteFrames { get; } = new AtlasFrame?[4, 3];
 
-    // Convenience: get the frame for a lane+skinType, falling back to type 0
+    // Convenience: get the frame for a lane+skinType, falling back to type 0.
+    // Unknown skin values (e.g. legacy 3) are drawn as the default note.
     public AtlasFrame? GetNoteFrame(int lane, int skinType)
-        => NoteFrames[lane, skinType] ?? NoteFrames[lane, 0];
+        => NoteFrames[lane, NoteSkins.Normalize(skinType)] ?? NoteFrames[lane, 0];
 
     // Receptor frames: [lane][state]
     // state 0=static, 1=press, 2=confirm, 3=confirmHold
@@ -267,20 +268,16 @@ public class NoteStyle
     /// <summary>How to render hold end caps: "attached" (pixel-perfect), "separate" (legacy)</summary>
     public string HoldEndCapMode { get; set; } = "attached";
 
-    // Tint colors for skin types 1-3 when no dedicated frame exists.
-    // skin=1 (BAD/X) → red
-    // skin=2 (GOOD/O) → cyan/blue
-    // skin=3 (heal) → green
-    public Microsoft.Xna.Framework.Color TintDamage    { get; set; } = new Microsoft.Xna.Framework.Color(255, 50,  50);   // skin=1: X → red
-    public Microsoft.Xna.Framework.Color TintInstakill { get; set; } = new Microsoft.Xna.Framework.Color(0,   200, 255);  // skin=2: O → cyan
-    public Microsoft.Xna.Framework.Color TintHeal      { get; set; } = new Microsoft.Xna.Framework.Color(0,   230, 80);   // skin=3: heal → green
+    // Tint colors for skins 1-2 when the style has no dedicated frame (visual only).
+    // skin=1 (negative / X) → red, skin=2 (positive / O) → cyan
+    public Microsoft.Xna.Framework.Color TintNegative { get; set; } = new Microsoft.Xna.Framework.Color(255, 50,  50);
+    public Microsoft.Xna.Framework.Color TintPositive { get; set; } = new Microsoft.Xna.Framework.Color(0,   200, 255);
 
-    /// <summary>Returns the fallback tint for a given skin type (0=White, 1=damage, 2=instakill, 3=heal).</summary>
-    public Microsoft.Xna.Framework.Color GetSkinTint(int skinType) => skinType switch
+    /// <summary>Returns the fallback tint for a skin (0/unknown = White, 1 = negative, 2 = positive).</summary>
+    public Microsoft.Xna.Framework.Color GetSkinTint(int skinType) => NoteSkins.Normalize(skinType) switch
     {
-        1 => TintDamage,
-        2 => TintInstakill,
-        3 => TintHeal,
+        NoteSkins.Negative => TintNegative,
+        NoteSkins.Positive => TintPositive,
         _ => Microsoft.Xna.Framework.Color.White,
     };
 
@@ -895,11 +892,11 @@ public class NoteStyle
             
             Console.WriteLine($"[NoteStyle] Loaded {foundFrames}/4 note frames");
             
-            // skinType 1 = damage, 2 = instakill, 3 = heal (always use fallback detection)
+            // skinType 1 = negative (X), 2 = positive (O) — frames named e.g. "noteLeft1"
             string[] notePrefixesSkin = { "noteLeft", "noteDown", "noteUp", "noteRight" };
             for (int i = 0; i < 4; i++)
             {
-                for (int st = 1; st <= 3; st++)
+                for (int st = NoteSkins.Negative; st <= NoteSkins.Positive; st++)
                     style.NoteFrames[i, st] = noteAtlas.GetFirstFrame(notePrefixesSkin[i] + st.ToString());
             }
 
@@ -1181,13 +1178,15 @@ public class NoteStyle
                     if (root2.TryGetProperty("colorizeByLane", out var cbl))
                         style.ColorizeByLane = cbl.GetBoolean();
 
-                    // Tint colors for skin types: [r, g, b] arrays (0-255)
-                    if (root2.TryGetProperty("tintDamage", out var td) && td.ValueKind == System.Text.Json.JsonValueKind.Array)
-                        style.TintDamage = ParseColorArray(td);
-                    if (root2.TryGetProperty("tintInstakill", out var ti) && ti.ValueKind == System.Text.Json.JsonValueKind.Array)
-                        style.TintInstakill = ParseColorArray(ti);
-                    if (root2.TryGetProperty("tintHeal", out var th) && th.ValueKind == System.Text.Json.JsonValueKind.Array)
-                        style.TintHeal = ParseColorArray(th);
+                    // Tint colors for skins: [r, g, b] arrays (0-255).
+                    // "tintNegative"/"tintPositive"; legacy keys "tintDamage"/"tintInstakill"
+                    // are still accepted. "tintHeal" (old skin 3) is ignored.
+                    if ((root2.TryGetProperty("tintNegative", out var tn) || root2.TryGetProperty("tintDamage", out tn)) &&
+                        tn.ValueKind == System.Text.Json.JsonValueKind.Array)
+                        style.TintNegative = ParseColorArray(tn);
+                    if ((root2.TryGetProperty("tintPositive", out var tp) || root2.TryGetProperty("tintInstakill", out tp)) &&
+                        tp.ValueKind == System.Text.Json.JsonValueKind.Array)
+                        style.TintPositive = ParseColorArray(tp);
                 }
                 catch (Exception exJson)
                 {

@@ -128,7 +128,7 @@ public class EditorPicker : FunkyMakerPlayer.UI.IDirectScreen
             if (_cardBounds[i] != Rectangle.Empty && _cardBounds[i].Contains(ms.Position))
             {
                 _hoveredCard = i;
-                if (mouseMoved) _selected = i;
+                if (mouseMoved && _selected != i) { _selected = i; UI.UiSfx.Play(UI.UiSound.Move); }
                 break;
             }
         }
@@ -153,6 +153,7 @@ public class EditorPicker : FunkyMakerPlayer.UI.IDirectScreen
 
         if (up) _selected = (_selected - 1 + _cards.Length) % _cards.Length;
         else if (down) _selected = (_selected + 1) % _cards.Length;
+        if (up || down) UI.UiSfx.Play(UI.UiSound.Move);
 
         if (clicked && _backHovered)
         {
@@ -180,6 +181,7 @@ public class EditorPicker : FunkyMakerPlayer.UI.IDirectScreen
     {
         EditorChosen = true;
         ChosenEditor = _cards[_selected].Type;
+        UI.UiSfx.Play(UI.UiSound.EditorSelect);
         Console.WriteLine($"[EditorPicker] Chosen: {_cards[_selected].Name} ({ChosenEditor})");
     }
 

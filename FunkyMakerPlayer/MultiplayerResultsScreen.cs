@@ -108,6 +108,8 @@ public class MultiplayerResultsScreen
                 
                 if (_timer >= DISPLAY_DURATION || enterPressed || escapePressed)
                 {
+                    if (enterPressed || escapePressed)
+                        UI.UiSfx.Play(enterPressed ? UI.UiSound.Confirm : UI.UiSound.Back);
                     _timer = 0f;
                     CurrentPhase = Phase.FadeOut;
                 }

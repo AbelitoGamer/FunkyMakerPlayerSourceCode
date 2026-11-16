@@ -184,6 +184,7 @@ public partial class Game1 : Game
 
     // ── Multiplayer menu ─────────────────────────────────────────────────────
     private Multiplayer.MultiplayerMenu? _multiplayerMenu;
+    private Managers.OnlineMenuMusic? _onlineMenuMusic;   // Portraits of Kings / Jazzroom
     private bool          _inMultiplayer = false;
     
     // ── Multiplayer match state ──────────────────────────────────────────────
@@ -1368,7 +1369,9 @@ public partial class Game1 : Game
             }
             catch (Exception ex)
             {
-                _errorMsg        = ex.Message;
+                _errorMsg        = ex.Message == "PSYCH_ENGINE_MOD"
+                    ? "Psych Engine mods are not supported. Export the level as a .FNMM (ZIP) and try again."
+                    : ex.Message;
                 _loadingComplete = true;
                 _loadState       = LoadState.Done;
                 Console.Error.WriteLine($"[FunkyMakerPlayer] {ex}");
@@ -1424,6 +1427,8 @@ public partial class Game1 : Game
 
         // Load note style assets from the Assets folder next to the project
         string? assetsRoot = FindAssetsRoot();
+        UI.UiSfx.Initialize(assetsRoot);
+        _onlineMenuMusic = new Managers.OnlineMenuMusic(assetsRoot);
         if (assetsRoot != null)
         {
             // Note: NoteStyle is loaded AFTER Settings.Load so NoteStyleName is correct
@@ -2271,26 +2276,8 @@ public partial class Game1 : Game
                 r.OnNoteMissEvent  = eventId => _events?.FireActionPack(eventId);
             }
 
-            // Fallback mechanics for notes WITHOUT onPressEvent.
-            // If the level defines onPressEvent, it handles health via action_packs.
-            // These callbacks only fire when no event is defined (legacy levels).
-            _noteRenderers[myStrumlineIndex].OnDamageNoteHit = damage =>
-            {
-                if (NoteRenderer.Autoplay) return;
-                if (_healthBar != null)
-                    _healthBar.Health = MathHelper.Clamp(_healthBar.Health - damage, 0f, 1f);
-            };
-            _noteRenderers[myStrumlineIndex].OnInstakillNoteHit = () =>
-            {
-                if (NoteRenderer.Autoplay) return;
-                if (_healthBar != null)
-                    _healthBar.Health = 0f;
-            };
-            _noteRenderers[myStrumlineIndex].OnHealNoteHit = () =>
-            {
-                if (_healthBar != null)
-                    _healthBar.Health = MathHelper.Clamp(_healthBar.Health + 0.15f, 0f, 1f);
-            };
+            // No skin-based fallback effects: note skins are visual only and any
+            // damage/instakill/heal comes from the note's action packs (NoteSkins).
         }
 
         // ── Events ───────────────────────────────────────────────────────────
@@ -2524,6 +2511,7 @@ public partial class Game1 : Game
     // ── Update ───────────────────────────────────────────────────────────────
     protected override void Update(GameTime gameTime)
     {
+        var uiSnapshot = CaptureUiSfxSnapshot();
         try
         {
             UpdateInternal(gameTime);
@@ -2532,6 +2520,25 @@ public partial class Game1 : Game
         {
             HandleGameplayError(ex, "Update");
         }
+        finally
+        {
+            QueueUiSfxForScreenChanges(uiSnapshot);
+            UI.UiSfx.Flush();
+            UpdateOnlineMenuMusic(gameTime);
+        }
+    }
+
+    /// <summary>
+    /// Online menu background music. Keeps playing while a settings / HUD editor screen opened
+    /// from the online menu is up; stops (fades out) when a match starts or the player leaves.
+    /// </summary>
+    private void UpdateOnlineMenuMusic(GameTime gameTime)
+    {
+        if (_onlineMenuMusic == null) return;
+        bool fromOnlineMenu = (_inHudEditor || _inMainSettings) && _hudEditorReturnTarget == HudEditorReturnTarget.MultiplayerSettings;
+        bool inOnlineMenu = (_inMultiplayer || fromOnlineMenu) && _multiplayerMenu != null;
+        bool connecting = _inMultiplayer && _multiplayerMenu != null && _multiplayerMenu.IsConnectingScreen;
+        _onlineMenuMusic.Update((float)gameTime.ElapsedGameTime.TotalSeconds, inOnlineMenu, connecting);
     }
 
     private void UpdateInternal(GameTime gameTime)
@@ -2664,7 +2671,11 @@ public partial class Game1 : Game
             _volumeToastTimer = Math.Max(0f, _volumeToastTimer - dt);
 
         // Global FNF-style volume hotkeys (- / +) everywhere except text-entry or keybinding capture
-        bool allowVolumeHotkeys = !suppressUserInput && !_keyBindOverlay.IsActive && !_inEditor && !_inLevelSelector && !_inMultiplayer;
+        // Menus too; skipped only while typing text (level name, multiplayer fields) and in the
+        // Chart Editor, where - / + zoom the grid.
+        bool typingText = (_inLevelSelector && _levelSelector != null && _levelSelector.IsTypingName) ||
+                          (_inMultiplayer && _multiplayerMenu != null && _multiplayerMenu.IsEditingText);
+        bool allowVolumeHotkeys = !suppressUserInput && !_keyBindOverlay.IsActive && !_inEditor && !typingText;
         if (allowVolumeHotkeys)
         {
             bool volUp = (kb.IsKeyDown(Keys.OemPlus) && !_prevKb.IsKeyDown(Keys.OemPlus)) ||
@@ -2674,7 +2685,9 @@ public partial class Game1 : Game
             if (volUp || volDown)
             {
                 float step = volUp ? 0.05f : -0.05f;
+                float oldVolume = MusicVolume;
                 MusicVolume = MathF.Round(Math.Clamp(MusicVolume + step, 0f, 1f), 2);
+                UI.UiSfx.Play(MusicVolume == oldVolume ? UI.UiSound.SliderEnd : volUp ? UI.UiSound.SliderUp : UI.UiSound.SliderDown);
                 if (_musicInst != null) _musicInst.Volume = MusicVolume;
                 _volumeToastTimer = VOLUME_TOAST_DURATION;
                 Settings.Save(_graphics.SynchronizeWithVerticalRetrace);
@@ -2696,7 +2709,33 @@ public partial class Game1 : Game
             return;
         }
         
-        if ((escPressedForPause || pPressed) && 
+        // Online menu: ESC closes the settings overlay opened with F1 / the settings pill. The general
+        // ESC handling below skips the online menu (it handles its own ESC), and the menu itself is not
+        // updated while the overlay is up, so without this nothing would close it.
+        if (escPressedForPause && _inMultiplayer && _settingsManager?.IsActive == true &&
+            !(_arrowsMenu?.IsActive ?? false) && !(_splashMenu?.IsActive ?? false) &&
+            !(_countdownMenu?.IsActive ?? false) && !(_fontMenu?.IsActive ?? false) &&
+            !_keyBindOverlay.IsActive)
+        {
+            if (_settingsManager.IsFocused)
+            {
+                _settingsManager.Unfocus();   // first ESC releases an adjustable row, like elsewhere
+            }
+            else
+            {
+                _settingsManager.IsActive = false;
+#if ANDROID
+                _touchControls?.SetSettingsButtonsVisible(false);
+#endif
+                // Re-sync the menu's own input snapshot so this ESC isn't seen again as "go back".
+                _multiplayerMenu?.ResetInputCooldown();
+            }
+            _prevKb = kb;
+            base.Update(gameTime);
+            return;
+        }
+
+        if ((escPressedForPause || pPressed) &&
             !(_arrowsMenu?.IsActive ?? false) && !(_splashMenu?.IsActive ?? false) &&
             !(_countdownMenu?.IsActive ?? false) && !(_fontMenu?.IsActive ?? false) &&
             !_inMainSettings && !_inHudEditor && !_inMultiplayer &&
@@ -3080,45 +3119,33 @@ public partial class Game1 : Game
                 StartLoadingLevel(_freeplay.LevelPath);
                 _freeplay.LevelChosen = false;
             }
-            // Check if user selected HUD Editor
-            if (_freeplay.MenuAction == 1)
-            {
-                _inFreeplay = false;
-                _hudEditorReturnTarget = HudEditorReturnTarget.Freeplay;
-                _inMainSettings = true;
-                _mainSettingsMenu?.ResetInputCooldown(); // Prevent immediate ENTER detection
-                _freeplay.MenuAction = -1;
-                RefreshActiveDiscordPresence(immediate: true);
-            }
+            // Main-menu actions (HUD Editor is reached via EDITORS / Settings, not MenuAction)
+            int menuAction = _freeplay.ConsumeMenuAction();
             // Check if user selected Multiplayer
-            if (_freeplay.MenuAction == 3)
+            if (menuAction == 3)
             {
                 _inFreeplay = false;
                 _inMultiplayer = true;
                 _multiplayerMenu?.ResetInputCooldown();
-                _freeplay.MenuAction = -1;
                 RefreshActiveDiscordPresence(immediate: true);
             }
             #if ANDROID
             // Check if user selected IMPORT FILE (Android only)
-            if (_freeplay.MenuAction == 4)
+            if (menuAction == 4)
             {
                 OpenAndroidFilePicker();
-                _freeplay.MenuAction = -1;
             }
             // Check if user selected OPEN MODS (Android only)
-            if (_freeplay.MenuAction == 5)
+            if (menuAction == 5)
             {
                 OpenAndroidModsFolder();
-                _freeplay.MenuAction = -1;
             }
             // Check if user selected GRANT FOLDER ACCESS (Android only)
-            if (_freeplay.MenuAction == 6)
+            if (menuAction == 6)
             {
                 // Show help screen first
                 _modsHelpScreen?.Show();
-                _freeplay.MenuAction = -1;
-                
+
                 // Hide touch controls while help screen is visible
                 _touchControls?.SetAllControlsVisible(false);
             }
@@ -4187,6 +4214,7 @@ public partial class Game1 : Game
                         bool isDraw = playerRenderer.Score == _opponentScore;
                         bool playerWon = playerRenderer.Score > _opponentScore;
 
+                        UI.UiSfx.Play(UI.UiSound.Save);   // match finished
                         _resultsScreen = new MultiplayerResultsScreen(
                             _pixel!,
                             _catTex,
@@ -4217,6 +4245,7 @@ public partial class Game1 : Game
                 }
                 else
                 {
+                    UI.UiSfx.Play(UI.UiSound.Save);   // song finished
                     _songTransition = new SongTransition(_catTex, _pixel!);
                     _songTransition.Start(_rtWidth, _rtHeight);
                     _transitionToFreeplay = true;

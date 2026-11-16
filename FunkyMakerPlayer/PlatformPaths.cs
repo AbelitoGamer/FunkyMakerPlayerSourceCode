@@ -514,7 +514,7 @@ public static class PlatformPaths
             }
             else
             {
-                return "📁 Carpetas de mods creadas!\n\nColoca tus archivos en:\nDocuments → FunkyMakerPlayerPublicMods → mods";
+                return "📁 Carpetas de mods creadas!\n\nCrea una carpeta con una subcarpeta 'mods' y usa 'GRANT FOLDER ACCESS' para importarla, o 'IMPORT FILE' para un nivel suelto.";
             }
         }
         catch (Exception ex)
@@ -596,15 +596,17 @@ public static class PlatformPaths
     public static string GetCustomContentInstructions()
     {
 #if ANDROID
-        return $"Place custom content in:\n" +
-               $"Documents → FunkyMakerPlayerPublicMods → mods\n\n" +
-               $"Subfolders:\n" +
-               $"• levels/ - Custom levels (.fnmm, .rar)\n" +
-               $"• notestyles/ - Note skins\n" +
-               $"• notesplashes/ - Splash effects\n" +
-               $"• fonts/ - Custom fonts\n" +
-               $"• countdowns/ - Countdown assets\n\n" +
-               $"💡 Use 'OPEN MODS FOLDER' button to open in file manager!";
+        return $"The app imports mods from a folder you select (it copies them into app storage).\n\n" +
+               $"1. Create a folder with a 'mods' subfolder, e.g.:\n" +
+               $"   Documents → FunkyMakerPlayerPublicMods → mods\n\n" +
+               $"2. Put your content in mods:\n" +
+               $"   • levels/ - Custom levels (.fnmm, .rar)\n" +
+               $"   • notestyles/ - Note skins\n" +
+               $"   • notesplashes/ - Splash effects\n" +
+               $"   • fonts/ - Custom fonts\n" +
+               $"   • countdowns/ - Countdown assets\n\n" +
+               $"3. Use 'GRANT FOLDER ACCESS' and select the folder containing 'mods'.\n" +
+               $"   Or use 'IMPORT FILE' to import a single level.";
 #else
         return $"Place custom content in the 'mods' folder next to the game executable.\n\n" +
                $"Subfolders: levels, notestyles, notesplashes, fonts, countdowns";
@@ -742,7 +744,7 @@ public static class PlatformPaths
     {
         var results = new List<string>();
         if (!OperatingSystem.IsWindows())
-            return results;
+            return PickLinuxFiles(filter, title, allowMultiSelect);
 
         const int OFN_NOCHANGEDIR      = 0x00000008;
         const int OFN_ALLOWMULTISELECT = 0x00000200;
@@ -805,6 +807,87 @@ public static class PlatformPaths
         }
 
         return results;
+    }
+
+    /// <summary>
+    /// Linux/other Unix fallback for <see cref="PickDesktopFiles"/>: tries zenity, then kdialog.
+    /// Converts the Win32 null-delimited filter ("Desc\0*.a;*.b\0...") into each tool's syntax.
+    /// Returns an empty list if no dialog tool is available or the user cancels.
+    /// </summary>
+    private static List<string> PickLinuxFiles(string filter, string title, bool allowMultiSelect)
+    {
+        var filters = new List<(string Desc, string[] Patterns)>();
+        string[] parts = (filter ?? "").Split('\0');
+        for (int i = 0; i + 1 < parts.Length; i += 2)
+        {
+            if (string.IsNullOrEmpty(parts[i]) || string.IsNullOrEmpty(parts[i + 1])) break;
+            var patterns = parts[i + 1].Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+            filters.Add((parts[i], patterns));
+        }
+
+        // zenity: --file-filter="Desc | *.a *.b"
+        var zenityArgs = new List<string> { "--file-selection", $"--title={title}" };
+        if (allowMultiSelect) { zenityArgs.Add("--multiple"); zenityArgs.Add("--separator=\n"); }
+        foreach (var (desc, patterns) in filters)
+            zenityArgs.Add($"--file-filter={desc} | {string.Join(' ', patterns)}");
+
+        var picked = RunDialogTool("zenity", zenityArgs);
+        if (picked != null) return picked;
+
+        // kdialog: --getopenfilename <startDir> "*.a *.b|Desc\n*.c|Other"
+        string kFilter = string.Join("\n", filters.ConvertAll(f => $"{string.Join(' ', f.Patterns)}|{f.Desc}"));
+        var kdialogArgs = new List<string> { "--title", title, "--getopenfilename",
+            Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), kFilter };
+        if (allowMultiSelect) { kdialogArgs.Add("--multiple"); kdialogArgs.Add("--separate-output"); }
+
+        picked = RunDialogTool("kdialog", kdialogArgs);
+        if (picked != null) return picked;
+
+        Console.WriteLine("[PlatformPaths] No file dialog tool found (install zenity or kdialog), " +
+                          "or copy level files into the mods/levels folder.");
+        return new List<string>();
+    }
+
+    /// <summary>
+    /// Runs a dialog tool and returns the selected paths (one per line), an empty list on cancel,
+    /// or null when the tool is not installed / cannot be started.
+    /// </summary>
+    private static List<string>? RunDialogTool(string tool, List<string> args)
+    {
+        try
+        {
+            var psi = new System.Diagnostics.ProcessStartInfo
+            {
+                FileName = tool,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                UseShellExecute = false,
+                CreateNoWindow = true,
+            };
+            foreach (var a in args) psi.ArgumentList.Add(a);
+
+            using var proc = System.Diagnostics.Process.Start(psi);
+            if (proc == null) return null;
+            string output = proc.StandardOutput.ReadToEnd();
+            proc.WaitForExit();
+
+            var results = new List<string>();
+            if (proc.ExitCode != 0) return results; // cancelled
+            foreach (var line in output.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+            {
+                if (File.Exists(line)) results.Add(line);
+            }
+            return results;
+        }
+        catch (System.ComponentModel.Win32Exception)
+        {
+            return null; // tool not installed
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[PlatformPaths] {tool} failed: {ex.Message}");
+            return null;
+        }
     }
 #endif
 }

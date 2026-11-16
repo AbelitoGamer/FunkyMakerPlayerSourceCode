@@ -327,19 +327,8 @@ public class NoteRenderer
     public Action<int>?        OnNotePressEvent;
     /// <summary>Fired when a note with onMissEvent is missed. Args: event ID.</summary>
     public Action<int>?        OnNoteMissEvent;
-    /// <summary>
-    /// Fired when a damage note (skin=1) is hit with NO onPressEvent defined.
-    /// The level handles health via action_packs when onPressEvent IS defined.
-    /// </summary>
-    public Action<float>?      OnDamageNoteHit;
-    /// <summary>
-    /// Fired when an instakill note (skin=2) is hit with NO onPressEvent defined.
-    /// </summary>
-    public Action?             OnInstakillNoteHit;
-    /// <summary>
-    /// Fired when a heal note (skin=3) is hit with NO onPressEvent defined.
-    /// </summary>
-    public Action?             OnHealNoteHit;
+    // Note: there are no skin-based effect callbacks. Skins are visual only;
+    // damage/instakill/heal come from the note's action packs (see NoteSkins).
 
     public NoteRenderer(FnmmLevel level, int chartIndex,
                         float xOffset, GraphicsDevice gd, NoteStyle? style = null)
@@ -551,59 +540,10 @@ public class NoteRenderer
                 var note = _notes[lane][i];
                 if (songTime < note.Start) continue;
 
-                // Autoplay: analyze both onPressEvent and onMissEvent to decide the best action.
-                // Compare: damage from pressing vs damage from missing.
-                // Choose the option with LESS damage (or more benefit).
-                //
-                // Skin type fallback (when no events defined):
-                //   skin=0 (normal) → press
-                //   skin=1 (damage/X) → dodge
-                //   skin=2 (good/O) → press (must press to survive)
-                //   skin=3 (heal) → press (beneficial)
-                bool isDodge;
-                int pressIdx = (int)note.Props.OnPressEvent;
-                int missIdx = (int)note.Props.OnMissEvent;
-                
-                if (pressIdx >= 0 || missIdx >= 0)
-                {
-                    // Has events — analyze and compare health effects
-                    float pressBenefit = pressIdx >= 0 ? AnalyzePackBenefit(pressIdx) : 0f;
-                    float missBenefit = missIdx >= 0 ? AnalyzePackBenefit(missIdx) : 0f;
-                    
-                    // Decision logic:
-                    // - If pressing is BETTER than missing → press (higher value = less damage)
-                    // - If missing is BETTER than pressing → dodge
-                    // - If both are equal → check if neutral or use skin type fallback
-                    if (pressBenefit > missBenefit)
-                    {
-                        isDodge = false;  // Pressing is better → press
-                    }
-                    else if (missBenefit > pressBenefit)
-                    {
-                        isDodge = true;  // Missing is better → dodge
-                    }
-                    else
-                    {
-                        // Both equal: check if both are neutral (no health impact)
-                        if (pressBenefit == 0f && missBenefit == 0f)
-                        {
-                            // No health consequences — use skin type fallback
-                            isDodge = _isPlayer && note.Props.IsDamage;
-                        }
-                        else
-                        {
-                            // Same damage — prefer pressing (assume player wants to hit notes)
-                            isDodge = false;
-                        }
-                    }
-                }
-                else
-                {
-                    // No events — use skin type fallback
-                    // Only dodge skin=1 (damage/bad notes marked with X)
-                    // Press everything else: skin=0 (normal), skin=2 (good/O), skin=3 (heal)
-                    isDodge = _isPlayer && note.Props.IsDamage;  // skin=1 = bad = dodge
-                }
+                // Autoplay: skins are visual only. Dodge a note only when its action packs
+                // make letting it pass better than pressing it (NoteSkins.ShouldAvoid);
+                // notes without events are always pressed.
+                bool isDodge = _isPlayer && NoteSkins.ShouldAvoid(_level.Events, note.Props);
                 if (isDodge)
                 {
                     if (songTime - note.Start > HIT_WINDOW)
@@ -621,9 +561,6 @@ public class NoteRenderer
                 OnNoteHit?.Invoke(lane, holdEnd);
                 if (note.Props.OnPressEvent >= 0)
                     OnNotePressEvent?.Invoke((int)note.Props.OnPressEvent);
-                // Fallback: if no onPressEvent and skin=3 (heal), fire heal callback
-                else if (note.Props.IsHeal)
-                    OnHealNoteHit?.Invoke();
                 if (note.Duration > 0)
                     _holdEndTime[lane] = Math.Max(_holdEndTime[lane], note.Start + note.Duration);
                 else
@@ -808,23 +745,10 @@ public class NoteRenderer
                 OnNoteHit?.Invoke(lane, holdEnd);
                 OnJudgement?.Invoke(judgement);
 
+                // The level's action pack defines any effect. Skins are visual only:
+                // there is no hardcoded damage/instakill/heal fallback.
                 if (best.Props.OnPressEvent >= 0)
-                {
-                    // Level defines the mechanic
                     OnNotePressEvent?.Invoke((int)best.Props.OnPressEvent);
-                }
-                else
-                {
-                    // No event defined — apply default fallback by skin type
-                    // skin=1 (BAD/X) → damage/instakill
-                    // skin=2 (GOOD/O) → no penalty (press to survive)
-                    // skin=3 (heal) → restore health
-                    if (best.Props.IsDamage)
-                        OnInstakillNoteHit?.Invoke();   // skin=1 = bad = instakill fallback
-                    else if (best.Props.IsHeal)
-                        OnHealNoteHit?.Invoke();
-                    // skin=2 (IsInstakill in old naming) → good note, no default penalty
-                }
 
                 if (best.Duration > 0)
                 {
@@ -874,10 +798,15 @@ public class NoteRenderer
                 // Safe frames: skip miss penalty during song start
                 if (inSafeFrames) continue;
                 
-                // All note types count as misses — the level's onMissEvent handles effects.
-                Misses++; Combo = 0;
-                _comboBreakTimer[lane] = 0.5f;  // Combo break effect
-                OnNoteMiss?.Invoke();
+                // Avoid-notes (pressing hurts or missing heals) and notes that heal when
+                // pressed are NOT misses: no combo break, no miss penalty.
+                // Their onMissEvent still fires.
+                if (!NoteSkins.IsMissFree(_level.Events, note.Props))
+                {
+                    Misses++; Combo = 0;
+                    _comboBreakTimer[lane] = 0.5f;  // Combo break effect
+                    OnNoteMiss?.Invoke();
+                }
                 if (note.Props.OnMissEvent >= 0)
                     OnNoteMissEvent?.Invoke((int)note.Props.OnMissEvent);
             }
@@ -1020,7 +949,10 @@ public class NoteRenderer
                 // FNF uses a larger margin (2x screen height) for smooth appearance
                 if (noteY < -sh * 0.5f || noteY > sh * 1.5f) continue;
 
-                bool isDangerous = _isPlayer && (note.Props.IsDamage || note.Props.IsInstakill);
+                // Avoid-notes and marked (X/O) notes stay drawn past the receptor so the
+                // player can see them scroll by.
+                bool isDangerous = _isPlayer &&
+                    (note.Props.VisualSkin != NoteSkins.Default || NoteSkins.ShouldAvoid(_level.Events, note.Props));
 
                 if (!isDangerous)
                 {
@@ -1459,62 +1391,24 @@ public class NoteRenderer
     // ── Note head ────────────────────────────────────────────────────────────
     private void DrawNoteHead(SpriteBatch sb, int lane, float cx, float cy, FnmmNote note, float sx, float alpha, float strumY)
     {
-        int skinType = (int)note.Props.Skin;  // 0=normal, 1=bad, 2=good, 3=heal
+        int skinType = note.Props.VisualSkin;  // 0=default, 1=negative (X), 2=positive (O)
 
-        // Determine symbol and tint based on event analysis + skin type.
-        // Priority: analyze onPressEvent action_pack for health effect.
-        // If event exists → use event analysis to determine X or O.
-        // If no event → use skin type as fallback.
-        int pressPackIdx = (int)note.Props.OnPressEvent;
-        int missPackIdx = (int)note.Props.OnMissEvent;
-
-        // Symbol: O = should press, X = should avoid
-        // Compare actual damage values: higher value = better (less damage or more healing)
-        string? symbol;
-        if (skinType == 0)
+        // Symbol overlay (only when the style has no dedicated frame for the skin):
+        // purely visual — X for the negative skin, O for the positive skin.
+        string? symbol = skinType switch
         {
-            symbol = null;  // normal note, never show symbol
-        }
-        else if (pressPackIdx >= 0 || missPackIdx >= 0)
-        {
-            // Level defined events — analyze and compare benefits
-            float pressBenefit = pressPackIdx >= 0 ? AnalyzePackBenefit(pressPackIdx) : 0f;
-            float missBenefit = missPackIdx >= 0 ? AnalyzePackBenefit(missPackIdx) : 0f;
-            
-            if (pressBenefit > missBenefit)
-                symbol = "O";  // Pressing is better → show O
-            else if (missBenefit > pressBenefit)
-                symbol = "X";  // Missing is better → show X
-            else
-            {
-                // Equal: both do same damage (or both neutral)
-                // Fall back to skin type if both are neutral (no health impact)
-                if (pressBenefit == 0f && missBenefit == 0f)
-                {
-                    // No health consequences — use skin type
-                    symbol = skinType switch { 1 => "X", 2 => "O", 3 => "O", _ => null };
-                }
-                else
-                {
-                    // Same damage — slightly prefer pressing (assume neutral action)
-                    symbol = "O";
-                }
-            }
-        }
-        else
-        {
-            // No event — use skin type fallback
-            symbol = skinType switch { 1 => "X", 2 => "O", 3 => "O", _ => null };
-        }
+            NoteSkins.Negative => "X",
+            NoteSkins.Positive => "O",
+            _ => null,
+        };
 
         // Tint: use skin config or defaults
         Color fallbackTint = _style != null
             ? _style.GetSkinTint(skinType)
             : skinType switch
             {
-                1 => new Color(255, 50,  50),
-                2 => new Color(0,   200, 255),
-                3 => new Color(0,   230, 80),
+                NoteSkins.Negative => new Color(255, 50,  50),
+                NoteSkins.Positive => new Color(0,   200, 255),
                 _ => Color.White,
             };
 
@@ -1662,23 +1556,6 @@ public class NoteRenderer
     /// Returns the actual health value: positive = healing, negative = damage, 0 = neutral.
     /// This allows comparing which option does less damage when both are harmful.
     /// </summary>
-    private float AnalyzePackBenefit(int packIndex)
-    {
-        if (packIndex < 0) return 0f;  // -1 means no event
-        var packs = _level.Events.ActionPacks;
-        if (packIndex >= packs.Count) return 0f;
-        var pack = packs[packIndex];
-        float netHealth = 0f;
-        foreach (var action in pack.Actions)
-        {
-            if (action.Type != "PlayerHealth") continue;
-            float val = action.Props.ValueFloat ?? 0f;
-            string op = action.Props.Operation ?? "remove";
-            netHealth += op == "add" ? val : -val;
-        }
-        return netHealth;  // Return actual value for comparison
-    }
-
     // ── Note symbol overlay (X / O) ──────────────────────────────────────────    /// <summary>
     /// Draws a large X or O symbol centered on the note, in the lane color.
     /// Uses a dark outline pass + bright fill pass for readability on any background.

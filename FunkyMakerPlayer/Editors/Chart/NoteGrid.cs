@@ -454,10 +454,9 @@ public class NoteGrid
         
         Color noteColor = GetNoteColor(lane);
         
-        if (note.Props.IsDamage) noteColor = Color.Purple;
-        if (note.Props.IsInstakill) noteColor = Color.Black;
-        if (note.Props.IsHeal) noteColor = Color.LightGreen;
-        
+        if (note.Props.IsNegative) noteColor = new Color(255, 50, 50);
+        if (note.Props.IsPositive) noteColor = new Color(0, 200, 255);
+
         if (_selectedNotes.Contains(note))
             noteColor = Color.White;
         
@@ -467,7 +466,7 @@ public class NoteGrid
         // Draw arrow from notestyle or fallback
         if (_noteStyle != null)
         {
-            var frame = _noteStyle.GetNoteFrame(lane, (int)note.Props.Skin);
+            var frame = _noteStyle.GetNoteFrame(lane, note.Props.VisualSkin);
             if (frame != null)
             {
                 float scale = (CELL_SIZE - 8f) / frame.Source.Width;
