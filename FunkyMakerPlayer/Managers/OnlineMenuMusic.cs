@@ -12,12 +12,12 @@ namespace FunkyMakerPlayer.Managers;
 /// - While the "Connecting to server" screen is up, Portraits fades out quickly (and pauses where it was)
 ///   and "Jazzroom" plays instead; leaving that screen fades Jazzroom out and Portraits back in.
 /// Both tracks are MP3s in <c>Assets/music/online/</c>, streamed with NLayer (no full decode in memory).
-/// Effective volume = master volume (<see cref="Game1.MusicVolume"/>) × <see cref="Gain"/> × fade.
+/// Effective volume = master volume (<see cref="Game1.MusicVolume"/>) × <see cref="Volume"/> × fade.
 /// </summary>
 public sealed class OnlineMenuMusic : IDisposable
 {
-    /// <summary>Menu music level relative to gameplay music.</summary>
-    public const float Gain = 0.7f;
+    /// <summary>"Menu Music Volume" setting (0..1), persisted in settings.json as <c>MenuMusicVolume</c>.</summary>
+    public static float Volume = 0.7f;
 
     private const float FadeInSeconds = 1.5f;       // Portraits coming back
     private const float FadeOutSeconds = 0.35f;     // "fades out quickly"
@@ -152,7 +152,7 @@ public sealed class OnlineMenuMusic : IDisposable
                     if (_fade <= 0f) _inst.Pause(); // keep the position for when it fades back in
                 }
 
-                _inst.Volume = Math.Clamp(Game1.MusicVolume * Gain * _fade, 0f, 1f);
+                _inst.Volume = Math.Clamp(Game1.MusicVolume * Volume * _fade, 0f, 1f);
             }
             catch (Exception ex) { Console.WriteLine($"[OnlineMenuMusic] Playback error: {ex.Message}"); }
         }

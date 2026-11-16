@@ -44,6 +44,9 @@ public class LevelSelector : FunkyMakerPlayer.UI.IDirectScreen
 
     // ── New Chart Creation Modal ─────────────────────────────────────────────
     private bool _createModalOpen = false;
+
+    /// <summary>True while the New Chart modal (with its name field) is open; Game1 skips the -/+ volume keys then.</summary>
+    public bool IsTypingName => _createModalOpen;
     private string _newLevelName = "My Custom Chart";
     private float _newLevelBpm = 120f;
     private string? _selectedOggPath = null;

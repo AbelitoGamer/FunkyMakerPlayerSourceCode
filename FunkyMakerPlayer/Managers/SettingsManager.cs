@@ -740,6 +740,19 @@ public class SettingsManager
 
         entries.Add(new SettingItem
         {
+            Label = "Menu Music Volume",
+            Value = $"{(int)Math.Round(OnlineMenuMusic.Volume * 100)}%",
+            Kind = SettingKind.Adjustable,
+            Description = "Volume of the menu background music (scaled by Master Volume).",
+            OnAdjust = (_, delta) =>
+            {
+                OnlineMenuMusic.Volume = MathF.Round(Math.Clamp(OnlineMenuMusic.Volume + delta * 0.05f, 0f, 1f), 2);
+                return new SettingsActionResult { NeedsSave = true };
+            }
+        });
+
+        entries.Add(new SettingItem
+        {
             Label = "VSync",
             Value = game != null && game._graphics.SynchronizeWithVerticalRetrace ? "ON" : "OFF",
             Kind = SettingKind.Toggle,

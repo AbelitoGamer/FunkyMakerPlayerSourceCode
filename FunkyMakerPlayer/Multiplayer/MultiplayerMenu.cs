@@ -40,6 +40,9 @@ namespace FunkyMakerPlayer.Multiplayer
         /// <summary>True while the "Connecting to server" screen is showing (Game1 switches menu music on it).</summary>
         public bool IsConnectingScreen => _state == MenuState.Connecting;
 
+        /// <summary>True while a text field is being edited (Game1 skips the -/+ volume keys then).</summary>
+        public bool IsEditingText => _isEditingText;
+
         /// <summary>
         /// Returns the file path of the selected level for gameplay.
         /// For Official levels: returns temp file path from LevelCache

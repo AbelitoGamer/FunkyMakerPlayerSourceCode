@@ -2671,7 +2671,11 @@ public partial class Game1 : Game
             _volumeToastTimer = Math.Max(0f, _volumeToastTimer - dt);
 
         // Global FNF-style volume hotkeys (- / +) everywhere except text-entry or keybinding capture
-        bool allowVolumeHotkeys = !suppressUserInput && !_keyBindOverlay.IsActive && !_inEditor && !_inLevelSelector && !_inMultiplayer;
+        // Menus too; skipped only while typing text (level name, multiplayer fields) and in the
+        // Chart Editor, where - / + zoom the grid.
+        bool typingText = (_inLevelSelector && _levelSelector != null && _levelSelector.IsTypingName) ||
+                          (_inMultiplayer && _multiplayerMenu != null && _multiplayerMenu.IsEditingText);
+        bool allowVolumeHotkeys = !suppressUserInput && !_keyBindOverlay.IsActive && !_inEditor && !typingText;
         if (allowVolumeHotkeys)
         {
             bool volUp = (kb.IsKeyDown(Keys.OemPlus) && !_prevKb.IsKeyDown(Keys.OemPlus)) ||
