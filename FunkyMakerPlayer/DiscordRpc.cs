@@ -37,7 +37,7 @@ public static class DiscordRpc
     private const string FUNKYMAKER_WEBSITE = "https://thisisfenix.github.io/FunkyMakerPlayer/index.html";
     
     // ── State ─────────────────────────────────────────────────────────────────
-    private static string _latestReleaseUrl = "https://github.com/Thisisfenix/FunkyMakerPlayerSourceCode/releases/latest";
+    private static string _latestReleaseUrl = "https://github.com/Thisisfenix/thisisfenix.github.io/releases/latest"; // se reemplaza por el repo oficial cuando tenga releases
     
     private static DiscordRpcClient? _client;
     private static bool _initialized = false;
@@ -103,14 +103,21 @@ public static class DiscordRpc
             using var client = new HttpClient();
             client.DefaultRequestHeaders.Add("User-Agent", "FunkyMakerPlayer");
             
-            var url = $"https://api.github.com/repos/{GITHUB_REPO}/releases/latest";
-            var response = await client.GetStringAsync(url);
-            var json = JsonDocument.Parse(response);
-            
-            if (json.RootElement.TryGetProperty("html_url", out var htmlUrl))
+            // Repo oficial primero; si aún no tiene releases (404), usar el repo legacy.
+            foreach (var repo in new[] { GITHUB_REPO, "Thisisfenix/thisisfenix.github.io" })
             {
-                _latestReleaseUrl = htmlUrl.GetString() ?? _latestReleaseUrl;
-                Console.WriteLine($"[Discord] Latest release: {_latestReleaseUrl}");
+                try
+                {
+                    var response = await client.GetStringAsync($"https://api.github.com/repos/{repo}/releases/latest");
+                    var json = JsonDocument.Parse(response);
+                    if (json.RootElement.TryGetProperty("html_url", out var htmlUrl) && htmlUrl.GetString() is string u)
+                    {
+                        _latestReleaseUrl = u;
+                        Console.WriteLine($"[Discord] Latest release: {_latestReleaseUrl}");
+                        return;
+                    }
+                }
+                catch (HttpRequestException) { }
             }
         }
         catch (Exception ex)

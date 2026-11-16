@@ -18,7 +18,11 @@ namespace FunkyMakerPlayer;
 /// </summary>
 public static class Updater
 {
-    public const string LatestReleasePageUrl = "https://github.com/Thisisfenix/FunkyMakerPlayerSourceCode/releases/latest";
+    // Si el repo oficial ya tiene releases usa su página; si no, la del repo legacy.
+    private const string OFFICIAL_RELEASES_PAGE = "https://github.com/Thisisfenix/FunkyMakerPlayerSourceCode/releases/latest";
+    private const string LEGACY_RELEASES_PAGE   = "https://github.com/Thisisfenix/thisisfenix.github.io/releases/latest";
+    private static bool _officialRepoHasReleases;
+    public static string LatestReleasePageUrl => _officialRepoHasReleases ? OFFICIAL_RELEASES_PAGE : LEGACY_RELEASES_PAGE;
     private static readonly string[] API_URLS =
     {
         "https://api.github.com/repos/Thisisfenix/FunkyMakerPlayerSourceCode/releases",
@@ -227,6 +231,7 @@ public static class Updater
 
             foreach (var release in releases.EnumerateArray())
             {
+                if (apiUrl == API_URLS[0]) _officialRepoHasReleases = true;
                 bool isDraft      = release.TryGetProperty("draft",      out var d) && d.GetBoolean();
                 bool isPrerelease = release.TryGetProperty("prerelease", out var p) && p.GetBoolean();
                 if (isDraft || isPrerelease) continue;
