@@ -184,6 +184,7 @@ public partial class Game1 : Game
 
     // ── Multiplayer menu ─────────────────────────────────────────────────────
     private Multiplayer.MultiplayerMenu? _multiplayerMenu;
+    private Managers.OnlineMenuMusic? _onlineMenuMusic;   // Portraits of Kings / Jazzroom
     private bool          _inMultiplayer = false;
     
     // ── Multiplayer match state ──────────────────────────────────────────────
@@ -1427,6 +1428,7 @@ public partial class Game1 : Game
         // Load note style assets from the Assets folder next to the project
         string? assetsRoot = FindAssetsRoot();
         UI.UiSfx.Initialize(assetsRoot);
+        _onlineMenuMusic = new Managers.OnlineMenuMusic(assetsRoot);
         if (assetsRoot != null)
         {
             // Note: NoteStyle is loaded AFTER Settings.Load so NoteStyleName is correct
@@ -2522,7 +2524,21 @@ public partial class Game1 : Game
         {
             QueueUiSfxForScreenChanges(uiSnapshot);
             UI.UiSfx.Flush();
+            UpdateOnlineMenuMusic(gameTime);
         }
+    }
+
+    /// <summary>
+    /// Online menu background music. Keeps playing while a settings / HUD editor screen opened
+    /// from the online menu is up; stops (fades out) when a match starts or the player leaves.
+    /// </summary>
+    private void UpdateOnlineMenuMusic(GameTime gameTime)
+    {
+        if (_onlineMenuMusic == null) return;
+        bool fromOnlineMenu = (_inHudEditor || _inMainSettings) && _hudEditorReturnTarget == HudEditorReturnTarget.MultiplayerSettings;
+        bool inOnlineMenu = (_inMultiplayer || fromOnlineMenu) && _multiplayerMenu != null;
+        bool connecting = _inMultiplayer && _multiplayerMenu != null && _multiplayerMenu.IsConnectingScreen;
+        _onlineMenuMusic.Update((float)gameTime.ElapsedGameTime.TotalSeconds, inOnlineMenu, connecting);
     }
 
     private void UpdateInternal(GameTime gameTime)

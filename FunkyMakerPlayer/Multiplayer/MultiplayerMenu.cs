@@ -36,7 +36,10 @@ namespace FunkyMakerPlayer.Multiplayer
         // ══════════════════════════════════════════════════════════════════════
         // Public Properties for Game1 Integration
         // ══════════════════════════════════════════════════════════════════════
-        
+
+        /// <summary>True while the "Connecting to server" screen is showing (Game1 switches menu music on it).</summary>
+        public bool IsConnectingScreen => _state == MenuState.Connecting;
+
         /// <summary>
         /// Returns the file path of the selected level for gameplay.
         /// For Official levels: returns temp file path from LevelCache
