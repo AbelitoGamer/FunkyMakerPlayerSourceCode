@@ -285,6 +285,7 @@ public class HudEditor
             SaveHudLayout();
             _feedbackMessage = "Layout saved to hud_settings.json!";
             _feedbackTimer = FEEDBACK_DURATION;
+            UI.UiSfx.Play(UI.UiSound.Save);
         }
         
         // R to reset to defaults
@@ -295,18 +296,21 @@ public class HudEditor
             LoadFromHudSettings(screenWidth, screenHeight);
             _feedbackMessage = "Reset to default positions & visibility!";
             _feedbackTimer = FEEDBACK_DURATION;
+            UI.UiSfx.Play(UI.UiSound.Undo);
         }
         
         // G to toggle grid
         if (kb.IsKeyDown(Keys.G) && !_prevKb.IsKeyDown(Keys.G))
         {
             _showGrid = !_showGrid;
+            UI.UiSfx.Play(UI.UiSound.Toggle);
         }
         
         // H to toggle instructions panel
         if (kb.IsKeyDown(Keys.H) && !_prevKb.IsKeyDown(Keys.H))
         {
             _showInstructions = !_showInstructions;
+            UI.UiSfx.Play(UI.UiSound.Toggle);
         }
 
         // A to toggle visibility of ALL elements at once (master toggle)
@@ -320,6 +324,7 @@ public class HudEditor
             SyncToHudSettings();
             _feedbackMessage = $"All HUD Elements: {(nextState ? "VISIBLE" : "HIDDEN")}";
             _feedbackTimer = FEEDBACK_DURATION;
+            UI.UiSfx.Play(UI.UiSound.Toggle);
         }
 
         // V, Space, or Delete to toggle visibility of selected element
@@ -333,6 +338,7 @@ public class HudEditor
             SyncToHudSettings();
             _feedbackMessage = $"{elem.Name}: {(elem.Visible ? "VISIBLE" : "HIDDEN")}";
             _feedbackTimer = FEEDBACK_DURATION;
+            UI.UiSfx.Play(UI.UiSound.Toggle);
         }
         
         // Right-click on an element to select and toggle its visibility
@@ -349,6 +355,7 @@ public class HudEditor
                     SyncToHudSettings();
                     _feedbackMessage = $"{elem.Name}: {(elem.Visible ? "VISIBLE" : "HIDDEN")}";
                     _feedbackTimer = FEEDBACK_DURATION;
+                    UI.UiSfx.Play(UI.UiSound.Toggle);
                     break;
                 }
             }
@@ -367,6 +374,7 @@ public class HudEditor
                 {
                     _selectedElement = i;
                     _isDragging = true;
+                    UI.UiSfx.Play(UI.UiSound.Grab);
                     _dragOffset = new Point(mousePos.X - elem.Position.X, mousePos.Y - elem.Position.Y);
                     break;
                 }
@@ -376,6 +384,7 @@ public class HudEditor
         if (mouse.LeftButton == ButtonState.Released && _prevMouse.LeftButton == ButtonState.Pressed)
         {
             // Stop dragging
+            if (_isDragging) UI.UiSfx.Play(UI.UiSound.Release);
             _isDragging = false;
             SyncToHudSettings();
         }
@@ -431,12 +440,19 @@ public class HudEditor
             }
             if (moved)
                 SyncToHudSettings();
+
+            // Nudge sound on the initial key press only (movement repeats every frame while held)
+            if (kb.IsKeyDown(Keys.Up) && !_prevKb.IsKeyDown(Keys.Up)) UI.UiSfx.Play(UI.UiSound.NudgeUp);
+            else if (kb.IsKeyDown(Keys.Down) && !_prevKb.IsKeyDown(Keys.Down)) UI.UiSfx.Play(UI.UiSound.NudgeDown);
+            else if (kb.IsKeyDown(Keys.Left) && !_prevKb.IsKeyDown(Keys.Left)) UI.UiSfx.Play(UI.UiSound.NudgeLeft);
+            else if (kb.IsKeyDown(Keys.Right) && !_prevKb.IsKeyDown(Keys.Right)) UI.UiSfx.Play(UI.UiSound.NudgeRight);
         }
         
         // Tab to cycle selection
         if (kb.IsKeyDown(Keys.Tab) && !_prevKb.IsKeyDown(Keys.Tab))
         {
             _selectedElement = (_selectedElement + 1) % _elements.Count;
+            UI.UiSfx.Play(UI.UiSound.CycleNext);
         }
         
         _prevKb = kb;

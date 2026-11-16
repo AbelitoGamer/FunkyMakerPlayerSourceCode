@@ -694,6 +694,7 @@ namespace FunkyMakerPlayer.Editors.Chart
             if (JustPressed(kb, Keys.V))
             {
                 _showPreview = !_showPreview;
+                UI.UiSfx.Play(UI.UiSound.Toggle);
                 ShowToast(_showPreview ? "Stage Preview shown" : "Stage Preview hidden");
             }
 
@@ -716,12 +717,12 @@ namespace FunkyMakerPlayer.Editors.Chart
             if (!ctrl && JustPressed(kb, Keys.C)) CyclePreviewCamera();
             if (!ctrl && JustPressed(kb, Keys.H))
             {
-                _hitsoundsEnabled = !_hitsoundsEnabled;
+                _hitsoundsEnabled = !_hitsoundsEnabled; UI.UiSfx.Play(UI.UiSound.Toggle);
                 ShowToast(_hitsoundsEnabled ? "Hitsounds ON" : "Hitsounds OFF");
             }
             if (!ctrl && JustPressed(kb, Keys.N))
             {
-                _metronomeEnabled = !_metronomeEnabled;
+                _metronomeEnabled = !_metronomeEnabled; UI.UiSfx.Play(UI.UiSound.Toggle);
                 ShowToast(_metronomeEnabled ? "Metronome ON" : "Metronome OFF");
             }
             if (!ctrl && JustPressed(kb, Keys.M)) MirrorCurrentMeasure();
@@ -744,6 +745,7 @@ namespace FunkyMakerPlayer.Editors.Chart
                 else
                 {
                     _activePreset = NextPreset(_activePreset);
+                    UI.UiSfx.Play(UI.UiSound.Toggle);
                     ShowToast($"Brush: {PresetName(_activePreset)}");
                 }
             }
@@ -909,6 +911,7 @@ namespace FunkyMakerPlayer.Editors.Chart
             int offset = (_leftStrumline - 1 + dir + extraCount * 4) % extraCount;
             _leftStrumline = 1 + offset;
             _selectedStrumline = _leftStrumline;
+            UI.UiSfx.Play(UI.UiSound.SubTab);
             _selectedNote = null;
             ShowToast($"Left Track: SL{_leftStrumline} ({CountStrumNotes(_leftStrumline)} notes)");
         }
@@ -926,6 +929,7 @@ namespace FunkyMakerPlayer.Editors.Chart
                 _previewCameraMode = -1;
 
             _previewNeedsSeek = true;
+            UI.UiSfx.Play(UI.UiSound.SubTab);
             ShowToast($"Preview Cam: {GetPreviewCameraLabel()}");
         }
 
@@ -956,6 +960,7 @@ namespace FunkyMakerPlayer.Editors.Chart
                 }
             }
 
+            UI.UiSfx.Play((_clipboardNotes.Count > 0 ? UI.UiSound.Confirm : UI.UiSound.Error));
             ShowToast(_clipboardNotes.Count > 0
                 ? $"Copied {_clipboardNotes.Count} notes (Bar #{barIdx + 1})"
                 : $"No notes in Bar #{barIdx + 1} (SL{_selectedStrumline})");
@@ -965,6 +970,7 @@ namespace FunkyMakerPlayer.Editors.Chart
         {
             if (_level == null || _clipboardNotes.Count == 0)
             {
+                UI.UiSfx.Play(UI.UiSound.Error);
                 ShowToast("Clipboard empty (Ctrl+C inside a measure first)");
                 return;
             }
@@ -992,10 +998,12 @@ namespace FunkyMakerPlayer.Editors.Chart
 
             if (added.Count == 0)
             {
+                UI.UiSfx.Play(UI.UiSound.AlreadyInUse);
                 ShowToast("All copied notes already present at target bar");
                 return;
             }
 
+            UI.UiSfx.Play(UI.UiSound.Confirm);
             _undoManager.Do(new DelegateEditorAction(
                 () =>
                 {
@@ -1034,10 +1042,12 @@ namespace FunkyMakerPlayer.Editors.Chart
 
             if (moves.Count == 0)
             {
+                UI.UiSfx.Play(UI.UiSound.Error);
                 ShowToast($"No notes to mirror in Bar #{barIdx + 1}");
                 return;
             }
 
+            UI.UiSfx.Play(UI.UiSound.CycleNext);
             _undoManager.Do(new DelegateEditorAction(
                 () =>
                 {
@@ -1348,6 +1358,7 @@ namespace FunkyMakerPlayer.Editors.Chart
 
             if (strum[lane].Any(n => MathF.Abs(n.Start - start) < 0.005f))
             {
+                UI.UiSfx.Play(UI.UiSound.Error);
                 ShowToast("Note already exists at that beat");
                 return null;
             }
@@ -1382,6 +1393,7 @@ namespace FunkyMakerPlayer.Editors.Chart
             var strum = _level.Data.Strumlines[strumIdx];
             if (lane < 0 || lane >= strum.Count) return;
 
+            UI.UiSfx.Play(UI.UiSound.Delete);
             _undoManager.Do(new DelegateEditorAction(
                 () =>
                 {
@@ -1403,6 +1415,7 @@ namespace FunkyMakerPlayer.Editors.Chart
             float oldStart = note.Start;
             var srcList = _level.Data.Strumlines[fromStrum][fromLane];
             var dstList = _level.Data.Strumlines[toStrum][toLane];
+            UI.UiSfx.Play(UI.UiSound.Release);
 
             _undoManager.Do(new DelegateEditorAction(
                 () =>
@@ -1484,6 +1497,7 @@ namespace FunkyMakerPlayer.Editors.Chart
         // ── Quick Controls & Actions ─────────────────────────────────────────
         private void SetTool(EditorTool tool)
         {
+            if (_currentTool != tool) UI.UiSfx.Play(UI.UiSound.Focus);
             _currentTool = tool;
         }
 
@@ -1491,6 +1505,7 @@ namespace FunkyMakerPlayer.Editors.Chart
         {
             if (_level == null || idx < 0 || idx >= _level.Data.Strumlines.Count) return;
             if (idx > 0 && idx != _rightStrumline) _leftStrumline = idx;
+            if (_selectedStrumline != idx) UI.UiSfx.Play(UI.UiSound.Tab);
             _selectedStrumline = idx;
             _selectedNote = null;
         }
@@ -1507,13 +1522,16 @@ namespace FunkyMakerPlayer.Editors.Chart
         {
             int idx = Array.IndexOf(SNAP_VALUES, _snapDivisor);
             if (idx < 0) idx = 0;
-            idx = Math.Clamp(idx + dir, 0, SNAP_VALUES.Length - 1);
+            int newIdx = Math.Clamp(idx + dir, 0, SNAP_VALUES.Length - 1);
+            UI.UiSfx.Play((newIdx == idx ? UI.UiSound.SliderEnd : dir < 0 ? UI.UiSound.SliderDown : UI.UiSound.SliderUp));
+            idx = newIdx;
             _snapDivisor = SNAP_VALUES[idx];
             ShowToast($"Snap: 1/{_snapDivisor}");
         }
 
         private void AdjustHoldDuration(int dir)
         {
+            UI.UiSfx.Play((dir < 0 ? UI.UiSound.SliderDown : UI.UiSound.SliderUp));
             float stepBeats = GetSnapStepBeats();
             if (_selectedNote != null)
             {
@@ -1547,6 +1565,7 @@ namespace FunkyMakerPlayer.Editors.Chart
             var built = BuildPresetProps(next);
             var neu = (built.Skin, built.OnPressEvent, built.OnMissEvent);
 
+            UI.UiSfx.Play(UI.UiSound.Toggle);
             _undoManager.Do(new DelegateEditorAction(
                 () => { (target.Props.Skin, target.Props.OnPressEvent, target.Props.OnMissEvent) = neu; MarkPreviewDirty(); },
                 () => { (target.Props.Skin, target.Props.OnPressEvent, target.Props.OnMissEvent) = old; MarkPreviewDirty(); }
@@ -1694,7 +1713,8 @@ namespace FunkyMakerPlayer.Editors.Chart
             if (_level == null) return;
             float oldBpm = _level.Data.EffectiveBpm;
             float newBpm = Math.Clamp(MathF.Round((oldBpm + delta) * 10f) / 10f, 30f, 400f);
-            if (MathF.Abs(newBpm - oldBpm) < 0.01f) return;
+            if (MathF.Abs(newBpm - oldBpm) < 0.01f) { UI.UiSfx.Play(UI.UiSound.SliderEnd); return; }
+            UI.UiSfx.Play((delta < 0 ? UI.UiSound.SliderDown : UI.UiSound.SliderUp));
             _undoManager.Do(new DelegateEditorAction(
                 () => { _level.Data.Bpm = newBpm; MarkPreviewDirty(); },
                 () => { _level.Data.Bpm = oldBpm; MarkPreviewDirty(); }
@@ -1703,7 +1723,9 @@ namespace FunkyMakerPlayer.Editors.Chart
 
         private void ChangeZoom(float delta)
         {
-            _zoom = Math.Clamp(_zoom + delta, 0.50f, 2.50f);
+            float newZoom = Math.Clamp(_zoom + delta, 0.50f, 2.50f);
+            UI.UiSfx.Play((newZoom == _zoom ? UI.UiSound.SliderEnd : delta < 0 ? UI.UiSound.SliderDown : UI.UiSound.SliderUp));
+            _zoom = newZoom;
             ShowToast($"Grid Zoom: {_zoom:F2}x");
         }
 
@@ -1712,7 +1734,8 @@ namespace FunkyMakerPlayer.Editors.Chart
             if (_level == null) return;
             float oldSpd = _level.Data.Speed;
             float newSpd = Math.Clamp(MathF.Round((oldSpd + delta) * 20f) / 20f, 0.2f, 8.0f);
-            if (MathF.Abs(newSpd - oldSpd) < 0.005f) return;
+            if (MathF.Abs(newSpd - oldSpd) < 0.005f) { UI.UiSfx.Play(UI.UiSound.SliderEnd); return; }
+            UI.UiSfx.Play((delta < 0 ? UI.UiSound.SliderDown : UI.UiSound.SliderUp));
             _undoManager.Do(new DelegateEditorAction(
                 () => _level.Data.Speed = newSpd,
                 () => _level.Data.Speed = oldSpd
@@ -1722,7 +1745,8 @@ namespace FunkyMakerPlayer.Editors.Chart
 
         private void Undo()
         {
-            if (!_undoManager.CanUndo) return;
+            if (!_undoManager.CanUndo) { UI.UiSfx.Play(UI.UiSound.Error); return; }
+            UI.UiSfx.Play(UI.UiSound.Undo);
             _undoManager.Undo();
             _selectedNote = null;
             MarkPreviewDirty();
@@ -1731,7 +1755,8 @@ namespace FunkyMakerPlayer.Editors.Chart
 
         private void Redo()
         {
-            if (!_undoManager.CanRedo) return;
+            if (!_undoManager.CanRedo) { UI.UiSfx.Play(UI.UiSound.Error); return; }
+            UI.UiSfx.Play(UI.UiSound.Undo);
             _undoManager.Redo();
             MarkPreviewDirty();
             ShowToast("Redo");
@@ -1748,6 +1773,7 @@ namespace FunkyMakerPlayer.Editors.Chart
         private void TogglePlayPause()
         {
             _isPlaying = !_isPlaying;
+            UI.UiSfx.Play(UI.UiSound.Toggle);
             if (_isPlaying)
             {
                 float startSec = TimeUnitsToSeconds(_scrollY);
@@ -1803,6 +1829,7 @@ namespace FunkyMakerPlayer.Editors.Chart
             PausePlayback();
             PlaytestStartSeconds = fromStart ? 0f : Math.Max(0f, TimeUnitsToSeconds(_scrollY));
             PlaytestRequested = true;
+            UI.UiSfx.Play(UI.UiSound.StartSong);
         }
 
         private void SaveLevel()
@@ -1830,10 +1857,12 @@ namespace FunkyMakerPlayer.Editors.Chart
                 _undoManager.MarkAsSaved();
                 _manualModified = false;
                 SavedInSession = true;
+                UI.UiSfx.Play(UI.UiSound.Save);
                 ShowToast($"Saved {Path.GetFileName(savePath)}");
             }
             catch (Exception ex)
             {
+                UI.UiSfx.Play(UI.UiSound.Error);
                 ShowToast($"Save failed: {ex.Message}");
                 Console.WriteLine($"[ChartEditor] Save error: {ex.Message}");
             }
@@ -2275,7 +2304,7 @@ namespace FunkyMakerPlayer.Editors.Chart
             DrawButton(sb, _playtestBtnRect, "PLAYTEST", new Color(22, 82, 108), Color.White, btnFont, ACCENT_CYAN, () => TriggerPlaytest(false));
             DrawButton(sb, _undoBtnRect, "UNDO", _undoManager.CanUndo ? BG_CARD : new Color(24, 24, 34), _undoManager.CanUndo ? Color.White : Color.Gray, smallBtnFont, Color.White * 0.2f, Undo);
             DrawButton(sb, _redoBtnRect, "REDO", _undoManager.CanRedo ? BG_CARD : new Color(24, 24, 34), _undoManager.CanRedo ? Color.White : Color.Gray, smallBtnFont, Color.White * 0.2f, Redo);
-            DrawButton(sb, _previewToggleRect, _showPreview ? "PREV ON" : "PREV OFF", _showPreview ? new Color(46, 54, 88) : BG_CARD, _showPreview ? ACCENT_GOLD : Color.Gray, smallBtnFont, _showPreview ? ACCENT_GOLD * 0.6f : Color.White * 0.15f, () => _showPreview = !_showPreview);
+            DrawButton(sb, _previewToggleRect, _showPreview ? "PREV ON" : "PREV OFF", _showPreview ? new Color(46, 54, 88) : BG_CARD, _showPreview ? ACCENT_GOLD : Color.Gray, smallBtnFont, _showPreview ? ACCENT_GOLD * 0.6f : Color.White * 0.15f, () => { _showPreview = !_showPreview; UI.UiSfx.Play(UI.UiSound.Toggle); });
             DrawButton(sb, _saveBtnRect, IsModified ? "SAVE*" : "SAVE", IsModified ? new Color(150, 50, 88) : BG_CARD, Color.White, btnFont, IsModified ? ACCENT_PINK : Color.White * 0.2f, SaveLevel);
         }
 
@@ -2397,7 +2426,7 @@ namespace FunkyMakerPlayer.Editors.Chart
                     _skinBtnRects[i] = sr;
                     var preset = (NotePreset)i;
                     bool sel = _activePreset == preset;
-                    DrawButton(sb, sr, presetLabels[i], sel ? presetCols[i] * 0.28f : BG_CARD, sel ? Color.White : Color.Gray, smallFont, sel ? presetCols[i] : Color.White * 0.1f, () => _activePreset = preset);
+                    DrawButton(sb, sr, presetLabels[i], sel ? presetCols[i] * 0.28f : BG_CARD, sel ? Color.White : Color.Gray, smallFont, sel ? presetCols[i] : Color.White * 0.1f, () => { if (_activePreset != preset) UI.UiSfx.Play(UI.UiSound.Toggle); _activePreset = preset; });
                 }
                 y += skinStepY * 2 + UiScale.Px(8, s);
             }
@@ -2411,10 +2440,10 @@ namespace FunkyMakerPlayer.Editors.Chart
                 _metronomeBtnRect = new Rectangle(_toolbarRect.X + padX + halfW + halfGap, y, halfW, ctrlH);
                 DrawButton(sb, _hitsoundBtnRect, "SND (H)", _hitsoundsEnabled ? new Color(24, 88, 62) : BG_CARD,
                     _hitsoundsEnabled ? Color.White : Color.Gray, smallFont, _hitsoundsEnabled ? ACCENT_GREEN : Color.White * 0.12f,
-                    () => { _hitsoundsEnabled = !_hitsoundsEnabled; ShowToast(_hitsoundsEnabled ? "Hitsounds ON" : "Hitsounds OFF"); });
+                    () => { _hitsoundsEnabled = !_hitsoundsEnabled; UI.UiSfx.Play(UI.UiSound.Toggle); ShowToast(_hitsoundsEnabled ? "Hitsounds ON" : "Hitsounds OFF"); });
                 DrawButton(sb, _metronomeBtnRect, "MET (N)", _metronomeEnabled ? new Color(92, 72, 22) : BG_CARD,
                     _metronomeEnabled ? Color.White : Color.Gray, smallFont, _metronomeEnabled ? ACCENT_GOLD : Color.White * 0.12f,
-                    () => { _metronomeEnabled = !_metronomeEnabled; ShowToast(_metronomeEnabled ? "Metronome ON" : "Metronome OFF"); });
+                    () => { _metronomeEnabled = !_metronomeEnabled; UI.UiSfx.Play(UI.UiSound.Toggle); ShowToast(_metronomeEnabled ? "Metronome ON" : "Metronome OFF"); });
             }
             else
             {

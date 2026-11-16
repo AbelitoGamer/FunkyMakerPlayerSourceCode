@@ -727,6 +727,19 @@ public class SettingsManager
 
         entries.Add(new SettingItem
         {
+            Label = "SFX Volume",
+            Value = $"{(int)Math.Round(UI.UiSfx.Volume * 100)}%",
+            Kind = SettingKind.Adjustable,
+            Description = "Volume of menu and editor sound effects (scaled by Master Volume).",
+            OnAdjust = (_, delta) =>
+            {
+                UI.UiSfx.Volume = MathF.Round(Math.Clamp(UI.UiSfx.Volume + delta * 0.05f, 0f, 1f), 2);
+                return new SettingsActionResult { NeedsSave = true };
+            }
+        });
+
+        entries.Add(new SettingItem
+        {
             Label = "VSync",
             Value = game != null && game._graphics.SynchronizeWithVerticalRetrace ? "ON" : "OFF",
             Kind = SettingKind.Toggle,
@@ -951,7 +964,14 @@ public class SettingsManager
         }
 
         IsFocused = false;
-        return item.OnSelect?.Invoke() ?? new SettingsActionResult();
+        if (item.OnSelect == null) return new SettingsActionResult();
+        var result = item.OnSelect();
+        // Sub-menus / overlays get their open sound from Game1; plain toggles/actions click here.
+        bool opensSomething = result.OpenKeyBind || result.OpenArrowsMenu || result.OpenSplashMenu ||
+                              result.OpenCountdownMenu || result.OpenFontMenu || result.OpenHudEditor || result.ExitMenu;
+        if (!opensSomething)
+            UI.UiSfx.Play(item.Kind == SettingKind.Toggle ? UI.UiSound.Toggle : UI.UiSound.Confirm);
+        return result;
     }
 
     public SettingsActionResult HandleAdjustment(Game1 game, bool isLeft)
@@ -960,9 +980,24 @@ public class SettingsManager
         if (Selection < 0 || Selection >= entries.Count)
             return new SettingsActionResult();
 
-        var item = entries[Selection];
-        float delta = isLeft ? -1f : 1f;
-        return item.OnAdjust?.Invoke(isLeft, delta) ?? new SettingsActionResult();
+        return RunAdjust(game, entries[Selection], isLeft);
+    }
+
+    /// <summary>Runs an adjustable row's OnAdjust and plays a tick, or the "limit" sound if the value did not change.</summary>
+    private SettingsActionResult RunAdjust(Game1 game, SettingItem item, bool isLeft)
+    {
+        if (item.OnAdjust == null) return new SettingsActionResult();
+        string before = item.Value;
+        var result = item.OnAdjust(isLeft, isLeft ? -1f : 1f);
+
+        // Some rows apply their change through the result (volume, camera zoom, seek)
+        bool viaResult = (result.AdjustVolume > 0f && Game1.MusicVolume < 1f) ||
+                         (result.AdjustVolume < 0f && Game1.MusicVolume > 0f) ||
+                         result.AdjustCameraZoom != 0 || result.SeekSong != 0f;
+        var after = BuildTabEntries(game);
+        bool changed = viaResult || (Selection < after.Count && after[Selection].Value != before);
+        UI.UiSfx.Play(!changed ? UI.UiSound.SliderEnd : isLeft ? UI.UiSound.SliderDown : UI.UiSound.SliderUp);
+        return result;
     }
 
     public SettingsActionResult? UpdateMouse(
@@ -1048,8 +1083,7 @@ public class SettingsManager
                 if (_hoveredArrow != 0 && item.Kind == SettingKind.Adjustable && item.OnAdjust != null)
                 {
                     IsFocused = true;
-                    float delta = _hoveredArrow < 0 ? -1f : 1f;
-                    adjustmentResult = item.OnAdjust(_hoveredArrow < 0, delta);
+                    adjustmentResult = RunAdjust(game, item, _hoveredArrow < 0);
                     return null;
                 }
 

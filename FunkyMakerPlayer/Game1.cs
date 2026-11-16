@@ -1426,6 +1426,7 @@ public partial class Game1 : Game
 
         // Load note style assets from the Assets folder next to the project
         string? assetsRoot = FindAssetsRoot();
+        UI.UiSfx.Initialize(assetsRoot);
         if (assetsRoot != null)
         {
             // Note: NoteStyle is loaded AFTER Settings.Load so NoteStyleName is correct
@@ -2508,6 +2509,7 @@ public partial class Game1 : Game
     // ── Update ───────────────────────────────────────────────────────────────
     protected override void Update(GameTime gameTime)
     {
+        var uiSnapshot = CaptureUiSfxSnapshot();
         try
         {
             UpdateInternal(gameTime);
@@ -2515,6 +2517,11 @@ public partial class Game1 : Game
         catch (Exception ex)
         {
             HandleGameplayError(ex, "Update");
+        }
+        finally
+        {
+            QueueUiSfxForScreenChanges(uiSnapshot);
+            UI.UiSfx.Flush();
         }
     }
 
@@ -2658,7 +2665,9 @@ public partial class Game1 : Game
             if (volUp || volDown)
             {
                 float step = volUp ? 0.05f : -0.05f;
+                float oldVolume = MusicVolume;
                 MusicVolume = MathF.Round(Math.Clamp(MusicVolume + step, 0f, 1f), 2);
+                UI.UiSfx.Play(MusicVolume == oldVolume ? UI.UiSound.SliderEnd : volUp ? UI.UiSound.SliderUp : UI.UiSound.SliderDown);
                 if (_musicInst != null) _musicInst.Volume = MusicVolume;
                 _volumeToastTimer = VOLUME_TOAST_DURATION;
                 Settings.Save(_graphics.SynchronizeWithVerticalRetrace);
@@ -4159,6 +4168,7 @@ public partial class Game1 : Game
                         bool isDraw = playerRenderer.Score == _opponentScore;
                         bool playerWon = playerRenderer.Score > _opponentScore;
 
+                        UI.UiSfx.Play(UI.UiSound.Save);   // match finished
                         _resultsScreen = new MultiplayerResultsScreen(
                             _pixel!,
                             _catTex,
@@ -4189,6 +4199,7 @@ public partial class Game1 : Game
                 }
                 else
                 {
+                    UI.UiSfx.Play(UI.UiSound.Save);   // song finished
                     _songTransition = new SongTransition(_catTex, _pixel!);
                     _songTransition.Start(_rtWidth, _rtHeight);
                     _transitionToFreeplay = true;

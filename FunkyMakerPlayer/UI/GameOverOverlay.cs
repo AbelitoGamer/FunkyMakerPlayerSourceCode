@@ -24,6 +24,8 @@ public class GameOverOverlay
     private const float INPUT_UNLOCK_DELAY = 0.35f;
     
     public bool IsActive => _isActive;
+    /// <summary>0 = Retry, 1 = Menu.</summary>
+    public int Selection => _selection;
     public float Timer => _timer;
     
     public GameOverOverlay(Texture2D pixel, SpriteBatch spriteBatch, SpriteFont font)

@@ -8,6 +8,8 @@ using Microsoft.Xna.Framework;
 using Microsoft.Xna.Framework.Graphics;
 using Microsoft.Xna.Framework.Input;
 using Microsoft.Xna.Framework.Input.Touch;
+using UiSfx = FunkyMakerPlayer.UI.UiSfx;
+using UiSound = FunkyMakerPlayer.UI.UiSound;
 
 namespace FunkyMakerPlayer.Multiplayer
 {
@@ -426,6 +428,74 @@ namespace FunkyMakerPlayer.Multiplayer
         /// Update menu logic.
         /// </summary>
         public void Update(GameTime gameTime)
+        {
+            // Compare against the state seen at the end of the previous frame, so changes made by
+            // network callbacks between frames (match found, opponent ready…) are heard too.
+            // If the menu was not updated last frame, start from the current state.
+            var b = _sfxPrevFrame == UiSfx.Frame - 1 ? _sfxPrev : CaptureSfxState();
+
+            UpdateCore(gameTime);
+            QueueSfx(b);
+            _sfxPrev = CaptureSfxState();
+            _sfxPrevFrame = UiSfx.Frame;
+        }
+
+        private readonly record struct SfxState(
+            MenuState _state, int _selection, int _modeSelection, int _settingsCategory, int _settingsSelection,
+            bool _isSettingFocused, bool _isEditingText, string _editingTextValue, int _leaderboardTab,
+            int _leaderboardSelection, int _levelSelection, LevelSource _selectedSource, bool _isReady,
+            bool _opponentReady, string _roomCode, string _errorMessage, bool _isDownloading, string? _pendingDownloadError);
+
+        private SfxState _sfxPrev;
+        private long _sfxPrevFrame = -10;
+
+        private SfxState CaptureSfxState() => new(
+            _state, _selection, _modeSelection, _settingsCategory, _settingsSelection, _isSettingFocused,
+            _isEditingText, _editingTextValue, _leaderboardTab, _leaderboardSelection, _levelSelection,
+            _selectedSource, _isReady, _opponentReady, _roomCode, _errorMessage, _isDownloading, _pendingDownloadError);
+
+        /// <summary>Queues UI sounds for what changed since <paramref name="b"/>.</summary>
+        private void QueueSfx(SfxState b)
+        {
+
+            if (_state != b._state)
+            {
+                if (_state == MenuState.MatchFound) UiSfx.Play(UiSound.Receive);
+                else if (_state == MenuState.Searching) UiSfx.Play(UiSound.Wait);
+                else if (b._state == MenuState.Connecting && _state == MenuState.ModeSelect) UiSfx.Play(UiSound.Notice);
+                else UiSfx.Play(StateDepth(_state) > StateDepth(b._state) ? UiSound.Confirm : UiSound.Back);
+            }
+            else
+            {
+                if (_selection != b._selection || _modeSelection != b._modeSelection) UiSfx.Play(UiSound.Move);
+                if (_settingsSelection != b._settingsSelection) UiSfx.Play(UiSound.MoveRow);
+                if (_leaderboardSelection != b._leaderboardSelection || _levelSelection != b._levelSelection) UiSfx.Play(UiSound.MoveList);
+                if (_settingsCategory != b._settingsCategory || _leaderboardTab != b._leaderboardTab || _selectedSource != b._selectedSource)
+                    UiSfx.Play(UiSound.SubTab);
+                if (_isSettingFocused != b._isSettingFocused) UiSfx.Play(_isSettingFocused ? UiSound.Focus : UiSound.Back);
+                if (_isEditingText != b._isEditingText) UiSfx.Play(_isEditingText ? UiSound.Focus : UiSound.Confirm);
+                else if (_isEditingText && _editingTextValue != b._editingTextValue) UiSfx.Play(UiSound.Type);
+                if (_roomCode != b._roomCode && _roomCode.Length > 0) UiSfx.Play(UiSound.Type);
+                if (_isReady != b._isReady) UiSfx.Play(UiSound.Toggle);
+                if (_opponentReady && !b._opponentReady) UiSfx.Play(UiSound.Notice);
+            }
+
+            if (_isDownloading && !b._isDownloading) UiSfx.Play(UiSound.Wait);
+            if (!string.IsNullOrEmpty(_errorMessage) && _errorMessage != b._errorMessage) UiSfx.Play(UiSound.Error);
+            if (_pendingDownloadError != null && _pendingDownloadError != b._pendingDownloadError) UiSfx.Play(UiSound.Error);
+        }
+
+        /// <summary>Navigation depth of each menu state (for Confirm vs Back sounds).</summary>
+        private static int StateDepth(MenuState state) => state switch
+        {
+            MenuState.MainMenu => 0,
+            MenuState.Settings or MenuState.Leaderboard or MenuState.Connecting or MenuState.ModeSelect => 1,
+            MenuState.Lobby or MenuState.CreateRoom or MenuState.JoinRoom => 2,
+            MenuState.Searching => 3,
+            _ => 4, // MatchFound
+        };
+
+        private void UpdateCore(GameTime gameTime)
         {
             float dt = (float)gameTime.ElapsedGameTime.TotalSeconds;
             _pulseTimer += dt * PULSE_SPEED;

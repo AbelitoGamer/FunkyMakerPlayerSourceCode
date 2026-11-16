@@ -248,6 +248,7 @@ namespace FunkyMakerPlayer
             var kb = Keyboard.GetState();
             if (kb.IsKeyDown(Keys.Escape) || kb.IsKeyDown(Keys.Back))
             {
+                UI.UiSfx.Play(UI.UiSound.Back);
                 IsVisible = false;
                 return;
             }
@@ -291,6 +292,7 @@ namespace FunkyMakerPlayer
                     if (!greenButtonBounds.IsEmpty && greenButtonBounds.Contains(tapPos))
                     {
                         LaunchFolderPicker = true;
+                        UI.UiSfx.Play(UI.UiSound.Confirm);
                         IsVisible = false;
                         return;
                     }
@@ -300,6 +302,7 @@ namespace FunkyMakerPlayer
                     {
                         _targetPage = _currentPage - 1;
                         _pageTransition = 0f;
+                        UI.UiSfx.Play(UI.UiSound.Move);
                     }
                     
                     // Check next button
@@ -307,6 +310,7 @@ namespace FunkyMakerPlayer
                     {
                         _targetPage = _currentPage + 1;
                         _pageTransition = 0f;
+                        UI.UiSfx.Play(UI.UiSound.Move);
                     }
                 }
             }

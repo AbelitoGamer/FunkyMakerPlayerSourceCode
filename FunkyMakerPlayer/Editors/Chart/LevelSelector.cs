@@ -145,6 +145,24 @@ public class LevelSelector : FunkyMakerPlayer.UI.IDirectScreen
 
     public void Update(float dt, KeyboardState kb, int screenWidth, int screenHeight)
     {
+        // Snapshot → update → compare for UI sounds
+        var b = (_selectedIndex, _createModalOpen, _newLevelName, _newLevelBpm, _selectedOggPath, _createError);
+        UpdateCore(dt, kb, screenWidth, screenHeight);
+
+        if (!_createModalOpen && _selectedIndex != b._selectedIndex) UI.UiSfx.Play(UI.UiSound.MoveList);
+        if (_createModalOpen && !b._createModalOpen) UI.UiSfx.Play(UI.UiSound.Confirm);
+        if (!_createModalOpen && b._createModalOpen && !LevelSelected) UI.UiSfx.Play(UI.UiSound.Back);
+        if (_createModalOpen && b._createModalOpen)
+        {
+            if (_newLevelName != b._newLevelName) UI.UiSfx.Play(UI.UiSound.Type);
+            if (_newLevelBpm != b._newLevelBpm) UI.UiSfx.Play(_newLevelBpm > b._newLevelBpm ? UI.UiSound.SliderUp : UI.UiSound.SliderDown);
+            if (_selectedOggPath != b._selectedOggPath) UI.UiSfx.Play(_selectedOggPath != null ? UI.UiSound.Confirm : UI.UiSound.Delete);
+        }
+        if (_createError != null && _createError != b._createError) UI.UiSfx.Play(UI.UiSound.Error);
+    }
+
+    private void UpdateCore(float dt, KeyboardState kb, int screenWidth, int screenHeight)
+    {
         if (screenWidth > 0 && screenHeight > 0)
         {
             _screenWidth = screenWidth;
@@ -234,6 +252,7 @@ public class LevelSelector : FunkyMakerPlayer.UI.IDirectScreen
         else if (clicked && _refreshBtnRect.Contains(ms.Position))
         {
             RefreshLevels();
+            UI.UiSfx.Play(UI.UiSound.Notice);
         }
         else if (clicked && _hoveredIndex >= 0 && _hoveredIndex < _levelPaths.Count)
         {
@@ -247,6 +266,7 @@ public class LevelSelector : FunkyMakerPlayer.UI.IDirectScreen
         else if (rKey)
         {
             RefreshLevels();
+            UI.UiSfx.Play(UI.UiSound.Notice);
         }
         else if (enter && _levelPaths.Count > 0)
         {
@@ -309,11 +329,17 @@ public class LevelSelector : FunkyMakerPlayer.UI.IDirectScreen
                     _newLevelName += ch.Value;
                     _createError = null;
                 }
+                else if (ch.HasValue)
+                {
+                    UI.UiSfx.Play(UI.UiSound.TypeFull); // name already at max length
+                }
             }
         }
 
         if (JustPressed(kb, Keys.Left)) _newLevelBpm = Math.Max(30f, _newLevelBpm - (shift ? 10f : 1f));
         if (JustPressed(kb, Keys.Right)) _newLevelBpm = Math.Min(400f, _newLevelBpm + (shift ? 10f : 1f));
+        if ((JustPressed(kb, Keys.Left) && _newLevelBpm <= 30f) || (JustPressed(kb, Keys.Right) && _newLevelBpm >= 400f))
+            UI.UiSfx.Play(UI.UiSound.SliderEnd);
 
         if (clicked)
         {

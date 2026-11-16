@@ -46,6 +46,7 @@ public static class Settings
         public bool  ShowFpsCounter    { get; set; } = false;
         public bool  Midlescroll       { get; set; } = false;
         public float MusicVolume       { get; set; } = 0.85f;
+        public float SfxVolume         { get; set; } = 0.8f;   // UI sound effects (UiSfx)
         public bool  BilinearFiltering { get; set; } = true;
         public string NoteStyleName    { get; set; } = "Default";
         public string NoteSplashStyleName { get; set; } = "Default";
@@ -173,6 +174,7 @@ public static class Settings
             Game1.ShowDebugInfo            = d.ShowDebugInfo;
             Game1.ShowFpsCounter           = d.ShowFpsCounter;
             Game1.MusicVolume              = Math.Clamp(d.MusicVolume, 0f, 1f);
+            UI.UiSfx.Volume                = Math.Clamp(d.SfxVolume, 0f, 1f);
             Game1.BilinearFiltering        = d.BilinearFiltering;
             Game1.NoteStyleName            = d.NoteStyleName;
             Game1.NoteSplashStyleName      = d.NoteSplashStyleName;
@@ -245,6 +247,7 @@ public static class Settings
                 ShowDebugInfo    = Game1.ShowDebugInfo,
                 ShowFpsCounter   = Game1.ShowFpsCounter,
                 MusicVolume      = Game1.MusicVolume,
+                SfxVolume        = UI.UiSfx.Volume,
                 BilinearFiltering = Game1.BilinearFiltering,
                 NoteStyleName     = Game1.NoteStyleName,
                 NoteSplashStyleName = Game1.NoteSplashStyleName,
