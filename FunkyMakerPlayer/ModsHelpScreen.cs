@@ -95,7 +95,8 @@ namespace FunkyMakerPlayer
                     "1. Copia tus archivos .fnmm,",
                     "   .zip o .rar a tu telefono",
                     "",
-                    "2. Guardalo en:",
+                    "2. Crea una carpeta con una",
+                    "   subcarpeta mods, por ej.:",
                     "   Documents/",
                     "   FunkyMakerPlayerPublicMods/",
                     "   mods/",
@@ -103,8 +104,9 @@ namespace FunkyMakerPlayer
                     "3. En el menu, toca",
                     "   'GRANT FOLDER ACCESS'",
                     "",
-                    "4. Selecciona la carpeta",
-                    "   de tus mods"
+                    "4. Selecciona la carpeta que",
+                    "   contiene 'mods' y el app",
+                    "   la copiara a su storage"
                 }
             });
             
@@ -120,15 +122,16 @@ namespace FunkyMakerPlayer
                     "se abrira el selector",
                     "de carpetas de Android.",
                     "",
-                    "Navega hasta:",
+                    "Navega hasta la carpeta que",
+                    "contiene 'mods', por ej.:",
                     "Documents/",
                     "FunkyMakerPlayerPublicMods",
                     "",
                     "Toca 'USAR ESTA CARPETA'",
                     "o 'SELECT'",
                     "",
-                    "El permiso se guarda",
-                    "permanentemente!"
+                    "El app copiara tu contenido",
+                    "a su storage interno."
                 },
                 HasButton = true,
                 ButtonText = "ABRIR SELECTOR"
@@ -217,8 +220,10 @@ namespace FunkyMakerPlayer
                     "- Organiza tus niveles",
                     "  en subcarpetas",
                     "",
-                    "- La carpeta Documents",
-                    "  es accesible via USB",
+                    "- Documents no se lee",
+                    "  directo: importa con",
+                    "  GRANT FOLDER ACCESS o",
+                    "  IMPORT FILE",
                     "",
                     "- Comparte niveles via",
                     "  Bluetooth o mensajes",

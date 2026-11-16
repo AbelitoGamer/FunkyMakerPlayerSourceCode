@@ -514,7 +514,7 @@ public static class PlatformPaths
             }
             else
             {
-                return "📁 Carpetas de mods creadas!\n\nColoca tus archivos en:\nDocuments → FunkyMakerPlayerPublicMods → mods";
+                return "📁 Carpetas de mods creadas!\n\nCrea una carpeta con una subcarpeta 'mods' y usa 'GRANT FOLDER ACCESS' para importarla, o 'IMPORT FILE' para un nivel suelto.";
             }
         }
         catch (Exception ex)
@@ -596,15 +596,17 @@ public static class PlatformPaths
     public static string GetCustomContentInstructions()
     {
 #if ANDROID
-        return $"Place custom content in:\n" +
-               $"Documents → FunkyMakerPlayerPublicMods → mods\n\n" +
-               $"Subfolders:\n" +
-               $"• levels/ - Custom levels (.fnmm, .rar)\n" +
-               $"• notestyles/ - Note skins\n" +
-               $"• notesplashes/ - Splash effects\n" +
-               $"• fonts/ - Custom fonts\n" +
-               $"• countdowns/ - Countdown assets\n\n" +
-               $"💡 Use 'OPEN MODS FOLDER' button to open in file manager!";
+        return $"The app imports mods from a folder you select (it copies them into app storage).\n\n" +
+               $"1. Create a folder with a 'mods' subfolder, e.g.:\n" +
+               $"   Documents → FunkyMakerPlayerPublicMods → mods\n\n" +
+               $"2. Put your content in mods:\n" +
+               $"   • levels/ - Custom levels (.fnmm, .rar)\n" +
+               $"   • notestyles/ - Note skins\n" +
+               $"   • notesplashes/ - Splash effects\n" +
+               $"   • fonts/ - Custom fonts\n" +
+               $"   • countdowns/ - Countdown assets\n\n" +
+               $"3. Use 'GRANT FOLDER ACCESS' and select the folder containing 'mods'.\n" +
+               $"   Or use 'IMPORT FILE' to import a single level.";
 #else
         return $"Place custom content in the 'mods' folder next to the game executable.\n\n" +
                $"Subfolders: levels, notestyles, notesplashes, fonts, countdowns";
