@@ -1130,7 +1130,7 @@ public partial class Game1 : Game
                         builder.SetPositiveButton("Download", (sender, args) =>
                         {
                             var intent = new global::Android.Content.Intent(global::Android.Content.Intent.ActionView);
-                            intent.SetData(global::Android.Net.Uri.Parse("https://github.com/Thisisfenix/thisisfenix.github.io/releases/latest"));
+                            intent.SetData(global::Android.Net.Uri.Parse(Updater.LatestReleasePageUrl));
                             activity.StartActivity(intent);
                         });
                         builder.SetNegativeButton("Later", (sender, args) => { });

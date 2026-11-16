@@ -18,7 +18,12 @@ namespace FunkyMakerPlayer;
 /// </summary>
 public static class Updater
 {
-    private const string API_URL = "https://api.github.com/repos/Thisisfenix/thisisfenix.github.io/releases";
+    public const string LatestReleasePageUrl = "https://github.com/Thisisfenix/FunkyMakerPlayerSourceCode/releases/latest";
+    private static readonly string[] API_URLS =
+    {
+        "https://api.github.com/repos/Thisisfenix/FunkyMakerPlayerSourceCode/releases",
+        "https://api.github.com/repos/Thisisfenix/thisisfenix.github.io/releases", // legacy (<=0.4.8)
+    };
 
     private static string WinAsset    => "FunkyMakerPlayer_win.zip";
     private static string LinuxAsset  => "FunkyMakerPlayer_linux.zip";
@@ -194,9 +199,10 @@ public static class Updater
         System.Version? bestVer = null;
         string? bestChangelog = null;
 
+        foreach (string apiUrl in API_URLS)
         for (int page = 1; page <= 5; page++)
         {
-            string pageUrl = $"{API_URL}?per_page=30&page={page}";
+            string pageUrl = $"{apiUrl}?per_page=30&page={page}";
             Log($"[Updater] Fetching releases page {page}...");
 
             HttpResponseMessage response;

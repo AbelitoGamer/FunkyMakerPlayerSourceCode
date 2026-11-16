@@ -11,7 +11,8 @@ namespace FunkyMakerUpdater
 {
     class Program
     {
-        private const string GITHUB_API = "https://api.github.com/repos/Thisisfenix/thisisfenix.github.io/releases/latest";
+        private const string GITHUB_API_LEGACY = "https://api.github.com/repos/Thisisfenix/thisisfenix.github.io/releases/latest";
+        private const string GITHUB_API = "https://api.github.com/repos/Thisisfenix/FunkyMakerPlayerSourceCode/releases/latest";
         private const string ASSET_NAME = "FunkyMakerPlayer_win.zip";
 
         static async Task<int> Main(string[] args)
@@ -150,7 +151,9 @@ namespace FunkyMakerUpdater
                 client.DefaultRequestHeaders.Add("User-Agent", "FunkyMakerUpdater");
                 client.Timeout = TimeSpan.FromSeconds(30);
 
-                var response = await client.GetStringAsync(GITHUB_API);
+                string response;
+                try { response = await client.GetStringAsync(GITHUB_API); }
+                catch { response = await client.GetStringAsync(GITHUB_API_LEGACY); } // repo nuevo sin releases aún
                 var doc = JsonDocument.Parse(response);
                 var root = doc.RootElement;
 

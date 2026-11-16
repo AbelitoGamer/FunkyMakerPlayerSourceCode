@@ -33,11 +33,11 @@ public static class DiscordRpc
 #if !ANDROID
     // ── Configuration ─────────────────────────────────────────────────────────
     private const string CLIENT_ID = "1476660744673169489";
-    private const string GITHUB_REPO = "Thisisfenix/thisisfenix.github.io";
+    private const string GITHUB_REPO = "Thisisfenix/FunkyMakerPlayerSourceCode";
     private const string FUNKYMAKER_WEBSITE = "https://thisisfenix.github.io/FunkyMakerPlayer/index.html";
     
     // ── State ─────────────────────────────────────────────────────────────────
-    private static string _latestReleaseUrl = "https://github.com/YOUR_USERNAME/FunkyMakerPlayer/releases/latest";
+    private static string _latestReleaseUrl = "https://github.com/Thisisfenix/FunkyMakerPlayerSourceCode/releases/latest";
     
     private static DiscordRpcClient? _client;
     private static bool _initialized = false;

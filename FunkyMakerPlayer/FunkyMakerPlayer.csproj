@@ -7,8 +7,8 @@
     <TieredCompilation>false</TieredCompilation>
     <Nullable>enable</Nullable>
     <ImplicitUsings>disable</ImplicitUsings>
-    <Version>0.4.8</Version>
-    <AssemblyVersion>0.4.8</AssemblyVersion>
+    <Version>0.4.9</Version>
+    <AssemblyVersion>0.4.9</AssemblyVersion>
     <!-- Disable Mono runtime requirement to use CoreCLR instead -->
     <UseMonoRuntime>false</UseMonoRuntime>
     <!-- Icon and manifest only apply on Windows builds -->
@@ -23,9 +23,9 @@
     <AndroidPackageFormat>apk</AndroidPackageFormat>
     <ApplicationId>com.funkymakergame.player</ApplicationId>
     <ApplicationTitle>FunkyMaker Player</ApplicationTitle>
-    <ApplicationVersion>6</ApplicationVersion>
-    <ApplicationDisplayVersion>0.4.8</ApplicationDisplayVersion>
-    <AndroidVersionCode>6</AndroidVersionCode>
+    <ApplicationVersion>7</ApplicationVersion>
+    <ApplicationDisplayVersion>0.4.9</ApplicationDisplayVersion>
+    <AndroidVersionCode>7</AndroidVersionCode>
     <AndroidManifest>Platforms\Android\AndroidManifest.xml</AndroidManifest>
     <!-- Disable AOT for now to avoid trimming issues -->
     <RunAOTCompilation>false</RunAOTCompilation>
@@ -96,12 +96,6 @@
     </EmbeddedResource>
     <EmbeddedResource Include="Icon.bmp">
       <LogicalName>Icon.bmp</LogicalName>
-    </EmbeddedResource>
-    <EmbeddedResource Include="events\hard.json">
-      <LogicalName>events.hard.json</LogicalName>
-    </EmbeddedResource>
-    <EmbeddedResource Include="events\yellow_arrows.json">
-      <LogicalName>events.yellow_arrows.json</LogicalName>
     </EmbeddedResource>
   </ItemGroup>
   
