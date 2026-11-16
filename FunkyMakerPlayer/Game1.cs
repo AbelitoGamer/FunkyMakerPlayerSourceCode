@@ -2709,7 +2709,33 @@ public partial class Game1 : Game
             return;
         }
         
-        if ((escPressedForPause || pPressed) && 
+        // Online menu: ESC closes the settings overlay opened with F1 / the settings pill. The general
+        // ESC handling below skips the online menu (it handles its own ESC), and the menu itself is not
+        // updated while the overlay is up, so without this nothing would close it.
+        if (escPressedForPause && _inMultiplayer && _settingsManager?.IsActive == true &&
+            !(_arrowsMenu?.IsActive ?? false) && !(_splashMenu?.IsActive ?? false) &&
+            !(_countdownMenu?.IsActive ?? false) && !(_fontMenu?.IsActive ?? false) &&
+            !_keyBindOverlay.IsActive)
+        {
+            if (_settingsManager.IsFocused)
+            {
+                _settingsManager.Unfocus();   // first ESC releases an adjustable row, like elsewhere
+            }
+            else
+            {
+                _settingsManager.IsActive = false;
+#if ANDROID
+                _touchControls?.SetSettingsButtonsVisible(false);
+#endif
+                // Re-sync the menu's own input snapshot so this ESC isn't seen again as "go back".
+                _multiplayerMenu?.ResetInputCooldown();
+            }
+            _prevKb = kb;
+            base.Update(gameTime);
+            return;
+        }
+
+        if ((escPressedForPause || pPressed) &&
             !(_arrowsMenu?.IsActive ?? false) && !(_splashMenu?.IsActive ?? false) &&
             !(_countdownMenu?.IsActive ?? false) && !(_fontMenu?.IsActive ?? false) &&
             !_inMainSettings && !_inHudEditor && !_inMultiplayer &&
