@@ -102,8 +102,24 @@ public class SpriteAnimator
     public int RenderWidth  = 1280;
     public int RenderHeight = 720;
     
-    /// <summary>Final blend color combining tint and opacity.</summary>
-    public Color BlendColor => TintColor * Opacity;
+    /// <summary>Final blend color combining tint, miss tint and opacity.</summary>
+    public Color BlendColor => (_missTintAnim == _currentAnim
+        ? new Color(TintColor.R * _missTint.R / 255, TintColor.G * _missTint.G / 255, TintColor.B * _missTint.B / 255, TintColor.A)
+        : TintColor) * Opacity;
+
+    // Miss tint (multiplied over TintColor). Lasts while the animation it was set on is playing.
+    private Color _missTint = Color.White;
+    private int _missTintAnim = -1;
+
+    /// <summary>
+    /// Tints the current animation (used for non-player characters that miss: they play the
+    /// sing animation in this colour instead of a miss animation). Cleared by the next animation.
+    /// </summary>
+    public void SetMissTint(Color tint)
+    {
+        _missTint = tint;
+        _missTintAnim = _currentAnim;
+    }
 
     /// <summary>Current animation data (offset, scale, etc.)</summary>
     public SpriteAnimData CurrentAnimData =>
@@ -244,6 +260,7 @@ public class SpriteAnimator
         _currentAnim  = animIndex;
         _currentFrame = 0f;
         _playing      = true;
+        _missTintAnim = -1;  // a new animation clears the miss tint
         _completingHold = false;  // Reset hold completion flag
         _setByEvent = setByEvent;  // Mark if this was set by an event
 

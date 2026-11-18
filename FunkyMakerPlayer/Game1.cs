@@ -189,6 +189,15 @@ public partial class Game1 : Game
     
     // ── Multiplayer match state ──────────────────────────────────────────────
     private bool _isMultiplayerMatch = false;  // true if this is a PvP match
+    /// <summary>True while a multiplayer match runs (settings lock unfair options).</summary>
+    public bool IsMultiplayerMatch => _isMultiplayerMatch;
+
+    // Botplay is switched off for a match and restored when it ends (it used to stay off)
+    private bool _hasPreMatchSettings;
+    private bool _preMatchAutoplay;
+
+    // F3 / F4 scroll speed toast
+    private float _scrollToastTimer = 0f;
     private int _multiplayerPlayerRole = 0;  // 1 = Player 1 (plays chart 1 - Boyfriend), 2 = Player 2 (plays chart 0 - Enemy)
     private long _multiplayerStartTimestamp = 0;  // Server timestamp (milliseconds) for synchronized start
     private bool _countdownSignalReceived = false;  // true when server sends CountdownStart
@@ -325,6 +334,9 @@ public partial class Game1 : Game
     public static float ColorGradeShadowTintB   = 0.90f;  // Blue tint
     public static bool  HideExtraStrumlines = false;  // hide strumlines beyond player+opponent
     public static bool  HideOpponentStrumline = false; // hide opponent strumline (index 1)
+
+    /// <summary>Tint of a non-player character's "miss" (sing animation in dark purple).</summary>
+    private static readonly Color NonPlayerMissTint = new Color(0x5B, 0x3A, 0x8C);
     // Timer color presets: 0=white, 1=cyan, 2=pink, 3=yellow, 4=green, 5=custom
     public static int   TimerColorPreset = 0;
     public static Color TimerColorCustom = new Color(0xE0, 0xE0, 0xFF);
@@ -544,7 +556,13 @@ public partial class Game1 : Game
         _multiplayerMatchRecorded = false;
         DiscordRpc.SetParty(_multiplayerMatchId, 2, 2);
         
-        // Disable autoplay in multiplayer - players must play manually
+        // Disable autoplay in multiplayer - players must play manually.
+        // Remember the player's own settings so the match doesn't change them for good.
+        if (!_hasPreMatchSettings)
+        {
+            _preMatchAutoplay = NoteRenderer.Autoplay;
+            _hasPreMatchSettings = true;
+        }
         NoteRenderer.Autoplay = false;
         Console.WriteLine("[Game1] Autoplay disabled for multiplayer match");
         
@@ -1823,13 +1841,6 @@ public partial class Game1 : Game
 
         try
         {
-            // Disable middlescroll in multiplayer (force side-by-side layout)
-            if (_isMultiplayerMatch && NoteRenderer.Midlescroll)
-            {
-                NoteRenderer.Midlescroll = false;
-                Console.WriteLine("[Multiplayer] Middlescroll disabled for PvP");
-            }
-            
             // Update loading screen progress during GPU texture creation
             if (_loadingScreen != null)
             {
@@ -2210,6 +2221,19 @@ public partial class Game1 : Game
                         continue;
                     }
                     
+                    if (myAnimStrumline != 0)
+                    {
+                        // Not the player's strumline (e.g. playing as the enemy in multiplayer):
+                        // FMM levels are single player, so these characters have no real miss
+                        // animation (that slot is empty or used for something else). Play the
+                        // note's sing animation instead, tinted dark purple.
+                        int lane = _noteRenderers[myStrumlineIndex].LastMissLane;
+                        int singAnim = Math.Clamp(lane + 1, 1, Math.Max(1, anim.AnimCount - 1));
+                        anim.SetAnimation(singAnim, setByEvent: false);
+                        anim.SetMissTint(NonPlayerMissTint);
+                        continue;
+                    }
+
                     int missAnim = anim.AnimCount > 5 ? 5 : anim.AnimCount - 1;
                     anim.SetAnimation(missAnim, setByEvent: false);
                 }
@@ -3398,7 +3422,8 @@ public partial class Game1 : Game
         // Timeskip: Ctrl+Left/Right OR hold/press T (Shift+T backward) when T is not bound to a note lane
         bool ctrlHeld = kb.IsKeyDown(Keys.LeftControl) || kb.IsKeyDown(Keys.RightControl);
         bool shiftHeld = kb.IsKeyDown(Keys.LeftShift) || kb.IsKeyDown(Keys.RightShift);
-        if (TimeskipEnabled && _started && !_paused)
+        // Never in multiplayer: skipping desyncs the song from the opponent
+        if (TimeskipEnabled && _started && !_paused && !_isMultiplayerMatch)
         {
             if (ctrlHeld)
             {
@@ -3667,6 +3692,13 @@ public partial class Game1 : Game
     {
         _resultsScreen = null;
         _isMultiplayerMatch = false;
+        if (_hasPreMatchSettings)
+        {
+            // Give back the Botplay setting the match switched off
+            NoteRenderer.Autoplay = _preMatchAutoplay;
+            _hasPreMatchSettings = false;
+            Settings.Save(_graphics.SynchronizeWithVerticalRetrace);
+        }
         _multiplayerPlayerRole = 0;
         _multiplayerStartTimestamp = 0;
         _multiplayerMatchStartUtc = null;
@@ -4830,7 +4862,7 @@ public partial class Game1 : Game
             Settings.Save(_graphics.SynchronizeWithVerticalRetrace);
         }
 
-        if (result.SeekSong != 0f && _started)
+        if (result.SeekSong != 0f && _started && !_isMultiplayerMatch)
         {
             SeekSong(_songTime + result.SeekSong);
             if (!_paused)

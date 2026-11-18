@@ -199,8 +199,24 @@ public class SettingsManager
 
     public int GetItemCount(Game1 game) => BuildTabEntries(game).Count;
 
+    /// <summary>True while a multiplayer match is running: unfair options are locked.</summary>
+    private static bool InMultiplayerMatch => Game1.Instance?.IsMultiplayerMatch == true;
+
+    /// <summary>A row that shows its state but can't be changed during a multiplayer match.</summary>
+    private static SettingItem LockedInMatch(string label, string value) => new SettingItem
+    {
+        Label = label,
+        Value = value,
+        Kind = SettingKind.Action,
+        Description = "Disabled during multiplayer matches.",
+        OnSelect = () => new SettingsActionResult { NeedsSave = false },
+    };
+
     private void BuildGameplayEntries(List<SettingItem> entries)
     {
+        if (InMultiplayerMatch)
+            entries.Add(LockedInMatch("Botplay", "OFF"));
+        else
         entries.Add(new SettingItem
         {
             Label = "Botplay",
@@ -842,6 +858,12 @@ public class SettingsManager
             }
         });
 
+        if (InMultiplayerMatch)
+        {
+            entries.Add(LockedInMatch("Timeskip", "OFF"));
+        }
+        else
+        {
         entries.Add(new SettingItem
         {
             Label = "Timeskip",
@@ -885,6 +907,7 @@ public class SettingsManager
                     }
                 });
             }
+        }
         }
 
         entries.Add(new SettingItem
