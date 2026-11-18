@@ -252,6 +252,51 @@ public class NoteStyle
     // Flag to indicate this is a converted Codename Engine notestyle
     // When true, should use CodenameNoteRenderer for proper positioning
     public bool IsCodenameEngine { get; set; } = false;
+
+    /// <summary>skin.json "strumAlpha": strum opacity (FMM system default 0.85).</summary>
+    public float StrumAlpha { get; set; } = 1f;
+    /// <summary>skin.json "noteAlpha": note opacity.</summary>
+    public float NoteAlpha { get; set; } = 1f;
+    /// <summary>skin.json "holdAlpha": hold opacity. Null = the renderer's own default
+    /// (atlas: 0.85 upcoming / 0.75 held, Codename-style: 0.7, FMM system: 0.84).</summary>
+    public float? HoldAlpha { get; set; }
+
+    /// <summary>Miss sounds of the skin (miss.ogg, miss1.ogg, missnote1.ogg …); one is picked at random.</summary>
+    public List<Microsoft.Xna.Framework.Audio.SoundEffect> MissSounds { get; } = new();
+    private static readonly Random _missRandom = new();
+
+    /// <summary>Plays one of the skin's miss sounds, if it has any.</summary>
+    public void PlayMissSound()
+    {
+        if (MissSounds.Count == 0) return;
+        SoundFiles.Play(MissSounds[_missRandom.Next(MissSounds.Count)]);
+    }
+
+    /// <summary>Loads miss sounds from a skin folder: miss, miss1…miss9, missnote1…missnote9.</summary>
+    public void LoadMissSounds(string folderPath)
+    {
+        var names = new List<string> { "miss" };
+        for (int i = 1; i <= 9; i++) { names.Add("miss" + i); names.Add("missnote" + i); }
+        foreach (string name in names)
+        {
+            var sound = SoundFiles.Load(SoundFiles.Find(folderPath, name));
+            if (sound != null) MissSounds.Add(sound);
+        }
+        if (MissSounds.Count > 0)
+            Console.WriteLine($"[NoteStyle] {MissSounds.Count} miss sound(s) in {folderPath}");
+    }
+
+    /// <summary>Reads strumAlpha / noteAlpha / holdAlpha from a parsed skin.json.</summary>
+    public void ReadOpacity(System.Text.Json.JsonElement root)
+    {
+        if (root.TryGetProperty("strumAlpha", out var sa) && sa.ValueKind == System.Text.Json.JsonValueKind.Number)
+            StrumAlpha = Math.Clamp(sa.GetSingle(), 0f, 1f);
+        if (root.TryGetProperty("noteAlpha", out var na) && na.ValueKind == System.Text.Json.JsonValueKind.Number)
+            NoteAlpha = Math.Clamp(na.GetSingle(), 0f, 1f);
+        if (root.TryGetProperty("holdAlpha", out var ha) && ha.ValueKind == System.Text.Json.JsonValueKind.Number)
+            HoldAlpha = Math.Clamp(ha.GetSingle(), 0f, 1f);
+    }
+
     
     public float NoteScale         { get; set; } = 0.65f;
     public float ReceptorScale     { get; set; } = 0.65f;
@@ -1167,6 +1212,7 @@ public class NoteStyle
                         }
                         style.StateFps = fps;
                     }
+                    style.ReadOpacity(root2);
                     if (root2.TryGetProperty("noteScale", out var ns))
                         style.NoteScale = ns.GetSingle();
                     if (root2.TryGetProperty("receptorScale", out var rs))
@@ -1284,6 +1330,7 @@ public class NoteStyle
                 break; // Only try first existing JSON
             }
 
+            style.LoadMissSounds(folderPath);
             return style;
         }
         catch (Exception ex)

@@ -107,7 +107,7 @@ namespace FunkyMakerPlayer
             float noteScale = _style.NoteScale * sx;
             
             DrawCodenameHold(sb, pieceFrame, endFrame, lane, centerX, arrowY, 
-                           holdLengthPx, noteScale, alpha * 0.7f, scrollSpeed);
+                           holdLengthPx, noteScale, alpha * (_style.HoldAlpha ?? 0.7f), scrollSpeed);
         }
         
         private void DrawCodenameHold(SpriteBatch sb, AtlasFrame pieceFrame, AtlasFrame endFrame,
@@ -212,7 +212,7 @@ namespace FunkyMakerPlayer
             float noteScale = _style.NoteScale * sx;
             
             DrawCodenameHold(sb, pieceFrame, endFrame, lane, centerX, strumY, 
-                           holdLengthPx, noteScale, alpha * 0.7f, 1.0f);
+                           holdLengthPx, noteScale, alpha * (_style.HoldAlpha ?? 0.7f), 1.0f);
         }
     }
 }

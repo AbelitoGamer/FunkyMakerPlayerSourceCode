@@ -26,6 +26,20 @@ namespace FunkyMakerPlayer.UI
         // Countdown sprites: [0]=ready, [1]=set, [2]=go
         private Texture2D?[] _textures = new Texture2D?[3];
 
+        // Countdown sounds, one per beat: [3]=three, [2]=two, [1]=one, [0]=go (index = step)
+        private readonly Microsoft.Xna.Framework.Audio.SoundEffect?[] _sounds =
+            new Microsoft.Xna.Framework.Audio.SoundEffect?[4];
+        private int _lastSoundStep = 4;
+
+        /// <summary>Accepted file names per step (any of .ogg/.wav/.mp3), FNF names included.</summary>
+        private static readonly string[][] SoundNames =
+        {
+            new[] { "go", "introGo" },   // step 0
+            new[] { "one", "intro1" },   // step 1
+            new[] { "two", "intro2" },   // step 2
+            new[] { "three", "intro3" }, // step 3
+        };
+
         public float Timer => _timer;
         public int Step => _step;
         public bool IsDone => _done;
@@ -62,6 +76,7 @@ namespace FunkyMakerPlayer.UI
 
             Dispose();
             _loadedCountdown = selectedCountdown;
+            LoadSounds(selectedCountdown);
 
             for (int i = 0; i < 3; i++)
             {
@@ -88,6 +103,30 @@ namespace FunkyMakerPlayer.UI
             }
         }
 
+        /// <summary>Sounds per step: the selected pack first, then the default pack (per sound).</summary>
+        private void LoadSounds(string selectedCountdown)
+        {
+            var dirs = new System.Collections.Generic.List<string>();
+            if (!DefaultMods.IsDefaultCountdown(selectedCountdown))
+                dirs.Add(Path.Combine(PlatformPaths.GetCountdownsPath(), selectedCountdown));
+            dirs.Add(DefaultMods.CountdownDir);
+            string? bundled = DefaultMods.Bundled("countdowns", DefaultMods.CountdownName);
+            if (bundled != null) dirs.Add(bundled);
+
+            for (int step = 0; step < 4; step++)
+            {
+                _sounds[step] = null;
+                foreach (string dir in dirs)
+                {
+                    string? path = SoundFiles.Find(dir, SoundNames[step]);
+                    if (path == null) continue;
+                    _sounds[step] = SoundFiles.Load(path);
+                    if (_sounds[step] != null) break;
+                }
+            }
+            Console.WriteLine($"[Countdown] Sounds for '{selectedCountdown}': three={_sounds[3] != null} two={_sounds[2] != null} one={_sounds[1] != null} go={_sounds[0] != null}");
+        }
+
         /// <summary>Where to look for one countdown image, in priority order.</summary>
         public static System.Collections.Generic.IEnumerable<string> CandidatePaths(string selectedCountdown, string fileName)
         {
@@ -109,6 +148,7 @@ namespace FunkyMakerPlayer.UI
             _timer = 0f;
             _step = 3;
             _done = false;
+            _lastSoundStep = 4;
         }
 
         /// <summary>
@@ -122,6 +162,13 @@ namespace FunkyMakerPlayer.UI
             _timer += deltaTime;
             float beatDur = 60f / bpm;
             _step = 3 - (int)(_timer / beatDur);
+
+            // One sound per beat: three, two, one, go
+            if (_step != _lastSoundStep && _step >= 0 && _step <= 3)
+            {
+                _lastSoundStep = _step;
+                SoundFiles.Play(_sounds[_step]);
+            }
 
             // Check if countdown is complete (4 beats)
             if (_timer >= beatDur * 4f && !_done)
@@ -178,16 +225,6 @@ namespace FunkyMakerPlayer.UI
                 int dx = screenWidth / 2 - dw / 2;
                 int dy = screenHeight / 2 - dh / 2;
                 _spriteBatch.Draw(tex, new Microsoft.Xna.Framework.Rectangle(dx, dy, dw, dh), Microsoft.Xna.Framework.Color.White * alpha);
-            }
-            else if (_font != null && _step == 3)
-            {
-                // Step 3 has no sprite — draw "3" as text fallback
-                string text = "3";
-                float scale = 4f;
-                var sz = _font.MeasureString(text) * scale;
-                _spriteBatch.DrawString(_font, text,
-                    new Vector2(screenWidth / 2f - sz.X / 2f, screenHeight / 2f - sz.Y / 2f),
-                    Microsoft.Xna.Framework.Color.White * alpha, 0f, Vector2.Zero, scale, SpriteEffects.None, 0f);
             }
         }
 

@@ -317,6 +317,8 @@ public class NoteRenderer
 
     public Action<int, float>? OnNoteHit;
     public Action?             OnNoteMiss;
+    /// <summary>Lane of the miss being reported, valid while OnNoteMiss runs.</summary>
+    public int                 LastMissLane { get; private set; } = -1;
     /// <summary>Fired when player presses arrow key (for multiplayer animation sync). Args: lane index.</summary>
     public Action<int>?        OnKeyPress;
     /// <summary>Fired with rating string ("Sick!", "Good", "Bad", "Shit") on manual hit.</summary>
@@ -637,7 +639,8 @@ public class NoteRenderer
                         Misses++; Combo = 0;
                         Shits++;  // Count failed hold as Shit
                         _comboBreakTimer[lane] = 0.5f;  // Combo break effect
-                        OnNoteMiss?.Invoke();
+                        _style?.PlayMissSound();
+                        LastMissLane = lane; OnNoteMiss?.Invoke();
                         OnJudgement?.Invoke("Shit");
                     }
                     else
@@ -771,7 +774,8 @@ public class NoteRenderer
                     Misses++;
                     Combo = 0;
                     _comboBreakTimer[lane] = 0.5f;  // Combo break effect lasts 500ms
-                    OnNoteMiss?.Invoke();
+                    _style?.PlayMissSound();
+                    LastMissLane = lane; OnNoteMiss?.Invoke();
                     OnJudgement?.Invoke("Miss");
                 }
                 
@@ -805,7 +809,8 @@ public class NoteRenderer
                 {
                     Misses++; Combo = 0;
                     _comboBreakTimer[lane] = 0.5f;  // Combo break effect
-                    OnNoteMiss?.Invoke();
+                    _style?.PlayMissSound();
+                    LastMissLane = lane; OnNoteMiss?.Invoke();
                 }
                 if (note.Props.OnMissEvent >= 0)
                     OnNoteMissEvent?.Invoke((int)note.Props.OnMissEvent);
@@ -1340,7 +1345,7 @@ public class NoteRenderer
                 
                 // Receptors are NOT colorized by lane (they stay grayscale/original)
                 // Only the flying notes get colorized
-                Color receptorColor = Color.White * finalAlpha * alpha;
+                Color receptorColor = Color.White * finalAlpha * alpha * _style.StrumAlpha;
                 
                 // Calculate origin for rotation (center of the frame)
                 Vector2 origin = new Vector2(f.FrameW / 2f + f.OffsetX, f.FrameH / 2f + f.OffsetY);
@@ -1417,6 +1422,7 @@ public class NoteRenderer
             var f = _style.GetNoteFrame(lane, skinType);
             if (f != null)
             {
+                alpha *= _style.NoteAlpha;
                 bool hasDedicatedFrame = _style.NoteFrames[lane, skinType] != null;
                 Color baseTint = (hasDedicatedFrame || skinType == 0)
                     ? Color.White
