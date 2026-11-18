@@ -269,6 +269,19 @@ public class SettingsManager
 
         entries.Add(new SettingItem
         {
+            Label = "Show Key Labels",
+            Value = NoteRenderer.ShowKeyLabels ? "ON" : "OFF",
+            Kind = SettingKind.Toggle,
+            Description = "Shows the key for each lane on top of your strums.",
+            OnSelect = () =>
+            {
+                NoteRenderer.ShowKeyLabels = !NoteRenderer.ShowKeyLabels;
+                return new SettingsActionResult { NeedsSave = true };
+            }
+        });
+
+        entries.Add(new SettingItem
+        {
             Label = "Input Buffer",
             Value = $"{(int)Math.Round(NoteRenderer.InputBuffer * 1000)}ms",
             Kind = SettingKind.Adjustable,

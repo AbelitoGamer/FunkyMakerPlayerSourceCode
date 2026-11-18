@@ -71,6 +71,13 @@ public class NoteRenderer
     /// When true (default), ghost taps have no penalty.
     /// </summary>
     public static bool GhostTapping = true;
+
+    /// <summary>Draw each lane's key name on the player's strums (Settings → Gameplay). Off by default.</summary>
+    public static bool ShowKeyLabels = false;
+
+    /// <summary>Opacity (0–0.75) of the black lane underlay behind the player strumline. 0 = off.</summary>
+    public static float LaneUnderlay = 0f;
+    public const float LaneUnderlayMax = 0.75f;
     
     /// <summary>
     /// Input buffer in seconds. Allows hitting notes slightly early (before hit window).
@@ -1009,7 +1016,7 @@ public class NoteRenderer
             _pendingSplashLane = -1;  // Reset
         }
 
-        if (!Autoplay && _isPlayer && font != null && Alpha > 0.01f)
+        if (ShowKeyLabels && !Autoplay && _isPlayer && font != null && Alpha > 0.01f)
         {
             for (int lane = 0; lane < LANE_COUNT; lane++)
             {
