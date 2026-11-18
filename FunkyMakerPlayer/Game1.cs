@@ -918,6 +918,7 @@ public partial class Game1 : Game
         if (_healthBar != null)
             _healthBar.Health = 0.5f;
         _gameOverOverlay?.Hide();
+        _countdownOverlay?.EnsureLoaded(SelectedCountdown);
         _countdownOverlay?.Reset();
 
         // Start FNF-style receptor intro animation (pop-in effect)
@@ -1427,6 +1428,8 @@ public partial class Game1 : Game
 
         // Load note style assets from the Assets folder next to the project
         string? assetsRoot = FindAssetsRoot();
+        // Copy the default note style / countdown / font into mods/ before anything loads them
+        DefaultMods.EnsureInstalled();
         UI.UiSfx.Initialize(assetsRoot);
         _onlineMenuMusic = new Managers.OnlineMenuMusic(assetsRoot);
         if (assetsRoot != null)
@@ -1438,10 +1441,9 @@ public partial class Game1 : Game
             {
                 _catTex = LoadTextureViaImageSharp(GraphicsDevice, File.ReadAllBytes(catPath));
             }
-            // Load countdown sprites using CountdownOverlay
-            _countdownOverlay = new UI.CountdownOverlay(GraphicsDevice, _spriteBatch, _font);
-            _countdownOverlay.LoadCountdownAssets(SelectedCountdown, assetsRoot);
         }
+        // Countdown sprites are (re)loaded from mods/countdowns/ when a song starts
+        _countdownOverlay = new UI.CountdownOverlay(GraphicsDevice, _spriteBatch, _font);
 
         // Ensure levels folder exists
         string levelsFolder = FreeplayMenu.GetDefaultLevelsFolder();
@@ -1463,7 +1465,8 @@ public partial class Game1 : Game
             }
             
             // Load TrueType font for crisp UI rendering
-            // Priority: mods/fonts/main.otf > mods/fonts/main.ttf > Assets/Font/MilkyNice.otf
+            // Priority: mods/fonts/main.otf > main.ttf > MilkyNice.otf (the default) > MilkyNice.ttf
+            //           > the shipped copy of the default font
             string? fontPath = null;
             
             // Check mods/fonts/ first using PlatformPaths (works on Android publicmods)
@@ -1485,10 +1488,10 @@ public partial class Game1 : Game
                 }
             }
             
-            // Fallback to default font
+            // Fallback to the shipped copy of the default font
             if (fontPath == null)
             {
-                fontPath = System.IO.Path.Combine(assetsRoot, "Font", "MilkyNice.otf");
+                fontPath = DefaultMods.Bundled("fonts", DefaultMods.FontFileName) ?? DefaultMods.FontPath;
             }
             
             if (File.Exists(fontPath))
@@ -1565,15 +1568,9 @@ public partial class Game1 : Game
         Settings.Load(this);
 
         // Now load NoteStyle and NoteSplashStyle with the correct names from settings
-        string? assetsRootForStyle = FindAssetsRoot();
-        if (assetsRootForStyle != null)
-        {
-            _noteStyle = NoteStyle.LoadByName(NoteStyleName, assetsRootForStyle, GraphicsDevice);
-            
-            // Set the style on all note renderers
-            foreach (var r in _noteRenderers)
-                r.SetStyle(_noteStyle);
-        }
+        _noteStyle = NoteStyle.LoadByName(NoteStyleName, GraphicsDevice);
+        foreach (var r in _noteRenderers)
+            r.SetStyle(_noteStyle);
         
         // Load notesplash style (null = programmatic default)
         _noteSplashStyle = NoteSplashStyle.LoadByName(NoteSplashStyleName, GraphicsDevice);
@@ -2874,19 +2871,15 @@ public partial class Game1 : Game
         // ── Arrows menu ──────────────────────────────────────────────────────
         if (_arrowsMenu?.IsActive == true)
         {
-            string? assetsRoot = FindAssetsRoot();
-            _arrowsMenu.Update(kb, _prevKb, GraphicsDevice, assetsRoot);
+            _arrowsMenu.Update(kb, _prevKb, GraphicsDevice);
             
             // If menu was closed and we selected a style, apply it
             if (!_arrowsMenu.IsActive)
             {
                 // Apply to all note renderers
-                if (assetsRoot != null)
-                {
-                    _noteStyle = NoteStyle.LoadByName(NoteStyleName, assetsRoot, GraphicsDevice);
-                    foreach (var r in _noteRenderers)
-                        r.SetStyle(_noteStyle);
-                }
+                _noteStyle = NoteStyle.LoadByName(NoteStyleName, GraphicsDevice);
+                foreach (var r in _noteRenderers)
+                    r.SetStyle(_noteStyle);
                 Settings.Save(_graphics.SynchronizeWithVerticalRetrace);
                 if (_settingsManager != null) _settingsManager.IsActive = true;
             }
@@ -2915,8 +2908,7 @@ public partial class Game1 : Game
         // ── Countdown menu ───────────────────────────────────────────────────
         if (_countdownMenu?.IsActive == true)
         {
-            string? assetsRoot = FindAssetsRoot();
-            _countdownMenu.Update(kb, _prevKb, GraphicsDevice, assetsRoot);
+            _countdownMenu.Update(kb, _prevKb, GraphicsDevice);
             
             // If menu was closed, reopen settings
             if (!_countdownMenu.IsActive && _settingsManager != null)
@@ -4462,6 +4454,7 @@ public partial class Game1 : Game
         if (_healthBar != null)
             _healthBar.Health = 0.5f;
         _gameOverOverlay?.Hide();
+        _countdownOverlay?.EnsureLoaded(SelectedCountdown);
         _countdownOverlay?.Reset();
         
         // Start FNF-style receptor intro animation (pop-in effect)
@@ -4718,25 +4711,16 @@ public partial class Game1 : Game
         }
 
         if (result.OpenArrowsMenu)
-        {
-            string? assetsRoot = FindAssetsRoot();
-            _arrowsMenu?.Open(GraphicsDevice, assetsRoot);
-        }
+            _arrowsMenu?.Open(GraphicsDevice);
 
         if (result.OpenSplashMenu)
             _splashMenu?.Open(GraphicsDevice);
 
         if (result.OpenCountdownMenu)
-        {
-            string? assetsRoot = FindAssetsRoot();
-            _countdownMenu?.Open(GraphicsDevice, assetsRoot);
-        }
+            _countdownMenu?.Open(GraphicsDevice);
 
         if (result.OpenFontMenu)
-        {
-            string? assetsRoot = FindAssetsRoot();
-            _fontMenu?.Open(GraphicsDevice, assetsRoot);
-        }
+            _fontMenu?.Open(GraphicsDevice);
 
         if (result.OpenHudEditor)
         {
@@ -5358,7 +5342,7 @@ public partial class Game1 : Game
                 string assetsPath = Path.Combine(filesDir, "Assets");
                 
                 // Check if extraction is needed
-                if (!Directory.Exists(assetsPath) || !File.Exists(Path.Combine(assetsPath, "Font", "MilkyNice.otf")))
+                if (!Directory.Exists(assetsPath) || !File.Exists(Path.Combine(assetsPath, "LoadingScreen", "AnkushCat.png")))
                 {
                     Console.WriteLine("[FindAssetsRoot] Assets folder not found or incomplete");
                     
@@ -5427,7 +5411,7 @@ public partial class Game1 : Game
         {
             string norm = Path.GetFullPath(c);
             if (Directory.Exists(norm) &&
-                File.Exists(Path.Combine(norm, "shared", "images", "fmm.png")))
+                File.Exists(Path.Combine(norm, "LoadingScreen", "AnkushCat.png")))
                 return norm;
         }
         return null;
@@ -5491,7 +5475,7 @@ public partial class Game1 : Game
         try
         {
             // List of essential folders to extract (skip large unnecessary files)
-            string[] essentialFolders = { "Font", "LoadingScreen", "data", "images", "shared", "Content" };
+            string[] essentialFolders = { "LoadingScreen", "data", "images", "Content" };
             
             Console.WriteLine($"[CopyAndroidAssets] Extracting essential folders to: {targetRootPath}");
             

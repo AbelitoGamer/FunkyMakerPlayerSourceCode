@@ -111,29 +111,18 @@
     <AndroidAsset Include="..\Assets\**\*.*" Link="Assets\%(RecursiveDir)%(Filename)%(Extension)" />
   </ItemGroup>
 
-  <!-- Create notestyles folder in output (empty placeholder for custom skins) -->
+  <!-- Default mods (default note style, countdown, font + README/template files).
+       Shipped as mods/ next to the exe; DefaultMods.EnsureInstalled() copies missing files
+       into the real mods folder at startup (single-file publish / Android). -->
   <ItemGroup>
-    <None Include="notestyles\README.txt" Condition="Exists('notestyles\README.txt')">
-      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
-      <Link>notestyles\README.txt</Link>
-    </None>
-  </ItemGroup>
-
-  <!-- Android: Include empty notestyles as AndroidAsset -->
-  <ItemGroup Condition="$(TargetFramework.Contains('android'))">
-    <AndroidAsset Include="notestyles\README.txt" Condition="Exists('notestyles\README.txt')" Link="notestyles\README.txt" />
-  </ItemGroup>
-
-  <!-- Copy notesplashes folder to output directory (custom splash effects) -->
-  <ItemGroup>
-    <None Include="..\notesplashes\**\*.*" Link="notesplashes\%(RecursiveDir)%(Filename)%(Extension)">
+    <None Include="..\DefaultMods\**\*.*" Link="mods\%(RecursiveDir)%(Filename)%(Extension)">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </None>
   </ItemGroup>
 
-  <!-- Android: Include notesplashes as AndroidAsset -->
+  <!-- Android: default mods as AndroidAsset (APK path mods/...), extracted by DefaultMods -->
   <ItemGroup Condition="$(TargetFramework.Contains('android'))">
-    <AndroidAsset Include="..\notesplashes\**\*.*" Link="notesplashes\%(RecursiveDir)%(Filename)%(Extension)" />
+    <AndroidAsset Include="..\DefaultMods\**\*.*" Link="Assets\mods\%(RecursiveDir)%(Filename)%(Extension)" />
   </ItemGroup>
 
   <!-- Android: Include Resources -->

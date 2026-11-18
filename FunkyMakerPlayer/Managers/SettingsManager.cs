@@ -104,13 +104,13 @@ public class SettingsManager
 
         try
         {
-            string countdownsDir = System.IO.Path.Combine(AppContext.BaseDirectory, "mods", "countdowns");
+            string countdownsDir = PlatformPaths.GetCountdownsPath();
             if (System.IO.Directory.Exists(countdownsDir))
             {
                 foreach (var dir in System.IO.Directory.GetDirectories(countdownsDir))
                 {
                     string name = System.IO.Path.GetFileName(dir);
-                    if (!string.IsNullOrEmpty(name) && name != "default")
+                    if (!string.IsNullOrEmpty(name) && !DefaultMods.IsDefaultCountdown(name))
                     {
                         string readyPath = System.IO.Path.Combine(dir, "ready.png");
                         string setPath = System.IO.Path.Combine(dir, "set.png");

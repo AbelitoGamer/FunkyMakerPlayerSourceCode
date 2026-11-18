@@ -315,10 +315,6 @@ public class NoteStyle
         }
     }
 
-    public static NoteStyle? Load(string assetsRoot, GraphicsDevice gd)
-    {
-        return LoadFromFolder(assetsRoot, gd);
-    }
 
     /// <summary>
     /// Auto-detects frame mappings from XML and generates config.json if it doesn't exist.
@@ -722,7 +718,7 @@ public class NoteStyle
     /// Loads a note style from a specific folder.
     /// First tries to load from config.json (auto-generated or manual).
     /// If config doesn't exist, auto-detects and generates it.
-    /// Falls back to assetsRoot default if the custom folder is missing files.
+    /// Returns null if the folder has no usable PNG+XML pair.
     /// </summary>
     public static NoteStyle? LoadFromFolder(string folderPath, GraphicsDevice gd)
     {
@@ -1301,9 +1297,9 @@ public class NoteStyle
     /// Returns all available note style names: "Default" + any folder in notestyles/.
     /// A folder is valid if it has at least one PNG and one XML file.
     /// </summary>
-    public static List<string> GetAvailableStyles(string assetsRoot)
+    public static List<string> GetAvailableStyles()
     {
-        var styles = new List<string> { "Default" };
+        var styles = new List<string> { DefaultMods.NoteStyleName };
         string stylesDir = PlatformPaths.GetNoteStylesPath();
         if (Directory.Exists(stylesDir))
         {
@@ -1311,7 +1307,9 @@ public class NoteStyle
             {
                 string name = Path.GetFileName(dir);
                 if (string.IsNullOrEmpty(name)) continue;
-                // Accept any folder that has at least one PNG and one XML
+                if (DefaultMods.IsDefaultNoteStyle(name)) continue; // already listed first
+                // Accept any folder that has at least one PNG and one XML (atlas system),
+                // or an FMM-system folder (skin.json "noteSystem": "fmm", plain PNGs)
                 bool hasPng = Directory.GetFiles(dir, "*.png").Length > 0;
                 bool hasXml = Directory.GetFiles(dir, "*.xml").Length > 0;
                 if (hasPng && hasXml)
@@ -1322,12 +1320,35 @@ public class NoteStyle
     }
 
     /// <summary>
-    /// Loads a style by name. "Default" loads from assetsRoot, others from notestyles/<name>/.
+    /// Loads the default style from mods/notestyles/Default/, or from the shipped copy if the
+    /// player's copy is missing or broken.
     /// </summary>
-    public static NoteStyle? LoadByName(string name, string assetsRoot, GraphicsDevice gd)
+    public static NoteStyle? LoadDefault(GraphicsDevice gd)
     {
-        if (name == "Default" || string.IsNullOrEmpty(name))
-            return LoadFromFolder(assetsRoot, gd);
+        DefaultMods.EnsureInstalled();
+        if (Directory.Exists(DefaultMods.NoteStyleDir))
+        {
+            var style = LoadFromFolder(DefaultMods.NoteStyleDir, gd);
+            if (style != null) return style;
+        }
+
+        string? bundled = DefaultMods.Bundled("notestyles", DefaultMods.NoteStyleName);
+        if (bundled != null && Directory.Exists(bundled))
+        {
+            Console.WriteLine("[NoteStyle] mods/notestyles/Default failed to load, using the shipped copy");
+            return LoadFromFolder(bundled, gd);
+        }
+        return null;
+    }
+
+    /// <summary>
+    /// Loads a style by name. "Default" loads mods/notestyles/Default/ (see <see cref="LoadDefault"/>),
+    /// others from notestyles/&lt;name&gt;/.
+    /// </summary>
+    public static NoteStyle? LoadByName(string name, GraphicsDevice gd)
+    {
+        if (DefaultMods.IsDefaultNoteStyle(name))
+            return LoadDefault(gd);
 
         string stylesDir = PlatformPaths.GetNoteStylesPath();
         string skinDir   = Path.Combine(stylesDir, name);
@@ -1353,7 +1374,7 @@ public class NoteStyle
         }
         
         // Fallback to default
-        return LoadFromFolder(assetsRoot, gd);
+        return LoadDefault(gd);
     }
 
     /// <summary>

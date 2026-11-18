@@ -37,52 +37,68 @@ namespace FunkyMakerPlayer.UI
             _font = font;
         }
 
+        // Name of the pack currently loaded into _textures (null = nothing loaded yet)
+        private string? _loadedCountdown;
+
+        /// <summary>
+        /// Loads the selected pack if it is not the one already loaded. Called when a song
+        /// starts, so a pack picked in Settings applies to the next song.
+        /// </summary>
+        public void EnsureLoaded(string selectedCountdown)
+        {
+            if (_loadedCountdown != null &&
+                string.Equals(_loadedCountdown, selectedCountdown, StringComparison.Ordinal))
+                return;
+            LoadCountdownAssets(selectedCountdown);
+        }
+
         /// <summary>
         /// Loads countdown sprites from the selected countdown pack.
-        /// Priority: mods/countdowns/[selectedCountdown]/ > Assets/shared/images/ui/countdown/funkin2/
+        /// Per file: mods/countdowns/[selected]/ > mods/countdowns/Default/ > shipped Default copy.
         /// </summary>
-        public void LoadCountdownAssets(string selectedCountdown, string assetsRoot)
+        public void LoadCountdownAssets(string selectedCountdown)
         {
             string[] countdownFiles = { "ready.png", "set.png", "go.png" };
 
-            string modsCountdownsDir = Path.Combine(AppContext.BaseDirectory, "mods", "countdowns");
-            string defaultCountdownDir = Path.Combine(assetsRoot, "shared", "images", "ui", "countdown", "funkin2");
+            Dispose();
+            _loadedCountdown = selectedCountdown;
 
             for (int i = 0; i < 3; i++)
             {
                 string? foundPath = null;
-
-                // If not "default", check selected countdown in mods/countdowns/[name]/
-                if (selectedCountdown != "default")
+                foreach (string candidate in CandidatePaths(selectedCountdown, countdownFiles[i]))
                 {
-                    string selectedCountdownDir = Path.Combine(modsCountdownsDir, selectedCountdown);
-                    string modPath = Path.Combine(selectedCountdownDir, countdownFiles[i]);
-
-                    if (File.Exists(modPath))
-                    {
-                        foundPath = modPath;
-                        Console.WriteLine($"[Countdown] Using '{selectedCountdown}': {modPath}");
-                    }
+                    if (File.Exists(candidate)) { foundPath = candidate; break; }
                 }
 
-                // Fallback to default Assets if not found
                 if (foundPath == null)
                 {
-                    string defaultPath = Path.Combine(defaultCountdownDir, countdownFiles[i]);
-
-                    if (File.Exists(defaultPath))
-                    {
-                        foundPath = defaultPath;
-                        if (selectedCountdown != "default")
-                            Console.WriteLine($"[Countdown] '{selectedCountdown}' missing, using default Assets");
-                    }
+                    Console.WriteLine($"[Countdown] No {countdownFiles[i]} found for '{selectedCountdown}'");
+                    continue;
                 }
 
-                if (foundPath != null)
+                try
                 {
                     _textures[i] = LoadTextureViaImageSharp(_graphicsDevice, File.ReadAllBytes(foundPath));
                 }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"[Countdown] Failed to load {foundPath}: {ex.Message}");
+                }
             }
+        }
+
+        /// <summary>Where to look for one countdown image, in priority order.</summary>
+        public static System.Collections.Generic.IEnumerable<string> CandidatePaths(string selectedCountdown, string fileName)
+        {
+            if (!DefaultMods.IsDefaultCountdown(selectedCountdown))
+                yield return Path.Combine(PlatformPaths.GetCountdownsPath(), selectedCountdown, fileName);
+
+            yield return Path.Combine(DefaultMods.CountdownDir, fileName);
+
+            string? bundled = DefaultMods.Bundled("countdowns", DefaultMods.CountdownName, fileName);
+            if (bundled != null)
+                yield return bundled;
         }
 
         /// <summary>

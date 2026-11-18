@@ -911,7 +911,7 @@ public class NoteRenderer
             // _xOffset is in unscaled pixels, so we need to scale it
             // Then add lane spacing (which is already scaled via laneW)
             float baseX = _xOffset * sx;
-            
+
             // Midlescroll split: lanes 0-1 use _xOffset, lanes 2-3 use _xOffsetSplit
             if (_xOffsetSplit >= 0f && lane >= 2)
             {

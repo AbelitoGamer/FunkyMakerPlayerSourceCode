@@ -28,17 +28,15 @@ public class ArrowsMenu : IScreenOverlay
         _fontRenderer = fontRenderer;
     }
     
-    public void Open(GraphicsDevice graphicsDevice, string? assetsRoot)
+    public void Open(GraphicsDevice graphicsDevice)
     {
-        _styles = assetsRoot != null
-            ? NoteStyle.GetAvailableStyles(assetsRoot)
-            : new List<string> { "Default" };
+        _styles = NoteStyle.GetAvailableStyles();
         
         // Select currently active style
         Selection = _styles.IndexOf(Game1.NoteStyleName);
         if (Selection < 0) Selection = 0;
         
-        LoadPreview(_styles[Selection], graphicsDevice, assetsRoot);
+        LoadPreview(_styles[Selection], graphicsDevice);
         IsActive = true;
     }
     
@@ -48,13 +46,12 @@ public class ArrowsMenu : IScreenOverlay
         _previewStyle = null;
     }
     
-    private void LoadPreview(string styleName, GraphicsDevice graphicsDevice, string? assetsRoot)
+    private void LoadPreview(string styleName, GraphicsDevice graphicsDevice)
     {
-        if (assetsRoot != null)
-            _previewStyle = NoteStyle.LoadByName(styleName, assetsRoot, graphicsDevice);
+        _previewStyle = NoteStyle.LoadByName(styleName, graphicsDevice);
     }
     
-    public void Update(KeyboardState kb, KeyboardState prevKb, GraphicsDevice graphicsDevice, string? assetsRoot)
+    public void Update(KeyboardState kb, KeyboardState prevKb, GraphicsDevice graphicsDevice)
     {
         if (!IsActive) return;
         
@@ -62,13 +59,13 @@ public class ArrowsMenu : IScreenOverlay
         if (kb.IsKeyDown(Keys.Up) && !prevKb.IsKeyDown(Keys.Up))
         {
             Selection = (Selection - 1 + _styles.Count) % _styles.Count;
-            LoadPreview(_styles[Selection], graphicsDevice, assetsRoot);
+            LoadPreview(_styles[Selection], graphicsDevice);
         }
         
         if (kb.IsKeyDown(Keys.Down) && !prevKb.IsKeyDown(Keys.Down))
         {
             Selection = (Selection + 1) % _styles.Count;
-            LoadPreview(_styles[Selection], graphicsDevice, assetsRoot);
+            LoadPreview(_styles[Selection], graphicsDevice);
         }
         
         // Confirm selection

@@ -30,21 +30,12 @@ public class FontMenu : IScreenOverlay
         _fontRenderer = fontRenderer;
     }
     
-    public void Open(GraphicsDevice graphicsDevice, string? assetsRoot)
+    public void Open(GraphicsDevice graphicsDevice)
     {
-        ScanAvailableFonts(assetsRoot);
+        ScanAvailableFonts();
         
-        // Try to select current font by comparing paths
+        // The default font is listed first
         Selection = 0;
-        for (int i = 0; i < _fonts.Count; i++)
-        {
-            // Simple name match for now
-            if (_fonts[i].name == "Default")
-            {
-                Selection = i;
-                break;
-            }
-        }
         
         LoadPreview(_fonts[Selection].path, graphicsDevice);
         IsActive = true;
@@ -56,41 +47,44 @@ public class FontMenu : IScreenOverlay
         _previewFont = null;
     }
     
-    private void ScanAvailableFonts(string? assetsRoot)
+    private void ScanAvailableFonts()
     {
         _fonts.Clear();
+        string defaultName = Path.GetFileNameWithoutExtension(DefaultMods.FontFileName);
         
-        // Add default font
-        if (assetsRoot != null)
-        {
-            string defaultPath = Path.Combine(assetsRoot, "Font", "MilkyNice.otf");
-            if (File.Exists(defaultPath))
-            {
-                _fonts.Add(("Default (MilkyNice)", defaultPath));
-            }
-        }
-        
-        // Scan mods/fonts/ folder
+        // Every .otf/.ttf in mods/fonts/ — including the default MilkyNice.otf, listed first
         try
         {
             string fontsDir = PlatformPaths.GetFontsPath();
             if (Directory.Exists(fontsDir))
             {
                 var files = Directory.GetFiles(fontsDir);
+                Array.Sort(files, StringComparer.OrdinalIgnoreCase);
                 foreach (var file in files)
                 {
-                    string ext = Path.GetExtension(file).ToLower();
-                    if (ext == ".otf" || ext == ".ttf")
-                    {
-                        string name = Path.GetFileNameWithoutExtension(file);
+                    string ext = Path.GetExtension(file).ToLowerInvariant();
+                    if (ext != ".otf" && ext != ".ttf") continue;
+                    
+                    string name = Path.GetFileNameWithoutExtension(file);
+                    if (Path.GetFileName(file).Equals(DefaultMods.FontFileName, StringComparison.OrdinalIgnoreCase))
+                        _fonts.Insert(0, ($"{name} (Default)", file));
+                    else
                         _fonts.Add((name, file));
-                    }
                 }
             }
         }
         catch (Exception ex)
         {
             Console.WriteLine($"[FontMenu] Error scanning fonts: {ex.Message}");
+        }
+        
+        // Player deleted the default font from mods/fonts/ → offer the shipped copy
+        bool hasDefault = _fonts.Count > 0 && _fonts[0].name.EndsWith("(Default)", StringComparison.Ordinal);
+        if (!hasDefault)
+        {
+            string? bundled = DefaultMods.Bundled("fonts", DefaultMods.FontFileName);
+            if (bundled != null && File.Exists(bundled))
+                _fonts.Insert(0, ($"{defaultName} (Default)", bundled));
         }
         
         // Fallback if no fonts found
