@@ -252,6 +252,55 @@ public class NoteStyle
     // Flag to indicate this is a converted Codename Engine notestyle
     // When true, should use CodenameNoteRenderer for proper positioning
     public bool IsCodenameEngine { get; set; } = false;
+
+    /// <summary>skin.json "strumAlpha": strum opacity (FMM system default 0.85).</summary>
+    public float StrumAlpha { get; set; } = 1f;
+    /// <summary>skin.json "noteAlpha": note opacity.</summary>
+    public float NoteAlpha { get; set; } = 1f;
+    /// <summary>skin.json "holdAlpha": hold opacity. Null = the renderer's own default
+    /// (atlas: 0.85 upcoming / 0.75 held, Codename-style: 0.7, FMM system: 0.84).</summary>
+    public float? HoldAlpha { get; set; }
+
+    /// <summary>Miss sounds of the skin (miss.ogg, miss1.ogg, missnote1.ogg …); one is picked at random.</summary>
+    public List<Microsoft.Xna.Framework.Audio.SoundEffect> MissSounds { get; } = new();
+    private static readonly Random _missRandom = new();
+
+    /// <summary>Plays one of the skin's miss sounds, if it has any.</summary>
+    public void PlayMissSound()
+    {
+        if (MissSounds.Count == 0) return;
+        SoundFiles.Play(MissSounds[_missRandom.Next(MissSounds.Count)]);
+    }
+
+    /// <summary>Loads miss sounds from a skin folder: miss, miss1…miss9, missnote1…missnote9.</summary>
+    public void LoadMissSounds(string folderPath)
+    {
+        var names = new List<string> { "miss" };
+        for (int i = 1; i <= 9; i++) { names.Add("miss" + i); names.Add("missnote" + i); }
+        foreach (string name in names)
+        {
+            var sound = SoundFiles.Load(SoundFiles.Find(folderPath, name));
+            if (sound != null) MissSounds.Add(sound);
+        }
+        if (MissSounds.Count > 0)
+            Console.WriteLine($"[NoteStyle] {MissSounds.Count} miss sound(s) in {folderPath}");
+    }
+
+    /// <summary>Reads strumAlpha / noteAlpha / holdAlpha from a parsed skin.json.</summary>
+    public void ReadOpacity(System.Text.Json.JsonElement root)
+    {
+        if (root.TryGetProperty("strumAlpha", out var sa) && sa.ValueKind == System.Text.Json.JsonValueKind.Number)
+            StrumAlpha = Math.Clamp(sa.GetSingle(), 0f, 1f);
+        if (root.TryGetProperty("noteAlpha", out var na) && na.ValueKind == System.Text.Json.JsonValueKind.Number)
+            NoteAlpha = Math.Clamp(na.GetSingle(), 0f, 1f);
+        if (root.TryGetProperty("holdAlpha", out var ha) && ha.ValueKind == System.Text.Json.JsonValueKind.Number)
+            HoldAlpha = Math.Clamp(ha.GetSingle(), 0f, 1f);
+    }
+
+    /// <summary>Note system (skin.json "noteSystem"): atlas (default) or fmm (FmmNoteSystem.cs).</summary>
+    public NoteSystemKind NoteSystem { get; set; } = NoteSystemKind.Atlas;
+    /// <summary>Images and settings of an FMM-faithful style; null for atlas styles.</summary>
+    public FmmNoteAssets? Fmm { get; set; }
     
     public float NoteScale         { get; set; } = 0.65f;
     public float ReceptorScale     { get; set; } = 0.65f;
@@ -315,10 +364,6 @@ public class NoteStyle
         }
     }
 
-    public static NoteStyle? Load(string assetsRoot, GraphicsDevice gd)
-    {
-        return LoadFromFolder(assetsRoot, gd);
-    }
 
     /// <summary>
     /// Auto-detects frame mappings from XML and generates config.json if it doesn't exist.
@@ -722,10 +767,14 @@ public class NoteStyle
     /// Loads a note style from a specific folder.
     /// First tries to load from config.json (auto-generated or manual).
     /// If config doesn't exist, auto-detects and generates it.
-    /// Falls back to assetsRoot default if the custom folder is missing files.
+    /// Returns null if the folder has no usable PNG+XML pair.
     /// </summary>
     public static NoteStyle? LoadFromFolder(string folderPath, GraphicsDevice gd)
     {
+        // skin.json "noteSystem": "fmm" → plain images, rotated and tinted per lane
+        if (FmmNoteSystem.IsFmmFolder(folderPath))
+            return FmmNoteSystem.Load(folderPath, gd);
+
         try
         {
             var style = new NoteStyle();
@@ -1070,12 +1119,10 @@ public class NoteStyle
                 string p = Path.Combine(folderPath, c);
                 if (!File.Exists(p)) p = Path.Combine(folderPath, "shared", "images", c);
                 
-                // FALLBACK: If not found in level folder, try global Assets folder
+                // FALLBACK: skin has no hold texture → engine fallback in Assets/images/
                 if (!File.Exists(p))
                 {
                     string assetsPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "Assets", "images", c);
-                    if (!File.Exists(assetsPath))
-                        assetsPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "Assets", "shared", "images", c);
                     if (File.Exists(assetsPath))
                         p = assetsPath;
                 }
@@ -1152,6 +1199,7 @@ public class NoteStyle
             // Supports: { "fps": [12, 24, 24, 12], "noteScale": 0.7, "receptorScale": 0.7, "colorizeByLane": true }
             // fps array order: [static, press, confirm, confirmHold]
             string skinJson = Path.Combine(folderPath, "skin.json");
+            bool? skinColorize = null;
             if (File.Exists(skinJson))
             {
                 try
@@ -1171,12 +1219,16 @@ public class NoteStyle
                         }
                         style.StateFps = fps;
                     }
+                    style.ReadOpacity(root2);
                     if (root2.TryGetProperty("noteScale", out var ns))
                         style.NoteScale = ns.GetSingle();
                     if (root2.TryGetProperty("receptorScale", out var rs))
                         style.ReceptorScale = rs.GetSingle();
                     if (root2.TryGetProperty("colorizeByLane", out var cbl))
+                    {
                         style.ColorizeByLane = cbl.GetBoolean();
+                        skinColorize = style.ColorizeByLane;
+                    }
 
                     // Tint colors for skins: [r, g, b] arrays (0-255).
                     // "tintNegative"/"tintPositive"; legacy keys "tintDamage"/"tintInstakill"
@@ -1197,7 +1249,8 @@ public class NoteStyle
             // ── Apply config.json settings (colorizeByLane) ───────────────────
             if (config != null)
             {
-                style.ColorizeByLane = config.ColorizeByLane;
+                // skin.json wins when it sets colorizeByLane; config.json is auto-generated
+                style.ColorizeByLane = skinColorize ?? config.ColorizeByLane;
                 style.HoldEndCapMode = config.HoldEndCapMode;
                 Console.WriteLine($"[NoteStyle] ColorizeByLane: {style.ColorizeByLane}, HoldEndCapMode: {style.HoldEndCapMode}");
             }
@@ -1288,6 +1341,7 @@ public class NoteStyle
                 break; // Only try first existing JSON
             }
 
+            style.LoadMissSounds(folderPath);
             return style;
         }
         catch (Exception ex)
@@ -1301,9 +1355,9 @@ public class NoteStyle
     /// Returns all available note style names: "Default" + any folder in notestyles/.
     /// A folder is valid if it has at least one PNG and one XML file.
     /// </summary>
-    public static List<string> GetAvailableStyles(string assetsRoot)
+    public static List<string> GetAvailableStyles()
     {
-        var styles = new List<string> { "Default" };
+        var styles = new List<string> { DefaultMods.NoteStyleName };
         string stylesDir = PlatformPaths.GetNoteStylesPath();
         if (Directory.Exists(stylesDir))
         {
@@ -1311,10 +1365,12 @@ public class NoteStyle
             {
                 string name = Path.GetFileName(dir);
                 if (string.IsNullOrEmpty(name)) continue;
-                // Accept any folder that has at least one PNG and one XML
+                if (DefaultMods.IsDefaultNoteStyle(name)) continue; // already listed first
+                // Accept any folder that has at least one PNG and one XML (atlas system),
+                // or an FMM-system folder (skin.json "noteSystem": "fmm", plain PNGs)
                 bool hasPng = Directory.GetFiles(dir, "*.png").Length > 0;
                 bool hasXml = Directory.GetFiles(dir, "*.xml").Length > 0;
-                if (hasPng && hasXml)
+                if ((hasPng && hasXml) || FmmNoteSystem.IsFmmFolder(dir))
                     styles.Add(name);
             }
         }
@@ -1322,12 +1378,35 @@ public class NoteStyle
     }
 
     /// <summary>
-    /// Loads a style by name. "Default" loads from assetsRoot, others from notestyles/<name>/.
+    /// Loads the default style from mods/notestyles/Default/, or from the shipped copy if the
+    /// player's copy is missing or broken.
     /// </summary>
-    public static NoteStyle? LoadByName(string name, string assetsRoot, GraphicsDevice gd)
+    public static NoteStyle? LoadDefault(GraphicsDevice gd)
     {
-        if (name == "Default" || string.IsNullOrEmpty(name))
-            return LoadFromFolder(assetsRoot, gd);
+        DefaultMods.EnsureInstalled();
+        if (Directory.Exists(DefaultMods.NoteStyleDir))
+        {
+            var style = LoadFromFolder(DefaultMods.NoteStyleDir, gd);
+            if (style != null) return style;
+        }
+
+        string? bundled = DefaultMods.Bundled("notestyles", DefaultMods.NoteStyleName);
+        if (bundled != null && Directory.Exists(bundled))
+        {
+            Console.WriteLine("[NoteStyle] mods/notestyles/Default failed to load, using the shipped copy");
+            return LoadFromFolder(bundled, gd);
+        }
+        return null;
+    }
+
+    /// <summary>
+    /// Loads a style by name. "Default" loads mods/notestyles/Default/ (see <see cref="LoadDefault"/>),
+    /// others from notestyles/&lt;name&gt;/.
+    /// </summary>
+    public static NoteStyle? LoadByName(string name, GraphicsDevice gd)
+    {
+        if (DefaultMods.IsDefaultNoteStyle(name))
+            return LoadDefault(gd);
 
         string stylesDir = PlatformPaths.GetNoteStylesPath();
         string skinDir   = Path.Combine(stylesDir, name);
@@ -1353,7 +1432,7 @@ public class NoteStyle
         }
         
         // Fallback to default
-        return LoadFromFolder(assetsRoot, gd);
+        return LoadDefault(gd);
     }
 
     /// <summary>

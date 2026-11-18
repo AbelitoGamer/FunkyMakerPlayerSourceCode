@@ -189,6 +189,15 @@ public partial class Game1 : Game
     
     // ── Multiplayer match state ──────────────────────────────────────────────
     private bool _isMultiplayerMatch = false;  // true if this is a PvP match
+    /// <summary>True while a multiplayer match runs (settings lock unfair options).</summary>
+    public bool IsMultiplayerMatch => _isMultiplayerMatch;
+
+    // Botplay is switched off for a match and restored when it ends (it used to stay off)
+    private bool _hasPreMatchSettings;
+    private bool _preMatchAutoplay;
+
+    // F3 / F4 scroll speed toast
+    private float _scrollToastTimer = 0f;
     private int _multiplayerPlayerRole = 0;  // 1 = Player 1 (plays chart 1 - Boyfriend), 2 = Player 2 (plays chart 0 - Enemy)
     private long _multiplayerStartTimestamp = 0;  // Server timestamp (milliseconds) for synchronized start
     private bool _countdownSignalReceived = false;  // true when server sends CountdownStart
@@ -325,6 +334,9 @@ public partial class Game1 : Game
     public static float ColorGradeShadowTintB   = 0.90f;  // Blue tint
     public static bool  HideExtraStrumlines = false;  // hide strumlines beyond player+opponent
     public static bool  HideOpponentStrumline = false; // hide opponent strumline (index 1)
+
+    /// <summary>Tint of a non-player character's "miss" (sing animation in dark purple).</summary>
+    private static readonly Color NonPlayerMissTint = new Color(0x5B, 0x3A, 0x8C);
     // Timer color presets: 0=white, 1=cyan, 2=pink, 3=yellow, 4=green, 5=custom
     public static int   TimerColorPreset = 0;
     public static Color TimerColorCustom = new Color(0xE0, 0xE0, 0xFF);
@@ -336,9 +348,9 @@ public partial class Game1 : Game
     // Hide touch hitbox colors (android only)
     public static bool   HideTouchHitboxColors = false;
     // Note style name — "Default" or a folder name in mods/notestyles/
-    public static string NoteStyleName     = "Default";
+    public static string NoteStyleName     = DefaultMods.NoteStyleName;
     // NoteSplash style name — "Default" (programmatic) or a folder name in mods/notesplashes/
-    public static string NoteSplashStyleName = "Default";
+    public static string NoteSplashStyleName = DefaultMods.SplashName;
     // Icon mode: 0 = Fixed (FNF base - icons move with health %), 1 = Dynamic (icons stay at ends)
     public static int IconMode = 0;
     // Selected countdown pack name from mods/countdowns/[name]/
@@ -544,7 +556,13 @@ public partial class Game1 : Game
         _multiplayerMatchRecorded = false;
         DiscordRpc.SetParty(_multiplayerMatchId, 2, 2);
         
-        // Disable autoplay in multiplayer - players must play manually
+        // Disable autoplay in multiplayer - players must play manually.
+        // Remember the player's own settings so the match doesn't change them for good.
+        if (!_hasPreMatchSettings)
+        {
+            _preMatchAutoplay = NoteRenderer.Autoplay;
+            _hasPreMatchSettings = true;
+        }
         NoteRenderer.Autoplay = false;
         Console.WriteLine("[Game1] Autoplay disabled for multiplayer match");
         
@@ -918,6 +936,7 @@ public partial class Game1 : Game
         if (_healthBar != null)
             _healthBar.Health = 0.5f;
         _gameOverOverlay?.Hide();
+        _countdownOverlay?.EnsureLoaded(SelectedCountdown);
         _countdownOverlay?.Reset();
 
         // Start FNF-style receptor intro animation (pop-in effect)
@@ -1427,6 +1446,8 @@ public partial class Game1 : Game
 
         // Load note style assets from the Assets folder next to the project
         string? assetsRoot = FindAssetsRoot();
+        // Copy the default note style / countdown / font into mods/ before anything loads them
+        DefaultMods.EnsureInstalled();
         UI.UiSfx.Initialize(assetsRoot);
         _onlineMenuMusic = new Managers.OnlineMenuMusic(assetsRoot);
         if (assetsRoot != null)
@@ -1438,10 +1459,9 @@ public partial class Game1 : Game
             {
                 _catTex = LoadTextureViaImageSharp(GraphicsDevice, File.ReadAllBytes(catPath));
             }
-            // Load countdown sprites using CountdownOverlay
-            _countdownOverlay = new UI.CountdownOverlay(GraphicsDevice, _spriteBatch, _font);
-            _countdownOverlay.LoadCountdownAssets(SelectedCountdown, assetsRoot);
         }
+        // Countdown sprites are (re)loaded from mods/countdowns/ when a song starts
+        _countdownOverlay = new UI.CountdownOverlay(GraphicsDevice, _spriteBatch, _font);
 
         // Ensure levels folder exists
         string levelsFolder = FreeplayMenu.GetDefaultLevelsFolder();
@@ -1463,7 +1483,8 @@ public partial class Game1 : Game
             }
             
             // Load TrueType font for crisp UI rendering
-            // Priority: mods/fonts/main.otf > mods/fonts/main.ttf > Assets/Font/MilkyNice.otf
+            // Priority: mods/fonts/main.otf > main.ttf > MilkyNice.otf (the default) > MilkyNice.ttf
+            //           > the shipped copy of the default font
             string? fontPath = null;
             
             // Check mods/fonts/ first using PlatformPaths (works on Android publicmods)
@@ -1485,10 +1506,10 @@ public partial class Game1 : Game
                 }
             }
             
-            // Fallback to default font
+            // Fallback to the shipped copy of the default font
             if (fontPath == null)
             {
-                fontPath = System.IO.Path.Combine(assetsRoot, "Font", "MilkyNice.otf");
+                fontPath = DefaultMods.Bundled("fonts", DefaultMods.FontFileName) ?? DefaultMods.FontPath;
             }
             
             if (File.Exists(fontPath))
@@ -1565,15 +1586,9 @@ public partial class Game1 : Game
         Settings.Load(this);
 
         // Now load NoteStyle and NoteSplashStyle with the correct names from settings
-        string? assetsRootForStyle = FindAssetsRoot();
-        if (assetsRootForStyle != null)
-        {
-            _noteStyle = NoteStyle.LoadByName(NoteStyleName, assetsRootForStyle, GraphicsDevice);
-            
-            // Set the style on all note renderers
-            foreach (var r in _noteRenderers)
-                r.SetStyle(_noteStyle);
-        }
+        _noteStyle = NoteStyle.LoadByName(NoteStyleName, GraphicsDevice);
+        foreach (var r in _noteRenderers)
+            r.SetStyle(_noteStyle);
         
         // Load notesplash style (null = programmatic default)
         _noteSplashStyle = NoteSplashStyle.LoadByName(NoteSplashStyleName, GraphicsDevice);
@@ -1826,13 +1841,6 @@ public partial class Game1 : Game
 
         try
         {
-            // Disable middlescroll in multiplayer (force side-by-side layout)
-            if (_isMultiplayerMatch && NoteRenderer.Midlescroll)
-            {
-                NoteRenderer.Midlescroll = false;
-                Console.WriteLine("[Multiplayer] Middlescroll disabled for PvP");
-            }
-            
             // Update loading screen progress during GPU texture creation
             if (_loadingScreen != null)
             {
@@ -2089,6 +2097,8 @@ public partial class Game1 : Game
             {
                 renderer.Alpha = 0f;
             }
+            // HUD editor strumline offsets: index 0 = player, 1 = opponent
+            renderer.HudRole = i <= 1 ? i : -1;
             // With 3+ strumlines: extras (2+) hide when idle
             if (strumlineCount >= 3 && i >= 2) renderer.HideWhenIdle = true;
             // Multiplayer: Disable autoplay for opponent (index 1) — hits come from network
@@ -2211,6 +2221,19 @@ public partial class Game1 : Game
                         continue;
                     }
                     
+                    if (myAnimStrumline != 0)
+                    {
+                        // Not the player's strumline (e.g. playing as the enemy in multiplayer):
+                        // FMM levels are single player, so these characters have no real miss
+                        // animation (that slot is empty or used for something else). Play the
+                        // note's sing animation instead, tinted dark purple.
+                        int lane = _noteRenderers[myStrumlineIndex].LastMissLane;
+                        int singAnim = Math.Clamp(lane + 1, 1, Math.Max(1, anim.AnimCount - 1));
+                        anim.SetAnimation(singAnim, setByEvent: false);
+                        anim.SetMissTint(NonPlayerMissTint);
+                        continue;
+                    }
+
                     int missAnim = anim.AnimCount > 5 ? 5 : anim.AnimCount - 1;
                     anim.SetAnimation(missAnim, setByEvent: false);
                 }
@@ -2669,6 +2692,8 @@ public partial class Game1 : Game
 
         if (_volumeToastTimer > 0f)
             _volumeToastTimer = Math.Max(0f, _volumeToastTimer - dt);
+        if (_scrollToastTimer > 0f)
+            _scrollToastTimer = Math.Max(0f, _scrollToastTimer - dt);
 
         // Global FNF-style volume hotkeys (- / +) everywhere except text-entry or keybinding capture
         // Menus too; skipped only while typing text (level name, multiplayer fields) and in the
@@ -2690,6 +2715,28 @@ public partial class Game1 : Game
                 UI.UiSfx.Play(MusicVolume == oldVolume ? UI.UiSound.SliderEnd : volUp ? UI.UiSound.SliderUp : UI.UiSound.SliderDown);
                 if (_musicInst != null) _musicInst.Volume = MusicVolume;
                 _volumeToastTimer = VOLUME_TOAST_DURATION;
+                Settings.Save(_graphics.SynchronizeWithVerticalRetrace);
+            }
+        }
+
+        // F3 / F4: scroll speed down / up while a song is on screen (not paused, no menu open).
+        // Visual only, so it is allowed in multiplayer too.
+        bool inSong = _level != null && !_inPauseMenu && !_inFreeplay && !_inMultiplayer && !_inEditor &&
+                      !_inEditorPicker && !_inLevelSelector && !_inMainSettings && !_inHudEditor &&
+                      !(_settingsManager?.IsActive ?? false) && !_keyBindOverlay.IsActive;
+        if (inSong && !suppressUserInput)
+        {
+            bool slower = kb.IsKeyDown(Keys.F3) && !_prevKb.IsKeyDown(Keys.F3);
+            bool faster = kb.IsKeyDown(Keys.F4) && !_prevKb.IsKeyDown(Keys.F4);
+            if (slower || faster)
+            {
+                float old = NoteRenderer.ScrollMultiplier;
+                // Same step and range as the Scroll Speed setting
+                NoteRenderer.ScrollMultiplier = MathF.Round(
+                    Math.Clamp(old + (faster ? 0.10f : -0.10f), 0.25f, 5.0f), 2);
+                UI.UiSfx.Play(NoteRenderer.ScrollMultiplier == old ? UI.UiSound.SliderEnd
+                    : faster ? UI.UiSound.SliderUp : UI.UiSound.SliderDown);
+                _scrollToastTimer = VOLUME_TOAST_DURATION;
                 Settings.Save(_graphics.SynchronizeWithVerticalRetrace);
             }
         }
@@ -2874,19 +2921,15 @@ public partial class Game1 : Game
         // ── Arrows menu ──────────────────────────────────────────────────────
         if (_arrowsMenu?.IsActive == true)
         {
-            string? assetsRoot = FindAssetsRoot();
-            _arrowsMenu.Update(kb, _prevKb, GraphicsDevice, assetsRoot);
+            _arrowsMenu.Update(kb, _prevKb, GraphicsDevice);
             
             // If menu was closed and we selected a style, apply it
             if (!_arrowsMenu.IsActive)
             {
                 // Apply to all note renderers
-                if (assetsRoot != null)
-                {
-                    _noteStyle = NoteStyle.LoadByName(NoteStyleName, assetsRoot, GraphicsDevice);
-                    foreach (var r in _noteRenderers)
-                        r.SetStyle(_noteStyle);
-                }
+                _noteStyle = NoteStyle.LoadByName(NoteStyleName, GraphicsDevice);
+                foreach (var r in _noteRenderers)
+                    r.SetStyle(_noteStyle);
                 Settings.Save(_graphics.SynchronizeWithVerticalRetrace);
                 if (_settingsManager != null) _settingsManager.IsActive = true;
             }
@@ -2915,8 +2958,7 @@ public partial class Game1 : Game
         // ── Countdown menu ───────────────────────────────────────────────────
         if (_countdownMenu?.IsActive == true)
         {
-            string? assetsRoot = FindAssetsRoot();
-            _countdownMenu.Update(kb, _prevKb, GraphicsDevice, assetsRoot);
+            _countdownMenu.Update(kb, _prevKb, GraphicsDevice);
             
             // If menu was closed, reopen settings
             if (!_countdownMenu.IsActive && _settingsManager != null)
@@ -3404,7 +3446,8 @@ public partial class Game1 : Game
         // Timeskip: Ctrl+Left/Right OR hold/press T (Shift+T backward) when T is not bound to a note lane
         bool ctrlHeld = kb.IsKeyDown(Keys.LeftControl) || kb.IsKeyDown(Keys.RightControl);
         bool shiftHeld = kb.IsKeyDown(Keys.LeftShift) || kb.IsKeyDown(Keys.RightShift);
-        if (TimeskipEnabled && _started && !_paused)
+        // Never in multiplayer: skipping desyncs the song from the opponent
+        if (TimeskipEnabled && _started && !_paused && !_isMultiplayerMatch)
         {
             if (ctrlHeld)
             {
@@ -3447,11 +3490,13 @@ public partial class Game1 : Game
             if (speedUp)
             {
                 NoteRenderer.ScrollMultiplier = MathF.Round(Math.Min(5.0f, NoteRenderer.ScrollMultiplier + 0.25f), 2);
+                _scrollToastTimer = VOLUME_TOAST_DURATION;
                 Settings.Save(_graphics.SynchronizeWithVerticalRetrace);
             }
             if (speedDown)
             {
                 NoteRenderer.ScrollMultiplier = MathF.Round(Math.Max(0.25f, NoteRenderer.ScrollMultiplier - 0.25f), 2);
+                _scrollToastTimer = VOLUME_TOAST_DURATION;
                 Settings.Save(_graphics.SynchronizeWithVerticalRetrace);
             }
         }
@@ -3673,6 +3718,13 @@ public partial class Game1 : Game
     {
         _resultsScreen = null;
         _isMultiplayerMatch = false;
+        if (_hasPreMatchSettings)
+        {
+            // Give back the Botplay setting the match switched off
+            NoteRenderer.Autoplay = _preMatchAutoplay;
+            _hasPreMatchSettings = false;
+            Settings.Save(_graphics.SynchronizeWithVerticalRetrace);
+        }
         _multiplayerPlayerRole = 0;
         _multiplayerStartTimestamp = 0;
         _multiplayerMatchStartUtc = null;
@@ -4462,6 +4514,7 @@ public partial class Game1 : Game
         if (_healthBar != null)
             _healthBar.Health = 0.5f;
         _gameOverOverlay?.Hide();
+        _countdownOverlay?.EnsureLoaded(SelectedCountdown);
         _countdownOverlay?.Reset();
         
         // Start FNF-style receptor intro animation (pop-in effect)
@@ -4718,25 +4771,16 @@ public partial class Game1 : Game
         }
 
         if (result.OpenArrowsMenu)
-        {
-            string? assetsRoot = FindAssetsRoot();
-            _arrowsMenu?.Open(GraphicsDevice, assetsRoot);
-        }
+            _arrowsMenu?.Open(GraphicsDevice);
 
         if (result.OpenSplashMenu)
             _splashMenu?.Open(GraphicsDevice);
 
         if (result.OpenCountdownMenu)
-        {
-            string? assetsRoot = FindAssetsRoot();
-            _countdownMenu?.Open(GraphicsDevice, assetsRoot);
-        }
+            _countdownMenu?.Open(GraphicsDevice);
 
         if (result.OpenFontMenu)
-        {
-            string? assetsRoot = FindAssetsRoot();
-            _fontMenu?.Open(GraphicsDevice, assetsRoot);
-        }
+            _fontMenu?.Open(GraphicsDevice);
 
         if (result.OpenHudEditor)
         {
@@ -4844,7 +4888,7 @@ public partial class Game1 : Game
             Settings.Save(_graphics.SynchronizeWithVerticalRetrace);
         }
 
-        if (result.SeekSong != 0f && _started)
+        if (result.SeekSong != 0f && _started && !_isMultiplayerMatch)
         {
             SeekSong(_songTime + result.SeekSong);
             if (!_paused)
@@ -4948,6 +4992,7 @@ public partial class Game1 : Game
                 _lastCamMatrix = hudCamMatrix;
                 DrawSceneOrdered(sw, sh, hudCamMatrix);
                 _spriteBatch.Begin(SpriteSortMode.Deferred, BlendState.NonPremultiplied, SamplerState.LinearClamp);
+                DrawLaneUnderlay();
                 DrawNotes();
                 _spriteBatch.End();
             }
@@ -5055,6 +5100,8 @@ public partial class Game1 : Game
 
         // ── HUD: health bar, icons, stats (drawn before notes) ───────────────
         _spriteBatch.Begin(SpriteSortMode.Deferred, BlendState.NonPremultiplied, SamplerState.LinearClamp);
+        // Lane underlay first: above the stage, below every HUD element and the notes
+        DrawLaneUnderlay();
         float mpOpponentAccuracy = _isMultiplayerMatch
             ? ComputeAccuracy(_opponentSicks, _opponentGoods, _opponentBads, _opponentShits, _opponentMisses)
             : 100f;
@@ -5184,6 +5231,7 @@ public partial class Game1 : Game
         _spriteBatch.End();
 
         DrawVolumeToastOverlay(winBounds.Width);
+        DrawScrollToastOverlay(winBounds.Width);
         DrawTouchControls();
     }
 
@@ -5219,6 +5267,42 @@ public partial class Game1 : Game
         }
 
         DrawVolumeToastOverlay(winW);
+        DrawScrollToastOverlay(winW);
+    }
+
+    /// <summary>"SCROLL SPEED: 1.20x" toast for F3 / F4, under the volume toast if both are up.</summary>
+    private void DrawScrollToastOverlay(int winW)
+    {
+        if (_scrollToastTimer <= 0f || _pixel == null || (_font == null && _fontRenderer == null)) return;
+
+        float alpha = Math.Clamp(_scrollToastTimer / 0.35f, 0f, 1f);
+        int boxW = 240;
+        int boxH = 34;
+        int boxX = (winW - boxW) / 2;
+        int boxY = _volumeToastTimer > 0f ? 14 + 54 + 6 : 14;
+
+        GraphicsDevice.SetRenderTarget(null);
+        _spriteBatch.Begin(samplerState: SamplerState.LinearClamp);
+        _spriteBatch.Draw(_pixel, new Rectangle(boxX, boxY, boxW, boxH), new Color(16, 18, 28) * (0.90f * alpha));
+        _spriteBatch.Draw(_pixel, new Rectangle(boxX, boxY, boxW, 2), new Color(0xFF, 0x44, 0x88) * (0.85f * alpha));
+        _spriteBatch.Draw(_pixel, new Rectangle(boxX, boxY + boxH - 2, boxW, 2), new Color(0xFF, 0x44, 0x88) * (0.45f * alpha));
+
+        string text = $"SCROLL SPEED: {NoteRenderer.ScrollMultiplier:F2}x";
+        if (_fontRenderer != null)
+        {
+            var sz = _fontRenderer.MeasureString(text, 16);
+            _fontRenderer.DrawString(_spriteBatch, text,
+                new Vector2(boxX + (boxW - sz.X) / 2f, boxY + (boxH - sz.Y) / 2f), Color.White * alpha, 16);
+        }
+        else if (_font != null)
+        {
+            float scale = 16f / Math.Max(16f, (float)_font.LineSpacing);
+            var sz = _font.MeasureString(text) * scale;
+            _spriteBatch.DrawString(_font, text,
+                new Vector2(boxX + (boxW - sz.X) / 2f, boxY + (boxH - sz.Y) / 2f), Color.White * alpha,
+                0f, Vector2.Zero, scale, SpriteEffects.None, 0f);
+        }
+        _spriteBatch.End();
     }
 
     private void DrawVolumeToastOverlay(int winW)
@@ -5358,7 +5442,7 @@ public partial class Game1 : Game
                 string assetsPath = Path.Combine(filesDir, "Assets");
                 
                 // Check if extraction is needed
-                if (!Directory.Exists(assetsPath) || !File.Exists(Path.Combine(assetsPath, "Font", "MilkyNice.otf")))
+                if (!Directory.Exists(assetsPath) || !File.Exists(Path.Combine(assetsPath, "LoadingScreen", "AnkushCat.png")))
                 {
                     Console.WriteLine("[FindAssetsRoot] Assets folder not found or incomplete");
                     
@@ -5427,7 +5511,7 @@ public partial class Game1 : Game
         {
             string norm = Path.GetFullPath(c);
             if (Directory.Exists(norm) &&
-                File.Exists(Path.Combine(norm, "shared", "images", "fmm.png")))
+                File.Exists(Path.Combine(norm, "LoadingScreen", "AnkushCat.png")))
                 return norm;
         }
         return null;
@@ -5491,7 +5575,7 @@ public partial class Game1 : Game
         try
         {
             // List of essential folders to extract (skip large unnecessary files)
-            string[] essentialFolders = { "Font", "LoadingScreen", "data", "images", "shared", "Content" };
+            string[] essentialFolders = { "LoadingScreen", "data", "images", "Content" };
             
             Console.WriteLine($"[CopyAndroidAssets] Extracting essential folders to: {targetRootPath}");
             
@@ -5917,6 +6001,15 @@ public partial class Game1 : Game
     }
 
     // ── Notes drawing ────────────────────────────────────────────────────────
+    /// <summary>Black lane underlay behind the player strumline (Settings → Graphics → Lane Underlay).</summary>
+    private void DrawLaneUnderlay()
+    {
+        if (_level == null || _noteRenderers.Count == 0 || NoteRenderer.LaneUnderlay <= 0f) return;
+        // Same opacity DrawNotes gives the player strumline this frame
+        float alpha = NoteRenderer.HidePlayerStrumline && !_isMultiplayerMatch ? 0f : _notesAlpha;
+        _noteRenderers[0].DrawLaneUnderlay(_spriteBatch, alpha);
+    }
+
     private void DrawNotes()
     {
         if (_level == null) return;

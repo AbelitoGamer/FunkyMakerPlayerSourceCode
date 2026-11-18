@@ -31,7 +31,7 @@ public class CountdownMenu : IScreenOverlay
         _fontRenderer = fontRenderer;
     }
     
-    public void Open(GraphicsDevice graphicsDevice, string? assetsRoot)
+    public void Open(GraphicsDevice graphicsDevice)
     {
         ScanAvailablePacks();
         
@@ -39,7 +39,7 @@ public class CountdownMenu : IScreenOverlay
         Selection = _packs.IndexOf(Game1.SelectedCountdown);
         if (Selection < 0) Selection = 0;
         
-        LoadPreview(_packs[Selection], graphicsDevice, assetsRoot);
+        LoadPreview(_packs[Selection], graphicsDevice);
         IsActive = true;
     }
     
@@ -57,7 +57,7 @@ public class CountdownMenu : IScreenOverlay
     private void ScanAvailablePacks()
     {
         _packs.Clear();
-        _packs.Add("default");  // Built-in Assets
+        _packs.Add("default");  // mods/countdowns/Default/ (setting value kept as "default")
         
         try
         {
@@ -68,7 +68,7 @@ public class CountdownMenu : IScreenOverlay
                 foreach (var dir in dirs)
                 {
                     string name = Path.GetFileName(dir);
-                    if (!string.IsNullOrEmpty(name) && name != "default")
+                    if (!string.IsNullOrEmpty(name) && !DefaultMods.IsDefaultCountdown(name))
                     {
                         // Check if it has the required files
                         string readyPath = Path.Combine(dir, "ready.png");
@@ -89,7 +89,7 @@ public class CountdownMenu : IScreenOverlay
         }
     }
     
-    private void LoadPreview(string packName, GraphicsDevice graphicsDevice, string? assetsRoot)
+    private void LoadPreview(string packName, GraphicsDevice graphicsDevice)
     {
         // Dispose old textures
         _previewReady?.Dispose();
@@ -101,38 +101,9 @@ public class CountdownMenu : IScreenOverlay
         
         try
         {
-            string baseDir;
-            if (packName == "default" && assetsRoot != null)
-            {
-                // Default countdown is in Assets/shared/images/ui/countdown/funkin2/
-                baseDir = Path.Combine(assetsRoot, "shared", "images", "ui", "countdown", "funkin2");
-            }
-            else
-            {
-                baseDir = Path.Combine(PlatformPaths.GetCountdownsPath(), packName);
-            }
-            
-            string readyPath = Path.Combine(baseDir, "ready.png");
-            string setPath = Path.Combine(baseDir, "set.png");
-            string goPath = Path.Combine(baseDir, "go.png");
-            
-            if (File.Exists(readyPath))
-            {
-                using var fs = File.OpenRead(readyPath);
-                _previewReady = Texture2D.FromStream(graphicsDevice, fs);
-            }
-            
-            if (File.Exists(setPath))
-            {
-                using var fs = File.OpenRead(setPath);
-                _previewSet = Texture2D.FromStream(graphicsDevice, fs);
-            }
-            
-            if (File.Exists(goPath))
-            {
-                using var fs = File.OpenRead(goPath);
-                _previewGo = Texture2D.FromStream(graphicsDevice, fs);
-            }
+            _previewReady = LoadPreviewImage(packName, "ready.png", graphicsDevice);
+            _previewSet = LoadPreviewImage(packName, "set.png", graphicsDevice);
+            _previewGo = LoadPreviewImage(packName, "go.png", graphicsDevice);
         }
         catch (Exception ex)
         {
@@ -140,7 +111,18 @@ public class CountdownMenu : IScreenOverlay
         }
     }
     
-    public void Update(KeyboardState kb, KeyboardState prevKb, GraphicsDevice graphicsDevice, string? assetsRoot)
+    private static Texture2D? LoadPreviewImage(string packName, string fileName, GraphicsDevice graphicsDevice)
+    {
+        foreach (string path in CountdownOverlay.CandidatePaths(packName, fileName))
+        {
+            if (!File.Exists(path)) continue;
+            using var fs = File.OpenRead(path);
+            return Texture2D.FromStream(graphicsDevice, fs);
+        }
+        return null;
+    }
+    
+    public void Update(KeyboardState kb, KeyboardState prevKb, GraphicsDevice graphicsDevice)
     {
         if (!IsActive) return;
         
@@ -148,13 +130,13 @@ public class CountdownMenu : IScreenOverlay
         if (kb.IsKeyDown(Keys.Up) && !prevKb.IsKeyDown(Keys.Up))
         {
             Selection = (Selection - 1 + _packs.Count) % _packs.Count;
-            LoadPreview(_packs[Selection], graphicsDevice, assetsRoot);
+            LoadPreview(_packs[Selection], graphicsDevice);
         }
         
         if (kb.IsKeyDown(Keys.Down) && !prevKb.IsKeyDown(Keys.Down))
         {
             Selection = (Selection + 1) % _packs.Count;
-            LoadPreview(_packs[Selection], graphicsDevice, assetsRoot);
+            LoadPreview(_packs[Selection], graphicsDevice);
         }
         
         // Confirm selection

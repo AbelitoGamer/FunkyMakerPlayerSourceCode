@@ -98,7 +98,9 @@ keystore.properties
 .agents/
 
 # Required build inputs: events/*.json are EmbeddedResources in the csproj and
-# notesplashes/ is copied to the output, so they must not be ignored.
+# DefaultMods/ is shipped as the build's mods/ folder, so they must not be ignored.
 !FunkyMakerPlayer/events/
 !FunkyMakerPlayer/events/**
-!notesplashes/**
+!DefaultMods/**
+# Local reference material (hud.hx, skin sources): kept on disk, not in the repo
+References/

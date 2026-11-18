@@ -11,6 +11,10 @@ namespace FunkyMakerPlayer;
 /// </summary>
 public class HudEditor
 {
+    // Editor box of each strumline at offset (0, 0); the saved offset is the box's movement from here
+    private static readonly Point OpponentStrumlineBase = new Point(100, 60);
+    private static readonly Point PlayerStrumlineBase = new Point(740, 60);
+
     private readonly Texture2D _pixel;
     private readonly SpriteFont _font;
     
@@ -182,7 +186,8 @@ public class HudEditor
         _elements.Add(new HudElement
         {
             Name = "Opponent Strumline",
-            Position = new Point(100, 60),
+            Position = new Point(OpponentStrumlineBase.X + hudSettings.OpponentStrumlineOffset.X,
+                                 OpponentStrumlineBase.Y + hudSettings.OpponentStrumlineOffset.Y),
             Size = new Point(440, 90),
             Color = new Color(194, 75, 153),
             Type = HudElementType.Strumline,
@@ -193,7 +198,8 @@ public class HudEditor
         _elements.Add(new HudElement
         {
             Name = "Player Strumline",
-            Position = new Point(740, 60),
+            Position = new Point(PlayerStrumlineBase.X + hudSettings.PlayerStrumlineOffset.X,
+                                 PlayerStrumlineBase.Y + hudSettings.PlayerStrumlineOffset.Y),
             Size = new Point(440, 90),
             Color = new Color(0, 255, 255),
             Type = HudElementType.Strumline,
@@ -764,10 +770,14 @@ public class HudEditor
 
                 case "Opponent Strumline":
                     hudSettings.OpponentStrumlineVisible = elem.Visible;
+                    hudSettings.OpponentStrumlineOffset = new HudPosition(
+                        elem.Position.X - OpponentStrumlineBase.X, elem.Position.Y - OpponentStrumlineBase.Y);
                     break;
 
                 case "Player Strumline":
                     hudSettings.PlayerStrumlineVisible = elem.Visible;
+                    hudSettings.PlayerStrumlineOffset = new HudPosition(
+                        elem.Position.X - PlayerStrumlineBase.X, elem.Position.Y - PlayerStrumlineBase.Y);
                     break;
             }
         }

@@ -104,13 +104,13 @@ public class SettingsManager
 
         try
         {
-            string countdownsDir = System.IO.Path.Combine(AppContext.BaseDirectory, "mods", "countdowns");
+            string countdownsDir = PlatformPaths.GetCountdownsPath();
             if (System.IO.Directory.Exists(countdownsDir))
             {
                 foreach (var dir in System.IO.Directory.GetDirectories(countdownsDir))
                 {
                     string name = System.IO.Path.GetFileName(dir);
-                    if (!string.IsNullOrEmpty(name) && name != "default")
+                    if (!string.IsNullOrEmpty(name) && !DefaultMods.IsDefaultCountdown(name))
                     {
                         string readyPath = System.IO.Path.Combine(dir, "ready.png");
                         string setPath = System.IO.Path.Combine(dir, "set.png");
@@ -199,8 +199,24 @@ public class SettingsManager
 
     public int GetItemCount(Game1 game) => BuildTabEntries(game).Count;
 
+    /// <summary>True while a multiplayer match is running: unfair options are locked.</summary>
+    private static bool InMultiplayerMatch => Game1.Instance?.IsMultiplayerMatch == true;
+
+    /// <summary>A row that shows its state but can't be changed during a multiplayer match.</summary>
+    private static SettingItem LockedInMatch(string label, string value) => new SettingItem
+    {
+        Label = label,
+        Value = value,
+        Kind = SettingKind.Action,
+        Description = "Disabled during multiplayer matches.",
+        OnSelect = () => new SettingsActionResult { NeedsSave = false },
+    };
+
     private void BuildGameplayEntries(List<SettingItem> entries)
     {
+        if (InMultiplayerMatch)
+            entries.Add(LockedInMatch("Botplay", "OFF"));
+        else
         entries.Add(new SettingItem
         {
             Label = "Botplay",
@@ -245,7 +261,7 @@ public class SettingsManager
             Label = "Scroll Speed",
             Value = $"{NoteRenderer.ScrollMultiplier:F2}x",
             Kind = SettingKind.Adjustable,
-            Description = "Visual note speed multiplier (default: 1.00x, range: 0.25x - 5.00x). Press ENTER to focus, LEFT/RIGHT to change.",
+            Description = "Visual note speed multiplier (default: 1.00x, range: 0.25x - 5.00x). Press ENTER to focus, LEFT/RIGHT to change. In a song: F3 slower, F4 faster.",
             OnAdjust = (_, delta) =>
             {
                 NoteRenderer.ScrollMultiplier = MathF.Round(
@@ -263,6 +279,19 @@ public class SettingsManager
             OnSelect = () =>
             {
                 NoteRenderer.GhostTapping = !NoteRenderer.GhostTapping;
+                return new SettingsActionResult { NeedsSave = true };
+            }
+        });
+
+        entries.Add(new SettingItem
+        {
+            Label = "Show Key Labels",
+            Value = NoteRenderer.ShowKeyLabels ? "ON" : "OFF",
+            Kind = SettingKind.Toggle,
+            Description = "Shows the key for each lane on top of your strums.",
+            OnSelect = () =>
+            {
+                NoteRenderer.ShowKeyLabels = !NoteRenderer.ShowKeyLabels;
                 return new SettingsActionResult { NeedsSave = true };
             }
         });
@@ -374,6 +403,20 @@ public class SettingsManager
             {
                 IsActive = false;
                 return new SettingsActionResult { OpenFontMenu = true, NeedsSave = false };
+            }
+        });
+
+        entries.Add(new SettingItem
+        {
+            Label = "Lane Underlay",
+            Value = NoteRenderer.LaneUnderlay <= 0f ? "OFF" : $"{(int)MathF.Round(NoteRenderer.LaneUnderlay * 100)}%",
+            Kind = SettingKind.Adjustable,
+            Description = "Black backdrop behind your strumline so notes stand out from the background (0% = off, up to 75%). Press ENTER to focus, LEFT/RIGHT to change.",
+            OnAdjust = (_, delta) =>
+            {
+                NoteRenderer.LaneUnderlay = MathF.Round(
+                    Math.Clamp(NoteRenderer.LaneUnderlay + delta * 0.05f, 0f, NoteRenderer.LaneUnderlayMax), 2);
+                return new SettingsActionResult { NeedsSave = true };
             }
         });
 
@@ -829,6 +872,12 @@ public class SettingsManager
             }
         });
 
+        if (InMultiplayerMatch)
+        {
+            entries.Add(LockedInMatch("Timeskip", "OFF"));
+        }
+        else
+        {
         entries.Add(new SettingItem
         {
             Label = "Timeskip",
@@ -872,6 +921,7 @@ public class SettingsManager
                     }
                 });
             }
+        }
         }
 
         entries.Add(new SettingItem

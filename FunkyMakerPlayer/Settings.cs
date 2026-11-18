@@ -49,8 +49,8 @@ public static class Settings
         public float SfxVolume         { get; set; } = 0.8f;   // UI sound effects (UiSfx)
         public float MenuMusicVolume   { get; set; } = 0.7f;   // menu background music (OnlineMenuMusic)
         public bool  BilinearFiltering { get; set; } = true;
-        public string NoteStyleName    { get; set; } = "Default";
-        public string NoteSplashStyleName { get; set; } = "Default";
+        public string NoteStyleName    { get; set; } = DefaultMods.NoteStyleName;
+        public string NoteSplashStyleName { get; set; } = DefaultMods.SplashName;
         public bool  ShowStrumlines       { get; set; } = true;
         public bool  HidePlayerStrumline  { get; set; } = false;
         public bool  HideExtraStrumlines { get; set; } = false;
@@ -74,6 +74,8 @@ public static class Settings
         /// When false, ghost taps break combo and count as miss (competitive mode).
         /// </summary>
         public bool  GhostTapping      { get; set; } = true;
+        public bool  ShowKeyLabels     { get; set; } = false;
+        public float LaneUnderlay      { get; set; } = 0f;
         
         /// <summary>
         /// Input buffer in seconds. Allows lowering pre-hit anticipation below default.
@@ -162,6 +164,8 @@ public static class Settings
             NoteRenderer.ScrollMultiplier  = d.ScrollMultiplier <= 0f ? 1.0f : Math.Clamp(d.ScrollMultiplier, 0.25f, 5.0f);
             NoteRenderer.Midlescroll       = d.Midlescroll;
             NoteRenderer.GhostTapping      = d.GhostTapping;
+            NoteRenderer.ShowKeyLabels     = d.ShowKeyLabels;
+            NoteRenderer.LaneUnderlay      = Math.Clamp(d.LaneUnderlay, 0f, NoteRenderer.LaneUnderlayMax);
             NoteRenderer.InputBuffer       = Math.Clamp(d.InputBuffer, 0f, 0.010f);
             NoteRenderer.SafeFramesTime    = Math.Clamp(d.SafeFramesTime, 0f, 0.083f);
             NoteRenderer.CameraFollowPlayer = d.CameraFollowPlayer;
@@ -178,8 +182,14 @@ public static class Settings
             UI.UiSfx.Volume                = Math.Clamp(d.SfxVolume, 0f, 1f);
             Managers.OnlineMenuMusic.Volume = Math.Clamp(d.MenuMusicVolume, 0f, 1f);
             Game1.BilinearFiltering        = d.BilinearFiltering;
-            Game1.NoteStyleName            = d.NoteStyleName;
-            Game1.NoteSplashStyleName      = d.NoteSplashStyleName;
+            // Old saves say "Default"; show the current default's name instead
+            Game1.NoteStyleName            = DefaultMods.IsDefaultNoteStyle(d.NoteStyleName)
+                                                 ? DefaultMods.NoteStyleName
+                                                 : d.NoteStyleName;
+            // Old saves say "Default" (the code-drawn splash); that now means the default splash
+            Game1.NoteSplashStyleName      = DefaultMods.IsDefaultSplash(d.NoteSplashStyleName)
+                                                 ? DefaultMods.SplashName
+                                                 : d.NoteSplashStyleName;
             NoteRenderer.ShowStrumlines    = d.ShowStrumlines;
             NoteRenderer.HidePlayerStrumline = d.HidePlayerStrumline;
             Game1.HideExtraStrumlines      = d.HideExtraStrumlines;
@@ -236,6 +246,8 @@ public static class Settings
                 ScrollMultiplier = NoteRenderer.ScrollMultiplier,
                 Midlescroll      = NoteRenderer.Midlescroll,
                 GhostTapping     = NoteRenderer.GhostTapping,
+                ShowKeyLabels    = NoteRenderer.ShowKeyLabels,
+                LaneUnderlay     = NoteRenderer.LaneUnderlay,
                 InputBuffer      = NoteRenderer.InputBuffer,
                 SafeFramesTime   = NoteRenderer.SafeFramesTime,
                 CameraFollowPlayer = NoteRenderer.CameraFollowPlayer,

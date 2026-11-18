@@ -52,13 +52,13 @@ namespace FunkyMakerPlayer
                                     float holdLengthPx, float strumY, float laneWidth, 
                                     float alpha, float scrollSpeed, float bpm)
         {
-            DrawFMMHold(sb, lane, centerX, arrowY, holdLengthPx, laneWidth, alpha * 0.85f);
+            DrawFMMHold(sb, lane, centerX, arrowY, holdLengthPx, laneWidth, alpha * (_style.HoldAlpha ?? 0.85f));
         }
         
         public void DrawActiveHold(SpriteBatch sb, int lane, float centerX, float strumY, 
                                   float holdLengthPx, float laneWidth, float alpha)
         {
-            DrawFMMHold(sb, lane, centerX, strumY, holdLengthPx, laneWidth, alpha * 0.75f);
+            DrawFMMHold(sb, lane, centerX, strumY, holdLengthPx, laneWidth, alpha * (_style.HoldAlpha ?? 0.75f));
         }
 
         /// <summary>

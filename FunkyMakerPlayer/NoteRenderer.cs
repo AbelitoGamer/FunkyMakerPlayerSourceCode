@@ -71,6 +71,13 @@ public class NoteRenderer
     /// When true (default), ghost taps have no penalty.
     /// </summary>
     public static bool GhostTapping = true;
+
+    /// <summary>Draw each lane's key name on the player's strums (Settings → Gameplay). Off by default.</summary>
+    public static bool ShowKeyLabels = false;
+
+    /// <summary>Opacity (0–0.75) of the black lane underlay behind the player strumline. 0 = off.</summary>
+    public static float LaneUnderlay = 0f;
+    public const float LaneUnderlayMax = 0.75f;
     
     /// <summary>
     /// Input buffer in seconds. Allows hitting notes slightly early (before hit window).
@@ -201,6 +208,7 @@ public class NoteRenderer
     
     // Strategy Pattern: Delegate rendering to engine-specific implementations
     private INoteStyleRenderer?       _renderer;  // Current active renderer
+    private FmmNoteSystemRenderer?    _fmm;       // Same object as _renderer for FMM-system styles
 
     // ── Hold note completion tracking (player only) ───────────────────────────
     // Stores the initial hit judgement distance for each active hold lane.
@@ -305,6 +313,20 @@ public class NoteRenderer
     /// <summary>Override the Y position of the receptor (screen pixels).</summary>
     public void SetStrumY(float y) => _customStrumY = y;
 
+    /// <summary>Which HUD-editor strumline offset applies: 0 = player, 1 = opponent, -1 = none.</summary>
+    public int HudRole { get; set; } = -1;
+
+    /// <summary>HUD editor offset for this strumline, in render-target pixels.</summary>
+    private Vector2 HudOffsetPx
+    {
+        get
+        {
+            var hud = HudSettings.Instance;
+            var o = HudRole == 0 ? hud.PlayerStrumlineOffset : HudRole == 1 ? hud.OpponentStrumlineOffset : null;
+            return o == null ? Vector2.Zero : new Vector2(o.X * ScaleX, o.Y * ScaleY);
+        }
+    }
+
     public int Score  { get; private set; }
     public int Misses { get; private set; }
     public int Combo  { get; private set; }
@@ -317,6 +339,8 @@ public class NoteRenderer
 
     public Action<int, float>? OnNoteHit;
     public Action?             OnNoteMiss;
+    /// <summary>Lane of the miss being reported, valid while OnNoteMiss runs.</summary>
+    public int                 LastMissLane { get; private set; } = -1;
     /// <summary>Fired when player presses arrow key (for multiplayer animation sync). Args: lane index.</summary>
     public Action<int>?        OnKeyPress;
     /// <summary>Fired with rating string ("Sick!", "Good", "Bad", "Shit") on manual hit.</summary>
@@ -405,6 +429,7 @@ public class NoteRenderer
         Console.WriteLine($"[NoteRenderer] ═══════════════════════════════════════════");
         Console.WriteLine($"[NoteRenderer] SetStyle called");
         
+        _fmm = null;
         if (style == null)
         {
             _renderer = null;
@@ -416,8 +441,14 @@ public class NoteRenderer
         Console.WriteLine($"[NoteRenderer] IsCodenameEngine flag: {style.IsCodenameEngine}");
         Console.WriteLine($"[NoteRenderer] HoldTexture exists: {style.HoldTexture != null}");
         
-        // Choose renderer based on engine type
-        if (style.IsCodenameEngine)
+        // Choose renderer based on note system / engine type
+        if (style.NoteSystem == NoteSystemKind.Fmm && style.Fmm != null)
+        {
+            _fmm = new FmmNoteSystemRenderer(style);
+            _renderer = _fmm;
+            Console.WriteLine($"[NoteRenderer] Using FMM-faithful note system");
+        }
+        else if (style.IsCodenameEngine)
         {
             _renderer = new CodenameNoteStyleRenderer(style, Downscroll);
             Console.WriteLine($"[NoteRenderer] ✓✓✓ USING CODENAME ENGINE RENDERER ✓✓✓");
@@ -453,10 +484,11 @@ public class NoteRenderer
         // Trigger glow effect on receptor
         _glowTimer[lane] = 0.15f;
         SetRecState(lane, 2);  // Confirm state (pressed)
+        _fmm?.OnHit(lane);
         
         // Trigger splash effect for Sick! hits (only default if no particles)
         if (isSick && _particleSplash == null)
-            _splashTimer[lane] = 0.3f;
+            _splashTimer[lane] = SplashLength(lane);
         
         // Note: Particle splash for multiplayer opponent hits would need separate implementation
         // since we can't trigger _pendingSplashLane from here (no Draw() call for opponent)
@@ -528,6 +560,16 @@ public class NoteRenderer
         else if (!DisableAutoplay)          UpdateAutoplay(songTime);
         // If DisableAutoplay is true for opponent, clean up old notes that weren't hit
         else                                UpdateOpponentMultiplayer(songTime);
+
+        if (_fmm != null)
+        {
+            // Each step of an active hold re-hits the strum, like FMM's per-piece sustain hits
+            float stepSeconds = 15f / Math.Max(1f, _level.Data.EffectiveBpm);
+            for (int lane = 0; lane < LANE_COUNT; lane++)
+                if (_holdEndTime[lane] > 0f && songTime < _holdEndTime[lane])
+                    _fmm.HoldTick(lane, songTime, stepSeconds);
+            _fmm.Update(dt);
+        }
     }
 
     private void UpdateAutoplay(float songTime)
@@ -559,6 +601,9 @@ public class NoteRenderer
                 OnComboChanged?.Invoke(Combo);  // Fire combo changed event
                 float holdEnd = note.Duration > 0 ? note.Start + note.Duration : -1f;
                 OnNoteHit?.Invoke(lane, holdEnd);
+                // Botplay hits are perfect, so the player's strumline shows a splash (as in FNF)
+                if (_isPlayer)
+                    TriggerSplash(lane);
                 if (note.Props.OnPressEvent >= 0)
                     OnNotePressEvent?.Invoke((int)note.Props.OnPressEvent);
                 if (note.Duration > 0)
@@ -566,6 +611,7 @@ public class NoteRenderer
                 else
                     _glowTimer[lane] = 0.12f;
                 SetRecState(lane, 2);
+                _fmm?.OnHit(lane);
                 _anyLaneActive = true;
             }
 
@@ -637,7 +683,8 @@ public class NoteRenderer
                         Misses++; Combo = 0;
                         Shits++;  // Count failed hold as Shit
                         _comboBreakTimer[lane] = 0.5f;  // Combo break effect
-                        OnNoteMiss?.Invoke();
+                        _style?.PlayMissSound();
+                        LastMissLane = lane; OnNoteMiss?.Invoke();
                         OnJudgement?.Invoke("Shit");
                     }
                     else
@@ -679,6 +726,7 @@ public class NoteRenderer
             // Fire key press callback for multiplayer animation sync
             // This happens BEFORE hit detection so opponent sees animation even on misses
             OnKeyPress?.Invoke(lane);
+            _fmm?.OnPress(lane);
 
             // ── Find best note in hit window ──────────────────────────────────
             FnmmNote? best     = null;
@@ -719,27 +767,9 @@ public class NoteRenderer
                     case "Shit":  Shits++; break;
                 }
                 
-                // Trigger splash effect on Sick! rating (350 points) only when strumline is visible
-                bool isStrumlineVisible = HudSettings.Instance.MasterHudVisible &&
-                                          ShowStrumlines &&
-                                          !(_isPlayer && HidePlayerStrumline) &&
-                                          Alpha > 0.01f;
-                if (scoreGain >= 350 && isStrumlineVisible)
-                {
-                    // If using particle splash, ONLY trigger particles (not default splash)
-                    if (_particleSplash != null)
-                    {
-                        // Calculate splash position (center of receptor)
-                        // NOTE: Position will be calculated during Draw() since strumY is only available there
-                        // Store pending splash trigger for this lane
-                        _pendingSplashLane = lane;
-                    }
-                    else
-                    {
-                        // No particle splash active, use default splash
-                        _splashTimer[lane] = 0.3f;  // Splash lasts 300ms
-                    }
-                }
+                // Splash only on a Sick! (350 points)
+                if (scoreGain >= 350)
+                    TriggerSplash(lane);
                 
                 float holdEnd = best.Duration > 0 ? best.Start + best.Duration : -1f;
                 OnNoteHit?.Invoke(lane, holdEnd);
@@ -761,6 +791,7 @@ public class NoteRenderer
                     _glowTimer[lane] = RecAnimDuration(lane, 2, 0.15f);
 
                 SetRecState(lane, 2);
+                _fmm?.OnHit(lane);
             }
             else
             {
@@ -771,7 +802,8 @@ public class NoteRenderer
                     Misses++;
                     Combo = 0;
                     _comboBreakTimer[lane] = 0.5f;  // Combo break effect lasts 500ms
-                    OnNoteMiss?.Invoke();
+                    _style?.PlayMissSound();
+                    LastMissLane = lane; OnNoteMiss?.Invoke();
                     OnJudgement?.Invoke("Miss");
                 }
                 
@@ -805,7 +837,8 @@ public class NoteRenderer
                 {
                     Misses++; Combo = 0;
                     _comboBreakTimer[lane] = 0.5f;  // Combo break effect
-                    OnNoteMiss?.Invoke();
+                    _style?.PlayMissSound();
+                    LastMissLane = lane; OnNoteMiss?.Invoke();
                 }
                 if (note.Props.OnMissEvent >= 0)
                     OnNoteMissEvent?.Invoke((int)note.Props.OnMissEvent);
@@ -900,10 +933,13 @@ public class NoteRenderer
 
         float sh     = ScreenH;
         float sx     = ScaleX * NoteScale;
-        float strumY = StrumY;
+        Vector2 hudOffset = HudOffsetPx;
+        float strumY = StrumY + hudOffset.Y;
         float spd    = EffSpeed;
         float laneW  = LANE_WIDTH * sx;
         float alpha  = Alpha;
+        if (_fmm != null) _fmm.ShadowOffsetY = 10f * ScaleY;  // hud.hx dropShadow: 10 px at 720p
+
 
         for (int lane = 0; lane < LANE_COUNT; lane++)
         {
@@ -911,7 +947,7 @@ public class NoteRenderer
             // _xOffset is in unscaled pixels, so we need to scale it
             // Then add lane spacing (which is already scaled via laneW)
             float baseX = _xOffset * sx;
-            
+
             // Midlescroll split: lanes 0-1 use _xOffset, lanes 2-3 use _xOffsetSplit
             if (_xOffsetSplit >= 0f && lane >= 2)
             {
@@ -922,6 +958,7 @@ public class NoteRenderer
             {
                 baseX += lane * laneW;  // Normal spacing
             }
+            baseX += hudOffset.X;
             
             float cx = baseX + laneW / 2f;  // Center X of the lane
 
@@ -989,18 +1026,19 @@ public class NoteRenderer
             {
                 baseX += lane * laneW;
             }
+            baseX += hudOffset.X;
             float cx = baseX + laneW / 2f;
             
             _particleSplash.Trigger(lane, new Vector2(cx, strumY));
             _pendingSplashLane = -1;  // Reset
         }
 
-        if (!Autoplay && _isPlayer && font != null && Alpha > 0.01f)
+        if (ShowKeyLabels && !Autoplay && _isPlayer && font != null && Alpha > 0.01f)
         {
             for (int lane = 0; lane < LANE_COUNT; lane++)
             {
                 // Calculate position - same logic as main loop
-                float baseX = _xOffset * sx + lane * laneW;
+                float baseX = _xOffset * sx + lane * laneW + hudOffset.X;
                 float lx = baseX + laneW / 2f;
                 string label = PlayerKeys[lane].ToString();
                 var sz = font.MeasureString(label);
@@ -1145,6 +1183,12 @@ public class NoteRenderer
     // ── Receptor ─────────────────────────────────────────────────────────────
     private void DrawReceptor(SpriteBatch sb, int lane, float cx, float cy, float sx, float alpha, float songTime)
     {
+        if (_fmm != null && _style != null)
+        {
+            DrawFmmReceptor(sb, lane, cx, cy, sx, alpha);
+            return;
+        }
+
         // ── FNF-style receptor intro animation (pop-in effect during countdown) ──
         float introScale = 1f;
         float introAlpha = 1f;
@@ -1208,16 +1252,6 @@ public class NoteRenderer
         // Apply effect transforms to position
         cx += effectOffsetX;
         cy += effectOffsetY;
-        
-        // Draw combo break effect (red flash)
-        if (_comboBreakTimer[lane] > 0f)
-        {
-            float breakAlpha = _comboBreakTimer[lane] / 0.5f;  // Fade out over 500ms
-            float breakSize = 1.2f + (1f - breakAlpha) * 0.3f;  // Expand slightly
-            Color breakColor = Color.Red * breakAlpha * 0.6f * alpha;
-            float breakRadius = LANE_WIDTH * sx * breakSize * 0.6f;
-            DrawCircle(sb, cx, cy, breakRadius, breakColor);
-        }
         
         if (_style != null)
         {
@@ -1340,7 +1374,7 @@ public class NoteRenderer
                 
                 // Receptors are NOT colorized by lane (they stay grayscale/original)
                 // Only the flying notes get colorized
-                Color receptorColor = Color.White * finalAlpha * alpha;
+                Color receptorColor = Color.White * finalAlpha * alpha * _style.StrumAlpha;
                 
                 // Calculate origin for rotation (center of the frame)
                 Vector2 origin = new Vector2(f.FrameW / 2f + f.OffsetX, f.FrameH / 2f + f.OffsetY);
@@ -1388,6 +1422,30 @@ public class NoteRenderer
         }
     }
 
+    /// <summary>
+    /// FMM-faithful strum: no intro pop-in or glow (hud.hx cancels the strum animations);
+    /// the press/hit animation lives in FmmNoteSystemRenderer.
+    /// </summary>
+    private void DrawFmmReceptor(SpriteBatch sb, int lane, float cx, float cy, float sx, float alpha)
+    {
+        float rotation = 0f;
+        if (_arrowEffects != null && ArrowEffectManager.Enabled)
+        {
+            var transform = _arrowEffects.GetArrowTransform(lane, cx, cy);
+            cx += transform.offsetX;
+            cy += transform.offsetY;
+            rotation = transform.rotation;
+        }
+
+        _fmm!.DrawStrum(sb, lane, cx, cy, _style!.ReceptorScale * sx, alpha, rotation);
+
+        if (_splashTimer[lane] > 0f)
+            DrawNoteSplash(sb, lane, cx, cy, sx, alpha);
+    }
+
+    /// <summary>Lane colour for splashes: FMM styles tint them with the pressed colours (hud.hx onSplashShown).</summary>
+    private Color SplashLaneColor(int lane) => _fmm?.PressedColor(lane) ?? LaneColors[lane];
+
     // ── Note head ────────────────────────────────────────────────────────────
     private void DrawNoteHead(SpriteBatch sb, int lane, float cx, float cy, FnmmNote note, float sx, float alpha, float strumY)
     {
@@ -1401,6 +1459,16 @@ public class NoteRenderer
             NoteSkins.Positive => "O",
             _ => null,
         };
+
+        // FMM-faithful: one image rotated and tinted per lane, no FNF pop/glow extras
+        if (_fmm != null && _style != null)
+        {
+            float noteScale = _style.NoteScale * sx;
+            bool dedicated = _fmm.DrawNote(sb, lane, skinType, cx, cy, noteScale, alpha);
+            if (!dedicated && symbol != null && _font != null)
+                DrawNoteSymbol(sb, symbol, cx, cy, _fmm.NoteImageWidth * noteScale, LaneColors[lane], alpha);
+            return;
+        }
 
         // Tint: use skin config or defaults
         Color fallbackTint = _style != null
@@ -1417,6 +1485,7 @@ public class NoteRenderer
             var f = _style.GetNoteFrame(lane, skinType);
             if (f != null)
             {
+                alpha *= _style.NoteAlpha;
                 bool hasDedicatedFrame = _style.NoteFrames[lane, skinType] != null;
                 Color baseTint = (hasDedicatedFrame || skinType == 0)
                     ? Color.White
@@ -1645,22 +1714,12 @@ public class NoteRenderer
     {
         if (_splashStyle == null || _splashStyle.SplashFrames[lane] == null) return;
         
-        var frames = _splashStyle.SplashFrames[lane]!;
-        float duration = _splashStyle.Duration;
-        float progress = 1f - (_splashTimer[lane] / duration);  // 0 = just started, 1 = finished
-        
-        // Calculate frame index based on FPS and progress
-        int frameCount = frames.Count;
-        int frameIndex = (int)(progress * frameCount);
-        if (frameIndex >= frameCount) frameIndex = frameCount - 1;
-        if (frameIndex < 0) frameIndex = 0;
-        
-        var frame = frames[frameIndex];
-        float frameAlpha = (1f - progress) * alpha;
-        
-        // Apply colorize by lane if enabled
-        Color tint = _splashStyle.ColorizeByLane ? LaneColors[lane] : Color.White;
-        tint *= frameAlpha;
+        // Plays at the style's fps; _splashTimer counts down from SplashLength(lane)
+        float elapsed = SplashLength(lane) - _splashTimer[lane];
+        var frame = _splashStyle.FrameAt(lane, elapsed);
+        if (frame == null) return;
+
+        Color tint = _splashStyle.TintFor(lane, SplashLaneColor(lane)) * (_splashStyle.AlphaAt(lane, elapsed) * alpha);
         
         // FNF-style positioning: SAME AS RECEPTOR DRAWING (line 858-859)
         // Center the full frame, then apply NEGATED offset (like receptors do)
@@ -1682,13 +1741,67 @@ public class NoteRenderer
     /// Draws programmatic notesplash (default fallback, no copyright issues).
     /// Simple particle burst effect with color-coded glow.
     /// </summary>
+    /// <summary>
+    /// Full-height black column covering this strumline's four lanes (plus a small margin),
+    /// so the chart stays readable over busy backgrounds. Follows the strumline's position,
+    /// HUD offset and visibility. Game1 calls it for the player strumline right after the
+    /// scene, before the HUD, so it sits below every UI element and the notes.
+    /// </summary>
+    /// <param name="alpha">The strumline's opacity this frame (0 hides the underlay).</param>
+    public void DrawLaneUnderlay(SpriteBatch sb, float alpha)
+    {
+        if (HudRole != 0 || LaneUnderlay <= 0f) return;
+        if (!HudSettings.Instance.MasterHudVisible || !ShowStrumlines ||
+            (_isPlayer && HidePlayerStrumline) || alpha <= 0.01f)
+            return;
+
+        float sx = ScaleX * NoteScale;
+        float laneW = LANE_WIDTH * sx;
+        float hudOffsetX = HudOffsetPx.X;
+
+        float left = float.MaxValue, right = float.MinValue;
+        for (int lane = 0; lane < LANE_COUNT; lane++)
+        {
+            float baseX = _xOffsetSplit >= 0f && lane >= 2
+                ? _xOffsetSplit * sx + (lane - 2) * laneW
+                : _xOffset * sx + lane * laneW;
+            baseX += hudOffsetX;
+            left = Math.Min(left, baseX);
+            right = Math.Max(right, baseX + laneW);
+        }
+        float margin = laneW * 0.08f;
+        DrawRect(sb, left - margin, 0f, right - left + margin * 2f, ScreenH,
+                 Color.Black * (Math.Clamp(LaneUnderlay, 0f, LaneUnderlayMax) * alpha));
+    }
+
+    /// <summary>Starts a splash on a lane (only while this strumline is visible).</summary>
+    private void TriggerSplash(int lane)
+    {
+        bool visible = HudSettings.Instance.MasterHudVisible && ShowStrumlines &&
+                       !(_isPlayer && HidePlayerStrumline) && Alpha > 0.01f;
+        if (!visible) return;
+
+        // Particle splashes are positioned in Draw() (strumY is only known there)
+        if (_particleSplash != null)
+            _pendingSplashLane = lane;
+        else
+            _splashTimer[lane] = SplashLength(lane);
+    }
+
+    /// <summary>Splash length for a lane: the texture animation's length, or 0.3 s for the code-drawn one.</summary>
+    private float SplashLength(int lane)
+    {
+        float len = _splashStyle?.Length(lane) ?? 0f;
+        return len > 0f ? len : 0.3f;
+    }
+
     private void DrawNoteSplashProgrammatic(SpriteBatch sb, int lane, float cx, float cy, float sx, float alpha)
     {
-        float progress = 1f - (_splashTimer[lane] / 0.3f);  // 0 = just started, 1 = finished
+        float progress = Math.Clamp(1f - (_splashTimer[lane] / 0.3f), 0f, 1f);  // 0 = just started, 1 = finished
         float splashAlpha = (1f - progress) * 0.8f;  // Fade out
         float splashScale = 1f + progress * 0.5f;  // Expand outward
         
-        Color splashColor = LaneColors[lane] * splashAlpha * alpha;
+        Color splashColor = SplashLaneColor(lane) * splashAlpha * alpha;
         float splashSize = LANE_WIDTH * sx * splashScale;
         
         // Draw 4 particles in + pattern
