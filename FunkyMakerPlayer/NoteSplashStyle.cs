@@ -22,8 +22,50 @@ public class NoteSplashStyle
     /// <summary>Animation FPS for splash effect. Default: 24 FPS.</summary>
     public float AnimationFps { get; set; } = 24f;
 
-    /// <summary>Total duration of splash effect in seconds. Default: 0.3s.</summary>
-    public float Duration { get; set; } = 0.3f;
+    /// <summary>How long the splash shows: its longest lane's frame count / fps.
+    /// (splash.json "duration" is no longer used; the animation plays at "fps".)</summary>
+    public float Duration
+    {
+        get
+        {
+            float longest = 0f;
+            for (int lane = 0; lane < 4; lane++) longest = Math.Max(longest, Length(lane));
+            return longest > 0f ? longest : 0.3f;
+        }
+    }
+
+    /// <summary>Length of one lane's animation in seconds (0 when the lane has no frames).</summary>
+    public float Length(int lane) =>
+        SplashFrames[lane] is { Count: > 0 } f ? f.Count / Math.Max(1f, AnimationFps) : 0f;
+
+    /// <summary>Frame to show <paramref name="elapsed"/> seconds after the hit; null once the animation is over.</summary>
+    public AtlasFrame? FrameAt(int lane, float elapsed)
+    {
+        if (SplashFrames[lane] is not { Count: > 0 } frames || elapsed < 0f) return null;
+        int index = (int)(elapsed * AnimationFps);
+        return index < frames.Count ? frames[index] : null;
+    }
+
+    /// <summary>splash.json "alpha": opacity of the splash. Default 1.</summary>
+    public float Alpha { get; set; } = 1f;
+
+    /// <summary>splash.json "fade": fade out over the animation. Default false.</summary>
+    public bool Fade { get; set; } = false;
+
+    /// <summary>splash.json "colors": tint per lane (left, down, up, right). Overrides colorizeByLane.</summary>
+    public Color[]? LaneColors { get; set; }
+
+    /// <summary>Tint for a lane: "colors" if set, else <paramref name="laneColor"/> when colorizeByLane, else white.</summary>
+    public Color TintFor(int lane, Color laneColor) =>
+        LaneColors != null ? LaneColors[lane & 3] : ColorizeByLane ? laneColor : Color.White;
+
+    /// <summary>Opacity <paramref name="elapsed"/> seconds in (alpha, faded when "fade" is on).</summary>
+    public float AlphaAt(int lane, float elapsed)
+    {
+        if (!Fade) return Alpha;
+        float len = Length(lane);
+        return len > 0f ? Alpha * Math.Clamp(1f - elapsed / len, 0f, 1f) : Alpha;
+    }
 
     /// <summary>Scale multiplier for splash rendering. Default: 1.0.</summary>
     public float Scale { get; set; } = 1.0f;
@@ -167,9 +209,24 @@ public class NoteSplashStyle
                     var root = doc.RootElement;
 
                     if (root.TryGetProperty("fps", out var fps))
-                        style.AnimationFps = fps.GetSingle();
-                    if (root.TryGetProperty("duration", out var dur))
-                        style.Duration = dur.GetSingle();
+                        style.AnimationFps = Math.Max(1f, fps.GetSingle());
+                    if (root.TryGetProperty("alpha", out var al) && al.ValueKind == System.Text.Json.JsonValueKind.Number)
+                        style.Alpha = Math.Clamp(al.GetSingle(), 0f, 1f);
+                    if (root.TryGetProperty("fade", out var fd) &&
+                        (fd.ValueKind == System.Text.Json.JsonValueKind.True || fd.ValueKind == System.Text.Json.JsonValueKind.False))
+                        style.Fade = fd.GetBoolean();
+                    if (root.TryGetProperty("colors", out var cols) && cols.ValueKind == System.Text.Json.JsonValueKind.Array)
+                    {
+                        var lc = new[] { Color.White, Color.White, Color.White, Color.White };
+                        int ci = 0;
+                        foreach (var c in cols.EnumerateArray())
+                        {
+                            if (ci >= 4) break;
+                            if (FmmNoteSystem.TryReadColor(c, out var parsed)) lc[ci] = parsed;
+                            ci++;
+                        }
+                        style.LaneColors = lc;
+                    }
                     if (root.TryGetProperty("scale", out var sc))
                         style.Scale = sc.GetSingle();
                     if (root.TryGetProperty("colorizeByLane", out var cbl))
@@ -211,31 +268,20 @@ public class NoteSplashStyle
     }
 
     /// <summary>
-    /// Returns all available notesplash style names: "Default" (programmatic) + any folder in notesplashes/.
-    /// A folder is valid if it has at least one PNG and one XML file.
+    /// All splash style names: the default ("FMM (Default)"), other folders in notesplashes/
+    /// (PNG + XML), then the built-in code-drawn ones ("Simple", "Particles: …").
     /// </summary>
     public static List<string> GetAvailableStyles()
     {
-        var styles = new List<string> 
-        { 
-            "Default",
-            // Particle styles (procedural, no textures)
-            "Particles: CircleExpand",
-            "Particles: SplashDrops",
-            "Particles: StarBurst",
-            "Particles: Explosion",
-            "Particles: RingPulse",
-            "Particles: Randomizer"  // Random style on each hit
-        };
-        
+        var styles = new List<string> { DefaultMods.SplashName };
+
         string splashesDir = PlatformPaths.GetNoteSplashesPath();
-        
         if (Directory.Exists(splashesDir))
         {
             foreach (var dir in Directory.GetDirectories(splashesDir))
             {
                 string name = Path.GetFileName(dir);
-                if (string.IsNullOrEmpty(name)) continue;
+                if (string.IsNullOrEmpty(name) || DefaultMods.IsDefaultSplash(name)) continue;
 
                 // Accept any folder that has at least one PNG and one XML
                 bool hasPng = Directory.GetFiles(dir, "*.png").Length > 0;
@@ -244,28 +290,47 @@ public class NoteSplashStyle
                     styles.Add(name);
             }
         }
-        
+
+        styles.Add(DefaultMods.SimpleSplashName);
+        styles.AddRange(new[]
+        {
+            "Particles: CircleExpand",
+            "Particles: SplashDrops",
+            "Particles: StarBurst",
+            "Particles: Explosion",
+            "Particles: RingPulse",
+            "Particles: Randomizer",  // Random style on each hit
+        });
         return styles;
     }
 
+    /// <summary>True for the built-in code-drawn splashes ("Simple" and "Particles: …").</summary>
+    public static bool IsBuiltIn(string? name) =>
+        name != null && (name.Equals(DefaultMods.SimpleSplashName, StringComparison.OrdinalIgnoreCase) ||
+                         name.StartsWith("Particles:", StringComparison.Ordinal));
+
     /// <summary>
-    /// Loads a notesplash style by name. 
-    /// "Default" returns null (programmatic fallback).
-    /// "Particles: *" returns null (will use ParticleNoteSplash instead).
-    /// Other names load from notesplashes/<name>/ folder.
+    /// Loads a splash style by name. The default loads mods/notesplashes/FMM (Default)/ (shipped
+    /// copy as fallback). Built-in names return null: "Simple" is drawn by NoteRenderer, particles
+    /// by ParticleNoteSplash. Other names load notesplashes/&lt;name&gt;/.
     /// </summary>
     public static NoteSplashStyle? LoadByName(string name, GraphicsDevice gd)
     {
-        // Default = programmatic fallback (no textures)
-        // Particles: * = return null (will be handled by ParticleNoteSplash)
-        if (name == "Default" || name.StartsWith("Particles:") || string.IsNullOrEmpty(name))
+        if (IsBuiltIn(name))
             return null;
 
-        string splashesDir = PlatformPaths.GetNoteSplashesPath();
-        string styleDir = Path.Combine(splashesDir, name);
-        
+        if (DefaultMods.IsDefaultSplash(name))
+        {
+            DefaultMods.EnsureInstalled();
+            var style = Directory.Exists(DefaultMods.SplashDir) ? LoadFromFolder(DefaultMods.SplashDir, gd) : null;
+            if (style != null) return style;
+            string? bundled = DefaultMods.Bundled("notesplashes", DefaultMods.SplashName);
+            return bundled != null && Directory.Exists(bundled) ? LoadFromFolder(bundled, gd) : null;
+        }
+
+        string styleDir = Path.Combine(PlatformPaths.GetNoteSplashesPath(), name);
         if (!Directory.Exists(styleDir))
-            return null;  // Fallback to programmatic
+            return null;  // Fallback to the code-drawn splash
 
         return LoadFromFolder(styleDir, gd);
     }

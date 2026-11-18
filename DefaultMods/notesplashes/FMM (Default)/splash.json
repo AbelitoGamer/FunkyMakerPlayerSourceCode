@@ -1,0 +1,10 @@
+{
+  "fps": 24,
+  "scale": 0.5,
+  "alpha": 1.0,
+  "fade": false,
+  "colorizeByLane": true,
+  "colors": ["#C576A8", "#4AEBEB", "#55E84F", "#E46E75"],
+  "offsetX": [0, 0, 0, 0],
+  "offsetY": [0, 0, 0, 0]
+}

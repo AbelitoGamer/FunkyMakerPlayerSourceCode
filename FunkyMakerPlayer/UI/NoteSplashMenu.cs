@@ -284,94 +284,34 @@ public class NoteSplashMenu : IScreenOverlay
         string selectedName = _styles[Selection];
         float infoY = 100f;
         Color infoColor = Color.White * 0.7f;
-        int infoSize = (int)(sh * 0.030f);
-        infoSize = Math.Clamp(infoSize, 16, 28);
-        
-        if (selectedName.StartsWith("Particles:"))
+        int infoSize = Math.Clamp((int)(sh * 0.030f), 16, 28);
+        int noteSize = (int)(infoSize * 0.85f);
+
+        var info = new List<(string text, bool small)>();
+        if (style != null && style.HasTextures)
         {
-            // Show info for particle-based splash
-            if (_fontRenderer != null)
-            {
-                _fontRenderer.DrawString(spriteBatch, "Type: Programmatic (Extended)",
-                    new Vector2(previewX + 8, infoY), infoColor, infoSize);
-                infoY += 24f;
-                int descSize = (int)(infoSize * 0.85f);
-                _fontRenderer.DrawString(spriteBatch, "Procedural visual effects",
-                    new Vector2(previewX + 8, infoY), infoColor * 0.6f, descSize);
-                infoY += 20f;
-                _fontRenderer.DrawString(spriteBatch, "No textures required",
-                    new Vector2(previewX + 8, infoY), infoColor * 0.6f, descSize);
-            }
-            else
-            {
-                spriteBatch.DrawString(_font, "Type: Programmatic (Extended)",
-                    new Vector2(previewX + 8, infoY), infoColor, 0f, Vector2.Zero, 0.7f, SpriteEffects.None, 0f);
-                infoY += 24f;
-                spriteBatch.DrawString(_font, "Procedural visual effects",
-                    new Vector2(previewX + 8, infoY), infoColor * 0.6f, 0f, Vector2.Zero, 0.65f, SpriteEffects.None, 0f);
-                infoY += 20f;
-                spriteBatch.DrawString(_font, "No textures required",
-                    new Vector2(previewX + 8, infoY), infoColor * 0.6f, 0f, Vector2.Zero, 0.65f, SpriteEffects.None, 0f);
-            }
-        }
-        else if (style != null && style.HasTextures)
-        {
-            if (_fontRenderer != null)
-            {
-                _fontRenderer.DrawString(spriteBatch, "Type: Texture-based",
-                    new Vector2(previewX + 8, infoY), infoColor, infoSize);
-                infoY += 24f;
-                _fontRenderer.DrawString(spriteBatch, $"FPS: {style.AnimationFps}",
-                    new Vector2(previewX + 8, infoY), infoColor, infoSize);
-                infoY += 24f;
-                _fontRenderer.DrawString(spriteBatch, $"Duration: {style.Duration:F2}s",
-                    new Vector2(previewX + 8, infoY), infoColor, infoSize);
-                infoY += 24f;
-                _fontRenderer.DrawString(spriteBatch, $"Scale: {style.Scale:F2}x",
-                    new Vector2(previewX + 8, infoY), infoColor, infoSize);
-            }
-            else
-            {
-                spriteBatch.DrawString(_font, "Type: Texture-based",
-                    new Vector2(previewX + 8, infoY), infoColor, 0f, Vector2.Zero, 0.7f, SpriteEffects.None, 0f);
-                infoY += 24f;
-                spriteBatch.DrawString(_font, $"FPS: {style.AnimationFps}",
-                    new Vector2(previewX + 8, infoY), infoColor, 0f, Vector2.Zero, 0.7f, SpriteEffects.None, 0f);
-                infoY += 24f;
-                spriteBatch.DrawString(_font, $"Duration: {style.Duration:F2}s",
-                    new Vector2(previewX + 8, infoY), infoColor, 0f, Vector2.Zero, 0.7f, SpriteEffects.None, 0f);
-                infoY += 24f;
-                spriteBatch.DrawString(_font, $"Scale: {style.Scale:F2}x",
-                    new Vector2(previewX + 8, infoY), infoColor, 0f, Vector2.Zero, 0.7f, SpriteEffects.None, 0f);
-            }
+            info.Add(("Type: Codename", false));
+            info.Add(($"FPS: {style.AnimationFps:0.##}", false));
+            info.Add(($"Length: {style.Duration:F2}s", false));
+            info.Add(($"Scale: {style.Scale:F2}x", false));
         }
         else
         {
-            if (_fontRenderer != null)
-            {
-                _fontRenderer.DrawString(spriteBatch, "Type: Programmatic (Default)",
-                    new Vector2(previewX + 8, infoY), infoColor, infoSize);
-                infoY += 24f;
-                int descSize = (int)(infoSize * 0.85f);
-                _fontRenderer.DrawString(spriteBatch, "Simple particle burst effect",
-                    new Vector2(previewX + 8, infoY), infoColor * 0.6f, descSize);
-                infoY += 20f;
-                _fontRenderer.DrawString(spriteBatch, "No copyright issues",
-                    new Vector2(previewX + 8, infoY), infoColor * 0.6f, descSize);
-            }
-            else
-            {
-                spriteBatch.DrawString(_font, "Type: Programmatic (Default)",
-                    new Vector2(previewX + 8, infoY), infoColor, 0f, Vector2.Zero, 0.7f, SpriteEffects.None, 0f);
-                infoY += 24f;
-                spriteBatch.DrawString(_font, "Simple particle burst effect",
-                    new Vector2(previewX + 8, infoY), infoColor * 0.6f, 0f, Vector2.Zero, 0.65f, SpriteEffects.None, 0f);
-                infoY += 20f;
-                spriteBatch.DrawString(_font, "No copyright issues",
-                    new Vector2(previewX + 8, infoY), infoColor * 0.6f, 0f, Vector2.Zero, 0.65f, SpriteEffects.None, 0f);
-            }
+            info.Add(("Type: Code", false));
+            info.Add(("Built in", true));
         }
-        
+
+        foreach (var (text, small) in info)
+        {
+            if (_fontRenderer != null)
+                _fontRenderer.DrawString(spriteBatch, text, new Vector2(previewX + 8, infoY),
+                    small ? infoColor * 0.6f : infoColor, small ? noteSize : infoSize);
+            else
+                spriteBatch.DrawString(_font, text, new Vector2(previewX + 8, infoY),
+                    small ? infoColor * 0.6f : infoColor, 0f, Vector2.Zero, small ? 0.65f : 0.7f, SpriteEffects.None, 0f);
+            infoY += small ? 20f : 24f;
+        }
+
         // ── Draw animated splash preview in center ────────────────────────────
         float receptorSize = NoteRenderer.LANE_WIDTH * 0.8f;
         
@@ -413,18 +353,13 @@ public class NoteSplashMenu : IScreenOverlay
         {
             if (style != null && style.HasTextures && style.SplashFrames[_animLane] != null)
             {
-                // Texture-based splash
-                var frames = style.SplashFrames[_animLane]!;
-                float progress = _animTimer / loopDuration;
-                int frameIndex = (int)(progress * frames.Count);
-                if (frameIndex >= frames.Count) frameIndex = frames.Count - 1;
-                
-                var frame = frames[frameIndex];
-                float splashScale = 1.5f * style.Scale;  // Larger for preview
-                float alpha = 1f - progress * 0.5f;  // Fade slightly
-                
-                Color tint = style.ColorizeByLane ? laneColors[_animLane] : Color.White;
-                tint *= alpha;
+                // Texture-based splash, played exactly as in game (fps, tint, alpha)
+                var frame = style.FrameAt(_animLane, _animTimer);
+                if (frame != null)
+                {
+                float splashScale = style.Scale;
+
+                Color tint = style.TintFor(_animLane, laneColors[_animLane]) * style.AlphaAt(_animLane, _animTimer);
                 
                 // Center the splash frame
                 float drawX = previewCx - frame.FrameW * splashScale / 2f + (-frame.OffsetX) * splashScale;
@@ -432,6 +367,7 @@ public class NoteSplashMenu : IScreenOverlay
                 
                 spriteBatch.Draw(frame.Texture, new Vector2(drawX, drawY), frame.Source, tint,
                     0f, Vector2.Zero, splashScale, SpriteEffects.None, 0f);
+                }
             }
             else
             {

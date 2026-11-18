@@ -49,8 +49,8 @@ public static class Settings
         public float SfxVolume         { get; set; } = 0.8f;   // UI sound effects (UiSfx)
         public float MenuMusicVolume   { get; set; } = 0.7f;   // menu background music (OnlineMenuMusic)
         public bool  BilinearFiltering { get; set; } = true;
-        public string NoteStyleName    { get; set; } = "Default";
-        public string NoteSplashStyleName { get; set; } = "Default";
+        public string NoteStyleName    { get; set; } = DefaultMods.NoteStyleName;
+        public string NoteSplashStyleName { get; set; } = DefaultMods.SplashName;
         public bool  ShowStrumlines       { get; set; } = true;
         public bool  HidePlayerStrumline  { get; set; } = false;
         public bool  HideExtraStrumlines { get; set; } = false;
@@ -178,8 +178,14 @@ public static class Settings
             UI.UiSfx.Volume                = Math.Clamp(d.SfxVolume, 0f, 1f);
             Managers.OnlineMenuMusic.Volume = Math.Clamp(d.MenuMusicVolume, 0f, 1f);
             Game1.BilinearFiltering        = d.BilinearFiltering;
-            Game1.NoteStyleName            = d.NoteStyleName;
-            Game1.NoteSplashStyleName      = d.NoteSplashStyleName;
+            // Old saves say "Default"; show the current default's name instead
+            Game1.NoteStyleName            = DefaultMods.IsDefaultNoteStyle(d.NoteStyleName)
+                                                 ? DefaultMods.NoteStyleName
+                                                 : d.NoteStyleName;
+            // Old saves say "Default" (the code-drawn splash); that now means the default splash
+            Game1.NoteSplashStyleName      = DefaultMods.IsDefaultSplash(d.NoteSplashStyleName)
+                                                 ? DefaultMods.SplashName
+                                                 : d.NoteSplashStyleName;
             NoteRenderer.ShowStrumlines    = d.ShowStrumlines;
             NoteRenderer.HidePlayerStrumline = d.HidePlayerStrumline;
             Game1.HideExtraStrumlines      = d.HideExtraStrumlines;

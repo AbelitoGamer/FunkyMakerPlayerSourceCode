@@ -338,7 +338,7 @@ public partial class Game1 : Game
     // Note style name — "Default" or a folder name in mods/notestyles/
     public static string NoteStyleName     = DefaultMods.NoteStyleName;
     // NoteSplash style name — "Default" (programmatic) or a folder name in mods/notesplashes/
-    public static string NoteSplashStyleName = "Default";
+    public static string NoteSplashStyleName = DefaultMods.SplashName;
     // Icon mode: 0 = Fixed (FNF base - icons move with health %), 1 = Dynamic (icons stay at ends)
     public static int IconMode = 0;
     // Selected countdown pack name from mods/countdowns/[name]/

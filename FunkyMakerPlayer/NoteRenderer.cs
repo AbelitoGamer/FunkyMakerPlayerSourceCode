@@ -467,7 +467,7 @@ public class NoteRenderer
         
         // Trigger splash effect for Sick! hits (only default if no particles)
         if (isSick && _particleSplash == null)
-            _splashTimer[lane] = 0.3f;
+            _splashTimer[lane] = SplashLength(lane);
         
         // Note: Particle splash for multiplayer opponent hits would need separate implementation
         // since we can't trigger _pendingSplashLane from here (no Draw() call for opponent)
@@ -580,6 +580,9 @@ public class NoteRenderer
                 OnComboChanged?.Invoke(Combo);  // Fire combo changed event
                 float holdEnd = note.Duration > 0 ? note.Start + note.Duration : -1f;
                 OnNoteHit?.Invoke(lane, holdEnd);
+                // Botplay hits are perfect, so the player's strumline shows a splash (as in FNF)
+                if (_isPlayer)
+                    TriggerSplash(lane);
                 if (note.Props.OnPressEvent >= 0)
                     OnNotePressEvent?.Invoke((int)note.Props.OnPressEvent);
                 if (note.Duration > 0)
@@ -743,27 +746,9 @@ public class NoteRenderer
                     case "Shit":  Shits++; break;
                 }
                 
-                // Trigger splash effect on Sick! rating (350 points) only when strumline is visible
-                bool isStrumlineVisible = HudSettings.Instance.MasterHudVisible &&
-                                          ShowStrumlines &&
-                                          !(_isPlayer && HidePlayerStrumline) &&
-                                          Alpha > 0.01f;
-                if (scoreGain >= 350 && isStrumlineVisible)
-                {
-                    // If using particle splash, ONLY trigger particles (not default splash)
-                    if (_particleSplash != null)
-                    {
-                        // Calculate splash position (center of receptor)
-                        // NOTE: Position will be calculated during Draw() since strumY is only available there
-                        // Store pending splash trigger for this lane
-                        _pendingSplashLane = lane;
-                    }
-                    else
-                    {
-                        // No particle splash active, use default splash
-                        _splashTimer[lane] = 0.3f;  // Splash lasts 300ms
-                    }
-                }
+                // Splash only on a Sick! (350 points)
+                if (scoreGain >= 350)
+                    TriggerSplash(lane);
                 
                 float holdEnd = best.Duration > 0 ? best.Start + best.Duration : -1f;
                 OnNoteHit?.Invoke(lane, holdEnd);
@@ -1244,16 +1229,6 @@ public class NoteRenderer
         cx += effectOffsetX;
         cy += effectOffsetY;
         
-        // Draw combo break effect (red flash)
-        if (_comboBreakTimer[lane] > 0f)
-        {
-            float breakAlpha = _comboBreakTimer[lane] / 0.5f;  // Fade out over 500ms
-            float breakSize = 1.2f + (1f - breakAlpha) * 0.3f;  // Expand slightly
-            Color breakColor = Color.Red * breakAlpha * 0.6f * alpha;
-            float breakRadius = LANE_WIDTH * sx * breakSize * 0.6f;
-            DrawCircle(sb, cx, cy, breakRadius, breakColor);
-        }
-        
         if (_style != null)
         {
             bool holdActive = _holdEndTime[lane] > 0f;
@@ -1715,22 +1690,12 @@ public class NoteRenderer
     {
         if (_splashStyle == null || _splashStyle.SplashFrames[lane] == null) return;
         
-        var frames = _splashStyle.SplashFrames[lane]!;
-        float duration = _splashStyle.Duration;
-        float progress = 1f - (_splashTimer[lane] / duration);  // 0 = just started, 1 = finished
-        
-        // Calculate frame index based on FPS and progress
-        int frameCount = frames.Count;
-        int frameIndex = (int)(progress * frameCount);
-        if (frameIndex >= frameCount) frameIndex = frameCount - 1;
-        if (frameIndex < 0) frameIndex = 0;
-        
-        var frame = frames[frameIndex];
-        float frameAlpha = (1f - progress) * alpha;
-        
-        // Apply colorize by lane if enabled
-        Color tint = _splashStyle.ColorizeByLane ? LaneColors[lane] : Color.White;
-        tint *= frameAlpha;
+        // Plays at the style's fps; _splashTimer counts down from SplashLength(lane)
+        float elapsed = SplashLength(lane) - _splashTimer[lane];
+        var frame = _splashStyle.FrameAt(lane, elapsed);
+        if (frame == null) return;
+
+        Color tint = _splashStyle.TintFor(lane, SplashLaneColor(lane)) * (_splashStyle.AlphaAt(lane, elapsed) * alpha);
         
         // FNF-style positioning: SAME AS RECEPTOR DRAWING (line 858-859)
         // Center the full frame, then apply NEGATED offset (like receptors do)
@@ -1752,13 +1717,34 @@ public class NoteRenderer
     /// Draws programmatic notesplash (default fallback, no copyright issues).
     /// Simple particle burst effect with color-coded glow.
     /// </summary>
+    /// <summary>Starts a splash on a lane (only while this strumline is visible).</summary>
+    private void TriggerSplash(int lane)
+    {
+        bool visible = HudSettings.Instance.MasterHudVisible && ShowStrumlines &&
+                       !(_isPlayer && HidePlayerStrumline) && Alpha > 0.01f;
+        if (!visible) return;
+
+        // Particle splashes are positioned in Draw() (strumY is only known there)
+        if (_particleSplash != null)
+            _pendingSplashLane = lane;
+        else
+            _splashTimer[lane] = SplashLength(lane);
+    }
+
+    /// <summary>Splash length for a lane: the texture animation's length, or 0.3 s for the code-drawn one.</summary>
+    private float SplashLength(int lane)
+    {
+        float len = _splashStyle?.Length(lane) ?? 0f;
+        return len > 0f ? len : 0.3f;
+    }
+
     private void DrawNoteSplashProgrammatic(SpriteBatch sb, int lane, float cx, float cy, float sx, float alpha)
     {
-        float progress = 1f - (_splashTimer[lane] / 0.3f);  // 0 = just started, 1 = finished
+        float progress = Math.Clamp(1f - (_splashTimer[lane] / 0.3f), 0f, 1f);  // 0 = just started, 1 = finished
         float splashAlpha = (1f - progress) * 0.8f;  // Fade out
         float splashScale = 1f + progress * 0.5f;  // Expand outward
         
-        Color splashColor = LaneColors[lane] * splashAlpha * alpha;
+        Color splashColor = SplashLaneColor(lane) * splashAlpha * alpha;
         float splashSize = LANE_WIDTH * sx * splashScale;
         
         // Draw 4 particles in + pattern
