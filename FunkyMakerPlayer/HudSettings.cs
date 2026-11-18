@@ -88,6 +88,12 @@ public class HudSettings
     public HudPosition OpponentIconPosition { get; set; } = new HudPosition(290, 610);
     public bool OpponentIconVisible { get; set; } = true;
     public HudPosition PlayerIconPosition { get; set; } = new HudPosition(890, 610);
+
+    // ── Strumline offsets (HUD editor) ───────────────────────────────────────
+    // Strumline positions come from the level (and can move with events), so the HUD editor
+    // stores an offset in 1280×720 pixels that is added on top of wherever the strumline is.
+    public HudPosition PlayerStrumlineOffset { get; set; } = new HudPosition(0, 0);
+    public HudPosition OpponentStrumlineOffset { get; set; } = new HudPosition(0, 0);
     public bool PlayerIconVisible { get; set; } = true;
 
     // ── Strumlines (unified with NoteRenderer / Game1 static state) ──────────
@@ -252,6 +258,8 @@ public class HudSettings
         OpponentIconVisible = true;
         PlayerIconPosition = new HudPosition(890, 610);
         PlayerIconVisible = true;
+        PlayerStrumlineOffset = new HudPosition(0, 0);
+        OpponentStrumlineOffset = new HudPosition(0, 0);
         StrumlinesVisible = true;
         PlayerStrumlineVisible = true;
         OpponentStrumlineVisible = true;
@@ -304,7 +312,10 @@ public class HudSettings
             OpponentIconPosition = new HudPosition(OpponentIconPosition.X, 10),
             OpponentIconVisible = OpponentIconVisible,
             PlayerIconPosition = new HudPosition(PlayerIconPosition.X, 10),
-            PlayerIconVisible = PlayerIconVisible
+            PlayerIconVisible = PlayerIconVisible,
+
+            PlayerStrumlineOffset = PlayerStrumlineOffset,
+            OpponentStrumlineOffset = OpponentStrumlineOffset
         };
         
         return adjusted;

@@ -313,6 +313,20 @@ public class NoteRenderer
     /// <summary>Override the Y position of the receptor (screen pixels).</summary>
     public void SetStrumY(float y) => _customStrumY = y;
 
+    /// <summary>Which HUD-editor strumline offset applies: 0 = player, 1 = opponent, -1 = none.</summary>
+    public int HudRole { get; set; } = -1;
+
+    /// <summary>HUD editor offset for this strumline, in render-target pixels.</summary>
+    private Vector2 HudOffsetPx
+    {
+        get
+        {
+            var hud = HudSettings.Instance;
+            var o = HudRole == 0 ? hud.PlayerStrumlineOffset : HudRole == 1 ? hud.OpponentStrumlineOffset : null;
+            return o == null ? Vector2.Zero : new Vector2(o.X * ScaleX, o.Y * ScaleY);
+        }
+    }
+
     public int Score  { get; private set; }
     public int Misses { get; private set; }
     public int Combo  { get; private set; }
@@ -919,7 +933,8 @@ public class NoteRenderer
 
         float sh     = ScreenH;
         float sx     = ScaleX * NoteScale;
-        float strumY = StrumY;
+        Vector2 hudOffset = HudOffsetPx;
+        float strumY = StrumY + hudOffset.Y;
         float spd    = EffSpeed;
         float laneW  = LANE_WIDTH * sx;
         float alpha  = Alpha;
@@ -943,6 +958,7 @@ public class NoteRenderer
             {
                 baseX += lane * laneW;  // Normal spacing
             }
+            baseX += hudOffset.X;
             
             float cx = baseX + laneW / 2f;  // Center X of the lane
 
@@ -1010,6 +1026,7 @@ public class NoteRenderer
             {
                 baseX += lane * laneW;
             }
+            baseX += hudOffset.X;
             float cx = baseX + laneW / 2f;
             
             _particleSplash.Trigger(lane, new Vector2(cx, strumY));
@@ -1021,7 +1038,7 @@ public class NoteRenderer
             for (int lane = 0; lane < LANE_COUNT; lane++)
             {
                 // Calculate position - same logic as main loop
-                float baseX = _xOffset * sx + lane * laneW;
+                float baseX = _xOffset * sx + lane * laneW + hudOffset.X;
                 float lx = baseX + laneW / 2f;
                 string label = PlayerKeys[lane].ToString();
                 var sz = font.MeasureString(label);

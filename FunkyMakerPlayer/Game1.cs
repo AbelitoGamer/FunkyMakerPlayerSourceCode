@@ -2086,6 +2086,8 @@ public partial class Game1 : Game
             {
                 renderer.Alpha = 0f;
             }
+            // HUD editor strumline offsets: index 0 = player, 1 = opponent
+            renderer.HudRole = i <= 1 ? i : -1;
             // With 3+ strumlines: extras (2+) hide when idle
             if (strumlineCount >= 3 && i >= 2) renderer.HideWhenIdle = true;
             // Multiplayer: Disable autoplay for opponent (index 1) — hits come from network
