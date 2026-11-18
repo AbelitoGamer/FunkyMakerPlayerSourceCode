@@ -7,8 +7,8 @@
     <TieredCompilation>false</TieredCompilation>
     <Nullable>enable</Nullable>
     <ImplicitUsings>disable</ImplicitUsings>
-    <Version>0.4.9</Version>
-    <AssemblyVersion>0.4.9</AssemblyVersion>
+    <Version>0.5.0</Version>
+    <AssemblyVersion>0.5.0</AssemblyVersion>
     <!-- Disable Mono runtime requirement to use CoreCLR instead -->
     <UseMonoRuntime>false</UseMonoRuntime>
     <!-- Icon and manifest only apply on Windows builds -->
@@ -23,9 +23,9 @@
     <AndroidPackageFormat>apk</AndroidPackageFormat>
     <ApplicationId>com.funkymakergame.player</ApplicationId>
     <ApplicationTitle>FunkyMaker Player</ApplicationTitle>
-    <ApplicationVersion>7</ApplicationVersion>
-    <ApplicationDisplayVersion>0.4.9</ApplicationDisplayVersion>
-    <AndroidVersionCode>7</AndroidVersionCode>
+    <ApplicationVersion>8</ApplicationVersion>
+    <ApplicationDisplayVersion>0.5.0</ApplicationDisplayVersion>
+    <AndroidVersionCode>8</AndroidVersionCode>
     <AndroidManifest>Platforms\Android\AndroidManifest.xml</AndroidManifest>
     <!-- Disable AOT for now to avoid trimming issues -->
     <RunAOTCompilation>false</RunAOTCompilation>
@@ -67,8 +67,9 @@
     <EnableCompressionInSingleFile>true</EnableCompressionInSingleFile>
   </PropertyGroup>
 
-  <!-- Windows-specific: WinExe hides the console, app.manifest, icon -->
-  <PropertyGroup Condition="'$(Configuration)' == 'Release' And '$(RuntimeIdentifier)' == 'win-x64'">
+  <!-- Windows-specific: WinExe hides the console, app.manifest, icon.
+       Applies to `publish -r win-x64` AND to a plain `build -c Release` on Windows (no RID). -->
+  <PropertyGroup Condition="'$(Configuration)' == 'Release' And !$(TargetFramework.Contains('android')) And ('$(RuntimeIdentifier)' == 'win-x64' Or ('$(RuntimeIdentifier)' == '' And '$(OS)' == 'Windows_NT'))">
     <OutputType>WinExe</OutputType>
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <ApplicationIcon>Icon.ico</ApplicationIcon>
