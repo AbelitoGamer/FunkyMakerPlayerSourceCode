@@ -1,0 +1,12 @@
+{
+  "noteSystem": "atlas",
+  "noteScale": 0.39,
+  "receptorScale": 0.39,
+  "noteAlpha": 1.0,
+  "strumAlpha": 1.0,
+  "holdAlpha": 0.7,
+  "fps": [24, 24, 24, 24],
+  "colorizeByLane": false,
+  "tintNegative": [255, 50, 50],
+  "tintPositive": [0, 200, 255]
+}

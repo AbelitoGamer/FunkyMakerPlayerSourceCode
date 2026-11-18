@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  FMM note skin. Originally packed with Funkin Packer v0.1.3; frames renamed for
+  FunkyMakerPlayer. Every frame is a 260x260 cell, except the holds, which are
+  cropped to their visible pixels (piece 106x260, end cap 106x52) so the hold
+  trail ends exactly where the note ends.
+  Lanes: Left = purple, Down = blue, Up = green, Right = red.
+-->
+<TextureAtlas imagePath="fmmnoteskin.png" width="1302" height="1042">
+  <!-- Notes (the scrolling arrows). Named by lane colour: the game looks up
+       notes by colour first, so "noteLeft" would lose to "purple hold piece". -->
+  <SubTexture name="purple0000" x="261" y="1" width="260" height="260"/>
+  <SubTexture name="blue0000" x="1" y="1" width="260" height="260"/>
+  <SubTexture name="green0000" x="261" y="521" width="260" height="260"/>
+  <SubTexture name="red0000" x="1" y="521" width="260" height="260"/>
+  <!-- Receptors: idle (grey) -->
+  <SubTexture name="staticLeft0000" x="1041" y="261" width="260" height="260"/>
+  <SubTexture name="staticDown0000" x="1041" y="1" width="260" height="260"/>
+  <SubTexture name="staticUp0000" x="1041" y="781" width="260" height="260"/>
+  <SubTexture name="staticRight0000" x="1041" y="521" width="260" height="260"/>
+  <!-- Receptors: key pressed, no note -->
+  <SubTexture name="pressLeft0000" x="261" y="261" width="260" height="260"/>
+  <SubTexture name="pressDown0000" x="1" y="261" width="260" height="260"/>
+  <SubTexture name="pressUp0000" x="521" y="261" width="260" height="260"/>
+  <SubTexture name="pressRight0000" x="521" y="1" width="260" height="260"/>
+  <!-- Receptors: note hit (same "arrowpressed" pictures as press) -->
+  <SubTexture name="confirmLeft0000" x="261" y="261" width="260" height="260"/>
+  <SubTexture name="confirmDown0000" x="1" y="261" width="260" height="260"/>
+  <SubTexture name="confirmUp0000" x="521" y="261" width="260" height="260"/>
+  <SubTexture name="confirmRight0000" x="521" y="1" width="260" height="260"/>
+  <!-- Hold trails: body is stretched, end cap goes at the tail -->
+  <SubTexture name="purple hold piece0000" x="335" y="781" width="106" height="260"/>
+  <SubTexture name="purple hold end0000" x="855" y="261" width="106" height="52"/>
+  <SubTexture name="blue hold piece0000" x="595" y="521" width="106" height="260"/>
+  <SubTexture name="blue hold end0000" x="855" y="1" width="106" height="52"/>
+  <SubTexture name="green hold piece0000" x="855" y="781" width="106" height="260"/>
+  <SubTexture name="green hold end0000" x="75" y="781" width="106" height="52"/>
+  <SubTexture name="red hold piece0000" x="595" y="781" width="106" height="260"/>
+  <SubTexture name="red hold end0000" x="855" y="521" width="106" height="52"/>
+</TextureAtlas>

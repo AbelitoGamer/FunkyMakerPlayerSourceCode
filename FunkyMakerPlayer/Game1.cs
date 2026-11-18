@@ -336,7 +336,7 @@ public partial class Game1 : Game
     // Hide touch hitbox colors (android only)
     public static bool   HideTouchHitboxColors = false;
     // Note style name — "Default" or a folder name in mods/notestyles/
-    public static string NoteStyleName     = "Default";
+    public static string NoteStyleName     = DefaultMods.NoteStyleName;
     // NoteSplash style name — "Default" (programmatic) or a folder name in mods/notesplashes/
     public static string NoteSplashStyleName = "Default";
     // Icon mode: 0 = Fixed (FNF base - icons move with health %), 1 = Dynamic (icons stay at ends)

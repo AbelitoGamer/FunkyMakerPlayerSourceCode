@@ -1119,12 +1119,10 @@ public class NoteStyle
                 string p = Path.Combine(folderPath, c);
                 if (!File.Exists(p)) p = Path.Combine(folderPath, "shared", "images", c);
                 
-                // FALLBACK: If not found in level folder, try global Assets folder
+                // FALLBACK: skin has no hold texture → engine fallback in Assets/images/
                 if (!File.Exists(p))
                 {
                     string assetsPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "Assets", "images", c);
-                    if (!File.Exists(assetsPath))
-                        assetsPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "Assets", "shared", "images", c);
                     if (File.Exists(assetsPath))
                         p = assetsPath;
                 }
@@ -1201,6 +1199,7 @@ public class NoteStyle
             // Supports: { "fps": [12, 24, 24, 12], "noteScale": 0.7, "receptorScale": 0.7, "colorizeByLane": true }
             // fps array order: [static, press, confirm, confirmHold]
             string skinJson = Path.Combine(folderPath, "skin.json");
+            bool? skinColorize = null;
             if (File.Exists(skinJson))
             {
                 try
@@ -1226,7 +1225,10 @@ public class NoteStyle
                     if (root2.TryGetProperty("receptorScale", out var rs))
                         style.ReceptorScale = rs.GetSingle();
                     if (root2.TryGetProperty("colorizeByLane", out var cbl))
+                    {
                         style.ColorizeByLane = cbl.GetBoolean();
+                        skinColorize = style.ColorizeByLane;
+                    }
 
                     // Tint colors for skins: [r, g, b] arrays (0-255).
                     // "tintNegative"/"tintPositive"; legacy keys "tintDamage"/"tintInstakill"
@@ -1247,7 +1249,8 @@ public class NoteStyle
             // ── Apply config.json settings (colorizeByLane) ───────────────────
             if (config != null)
             {
-                style.ColorizeByLane = config.ColorizeByLane;
+                // skin.json wins when it sets colorizeByLane; config.json is auto-generated
+                style.ColorizeByLane = skinColorize ?? config.ColorizeByLane;
                 style.HoldEndCapMode = config.HoldEndCapMode;
                 Console.WriteLine($"[NoteStyle] ColorizeByLane: {style.ColorizeByLane}, HoldEndCapMode: {style.HoldEndCapMode}");
             }
