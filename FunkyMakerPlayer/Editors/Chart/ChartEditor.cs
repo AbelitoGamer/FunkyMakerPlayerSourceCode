@@ -2757,7 +2757,7 @@ namespace FunkyMakerPlayer.Editors.Chart
             float editorNoteScale = Math.Min(maxW / refW, maxH / refH);
 
             // 1. Codename Engine atlas holds (HoldPieceFrames + HoldEndFrames) — always top-to-bottom Upscroll in chart grid
-            if (_noteStyle != null && _noteStyle.IsCodenameEngine &&
+            if (_noteStyle != null && (_noteStyle.IsCodenameEngine || _noteStyle.NoteSystem == NoteSystemKind.Fmm) &&
                 _noteStyle.HoldPieceFrames[lane] is { } pieceFrame &&
                 _noteStyle.HoldEndFrames[lane] is { } endFrame)
             {

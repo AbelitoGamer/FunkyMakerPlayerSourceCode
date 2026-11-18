@@ -297,6 +297,10 @@ public class NoteStyle
             HoldAlpha = Math.Clamp(ha.GetSingle(), 0f, 1f);
     }
 
+    /// <summary>Note system (skin.json "noteSystem"): atlas (default) or fmm (FmmNoteSystem.cs).</summary>
+    public NoteSystemKind NoteSystem { get; set; } = NoteSystemKind.Atlas;
+    /// <summary>Images and settings of an FMM-faithful style; null for atlas styles.</summary>
+    public FmmNoteAssets? Fmm { get; set; }
     
     public float NoteScale         { get; set; } = 0.65f;
     public float ReceptorScale     { get; set; } = 0.65f;
@@ -767,6 +771,10 @@ public class NoteStyle
     /// </summary>
     public static NoteStyle? LoadFromFolder(string folderPath, GraphicsDevice gd)
     {
+        // skin.json "noteSystem": "fmm" → plain images, rotated and tinted per lane
+        if (FmmNoteSystem.IsFmmFolder(folderPath))
+            return FmmNoteSystem.Load(folderPath, gd);
+
         try
         {
             var style = new NoteStyle();
@@ -1359,7 +1367,7 @@ public class NoteStyle
                 // or an FMM-system folder (skin.json "noteSystem": "fmm", plain PNGs)
                 bool hasPng = Directory.GetFiles(dir, "*.png").Length > 0;
                 bool hasXml = Directory.GetFiles(dir, "*.xml").Length > 0;
-                if (hasPng && hasXml)
+                if ((hasPng && hasXml) || FmmNoteSystem.IsFmmFolder(dir))
                     styles.Add(name);
             }
         }

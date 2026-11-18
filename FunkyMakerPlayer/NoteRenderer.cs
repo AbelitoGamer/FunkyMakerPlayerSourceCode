@@ -201,6 +201,7 @@ public class NoteRenderer
     
     // Strategy Pattern: Delegate rendering to engine-specific implementations
     private INoteStyleRenderer?       _renderer;  // Current active renderer
+    private FmmNoteSystemRenderer?    _fmm;       // Same object as _renderer for FMM-system styles
 
     // ── Hold note completion tracking (player only) ───────────────────────────
     // Stores the initial hit judgement distance for each active hold lane.
@@ -407,6 +408,7 @@ public class NoteRenderer
         Console.WriteLine($"[NoteRenderer] ═══════════════════════════════════════════");
         Console.WriteLine($"[NoteRenderer] SetStyle called");
         
+        _fmm = null;
         if (style == null)
         {
             _renderer = null;
@@ -418,8 +420,14 @@ public class NoteRenderer
         Console.WriteLine($"[NoteRenderer] IsCodenameEngine flag: {style.IsCodenameEngine}");
         Console.WriteLine($"[NoteRenderer] HoldTexture exists: {style.HoldTexture != null}");
         
-        // Choose renderer based on engine type
-        if (style.IsCodenameEngine)
+        // Choose renderer based on note system / engine type
+        if (style.NoteSystem == NoteSystemKind.Fmm && style.Fmm != null)
+        {
+            _fmm = new FmmNoteSystemRenderer(style);
+            _renderer = _fmm;
+            Console.WriteLine($"[NoteRenderer] Using FMM-faithful note system");
+        }
+        else if (style.IsCodenameEngine)
         {
             _renderer = new CodenameNoteStyleRenderer(style, Downscroll);
             Console.WriteLine($"[NoteRenderer] ✓✓✓ USING CODENAME ENGINE RENDERER ✓✓✓");
@@ -455,6 +463,7 @@ public class NoteRenderer
         // Trigger glow effect on receptor
         _glowTimer[lane] = 0.15f;
         SetRecState(lane, 2);  // Confirm state (pressed)
+        _fmm?.OnHit(lane);
         
         // Trigger splash effect for Sick! hits (only default if no particles)
         if (isSick && _particleSplash == null)
@@ -530,6 +539,16 @@ public class NoteRenderer
         else if (!DisableAutoplay)          UpdateAutoplay(songTime);
         // If DisableAutoplay is true for opponent, clean up old notes that weren't hit
         else                                UpdateOpponentMultiplayer(songTime);
+
+        if (_fmm != null)
+        {
+            // Each step of an active hold re-hits the strum, like FMM's per-piece sustain hits
+            float stepSeconds = 15f / Math.Max(1f, _level.Data.EffectiveBpm);
+            for (int lane = 0; lane < LANE_COUNT; lane++)
+                if (_holdEndTime[lane] > 0f && songTime < _holdEndTime[lane])
+                    _fmm.HoldTick(lane, songTime, stepSeconds);
+            _fmm.Update(dt);
+        }
     }
 
     private void UpdateAutoplay(float songTime)
@@ -568,6 +587,7 @@ public class NoteRenderer
                 else
                     _glowTimer[lane] = 0.12f;
                 SetRecState(lane, 2);
+                _fmm?.OnHit(lane);
                 _anyLaneActive = true;
             }
 
@@ -682,6 +702,7 @@ public class NoteRenderer
             // Fire key press callback for multiplayer animation sync
             // This happens BEFORE hit detection so opponent sees animation even on misses
             OnKeyPress?.Invoke(lane);
+            _fmm?.OnPress(lane);
 
             // ── Find best note in hit window ──────────────────────────────────
             FnmmNote? best     = null;
@@ -764,6 +785,7 @@ public class NoteRenderer
                     _glowTimer[lane] = RecAnimDuration(lane, 2, 0.15f);
 
                 SetRecState(lane, 2);
+                _fmm?.OnHit(lane);
             }
             else
             {
@@ -909,6 +931,8 @@ public class NoteRenderer
         float spd    = EffSpeed;
         float laneW  = LANE_WIDTH * sx;
         float alpha  = Alpha;
+        if (_fmm != null) _fmm.ShadowOffsetY = 10f * ScaleY;  // hud.hx dropShadow: 10 px at 720p
+
 
         for (int lane = 0; lane < LANE_COUNT; lane++)
         {
@@ -1150,6 +1174,12 @@ public class NoteRenderer
     // ── Receptor ─────────────────────────────────────────────────────────────
     private void DrawReceptor(SpriteBatch sb, int lane, float cx, float cy, float sx, float alpha, float songTime)
     {
+        if (_fmm != null && _style != null)
+        {
+            DrawFmmReceptor(sb, lane, cx, cy, sx, alpha);
+            return;
+        }
+
         // ── FNF-style receptor intro animation (pop-in effect during countdown) ──
         float introScale = 1f;
         float introAlpha = 1f;
@@ -1393,6 +1423,30 @@ public class NoteRenderer
         }
     }
 
+    /// <summary>
+    /// FMM-faithful strum: no intro pop-in or glow (hud.hx cancels the strum animations);
+    /// the press/hit animation lives in FmmNoteSystemRenderer.
+    /// </summary>
+    private void DrawFmmReceptor(SpriteBatch sb, int lane, float cx, float cy, float sx, float alpha)
+    {
+        float rotation = 0f;
+        if (_arrowEffects != null && ArrowEffectManager.Enabled)
+        {
+            var transform = _arrowEffects.GetArrowTransform(lane, cx, cy);
+            cx += transform.offsetX;
+            cy += transform.offsetY;
+            rotation = transform.rotation;
+        }
+
+        _fmm!.DrawStrum(sb, lane, cx, cy, _style!.ReceptorScale * sx, alpha, rotation);
+
+        if (_splashTimer[lane] > 0f)
+            DrawNoteSplash(sb, lane, cx, cy, sx, alpha);
+    }
+
+    /// <summary>Lane colour for splashes: FMM styles tint them with the pressed colours (hud.hx onSplashShown).</summary>
+    private Color SplashLaneColor(int lane) => _fmm?.PressedColor(lane) ?? LaneColors[lane];
+
     // ── Note head ────────────────────────────────────────────────────────────
     private void DrawNoteHead(SpriteBatch sb, int lane, float cx, float cy, FnmmNote note, float sx, float alpha, float strumY)
     {
@@ -1406,6 +1460,16 @@ public class NoteRenderer
             NoteSkins.Positive => "O",
             _ => null,
         };
+
+        // FMM-faithful: one image rotated and tinted per lane, no FNF pop/glow extras
+        if (_fmm != null && _style != null)
+        {
+            float noteScale = _style.NoteScale * sx;
+            bool dedicated = _fmm.DrawNote(sb, lane, skinType, cx, cy, noteScale, alpha);
+            if (!dedicated && symbol != null && _font != null)
+                DrawNoteSymbol(sb, symbol, cx, cy, _fmm.NoteImageWidth * noteScale, LaneColors[lane], alpha);
+            return;
+        }
 
         // Tint: use skin config or defaults
         Color fallbackTint = _style != null
