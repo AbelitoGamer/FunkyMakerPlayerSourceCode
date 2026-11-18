@@ -4992,6 +4992,7 @@ public partial class Game1 : Game
                 _lastCamMatrix = hudCamMatrix;
                 DrawSceneOrdered(sw, sh, hudCamMatrix);
                 _spriteBatch.Begin(SpriteSortMode.Deferred, BlendState.NonPremultiplied, SamplerState.LinearClamp);
+                DrawLaneUnderlay();
                 DrawNotes();
                 _spriteBatch.End();
             }
@@ -5099,6 +5100,8 @@ public partial class Game1 : Game
 
         // ── HUD: health bar, icons, stats (drawn before notes) ───────────────
         _spriteBatch.Begin(SpriteSortMode.Deferred, BlendState.NonPremultiplied, SamplerState.LinearClamp);
+        // Lane underlay first: above the stage, below every HUD element and the notes
+        DrawLaneUnderlay();
         float mpOpponentAccuracy = _isMultiplayerMatch
             ? ComputeAccuracy(_opponentSicks, _opponentGoods, _opponentBads, _opponentShits, _opponentMisses)
             : 100f;
@@ -5998,6 +6001,15 @@ public partial class Game1 : Game
     }
 
     // ── Notes drawing ────────────────────────────────────────────────────────
+    /// <summary>Black lane underlay behind the player strumline (Settings → Graphics → Lane Underlay).</summary>
+    private void DrawLaneUnderlay()
+    {
+        if (_level == null || _noteRenderers.Count == 0 || NoteRenderer.LaneUnderlay <= 0f) return;
+        // Same opacity DrawNotes gives the player strumline this frame
+        float alpha = NoteRenderer.HidePlayerStrumline && !_isMultiplayerMatch ? 0f : _notesAlpha;
+        _noteRenderers[0].DrawLaneUnderlay(_spriteBatch, alpha);
+    }
+
     private void DrawNotes()
     {
         if (_level == null) return;

@@ -1741,6 +1741,39 @@ public class NoteRenderer
     /// Draws programmatic notesplash (default fallback, no copyright issues).
     /// Simple particle burst effect with color-coded glow.
     /// </summary>
+    /// <summary>
+    /// Full-height black column covering this strumline's four lanes (plus a small margin),
+    /// so the chart stays readable over busy backgrounds. Follows the strumline's position,
+    /// HUD offset and visibility. Game1 calls it for the player strumline right after the
+    /// scene, before the HUD, so it sits below every UI element and the notes.
+    /// </summary>
+    /// <param name="alpha">The strumline's opacity this frame (0 hides the underlay).</param>
+    public void DrawLaneUnderlay(SpriteBatch sb, float alpha)
+    {
+        if (HudRole != 0 || LaneUnderlay <= 0f) return;
+        if (!HudSettings.Instance.MasterHudVisible || !ShowStrumlines ||
+            (_isPlayer && HidePlayerStrumline) || alpha <= 0.01f)
+            return;
+
+        float sx = ScaleX * NoteScale;
+        float laneW = LANE_WIDTH * sx;
+        float hudOffsetX = HudOffsetPx.X;
+
+        float left = float.MaxValue, right = float.MinValue;
+        for (int lane = 0; lane < LANE_COUNT; lane++)
+        {
+            float baseX = _xOffsetSplit >= 0f && lane >= 2
+                ? _xOffsetSplit * sx + (lane - 2) * laneW
+                : _xOffset * sx + lane * laneW;
+            baseX += hudOffsetX;
+            left = Math.Min(left, baseX);
+            right = Math.Max(right, baseX + laneW);
+        }
+        float margin = laneW * 0.08f;
+        DrawRect(sb, left - margin, 0f, right - left + margin * 2f, ScreenH,
+                 Color.Black * (Math.Clamp(LaneUnderlay, 0f, LaneUnderlayMax) * alpha));
+    }
+
     /// <summary>Starts a splash on a lane (only while this strumline is visible).</summary>
     private void TriggerSplash(int lane)
     {

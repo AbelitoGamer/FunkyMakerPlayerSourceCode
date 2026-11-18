@@ -408,6 +408,20 @@ public class SettingsManager
 
         entries.Add(new SettingItem
         {
+            Label = "Lane Underlay",
+            Value = NoteRenderer.LaneUnderlay <= 0f ? "OFF" : $"{(int)MathF.Round(NoteRenderer.LaneUnderlay * 100)}%",
+            Kind = SettingKind.Adjustable,
+            Description = "Black backdrop behind your strumline so notes stand out from the background (0% = off, up to 75%). Press ENTER to focus, LEFT/RIGHT to change.",
+            OnAdjust = (_, delta) =>
+            {
+                NoteRenderer.LaneUnderlay = MathF.Round(
+                    Math.Clamp(NoteRenderer.LaneUnderlay + delta * 0.05f, 0f, NoteRenderer.LaneUnderlayMax), 2);
+                return new SettingsActionResult { NeedsSave = true };
+            }
+        });
+
+        entries.Add(new SettingItem
+        {
             Label = "Show Combo",
             Value = Game1.ShowCombo ? "ON" : "OFF",
             Kind = SettingKind.Toggle,
