@@ -261,7 +261,7 @@ public class SettingsManager
             Label = "Scroll Speed",
             Value = $"{NoteRenderer.ScrollMultiplier:F2}x",
             Kind = SettingKind.Adjustable,
-            Description = "Visual note speed multiplier (default: 1.00x, range: 0.25x - 5.00x). Press ENTER to focus, LEFT/RIGHT to change.",
+            Description = "Visual note speed multiplier (default: 1.00x, range: 0.25x - 5.00x). Press ENTER to focus, LEFT/RIGHT to change. In a song: F3 slower, F4 faster.",
             OnAdjust = (_, delta) =>
             {
                 NoteRenderer.ScrollMultiplier = MathF.Round(

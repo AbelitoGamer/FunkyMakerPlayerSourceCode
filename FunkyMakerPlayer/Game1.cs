@@ -2692,6 +2692,8 @@ public partial class Game1 : Game
 
         if (_volumeToastTimer > 0f)
             _volumeToastTimer = Math.Max(0f, _volumeToastTimer - dt);
+        if (_scrollToastTimer > 0f)
+            _scrollToastTimer = Math.Max(0f, _scrollToastTimer - dt);
 
         // Global FNF-style volume hotkeys (- / +) everywhere except text-entry or keybinding capture
         // Menus too; skipped only while typing text (level name, multiplayer fields) and in the
@@ -2713,6 +2715,28 @@ public partial class Game1 : Game
                 UI.UiSfx.Play(MusicVolume == oldVolume ? UI.UiSound.SliderEnd : volUp ? UI.UiSound.SliderUp : UI.UiSound.SliderDown);
                 if (_musicInst != null) _musicInst.Volume = MusicVolume;
                 _volumeToastTimer = VOLUME_TOAST_DURATION;
+                Settings.Save(_graphics.SynchronizeWithVerticalRetrace);
+            }
+        }
+
+        // F3 / F4: scroll speed down / up while a song is on screen (not paused, no menu open).
+        // Visual only, so it is allowed in multiplayer too.
+        bool inSong = _level != null && !_inPauseMenu && !_inFreeplay && !_inMultiplayer && !_inEditor &&
+                      !_inEditorPicker && !_inLevelSelector && !_inMainSettings && !_inHudEditor &&
+                      !(_settingsManager?.IsActive ?? false) && !_keyBindOverlay.IsActive;
+        if (inSong && !suppressUserInput)
+        {
+            bool slower = kb.IsKeyDown(Keys.F3) && !_prevKb.IsKeyDown(Keys.F3);
+            bool faster = kb.IsKeyDown(Keys.F4) && !_prevKb.IsKeyDown(Keys.F4);
+            if (slower || faster)
+            {
+                float old = NoteRenderer.ScrollMultiplier;
+                // Same step and range as the Scroll Speed setting
+                NoteRenderer.ScrollMultiplier = MathF.Round(
+                    Math.Clamp(old + (faster ? 0.10f : -0.10f), 0.25f, 5.0f), 2);
+                UI.UiSfx.Play(NoteRenderer.ScrollMultiplier == old ? UI.UiSound.SliderEnd
+                    : faster ? UI.UiSound.SliderUp : UI.UiSound.SliderDown);
+                _scrollToastTimer = VOLUME_TOAST_DURATION;
                 Settings.Save(_graphics.SynchronizeWithVerticalRetrace);
             }
         }
@@ -3466,11 +3490,13 @@ public partial class Game1 : Game
             if (speedUp)
             {
                 NoteRenderer.ScrollMultiplier = MathF.Round(Math.Min(5.0f, NoteRenderer.ScrollMultiplier + 0.25f), 2);
+                _scrollToastTimer = VOLUME_TOAST_DURATION;
                 Settings.Save(_graphics.SynchronizeWithVerticalRetrace);
             }
             if (speedDown)
             {
                 NoteRenderer.ScrollMultiplier = MathF.Round(Math.Max(0.25f, NoteRenderer.ScrollMultiplier - 0.25f), 2);
+                _scrollToastTimer = VOLUME_TOAST_DURATION;
                 Settings.Save(_graphics.SynchronizeWithVerticalRetrace);
             }
         }
@@ -5202,6 +5228,7 @@ public partial class Game1 : Game
         _spriteBatch.End();
 
         DrawVolumeToastOverlay(winBounds.Width);
+        DrawScrollToastOverlay(winBounds.Width);
         DrawTouchControls();
     }
 
@@ -5237,6 +5264,42 @@ public partial class Game1 : Game
         }
 
         DrawVolumeToastOverlay(winW);
+        DrawScrollToastOverlay(winW);
+    }
+
+    /// <summary>"SCROLL SPEED: 1.20x" toast for F3 / F4, under the volume toast if both are up.</summary>
+    private void DrawScrollToastOverlay(int winW)
+    {
+        if (_scrollToastTimer <= 0f || _pixel == null || (_font == null && _fontRenderer == null)) return;
+
+        float alpha = Math.Clamp(_scrollToastTimer / 0.35f, 0f, 1f);
+        int boxW = 240;
+        int boxH = 34;
+        int boxX = (winW - boxW) / 2;
+        int boxY = _volumeToastTimer > 0f ? 14 + 54 + 6 : 14;
+
+        GraphicsDevice.SetRenderTarget(null);
+        _spriteBatch.Begin(samplerState: SamplerState.LinearClamp);
+        _spriteBatch.Draw(_pixel, new Rectangle(boxX, boxY, boxW, boxH), new Color(16, 18, 28) * (0.90f * alpha));
+        _spriteBatch.Draw(_pixel, new Rectangle(boxX, boxY, boxW, 2), new Color(0xFF, 0x44, 0x88) * (0.85f * alpha));
+        _spriteBatch.Draw(_pixel, new Rectangle(boxX, boxY + boxH - 2, boxW, 2), new Color(0xFF, 0x44, 0x88) * (0.45f * alpha));
+
+        string text = $"SCROLL SPEED: {NoteRenderer.ScrollMultiplier:F2}x";
+        if (_fontRenderer != null)
+        {
+            var sz = _fontRenderer.MeasureString(text, 16);
+            _fontRenderer.DrawString(_spriteBatch, text,
+                new Vector2(boxX + (boxW - sz.X) / 2f, boxY + (boxH - sz.Y) / 2f), Color.White * alpha, 16);
+        }
+        else if (_font != null)
+        {
+            float scale = 16f / Math.Max(16f, (float)_font.LineSpacing);
+            var sz = _font.MeasureString(text) * scale;
+            _spriteBatch.DrawString(_font, text,
+                new Vector2(boxX + (boxW - sz.X) / 2f, boxY + (boxH - sz.Y) / 2f), Color.White * alpha,
+                0f, Vector2.Zero, scale, SpriteEffects.None, 0f);
+        }
+        _spriteBatch.End();
     }
 
     private void DrawVolumeToastOverlay(int winW)
