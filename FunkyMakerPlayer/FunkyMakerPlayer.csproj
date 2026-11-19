@@ -113,10 +113,14 @@
   </ItemGroup>
 
   <!-- Default mods (default note style, countdown, font + README/template files).
-       Shipped as mods/ next to the exe; DefaultMods.EnsureInstalled() copies missing files
-       into the real mods folder at startup (single-file publish / Android). -->
+       Shipped as mods/ next to the exe AND inside Assets/DefaultMods/ (so the in-game updater,
+       which excludes mods/, still delivers new defaults and Desktop has an untouched fallback);
+       DefaultMods.EnsureInstalled() copies missing files into the real mods folder at startup. -->
   <ItemGroup>
     <None Include="..\DefaultMods\**\*.*" Link="mods\%(RecursiveDir)%(Filename)%(Extension)">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+    <None Include="..\DefaultMods\**\*.*" Link="Assets\DefaultMods\%(RecursiveDir)%(Filename)%(Extension)">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </None>
   </ItemGroup>

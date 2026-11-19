@@ -17,6 +17,7 @@ public class ArrowsMenu : IScreenOverlay
     
     public bool IsActive { get; set; } = false;
     public int Selection { get; set; } = 0;
+    public bool SelectionConfirmed { get; private set; } = false;
     
     private List<string> _styles = new();
     private NoteStyle? _previewStyle = null;
@@ -37,6 +38,7 @@ public class ArrowsMenu : IScreenOverlay
         if (Selection < 0) Selection = 0;
         
         LoadPreview(_styles[Selection], graphicsDevice);
+        SelectionConfirmed = false;
         IsActive = true;
     }
     
@@ -73,6 +75,7 @@ public class ArrowsMenu : IScreenOverlay
             (kb.IsKeyDown(Keys.Space) && !prevKb.IsKeyDown(Keys.Space)))
         {
             Game1.NoteStyleName = _styles[Selection];
+            SelectionConfirmed = true;
             Close();
         }
         

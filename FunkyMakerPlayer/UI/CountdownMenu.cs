@@ -18,6 +18,7 @@ public class CountdownMenu : IScreenOverlay
     
     public bool IsActive { get; set; } = false;
     public int Selection { get; set; } = 0;
+    public bool SelectionConfirmed { get; private set; } = false;
     
     private List<string> _packs = new();
     private Texture2D? _previewReady = null;
@@ -40,6 +41,7 @@ public class CountdownMenu : IScreenOverlay
         if (Selection < 0) Selection = 0;
         
         LoadPreview(_packs[Selection], graphicsDevice);
+        SelectionConfirmed = false;
         IsActive = true;
     }
     
@@ -144,6 +146,7 @@ public class CountdownMenu : IScreenOverlay
             (kb.IsKeyDown(Keys.Space) && !prevKb.IsKeyDown(Keys.Space)))
         {
             Game1.SelectedCountdown = _packs[Selection];
+            SelectionConfirmed = true;
             Close();
         }
         

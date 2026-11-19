@@ -18,6 +18,7 @@ public class FontMenu : IScreenOverlay
     
     public bool IsActive { get; set; } = false;
     public int Selection { get; set; } = 0;
+    public bool SelectionConfirmed { get; private set; } = false;
     
     private List<(string name, string path)> _fonts = new();
     private FontRenderer? _previewFont = null;
@@ -36,8 +37,10 @@ public class FontMenu : IScreenOverlay
         
         // The default font is listed first
         Selection = 0;
+        SelectionConfirmed = false;
         
-        LoadPreview(_fonts[Selection].path, graphicsDevice);
+        if (_fonts.Count > 0)
+            LoadPreview(_fonts[Selection].path, graphicsDevice);
         IsActive = true;
     }
     
@@ -118,13 +121,13 @@ public class FontMenu : IScreenOverlay
         if (!IsActive) return;
         
         // Navigation
-        if (kb.IsKeyDown(Keys.Up) && !prevKb.IsKeyDown(Keys.Up))
+        if (_fonts.Count > 0 && kb.IsKeyDown(Keys.Up) && !prevKb.IsKeyDown(Keys.Up))
         {
             Selection = (Selection - 1 + _fonts.Count) % _fonts.Count;
             LoadPreview(_fonts[Selection].path, graphicsDevice);
         }
         
-        if (kb.IsKeyDown(Keys.Down) && !prevKb.IsKeyDown(Keys.Down))
+        if (_fonts.Count > 0 && kb.IsKeyDown(Keys.Down) && !prevKb.IsKeyDown(Keys.Down))
         {
             Selection = (Selection + 1) % _fonts.Count;
             LoadPreview(_fonts[Selection].path, graphicsDevice);
@@ -135,6 +138,7 @@ public class FontMenu : IScreenOverlay
             (kb.IsKeyDown(Keys.Space) && !prevKb.IsKeyDown(Keys.Space)))
         {
             // Font selection confirmed
+            SelectionConfirmed = _fonts.Count > 0 && !string.IsNullOrEmpty(_selectedFontPath);
             Close();
         }
         

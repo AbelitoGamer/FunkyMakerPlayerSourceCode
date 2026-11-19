@@ -119,8 +119,19 @@ public static class DefaultMods
 #if ANDROID
         return ExtractFromApk();
 #else
-        string root = Path.Combine(AppContext.BaseDirectory, "mods");
-        return Directory.Exists(Path.Combine(root, "notestyles", NoteStyleName)) ? root : null;
+        string[] candidates =
+        {
+            Path.Combine(AppContext.BaseDirectory, "Assets", "DefaultMods"),
+            Path.Combine(PlatformPaths.GetAppBaseDirectory(), "Assets", "DefaultMods"),
+            Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "DefaultMods"),
+            Path.Combine(AppContext.BaseDirectory, "mods"),
+        };
+        foreach (string root in candidates)
+        {
+            if (Directory.Exists(Path.Combine(root, "notestyles", NoteStyleName)))
+                return Path.GetFullPath(root);
+        }
+        return null;
 #endif
     }
 

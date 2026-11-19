@@ -2904,11 +2904,14 @@ public partial class Game1 : Game
             // If menu was closed and we selected a style, apply it
             if (!_arrowsMenu.IsActive)
             {
-                // Apply to all note renderers
-                _noteStyle = NoteStyle.LoadByName(NoteStyleName, GraphicsDevice);
-                foreach (var r in _noteRenderers)
-                    r.SetStyle(_noteStyle);
-                Settings.Save(_graphics.SynchronizeWithVerticalRetrace);
+                if (_arrowsMenu.SelectionConfirmed)
+                {
+                    // Apply to all note renderers
+                    _noteStyle = NoteStyle.LoadByName(NoteStyleName, GraphicsDevice);
+                    foreach (var r in _noteRenderers)
+                        r.SetStyle(_noteStyle);
+                    Settings.Save(_graphics.SynchronizeWithVerticalRetrace);
+                }
                 if (_settingsManager != null) _settingsManager.IsActive = true;
             }
             
@@ -2946,9 +2949,17 @@ public partial class Game1 : Game
         {
             _countdownMenu.Update(kb, _prevKb, GraphicsDevice);
             
-            // If menu was closed, reopen settings
-            if (!_countdownMenu.IsActive && _settingsManager != null)
-                _settingsManager.IsActive = true;
+            // If menu was closed, save selection and reopen settings
+            if (!_countdownMenu.IsActive)
+            {
+                if (_countdownMenu.SelectionConfirmed)
+                {
+                    _countdownOverlay?.EnsureLoaded(SelectedCountdown);
+                    Settings.Save(_graphics.SynchronizeWithVerticalRetrace);
+                }
+                if (_settingsManager != null)
+                    _settingsManager.IsActive = true;
+            }
             
             AdvanceLiveMultiplayerIfActive(gameTime, dt);
             _prevKb = kb;
@@ -2961,23 +2972,26 @@ public partial class Game1 : Game
         {
             _fontMenu.Update(kb, _prevKb, GraphicsDevice);
             
-            // If menu was closed, check if we need to reload font
+            // If menu was closed, check if we need to reload font (only on confirm, not ESC cancel)
             if (!_fontMenu.IsActive)
             {
-                string newFontPath = _fontMenu.GetSelectedFontPath();
-                if (!string.IsNullOrEmpty(newFontPath) && System.IO.File.Exists(newFontPath))
+                if (_fontMenu.SelectionConfirmed)
                 {
-                    try
+                    string newFontPath = _fontMenu.GetSelectedFontPath();
+                    if (!string.IsNullOrEmpty(newFontPath) && System.IO.File.Exists(newFontPath))
                     {
-                        _fontRenderer = new FontRenderer(GraphicsDevice, newFontPath);
-                        _freeplay?.SetFontRenderer(_fontRenderer);
-                        _mainSettingsMenu?.SetFontRenderer(_fontRenderer);
-                        _multiplayerMenu?.SetFontRenderer(_fontRenderer);
-                        Console.WriteLine($"[Game1] Font changed to: {newFontPath}");
-                    }
-                    catch (Exception ex)
-                    {
-                        Console.WriteLine($"[Game1] Error loading font: {ex.Message}");
+                        try
+                        {
+                            _fontRenderer = new FontRenderer(GraphicsDevice, newFontPath);
+                            _freeplay?.SetFontRenderer(_fontRenderer);
+                            _mainSettingsMenu?.SetFontRenderer(_fontRenderer);
+                            _multiplayerMenu?.SetFontRenderer(_fontRenderer);
+                            Console.WriteLine($"[Game1] Font changed to: {newFontPath}");
+                        }
+                        catch (Exception ex)
+                        {
+                            Console.WriteLine($"[Game1] Error loading font: {ex.Message}");
+                        }
                     }
                 }
                 
