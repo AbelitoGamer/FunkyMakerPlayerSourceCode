@@ -197,6 +197,10 @@ namespace FunkyMakerPlayer.Multiplayer
         // Room system
         private string _roomCode = "";
         private bool _isPrivateRoom = false;
+        private bool _isRoomHost = false;
+        private bool _isCreatingRoom = false;
+        private bool _isCheckingRoom = false;
+        private string? _joinRoomError = null;
         private int _modeSelection = 0; // 0 = Matchmaking, 1 = Private Room
         
         // Server info
@@ -997,13 +1001,92 @@ namespace FunkyMakerPlayer.Multiplayer
         {
             if (action == 0)
             {
-                Console.WriteLine($"[Multiplayer] Creating room: {_roomCode}");
-                TransitionToState(MenuState.Lobby);
+                if (_isCreatingRoom) return;
+                _ = CreateAndEnterRoomAsync();
             }
             else
             {
                 _roomCode = "";
+                _isRoomHost = false;
+                _isCheckingRoom = false;
+                _joinRoomError = null;
                 TransitionToState(MenuState.JoinRoom);
+            }
+        }
+
+        private async Task CreateAndEnterRoomAsync()
+        {
+            _isCreatingRoom = true;
+            try
+            {
+                Console.WriteLine($"[Multiplayer] Creating room on server: {_roomCode}");
+                bool created = await NetworkManager.Instance.CreatePrivateRoomAsync(_roomCode);
+                if (!created)
+                {
+                    // Collision or transient reject — try once more with a fresh code
+                    _roomCode = GenerateRoomCode();
+                    created = await NetworkManager.Instance.CreatePrivateRoomAsync(_roomCode);
+                }
+
+                if (created)
+                {
+                    _isRoomHost = true;
+                    TransitionToState(MenuState.Lobby);
+                }
+                else
+                {
+                    _errorMessage = "Could not create room on server.";
+                    _errorMessageTimer = 3f;
+                    UiSfx.Play(UiSound.Error);
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[Multiplayer] Create room error: {ex.Message}");
+                _errorMessage = "Could not reach server to create room.";
+                _errorMessageTimer = 3f;
+                UiSfx.Play(UiSound.Error);
+            }
+            finally
+            {
+                _isCreatingRoom = false;
+            }
+        }
+
+        private async Task CheckAndJoinRoomAsync(string code)
+        {
+            _isCheckingRoom = true;
+            _joinRoomError = null;
+            try
+            {
+                bool exists = await NetworkManager.Instance.CheckPrivateRoomAsync(code);
+                if (_state != MenuState.JoinRoom) return;
+
+                if (exists)
+                {
+                    Console.WriteLine($"[Multiplayer] Verified room exists: {code}");
+                    _isRoomHost = false;
+                    TransitionToState(MenuState.Lobby);
+                }
+                else
+                {
+                    Console.WriteLine($"[Multiplayer] Room not found on server: {code}");
+                    _joinRoomError = "Room not found. Check the code and try again.";
+                    UiSfx.Play(UiSound.Error);
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[Multiplayer] CheckPrivateRoom error: {ex.Message}");
+                if (_state == MenuState.JoinRoom)
+                {
+                    _joinRoomError = "Could not verify room with server.";
+                    UiSfx.Play(UiSound.Error);
+                }
+            }
+            finally
+            {
+                _isCheckingRoom = false;
             }
         }
         
@@ -1012,10 +1095,14 @@ namespace FunkyMakerPlayer.Multiplayer
             // Back / Cancel first
             if (IsKeyPressed(kb, Keys.Escape) || IsRectClicked(mouse, _backButtonRect))
             {
+                _isCheckingRoom = false;
+                _joinRoomError = null;
                 _selection = 0;
                 TransitionToState(MenuState.CreateRoom);
                 return;
             }
+
+            if (_isCheckingRoom) return;
 
             // Backspace with hold repeat
             if (kb.IsKeyDown(Keys.Back))
@@ -1023,7 +1110,10 @@ namespace FunkyMakerPlayer.Multiplayer
                 if (!_prevKb.IsKeyDown(Keys.Back))
                 {
                     if (_roomCode.Length > 0)
+                    {
                         _roomCode = _roomCode.Substring(0, _roomCode.Length - 1);
+                        _joinRoomError = null;
+                    }
                     _backspaceHoldTimer = 0f;
                     _backspaceRepeatTimer = 0f;
                 }
@@ -1036,6 +1126,7 @@ namespace FunkyMakerPlayer.Multiplayer
                         if (_backspaceRepeatTimer >= 0.05f && _roomCode.Length > 0)
                         {
                             _roomCode = _roomCode.Substring(0, _roomCode.Length - 1);
+                            _joinRoomError = null;
                             _backspaceRepeatTimer = 0f;
                         }
                     }
@@ -1053,19 +1144,28 @@ namespace FunkyMakerPlayer.Multiplayer
                 if (_prevKb.IsKeyUp(key) && _roomCode.Length < 6)
                 {
                     if (key >= Keys.A && key <= Keys.Z)
+                    {
                         _roomCode += key.ToString();
+                        _joinRoomError = null;
+                    }
                     else if (key >= Keys.D0 && key <= Keys.D9)
+                    {
                         _roomCode += ((int)key - (int)Keys.D0).ToString();
+                        _joinRoomError = null;
+                    }
                     else if (key >= Keys.NumPad0 && key <= Keys.NumPad9)
+                    {
                         _roomCode += ((int)key - (int)Keys.NumPad0).ToString();
+                        _joinRoomError = null;
+                    }
                 }
             }
 
-            // Enter or click JOIN button when complete
+            // Enter or click JOIN button when complete — ask the server if the room exists
             if (_roomCode.Length == 6 && (IsKeyPressed(kb, Keys.Enter) || IsButtonClicked(mouse, 0)))
             {
-                Console.WriteLine($"[Multiplayer] Joining room: {_roomCode}");
-                TransitionToState(MenuState.Lobby);
+                Console.WriteLine($"[Multiplayer] Checking room on server: {_roomCode}");
+                _ = CheckAndJoinRoomAsync(_roomCode);
             }
         }
 
@@ -1837,6 +1937,11 @@ namespace FunkyMakerPlayer.Multiplayer
         /// </summary>
         private void TransitionToState(MenuState newState)
         {
+            if (_isRoomHost && (newState == MenuState.CreateRoom || newState == MenuState.ModeSelect || newState == MenuState.MainMenu))
+            {
+                _isRoomHost = false;
+                _ = NetworkManager.Instance.LeavePrivateRoomAsync();
+            }
             _state = newState;
             _stateTransitionTimer = TRANSITION_DURATION;
             _fadeAlpha = 0f;
@@ -3167,7 +3272,11 @@ namespace FunkyMakerPlayer.Multiplayer
             }
 
             int actionY = slotY + slotH + Px(42, uiScale);
-            if (_roomCode.Length < 6)
+            if (_isCheckingRoom)
+            {
+                DrawCenteredTextInPanel(sb, font, "Checking room on server...", panelX, actionY + Px(8, uiScale), panelW, ACCENT_WARNING, FontPx(16, uiScale, 13, 22));
+            }
+            else if (_roomCode.Length < 6)
             {
                 string prompt = $"Type {6 - _roomCode.Length} more character{(6 - _roomCode.Length == 1 ? "" : "s")} (A-Z, 0-9)...";
                 DrawCenteredTextInPanel(sb, font, prompt, panelX, actionY + Px(8, uiScale), panelW, TEXT_SECONDARY, FontPx(15, uiScale, 12, 22));
@@ -3184,6 +3293,11 @@ namespace FunkyMakerPlayer.Multiplayer
                 int btnFont = FontPx(18, uiScale, 14, 26);
                 Vector2 bSz = MeasureText(font, "JOIN ROOM", btnFont);
                 DrawText(sb, font, "JOIN ROOM", new Vector2(btnX + (btnW - bSz.X) / 2f, actionY + (btnH - bSz.Y) / 2f), Color.White * _fadeAlpha, btnFont, shadow: true);
+            }
+
+            if (!string.IsNullOrEmpty(_joinRoomError))
+            {
+                DrawCenteredTextInPanel(sb, font, _joinRoomError, panelX, actionY + Px(62, uiScale), panelW, new Color(255, 95, 95), FontPx(14, uiScale, 11, 20));
             }
         }
 

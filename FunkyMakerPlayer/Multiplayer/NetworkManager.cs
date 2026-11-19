@@ -537,6 +537,62 @@ namespace FunkyMakerPlayer.Multiplayer
         }
 
         /// <summary>
+        /// Register a private room code on the server when the host creates a room.
+        /// </summary>
+        public async Task<bool> CreatePrivateRoomAsync(string roomCode)
+        {
+            if (!IsConnected || _hubConnection == null)
+                return false;
+
+            string clean = string.IsNullOrWhiteSpace(roomCode) ? "" : roomCode.Trim().ToUpperInvariant();
+            if (clean.Length != 6)
+                return false;
+
+            try
+            {
+                return await _hubConnection.InvokeAsync<bool>("CreatePrivateRoom", clean);
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[Multiplayer] CreatePrivateRoom error: {ex.Message}");
+                return false;
+            }
+        }
+
+        /// <summary>
+        /// Unregister the host's private room on the server when leaving the room/lobby.
+        /// </summary>
+        public async Task LeavePrivateRoomAsync()
+        {
+            if (!IsConnected || _hubConnection == null)
+                return;
+
+            try
+            {
+                await _hubConnection.SendAsync("LeavePrivateRoom");
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[Multiplayer] LeavePrivateRoom error: {ex.Message}");
+            }
+        }
+
+        /// <summary>
+        /// Check whether a private room code currently exists on the server.
+        /// </summary>
+        public async Task<bool> CheckPrivateRoomAsync(string roomCode)
+        {
+            if (!IsConnected || _hubConnection == null)
+                throw new InvalidOperationException("Not connected to server");
+
+            string clean = string.IsNullOrWhiteSpace(roomCode) ? "" : roomCode.Trim().ToUpperInvariant();
+            if (clean.Length != 6)
+                return false;
+
+            return await _hubConnection.InvokeAsync<bool>("CheckPrivateRoom", clean);
+        }
+
+        /// <summary>
         /// Request list of official levels from server.
         /// </summary>
         public async void RequestOfficialLevels()
