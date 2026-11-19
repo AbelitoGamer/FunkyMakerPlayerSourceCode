@@ -18,6 +18,7 @@ public class NoteSplashMenu : IScreenOverlay
     
     public bool IsActive { get; set; } = false;
     public int Selection { get; set; } = 0;
+    public bool SelectionConfirmed { get; private set; } = false;
     
     private List<string> _styles = new();
     private NoteSplashStyle? _previewStyle = null;
@@ -43,6 +44,7 @@ public class NoteSplashMenu : IScreenOverlay
         
         LoadPreview(_styles[Selection], graphicsDevice);
         _animTimer = 0f;
+        SelectionConfirmed = false;
         IsActive = true;
     }
     
@@ -133,40 +135,7 @@ public class NoteSplashMenu : IScreenOverlay
             (kb.IsKeyDown(Keys.Space) && !prevKb.IsKeyDown(Keys.Space)))
         {
             Game1.NoteSplashStyleName = _styles[Selection];
-            
-            // Apply to all note renderers
-            var splashStyle = NoteSplashStyle.LoadByName(Game1.NoteSplashStyleName, graphicsDevice);
-            
-            // If it's a particle style, recreate the particle splash system
-            ParticleNoteSplash? particleSplash = null;
-            if (Game1.NoteSplashStyleName.StartsWith("Particles:"))
-            {
-                particleSplash = new ParticleNoteSplash(graphicsDevice);
-                
-                // Parse which style was selected
-                if (Game1.NoteSplashStyleName.Contains("CircleExpand"))
-                    particleSplash.CurrentStyle = ParticleNoteSplash.SplashStyle.CircleExpand;
-                else if (Game1.NoteSplashStyleName.Contains("SplashDrops"))
-                    particleSplash.CurrentStyle = ParticleNoteSplash.SplashStyle.SplashDrops;
-                else if (Game1.NoteSplashStyleName.Contains("StarBurst"))
-                    particleSplash.CurrentStyle = ParticleNoteSplash.SplashStyle.StarBurst;
-                else if (Game1.NoteSplashStyleName.Contains("Explosion"))
-                    particleSplash.CurrentStyle = ParticleNoteSplash.SplashStyle.Explosion;
-                else if (Game1.NoteSplashStyleName.Contains("RingPulse"))
-                    particleSplash.CurrentStyle = ParticleNoteSplash.SplashStyle.RingPulse;
-                else if (Game1.NoteSplashStyleName.Contains("Randomizer"))
-                    particleSplash.CurrentStyle = ParticleNoteSplash.SplashStyle.Randomizer;
-                
-                Console.WriteLine($"[NoteSplashMenu] Applied particle style: {particleSplash.CurrentStyle}");
-            }
-            
-            foreach (var r in noteRenderers)
-            {
-                r.SetSplashStyle(splashStyle);
-                r.SetParticleSplash(particleSplash);
-            }
-            
-            Settings.Save(true);  // Save settings
+            SelectionConfirmed = true;
             Close();
         }
         

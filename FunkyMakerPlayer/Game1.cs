@@ -1591,29 +1591,7 @@ public partial class Game1 : Game
             r.SetStyle(_noteStyle);
         
         // Load notesplash style (null = programmatic default)
-        _noteSplashStyle = NoteSplashStyle.LoadByName(NoteSplashStyleName, GraphicsDevice);
-        
-        // If user selected "Particles: *", initialize MonoGame.Extended particle system with specific style
-        if (NoteSplashStyleName.StartsWith("Particles:"))
-        {
-            _particleNoteSplash = new ParticleNoteSplash(GraphicsDevice);
-            
-            // Parse which style was selected
-            if (NoteSplashStyleName.Contains("CircleExpand"))
-                _particleNoteSplash.CurrentStyle = ParticleNoteSplash.SplashStyle.CircleExpand;
-            else if (NoteSplashStyleName.Contains("SplashDrops"))
-                _particleNoteSplash.CurrentStyle = ParticleNoteSplash.SplashStyle.SplashDrops;
-            else if (NoteSplashStyleName.Contains("StarBurst"))
-                _particleNoteSplash.CurrentStyle = ParticleNoteSplash.SplashStyle.StarBurst;
-            else if (NoteSplashStyleName.Contains("Explosion"))
-                _particleNoteSplash.CurrentStyle = ParticleNoteSplash.SplashStyle.Explosion;
-            else if (NoteSplashStyleName.Contains("RingPulse"))
-                _particleNoteSplash.CurrentStyle = ParticleNoteSplash.SplashStyle.RingPulse;
-            else if (NoteSplashStyleName.Contains("Randomizer"))
-                _particleNoteSplash.CurrentStyle = ParticleNoteSplash.SplashStyle.Randomizer;
-            
-            Console.WriteLine($"[Game1] Loaded particle-based notesplash: {_particleNoteSplash.CurrentStyle}");
-        }
+        ApplyNoteSplashStyle();
 
         // Setup multiplayer event handlers (ALWAYS subscribe, even if not in multiplayer yet)
         // These handlers will be ready when StartMultiplayerMatch() is called
@@ -2945,9 +2923,17 @@ public partial class Game1 : Game
         {
             _splashMenu.Update(kb, _prevKb, (float)gameTime.ElapsedGameTime.TotalSeconds, GraphicsDevice, _noteRenderers);
             
-            // If menu was closed, reopen settings
-            if (!_splashMenu.IsActive && _settingsManager != null)
-                _settingsManager.IsActive = true;
+            // If menu was closed, apply selection (updating cached _noteSplashStyle / _particleNoteSplash) and reopen settings
+            if (!_splashMenu.IsActive)
+            {
+                if (_splashMenu.SelectionConfirmed)
+                {
+                    ApplyNoteSplashStyle();
+                    Settings.Save(_graphics.SynchronizeWithVerticalRetrace);
+                }
+                if (_settingsManager != null)
+                    _settingsManager.IsActive = true;
+            }
             
             AdvanceLiveMultiplayerIfActive(gameTime, dt);
             _prevKb = kb;
@@ -6278,5 +6264,40 @@ public partial class Game1 : Game
         }
     }
 #endif
+
+    private void ApplyNoteSplashStyle()
+    {
+        _noteSplashStyle = NoteSplashStyle.LoadByName(NoteSplashStyleName, GraphicsDevice);
+
+        if (NoteSplashStyleName.StartsWith("Particles:"))
+        {
+            _particleNoteSplash = new ParticleNoteSplash(GraphicsDevice);
+
+            if (NoteSplashStyleName.Contains("CircleExpand"))
+                _particleNoteSplash.CurrentStyle = ParticleNoteSplash.SplashStyle.CircleExpand;
+            else if (NoteSplashStyleName.Contains("SplashDrops"))
+                _particleNoteSplash.CurrentStyle = ParticleNoteSplash.SplashStyle.SplashDrops;
+            else if (NoteSplashStyleName.Contains("StarBurst"))
+                _particleNoteSplash.CurrentStyle = ParticleNoteSplash.SplashStyle.StarBurst;
+            else if (NoteSplashStyleName.Contains("Explosion"))
+                _particleNoteSplash.CurrentStyle = ParticleNoteSplash.SplashStyle.Explosion;
+            else if (NoteSplashStyleName.Contains("RingPulse"))
+                _particleNoteSplash.CurrentStyle = ParticleNoteSplash.SplashStyle.RingPulse;
+            else if (NoteSplashStyleName.Contains("Randomizer"))
+                _particleNoteSplash.CurrentStyle = ParticleNoteSplash.SplashStyle.Randomizer;
+
+            Console.WriteLine($"[Game1] Loaded particle-based notesplash: {_particleNoteSplash.CurrentStyle}");
+        }
+        else
+        {
+            _particleNoteSplash = null;
+        }
+
+        foreach (var r in _noteRenderers)
+        {
+            r.SetSplashStyle(_noteSplashStyle);
+            r.SetParticleSplash(_particleNoteSplash);
+        }
+    }
 
 }
