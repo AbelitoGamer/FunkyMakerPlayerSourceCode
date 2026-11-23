@@ -118,7 +118,7 @@ public class EditorAudioManager : IDisposable
     {
         Volume = Math.Clamp(volume, 0f, 1f);
         if (_musicInst != null)
-            _musicInst.Volume = Volume;
+            _musicInst.Volume = Math.Clamp(Volume * Game1.MasterVolume, 0f, 1f);
     }
 
     public void Play()
@@ -133,7 +133,7 @@ public class EditorAudioManager : IDisposable
             CreateInstanceFromOffset(_playbackStartTime);
             if (_musicInst != null)
             {
-                _musicInst.Volume = Volume;
+                _musicInst.Volume = Math.Clamp(Volume * Game1.MasterVolume, 0f, 1f);
                 _musicInst.Play();
             }
         }
@@ -177,7 +177,7 @@ public class EditorAudioManager : IDisposable
                 CreateInstanceFromOffset(_playbackStartTime);
                 if (_musicInst != null)
                 {
-                    _musicInst.Volume = Volume;
+                    _musicInst.Volume = Math.Clamp(Volume * Game1.MasterVolume, 0f, 1f);
                     _musicInst.Play();
                 }
             }
@@ -205,7 +205,7 @@ public class EditorAudioManager : IDisposable
         if (source == null) return;
 
         _musicInst = source.CreateInstance();
-        _musicInst.Volume = Volume;
+        _musicInst.Volume = Math.Clamp(Volume * Game1.MasterVolume, 0f, 1f);
         _musicInst.IsLooped = false;
     }
 
