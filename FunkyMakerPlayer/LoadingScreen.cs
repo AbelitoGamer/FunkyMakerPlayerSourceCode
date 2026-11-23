@@ -30,6 +30,7 @@ public class LoadingScreen
     private readonly Texture2D   _pixel;
     private readonly SpriteFont? _font;
     private readonly Texture2D?  _catTex;
+    private static Texture2D?    _sharedCatTex;
     private readonly bool        _isMultiplayer;  // Don't show "Press ENTER" in multiplayer
 
     // Multiplayer ready states
@@ -87,13 +88,26 @@ public class LoadingScreen
         _font      = font;
         _isMultiplayer = isMultiplayer;
 
-        if (assetsRoot != null)
+        if (_sharedCatTex != null && !_sharedCatTex.IsDisposed)
         {
-            string catPath = Path.Combine(assetsRoot, "LoadingScreen", "AnkushCat.png");
-            if (File.Exists(catPath))
+            _catTex = _sharedCatTex;
+        }
+        else if (assetsRoot != null)
+        {
+            try
             {
-                using var fs = File.OpenRead(catPath);
-                _catTex = Texture2D.FromStream(gd, fs);
+                string catPath = Path.Combine(assetsRoot, "LoadingScreen", "AnkushCat.png");
+                if (File.Exists(catPath))
+                {
+                    using var fs = File.OpenRead(catPath);
+                    _sharedCatTex = Texture2D.FromStream(gd, fs);
+                    _catTex = _sharedCatTex;
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[LoadingScreen] Could not load AnkushCat.png: {ex.Message}");
+                _catTex = null;
             }
         }
     }

@@ -69,15 +69,9 @@ public static class FnmmLoader
         {
             try
             {
-                // Check if old format and convert if needed
-                byte[]? converted = FnmmConverter.ConvertIfNeeded(fnmmPath);
-                if (converted != null)
-                {
-                    // Load from converted in-memory bytes
-                    using var ms = new MemoryStream(converted);
-                    using var zip = new ZipArchive(ms, ZipArchiveMode.Read);
-                    return LoadFromZipArchive(zip, Path.GetFileNameWithoutExtension(fnmmPath), progressCallback);
-                }
+                // Load directly from the ZIP on disk; legacy JSON files (data.json / evt.json /
+                // scene.json / sprite.json) are converted on the fly inside LoadFromZipArchive
+                // without unpacking and re-zipping the whole archive in RAM.
                 return LoadFromZip(fnmmPath, progressCallback);
             }
             catch
@@ -126,22 +120,38 @@ public static class FnmmLoader
             {
                 try
                 {
-                    byte[]? converted = FnmmConverter.ConvertIfNeeded(path);
-                    using var zip = converted != null
-                        ? new ZipArchive(new MemoryStream(converted), ZipArchiveMode.Read)
-                        : ZipFile.OpenRead(path);
+                    using var zip = ZipFile.OpenRead(path);
                     var entry = zip.GetEntry("data.json")
-                        ?? zip.Entries.FirstOrDefault(e => e.FullName.EndsWith("/data.json", StringComparison.OrdinalIgnoreCase));
+                        ?? zip.Entries.FirstOrDefault(e => e.FullName.Replace('\\', '/').EndsWith("/data.json", StringComparison.OrdinalIgnoreCase));
                     if (entry != null)
                     {
                         using var sr = new StreamReader(entry.Open());
-                        return ParseJson<FnmmData>(sr.ReadToEnd());
+                        string dataText = sr.ReadToEnd();
+                        if (dataText.Contains("\"notes\"") && !dataText.Contains("\"strumlines\""))
+                            dataText = FnmmConverter.ConvertData(dataText);
+                        return ParseJson<FnmmData>(dataText);
                     }
                 }
-                catch { /* fall through to the full loader */ }
+                catch { /* fall through to SharpCompress archive reader */ }
             }
 
-            return Load(path).Data;
+            // Non-ZIP archive (.rar or nested): read only data.json via SharpCompress without loading sprites/music
+            using (var archive = ArchiveFactory.OpenArchive(path))
+            {
+                var dataEntry = archive.Entries.FirstOrDefault(e =>
+                    !e.IsDirectory &&
+                    (e.Key ?? "").Replace('\\', '/').Split('/').Last().Equals("data.json", StringComparison.OrdinalIgnoreCase));
+                if (dataEntry != null)
+                {
+                    using var sr = new StreamReader(dataEntry.OpenEntryStream());
+                    string dataText = sr.ReadToEnd();
+                    if (dataText.Contains("\"notes\"") && !dataText.Contains("\"strumlines\""))
+                        dataText = FnmmConverter.ConvertData(dataText);
+                    return ParseJson<FnmmData>(dataText);
+                }
+            }
+
+            return null;
         }
         catch
         {
@@ -152,8 +162,8 @@ public static class FnmmLoader
     /// <summary>
     /// Opens a level and lets <paramref name="use"/> read single files by their path inside the level
     /// ("music.ogg", "scene.json", "sprites/x/0.png"; null when missing), without loading the rest
-    /// (fork: Freeplay audio preview and icons). Folders and ZIP .fnmm only (old-format ZIPs are
-    /// converted in memory); RAR and other containers return default.
+    /// (fork: Freeplay audio preview and icons). Folders and ZIP .fnmm only (old-format JSONs are
+    /// converted on the fly without re-zipping the archive); RAR and other containers return default.
     /// </summary>
     public static T? WithLevelFiles<T>(string path, Func<Func<string, byte[]?>, T?> use)
     {
@@ -175,18 +185,27 @@ public static class FnmmLoader
                 _ = fs.Read(header, 0, 2);
             if (header[0] != 0x50 || header[1] != 0x4B) return default;
 
-            byte[]? converted = FnmmConverter.ConvertIfNeeded(path);
-            using var zip = converted != null
-                ? new ZipArchive(new MemoryStream(converted), ZipArchiveMode.Read)
-                : ZipFile.OpenRead(path);
+            using var zip = ZipFile.OpenRead(path);
             string prefix = "";
             if (zip.GetEntry("data.json") == null)
             {
-                var nested = zip.Entries.FirstOrDefault(e => e.FullName.EndsWith("/data.json", StringComparison.OrdinalIgnoreCase));
+                var nested = zip.Entries.FirstOrDefault(e => e.FullName.Replace('\\', '/').EndsWith("/data.json", StringComparison.OrdinalIgnoreCase));
                 if (nested == null) return default;
-                prefix = nested.FullName[..^"data.json".Length];
+                prefix = nested.FullName.Replace('\\', '/')[..^"data.json".Length];
             }
-            return use(rel => TryReadZipBytes(zip, prefix + rel));
+            bool isOld = FnmmConverter.IsOldZip(zip, prefix);
+            return use(rel =>
+            {
+                byte[]? raw = TryReadZipBytes(zip, prefix + rel);
+                if (raw == null || !isOld) return raw;
+                if (rel.Equals("scene.json", StringComparison.OrdinalIgnoreCase))
+                    return System.Text.Encoding.UTF8.GetBytes(FnmmConverter.ConvertScene(System.Text.Encoding.UTF8.GetString(raw)));
+                if (rel.EndsWith("/sprite.json", StringComparison.OrdinalIgnoreCase))
+                    return System.Text.Encoding.UTF8.GetBytes(FnmmConverter.FixSpriteJson(System.Text.Encoding.UTF8.GetString(raw)));
+                if (rel.Equals("data.json", StringComparison.OrdinalIgnoreCase))
+                    return System.Text.Encoding.UTF8.GetBytes(FnmmConverter.ConvertData(System.Text.Encoding.UTF8.GetString(raw)));
+                return raw;
+            });
         }
         catch (Exception ex)
         {
@@ -221,13 +240,13 @@ public static class FnmmLoader
         
         // Detect layout: flat (data.json at root) or nested (subfolder/data.json)
         string prefix = "";
-        if (zip.GetEntry("data.json") == null)
+        if (GetZipEntry(zip, "data.json") == null)
         {
             var nested = zip.Entries
-                .FirstOrDefault(e => e.FullName.EndsWith("/data.json", StringComparison.OrdinalIgnoreCase));
+                .FirstOrDefault(e => e.FullName.Replace('\\', '/').EndsWith("/data.json", StringComparison.OrdinalIgnoreCase));
             if (nested == null)
                 throw new Exception("data.json not found in .FNMM archive.");
-            prefix = nested.FullName[..^"data.json".Length];
+            prefix = nested.FullName.Replace('\\', '/')[..^"data.json".Length];
         }
 
         var level = new FnmmLevel();
@@ -235,10 +254,21 @@ public static class FnmmLoader
 
         // ── Core JSONs ───────────────────────────────────────────────────────
         progressCallback?.Invoke(0.25f, "Parsing level data...");
-        level.Data  = ParseJson<FnmmData>(ReadZipText(zip, prefix + "data.json"));
+        string rawDataText = ReadZipText(zip, prefix + "data.json");
+        bool isOldFormat = FnmmConverter.IsOldZip(zip, prefix, rawDataText);
+        if (isOldFormat)
+            Console.WriteLine("[FnmmConverter] Old format detected, converting JSONs in-place...");
 
-        string? sceneText  = TryReadZipText(zip, prefix + "scene.json");
-        string? eventsText = TryReadZipText(zip, prefix + "events.json");
+        string dataText = isOldFormat ? FnmmConverter.ConvertData(rawDataText) : rawDataText;
+        level.Data = ParseJson<FnmmData>(dataText);
+
+        string? sceneText = TryReadZipText(zip, prefix + "scene.json");
+        if (isOldFormat && sceneText != null)
+            sceneText = FnmmConverter.ConvertScene(sceneText);
+
+        string? eventsText = isOldFormat
+            ? FnmmConverter.ConvertEvents(TryReadZipText(zip, prefix + "evt.json"), rawDataText)
+            : TryReadZipText(zip, prefix + "events.json");
         level.Scene  = sceneText  != null ? ParseJson<FnmmScene> (sceneText)  : new FnmmScene();
         level.Events = eventsText != null ? ParseJson<FnmmEvents>(eventsText) : new FnmmEvents();
 
@@ -264,13 +294,13 @@ public static class FnmmLoader
         progressCallback?.Invoke(0.55f, "Loading textures...");
         foreach (var entry in zip.Entries)
         {
-            string rel = entry.FullName;
-            if (!string.IsNullOrEmpty(prefix) && rel.StartsWith(prefix))
+            string rel = entry.FullName.Replace('\\', '/');
+            if (!string.IsNullOrEmpty(prefix) && rel.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
                 rel = rel[prefix.Length..];
             if (!rel.Contains('/') && rel.EndsWith(".png", StringComparison.OrdinalIgnoreCase))
             {
                 string key = Path.GetFileNameWithoutExtension(rel);
-                level.LooseImages[key] = ReadZipBytes(zip, entry.FullName);
+                level.LooseImages[key] = ReadZipEntryBytes(entry);
             }
         }
 
@@ -278,13 +308,14 @@ public static class FnmmLoader
         progressCallback?.Invoke(0.65f, "Loading textures...");
         string spritesPrefix = prefix + "sprites/";
         var spriteEntries = zip.Entries
-            .Where(e => e.FullName.StartsWith(spritesPrefix, StringComparison.OrdinalIgnoreCase))
+            .Select(e => (Entry: e, NormName: e.FullName.Replace('\\', '/')))
+            .Where(x => x.NormName.StartsWith(spritesPrefix, StringComparison.OrdinalIgnoreCase))
             .ToList();
 
         var spriteNames = spriteEntries
-            .Select(e =>
+            .Select(x =>
             {
-                string rel = e.FullName[spritesPrefix.Length..];
+                string rel = x.NormName[spritesPrefix.Length..];
                 int slash = rel.IndexOf('/');
                 return slash >= 0 ? rel[..slash] : null;
             })
@@ -304,15 +335,17 @@ public static class FnmmLoader
             string sprPrefix = spritesPrefix + sprName + "/";
             string? jsonText = TryReadZipText(zip, sprPrefix + "sprite.json");
             if (jsonText == null) continue;
+            if (isOldFormat)
+                jsonText = FnmmConverter.FixSpriteJson(jsonText);
 
             var def = ParseJson<FnmmSprite>(jsonText);
 
             // Map frames by numeric filename to preserve index alignment
             // (missing files leave a gap filled with empty bytes → dummy texture)
             var pngEntries = spriteEntries
-                .Where(e => e.FullName.StartsWith(sprPrefix) &&
-                            e.FullName.EndsWith(".png", StringComparison.OrdinalIgnoreCase))
-                .Select(e => (idx: int.TryParse(Path.GetFileNameWithoutExtension(e.FullName), out int i) ? i : -1, entry: e))
+                .Where(x => x.NormName.StartsWith(sprPrefix, StringComparison.OrdinalIgnoreCase) &&
+                            x.NormName.EndsWith(".png", StringComparison.OrdinalIgnoreCase))
+                .Select(x => (idx: int.TryParse(Path.GetFileNameWithoutExtension(x.NormName), out int i) ? i : -1, entry: x.Entry))
                 .Where(x => x.idx >= 0)
                 .OrderBy(x => x.idx)
                 .ToList();
@@ -323,7 +356,7 @@ public static class FnmmLoader
             {
                 var match = pngEntries.FirstOrDefault(x => x.idx == fi);
                 frames.Add(match.entry != null
-                    ? ReadZipBytes(zip, match.entry.FullName)
+                    ? ReadZipEntryBytes(match.entry)
                     : Array.Empty<byte>());
             }
 
@@ -476,9 +509,27 @@ public static class FnmmLoader
 
     // ── ZIP helpers ─────────────────────────────────────────────────────────
 
+    private static ZipArchiveEntry? GetZipEntry(ZipArchive zip, string entryName)
+    {
+        var entry = zip.GetEntry(entryName);
+        if (entry != null) return entry;
+        string norm = entryName.Replace('\\', '/');
+        return zip.GetEntry(norm)
+            ?? zip.Entries.FirstOrDefault(e => e.FullName.Replace('\\', '/').Equals(norm, StringComparison.OrdinalIgnoreCase));
+    }
+
+    private static byte[] ReadZipEntryBytes(ZipArchiveEntry entry)
+    {
+        int cap = entry.Length > 0 && entry.Length <= int.MaxValue ? (int)entry.Length : 0;
+        using var ms = cap > 0 ? new MemoryStream(cap) : new MemoryStream();
+        using var s = entry.Open();
+        s.CopyTo(ms);
+        return ms.ToArray();
+    }
+
     private static string ReadZipText(ZipArchive zip, string entryName)
     {
-        var entry = zip.GetEntry(entryName)
+        var entry = GetZipEntry(zip, entryName)
             ?? throw new Exception($"Entry not found in archive: {entryName}");
         using var sr = new StreamReader(entry.Open());
         return sr.ReadToEnd();
@@ -486,7 +537,7 @@ public static class FnmmLoader
 
     private static string? TryReadZipText(ZipArchive zip, string entryName)
     {
-        var entry = zip.GetEntry(entryName);
+        var entry = GetZipEntry(zip, entryName);
         if (entry == null) return null;
         using var sr = new StreamReader(entry.Open());
         return sr.ReadToEnd();
@@ -494,20 +545,16 @@ public static class FnmmLoader
 
     private static byte[] ReadZipBytes(ZipArchive zip, string entryName)
     {
-        var entry = zip.GetEntry(entryName)
+        var entry = GetZipEntry(zip, entryName)
             ?? throw new Exception($"Entry not found: {entryName}");
-        using var ms = new MemoryStream();
-        entry.Open().CopyTo(ms);
-        return ms.ToArray();
+        return ReadZipEntryBytes(entry);
     }
 
     private static byte[]? TryReadZipBytes(ZipArchive zip, string entryName)
     {
-        var entry = zip.GetEntry(entryName);
+        var entry = GetZipEntry(zip, entryName);
         if (entry == null) return null;
-        using var ms = new MemoryStream();
-        entry.Open().CopyTo(ms);
-        return ms.ToArray();
+        return ReadZipEntryBytes(entry);
     }
 
     // ── JSON helper ─────────────────────────────────────────────────────────

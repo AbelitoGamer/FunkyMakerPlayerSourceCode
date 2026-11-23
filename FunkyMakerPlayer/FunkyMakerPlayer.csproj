@@ -37,6 +37,8 @@
     <AndroidManifest>Platforms\Android\AndroidManifest.xml</AndroidManifest>
     <!-- Disable AOT for now to avoid trimming issues -->
     <RunAOTCompilation>false</RunAOTCompilation>
+    <!-- Never use the Mono IL interpreter (fixes 32-bit Mono SIGSEGV SI_KERNEL in Debug builds) -->
+    <UseInterpreter>false</UseInterpreter>
     <!-- Disable Fast Deployment to fix native library loading -->
     <EmbedAssembliesIntoApk>true</EmbedAssembliesIntoApk>
     <AndroidUseSharedRuntime>false</AndroidUseSharedRuntime>
@@ -46,7 +48,7 @@
   <!-- Passwords are read from environment variables so they never end up in the repo.
        Set FUNKY_STORE_PASS and FUNKY_KEY_PASS before building a Release APK. -->
   <PropertyGroup Condition="$(TargetFramework.Contains('android')) And '$(Configuration)' == 'Release'">
-    <AndroidKeyStore>true</AndroidKeyStore>
+    <AndroidKeyStore Condition="'$(AndroidKeyStore)' == ''">true</AndroidKeyStore>
     <AndroidSigningKeyStore>$(MSBuildProjectDirectory)\..\funkymakergame.keystore</AndroidSigningKeyStore>
     <AndroidSigningStorePass>$([System.Environment]::GetEnvironmentVariable('FUNKY_STORE_PASS'))</AndroidSigningStorePass>
     <AndroidSigningKeyAlias>funkymakergame</AndroidSigningKeyAlias>
@@ -54,14 +56,14 @@
   </PropertyGroup>
 
   <Target Name="CheckAndroidSigningSecrets" BeforeTargets="SignAndroidPackage"
-          Condition="$(TargetFramework.Contains('android')) And '$(Configuration)' == 'Release'">
+          Condition="$(TargetFramework.Contains('android')) And '$(Configuration)' == 'Release' And '$(AndroidKeyStore)' == 'true'">
     <Error Condition="'$(AndroidSigningStorePass)' == '' Or '$(AndroidSigningKeyPass)' == ''"
            Text="Android Release: set the FUNKY_STORE_PASS and FUNKY_KEY_PASS environment variables before building." />
   </Target>
   
   <!-- Android Release configuration: support multiple ABIs (arm64-v8a, x86_64) -->
   <PropertyGroup Condition="$(TargetFramework.Contains('android')) And '$(Configuration)' == 'Release'">
-    <AndroidSupportedAbis>arm64-v8a;x86_64</AndroidSupportedAbis>
+    <AndroidSupportedAbis Condition="'$(AndroidSupportedAbis)' == '' And '$(RuntimeIdentifier)' == '' And '$(RuntimeIdentifiers)' == ''">arm64-v8a;x86_64</AndroidSupportedAbis>
   </PropertyGroup>
   
   <!-- Single-file publish configuration (both platforms) -->

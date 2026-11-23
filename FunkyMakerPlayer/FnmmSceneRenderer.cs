@@ -354,9 +354,10 @@ public static class FnmmSceneRenderer
                         NoteTextureFailure(ex2);
                         Console.WriteLine($"[Texture] {name}[{fi}]: character atlas packing failed: {ex2.Message}");
                     }
+                    continue;
                 }
 
-                if (fullTex == null && !needsSplit && !needsBgTile && !(animData != null && animData.IsSplit))
+                if (fullTex == null && !needsSplit && !needsBgTile)
                 {
                     continue;
                 }
@@ -446,10 +447,7 @@ public static class FnmmSceneRenderer
                     long compactThreshold = (!Environment.Is64BitProcess ? 16L : 64L) * 1024 * 1024;
                     if (estRawBytes >= compactThreshold)
                     {
-                        System.Runtime.GCSettings.LargeObjectHeapCompactionMode =
-                            System.Runtime.GCLargeObjectHeapCompactionMode.CompactOnce;
-                        GC.Collect(GC.MaxGeneration, GCCollectionMode.Forced, blocking: true, compacting: true);
-                        GC.WaitForPendingFinalizers();
+                        ForceCompactingGc();
                     }
                 }
             }
@@ -485,6 +483,37 @@ public static class FnmmSceneRenderer
             Console.WriteLine($"[SceneCache] Textures: {cacheHits}/{totalSprites} sprite(s) reused from cache");
 
         return texCache;
+    }
+
+    /// <summary>
+    /// Forces a compacting garbage collection. On 32-bit Android (Mono runtime, SGen GC),
+    /// <see cref="System.Runtime.GCSettings.LargeObjectHeapCompactionMode"/> throws
+    /// <see cref="PlatformNotSupportedException"/>, so it is safely guarded.
+    /// </summary>
+    internal static void ForceCompactingGc()
+    {
+        try
+        {
+            System.Runtime.GCSettings.LargeObjectHeapCompactionMode =
+                System.Runtime.GCLargeObjectHeapCompactionMode.CompactOnce;
+        }
+        catch (PlatformNotSupportedException)
+        {
+            // Mono runtime (used on 32-bit Android) does not support LOH compaction mode
+        }
+        catch
+        {
+        }
+
+        try
+        {
+            GC.Collect(GC.MaxGeneration, GCCollectionMode.Forced, blocking: true, compacting: true);
+            GC.WaitForPendingFinalizers();
+        }
+        catch
+        {
+            GC.Collect();
+        }
     }
 
     private static bool TryPackAtlas(

@@ -178,8 +178,46 @@ public static class FnmmConverter
         return outMs.ToArray();
     }
 
+    /// <summary>
+    /// Checks whether a ZIP archive (with optional nested folder <paramref name="prefix"/>) uses the
+    /// legacy format (`evt.json` or `data.json` with `"notes"` instead of `"strumlines"`), without
+    /// reading or re-compressing the archive's audio/image entries.
+    /// </summary>
+    internal static bool IsOldZip(ZipArchive zip, string prefix = "", string? dataJson = null)
+    {
+        string evtPath = (prefix + "evt.json").Replace('\\', '/');
+        if (zip.GetEntry(evtPath) != null ||
+            zip.Entries.Any(e =>
+            {
+                string norm = e.FullName.Replace('\\', '/');
+                return norm.Equals(evtPath, StringComparison.OrdinalIgnoreCase) ||
+                       norm.EndsWith("/evt.json", StringComparison.OrdinalIgnoreCase);
+            }))
+        {
+            return true;
+        }
+
+        if (dataJson == null)
+        {
+            string dataPath = (prefix + "data.json").Replace('\\', '/');
+            var dataEntry = zip.GetEntry(dataPath) ?? zip.Entries.FirstOrDefault(e =>
+            {
+                string norm = e.FullName.Replace('\\', '/');
+                return norm.Equals(dataPath, StringComparison.OrdinalIgnoreCase) ||
+                       norm.EndsWith("/data.json", StringComparison.OrdinalIgnoreCase);
+            });
+            if (dataEntry != null)
+            {
+                using var sr = new StreamReader(dataEntry.Open());
+                dataJson = sr.ReadToEnd();
+            }
+        }
+
+        return dataJson != null && dataJson.Contains("\"notes\"") && !dataJson.Contains("\"strumlines\"");
+    }
+
     // ── data.json: notes[] → strumlines[][][] ────────────────────────────────
-    private static string ConvertData(string oldJson)
+    internal static string ConvertData(string oldJson)
     {
         var doc = JsonNode.Parse(oldJson)!.AsObject();
 
@@ -246,7 +284,7 @@ public static class FnmmConverter
     }
 
     // ── evt.json → events.json ───────────────────────────────────────────────
-    private static string ConvertEvents(string? evtJson, string dataJson)
+    internal static string ConvertEvents(string? evtJson, string dataJson)
     {
         var eventsList = new JsonArray();
         var actionPacks = new JsonArray();
@@ -465,7 +503,7 @@ public static class FnmmConverter
     }
 
     // ── scene.json: type → strumLine ─────────────────────────────────────────
-    private static string ConvertScene(string oldJson)
+    internal static string ConvertScene(string oldJson)
     {
         var doc = JsonNode.Parse(oldJson)!.AsObject();
         var objects = doc["objects"]?.AsArray();
@@ -496,7 +534,7 @@ public static class FnmmConverter
     }
 
     // ── sprite.json: ensure required fields have defaults ────────────────────
-    private static string FixSpriteJson(string sprJson)
+    internal static string FixSpriteJson(string sprJson)
     {
         // type 0 is valid (multi-anim, N PNGs each a horizontal strip — same as type 1).
         // Just ensure each animation entry has all required fields with sensible defaults.

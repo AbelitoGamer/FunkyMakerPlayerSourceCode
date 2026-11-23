@@ -457,6 +457,7 @@ public partial class Game1 : Game
             Console.Error.WriteLine(ex.ToString());
             
 #if ANDROID
+            _errorMsg ??= $"Gameplay error in {context}: {ex.Message}";
             // Android: Show crash dialog that allows copying the error
             var activity = (Android.App.Activity)Microsoft.Xna.Framework.Game.Activity;
             if (activity != null)

@@ -413,8 +413,12 @@ dotnet publish FunkyMakerPlayer\FunkyMakerPlayer.csproj -f net10.0-android -c Re
 - `SupportedOSPlatformVersion=29`; Release ABIs `arm64-v8a;x86_64`. A 64-bit APK will not
   install on a 32-bit-only phone (`INSTALL_FAILED_NO_MATCHING_ABIS`); 32-bit needs the separate
   Mono build in §1 (CoreCLR has no android-arm runtime). minSdk 29 = Android 10+ only.
-- AOT disabled (`RunAOTCompilation=false`), `EmbedAssembliesIntoApk=true`,
-  `AndroidUseSharedRuntime=false`.
+- AOT disabled (`RunAOTCompilation=false`), Mono IL interpreter disabled (`UseInterpreter=false`; in `.NET 10`
+  Android `Debug` builds with `UseMonoRuntime=true`, the SDK defaults `UseInterpreter=true`, and `mono_ee_interp`
+  crashes with `SIGSEGV (SI_KERNEL)` on 32-bit worker threads when running ImageSharp / chart analysis),
+  `EmbedAssembliesIntoApk=true`, `AndroidUseSharedRuntime=false`. `AndroidKeyStore` and `AndroidSupportedAbis` in
+  the Release PropertyGroups now respect explicit `-p:AndroidKeyStore=false` / `-p:RuntimeIdentifiers=...`
+  overrides.
 - `Platforms/Android/AndroidManifest.xml` + `Platforms/Android/Resources/**`.
 
 ### Test builds (fork, 2026-11-20)
@@ -910,7 +914,15 @@ Sprite usage is derived from scene objects: a sprite used only by objects with
   caps `maxTexSize` to `4096`, lowers the per-strip LOH compaction threshold from `64 MB` to `16 MB`, and routes
   any multi-frame strip whose raw RGBA size exceeds `AtlasPacker.GetDefaultStripVramBudgetBytes()` (`20 MB` on
   32-bit processes vs `48 MB` on 64-bit Android) through `TryPackAtlas` so it streams and downscales instead of
-  allocating multiple full-sheet buffers in `LoadTextureViaImageSharp`. On 32-bit Android, `EnsureRenderTarget`
+  allocating multiple full-sheet buffers in `LoadTextureViaImageSharp` (also fixed a bug in
+  `FnmmSceneRenderer.LoadLevelTextures` where the `needsDownscale` branch lacked a `continue;` after
+  `TryPackAtlas`, so whenever `TryPackAtlas` succeeded and set `animData.IsSplit = true`, execution fell
+  through to `fullTex!.Width` / `textures.Add(fullTex!)` with `fullTex == null`, throwing
+  `NullReferenceException` on `maxTexSize=4096` devices). LOH compaction is wrapped in
+  `FnmmSceneRenderer.ForceCompactingGc()`, which catches `PlatformNotSupportedException` because 32-bit Android
+  runs on the Mono runtime (where `GCSettings.LargeObjectHeapCompactionMode = CompactOnce` is unsupported and
+  previously threw `PlatformNotSupportedException` inside `LoadLevelTextures`'s `finally` block, aborting
+  `SetupLevel()` into a black screen). On 32-bit Android, `EnsureRenderTarget`
   and `PresentRenderTarget` also keep the gameplay render target at logical 720p (`scale = 1f`, `k = 1`, no
   intermediate `_upscaleTarget`).
 All of this lives in `FnmmSceneRenderer` (shared by gameplay and the Chart
@@ -1842,6 +1854,22 @@ start, relay, results, history, turn).
     remain in RAM (`_levelInfo`, `_computedHashes`), `TryRestoreFromDisk` verifies disk files via streaming
     SHA-256 (`LevelHasher.CalculateHash(filePath)`), and `WriteTempFile` / `WriteTempFileForHash` copy directly
     from `official_cache/<hash>.fmc` (`File.Copy`) without allocating full-archive `byte[]` arrays in memory.
+  - **On-the-fly legacy `.FNMM` JSON conversion & `LoadingScreen` safeguards (`FnmmConverter.cs`, `FnmmLoader.cs`, `LoadingScreen.cs`, `Game1.LevelLoad.cs`):**
+    When a legacy-format `.FNMM` level (e.g., `deadlullaby.FNMM` with `evt.json` or `"notes"` in `data.json`)
+    finished downloading into `mods/levels/Received/`, `FreeplayMenu.RequestIcons` (`WithLevelFiles`),
+    `RoomClient.ScanLocalLevels` (`TryLoadChartData`), `FreeplayMenu.QueueStarRatings` (`TryLoadChartData`),
+    and `FnmmLoader.Load` all called `FnmmConverter.ConvertIfNeeded(path)` concurrently on 3–4 worker threads.
+    Each call unpacked **every file** in the `.FNMM` archive (`music.ogg` + all sprite PNGs) into a dictionary in
+    RAM and re-compressed the entire archive into a new in-memory ZIP `byte[]`, exhausting 32-bit RAM before
+    `StartLoadingLevel` even began (causing `new LoadingScreen(...)` to throw `OutOfMemoryException`
+    synchronously on the main thread after `_inMultiplayer` and `_inFreeplay` were set to `false`, which stranded
+    the game on `ErrorOverlay.DrawDropHint` `"Drag a .FNMM, .ZIP or .RAR file here"`). Now `FnmmLoader.Load`,
+    `TryLoadChartData`, and `WithLevelFiles` read directly from the ZIP on disk and convert only the small JSON
+    strings (`data.json`, `evt.json`, `scene.json`, `sprite.json`) on the fly via `FnmmConverter.IsOldZip` /
+    `ConvertData` / `ConvertEvents` / `ConvertScene` / `FixSpriteJson` (and `TryLoadChartData`'s SharpCompress
+    fallback reads only `data.json`). `LoadingScreen` now caches `AnkushCat.png` in a single shared static
+    `Texture2D` guarded by `try/catch`, and `StartLoadingLevel` wraps its synchronous setup in `try/catch` routed
+    to `HandleSetupLevelFailure`.
   - **Peak LOH audio & match memory reduction (`OggLoader.cs`, `AudioDecoder.cs`, `Game1.LevelLoad.cs`):**
     `OggLoader.DecodeVorbisWithPcm` and `AudioDecoder.DecodeMp3` now convert 4096-sample float chunks directly
     into 16-bit PCM bytes (`MemoryStream`) instead of allocating an intermediate full-song `float[]` (~64 MB LOH)

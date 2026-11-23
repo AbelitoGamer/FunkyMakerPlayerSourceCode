@@ -67,46 +67,54 @@ public partial class Game1
 
     private void StartLoadingLevel(string path, bool preserveSpriteCache = false)
     {
-        string levelName = ResetGameplayStateForLevelLoad(path);
-        _loadState = LoadState.Loading;
-        _preloadedPlaytestPcm = null;
-        bool cacheOwnedByEditor = _spriteCacheOwnedByEditor;
-        _spriteCacheOwnedByEditor = false;
-        if (!preserveSpriteCache)
+        try
         {
-            // A chart editor (open or suspended for a playtest) may share these textures: never free
-            // them then. Online matches and normal play never have one.
-            bool editorAround = cacheOwnedByEditor || _activeEditor != null || _suspendedChartEditor != null;
-            if (!editorAround) DisposeLevelTextures();
-            else _levelTextures.Clear();
-            _spriteTextureCache = null;
-            Console.WriteLine("[Cache] Cleared sprite texture cache for new level");
-        }
-        else
-        {
-            Console.WriteLine("[Cache] Preserved shared sprite texture cache for reload");
-        }
+            string levelName = ResetGameplayStateForLevelLoad(path);
+            _loadState = LoadState.Loading;
+            _preloadedPlaytestPcm = null;
+            bool cacheOwnedByEditor = _spriteCacheOwnedByEditor;
+            _spriteCacheOwnedByEditor = false;
+            if (!preserveSpriteCache)
+            {
+                // A chart editor (open or suspended for a playtest) may share these textures: never free
+                // them then. Online matches and normal play never have one.
+                bool editorAround = cacheOwnedByEditor || _activeEditor != null || _suspendedChartEditor != null;
+                if (!editorAround) DisposeLevelTextures();
+                else _levelTextures.Clear();
+                _spriteTextureCache = null;
+                Console.WriteLine("[Cache] Cleared sprite texture cache for new level");
+            }
+            else
+            {
+                Console.WriteLine("[Cache] Preserved shared sprite texture cache for reload");
+            }
 
-        // Show loading screen in main window
-        _loadingScreen   = new LoadingScreen(levelName, _pixel!, _font,
-                               FindAssetsRoot(), GraphicsDevice, _isMultiplayerMatch);
-        _loadingComplete = false;
-        
-        // Initialize multiplayer state in loading screen
-        if (_isMultiplayerMatch)
+            // Show loading screen in main window
+            _loadingScreen   = new LoadingScreen(levelName, _pixel!, _font,
+                                   FindAssetsRoot(), GraphicsDevice, _isMultiplayerMatch);
+            _loadingComplete = false;
+            
+            // Initialize multiplayer state in loading screen
+            if (_isMultiplayerMatch)
+            {
+                _loadingScreen.MyPlayerRole = _multiplayerPlayerRole;
+                // Initialize ready states: I'm not ready yet, opponent status unknown
+                if (_multiplayerPlayerRole == 1)
+                {
+                    _loadingScreen.Player1Ready = false;  // Me
+                    _loadingScreen.Player2Ready = false;  // Opponent
+                }
+                else if (_multiplayerPlayerRole == 2)
+                {
+                    _loadingScreen.Player1Ready = false;  // Opponent
+                    _loadingScreen.Player2Ready = false;  // Me
+                }
+            }
+        }
+        catch (Exception ex)
         {
-            _loadingScreen.MyPlayerRole = _multiplayerPlayerRole;
-            // Initialize ready states: I'm not ready yet, opponent status unknown
-            if (_multiplayerPlayerRole == 1)
-            {
-                _loadingScreen.Player1Ready = false;  // Me
-                _loadingScreen.Player2Ready = false;  // Opponent
-            }
-            else if (_multiplayerPlayerRole == 2)
-            {
-                _loadingScreen.Player1Ready = false;  // Opponent
-                _loadingScreen.Player2Ready = false;  // Me
-            }
+            HandleSetupLevelFailure(ex);
+            return;
         }
 
         // Load file on background thread (no GPU calls here)
@@ -362,9 +370,7 @@ public partial class Game1
                     frames[fi] = Array.Empty<byte>();
             }
             _level.LooseImages.Clear();
-            System.Runtime.GCSettings.LargeObjectHeapCompactionMode =
-                System.Runtime.GCLargeObjectHeapCompactionMode.CompactOnce;
-            GC.Collect(GC.MaxGeneration, GCCollectionMode.Forced, blocking: true, compacting: true);
+            FnmmSceneRenderer.ForceCompactingGc();
         }
 
         // ── Build one animator per scene object ──────────────────────────────
