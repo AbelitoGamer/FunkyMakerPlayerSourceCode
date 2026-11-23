@@ -457,7 +457,7 @@ public static class FnmmLoader
     private static void ExtractRar(string rarPath, string outDir)
     {
         // Use SharpCompress — no external tools needed
-        using var archive = ArchiveFactory.Open(rarPath);
+        using var archive = ArchiveFactory.OpenArchive(rarPath);
         foreach (var entry in archive.Entries)
         {
             if (entry.IsDirectory) continue;
