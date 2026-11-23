@@ -104,3 +104,7 @@ keystore.properties
 !DefaultMods/**
 # Local reference material (hud.hx, skin sources): kept on disk, not in the repo
 References/
+
+# Fork: bundled minimal ffmpeg (built by Tools/build-ffmpeg-min.sh via Tools/fetch-ffmpeg.ps1)
+Tools/ffmpeg/
+Tools/.ffmpeg-build/

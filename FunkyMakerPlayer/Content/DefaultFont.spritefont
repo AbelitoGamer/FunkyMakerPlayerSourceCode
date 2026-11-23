@@ -6,6 +6,8 @@
     <Spacing>0</Spacing>
     <UseKerning>true</UseKerning>
     <Style>Regular</Style>
+    <!-- Characters outside the regions (e.g. layout key names like Ñ) draw as '?' instead of throwing -->
+    <DefaultCharacter>?</DefaultCharacter>
     <CharacterRegions>
       <CharacterRegion>
         <Start>&#32;</Start>
