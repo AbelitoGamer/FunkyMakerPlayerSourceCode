@@ -60,7 +60,7 @@ public enum UiSound
 /// <see cref="Flush"/> runs (once per Update). This avoids stacked sounds when one input triggers
 /// several reactions (e.g. a menu "confirm" that also opens a screen).
 ///
-/// Effective volume = Master volume (<see cref="Game1.MusicVolume"/>) × <see cref="Volume"/> × per-sound gain.
+/// Effective volume = Master volume (<see cref="Game1.MasterVolume"/>) × <see cref="Volume"/> × per-sound gain.
 /// </summary>
 public static class UiSfx
 {
@@ -145,7 +145,7 @@ public static class UiSfx
         }
         if (sound == null) return;
 
-        float volume = Math.Clamp(Game1.MusicVolume * Volume * Defs[sound.Value].Gain, 0f, 1f);
+        float volume = Math.Clamp(Game1.MasterVolume * Volume * Defs[sound.Value].Gain, 0f, 1f);
         if (volume <= 0.001f) return;
 
         var files = Defs[sound.Value].Files;
@@ -175,9 +175,13 @@ public static class UiSfx
             }
             else
             {
-                // Android APK assets (or the content root next to the exe)
-                using var s = TitleContainer.OpenStream($"Assets/sounds/ui/{name}.wav");
-                fx = SoundEffect.FromStream(s);
+                // Android APK assets: the Assets folder is the APK's assets root, so no "Assets/"
+                // prefix there (fork fix: UI sounds were silent on Android); the prefixed path is
+                // the content root next to the exe.
+                Stream s;
+                try { s = TitleContainer.OpenStream($"sounds/ui/{name}.wav"); }
+                catch { s = TitleContainer.OpenStream($"Assets/sounds/ui/{name}.wav"); }
+                using (s) fx = SoundEffect.FromStream(s);
             }
         }
         catch (Exception ex)

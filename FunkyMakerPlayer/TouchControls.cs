@@ -55,7 +55,6 @@ public class TouchControls
     
     // Visual constants - More reasonable sizes for production
     private const float HITBOX_IDLE_ALPHA = 0.0f;   // Invisible cuando no se presiona (era 0.5)
-    private const float HITBOX_PRESSED_ALPHA = 0.4f; // Visible pero sutil cuando se presiona (era 0.8)
     private const float MENU_BUTTON_SIZE = 0.12f;  // 12% of screen height (más razonable)
     private const float MENU_MARGIN = 0.03f;       // Margen del borde de pantalla
     private static readonly Color MENU_COLOR_IDLE = new Color(30, 30, 40, 140);        // Gris más oscuro y menos opaco
@@ -261,6 +260,7 @@ public class TouchControls
     /// </summary>
     public void SetHidePauseButton(bool hide)
     {
+        if (_hidePauseButton == hide) return; // called every frame: log only changes
         _hidePauseButton = hide;
         Console.WriteLine($"[TouchControls] Pause button {(hide ? "hidden" : "visible")}");
     }
@@ -274,15 +274,30 @@ public class TouchControls
     }
     
     /// <summary>
+    /// Menu mode: touches on points where this returns true are not mapped to the D-pad / A / B
+    /// (the screen has its own button there, which wins).
+    /// </summary>
+    public Func<Point, bool>? IgnorePoint { get; set; }
+
+    /// <summary>Some finger is on the screen (read in the last <see cref="Update"/>).</summary>
+    public bool AnyTouchDown { get; private set; }
+    private bool _anyTouchDownPrev;
+
+    /// <summary>The last finger was lifted in the last <see cref="Update"/> (a tap anywhere ended).</summary>
+    public bool TapReleased => _anyTouchDownPrev && !AnyTouchDown;
+
+    /// <summary>
     /// Update touch input and map to virtual keys
     /// </summary>
     public void Update()
     {
         if (_hitboxTexture == null) return;
-        
+        _anyTouchDownPrev = AnyTouchDown;
+
         // Don't process input if controls are hidden
         if (!_allControlsVisible)
         {
+            AnyTouchDown = false;
             // Reset all states when hidden
             _keyStates.Clear();
             _keyStatesPrev.Clear();
@@ -313,36 +328,31 @@ public class TouchControls
         foreach (var key in keys)
             _keyStates[key] = false;
         
-        // Process all active touch points
+        // Process all active touch points.
+        // (No per-touch logging here: this runs every frame on the Android UI thread, and a line per
+        // finger per frame to logcat only slows the game down.)
         var touches = TouchPanel.GetState();
-        
-        // Debug: Log touch count
-        if (touches.Count > 0)
-        {
-            Console.WriteLine($"[TouchControls] {touches.Count} touch(es) detected in {_mode} mode");
-        }
-        
+        bool anyDown = false;
+
         foreach (var touch in touches)
         {
             // Only process Pressed and Moved states
             // Released state means finger lifted - key will stay false (already reset above)
-            if (touch.State == TouchLocationState.Pressed || 
+            if (touch.State == TouchLocationState.Pressed ||
                 touch.State == TouchLocationState.Moved)
             {
+                anyDown = true;
                 var touchPos = touch.Position;
-                
-                Console.WriteLine($"[TouchControls] Touch at ({touchPos.X:F0}, {touchPos.Y:F0}) state={touch.State}");
-                
+
                 if (_mode == ControlMode.Gameplay)
                 {
                     // Check pause button first (only in gameplay mode)
-                    if (_pauseButton != null && 
+                    if (_pauseButton != null &&
                         _pauseButton.Bounds.Contains((int)touchPos.X, (int)touchPos.Y))
                     {
                         _keyStates[Keys.P] = true;
-                        Console.WriteLine("[TouchControls] Pause button pressed!");
                     }
-                    
+
                     // Check hitboxes
                     for (int i = 0; i < _hitboxes.Length; i++)
                     {
@@ -350,40 +360,40 @@ public class TouchControls
                         {
                             _hitboxes[i].IsPressed = true;
                             _keyStates[_hitboxes[i].Key] = true;
-                            Console.WriteLine($"[TouchControls] Hitbox {i} pressed! Key={_hitboxes[i].Key} - Setting to TRUE");
                         }
                     }
                 }
                 else // Menu mode
                 {
+                    if (IgnorePoint != null && IgnorePoint(new Point((int)touchPos.X, (int)touchPos.Y)))
+                        continue;
+
                     // Check menu buttons
                     foreach (var button in _menuButtons)
                     {
                         if (button.Bounds.Contains((int)touchPos.X, (int)touchPos.Y))
                         {
                             _keyStates[button.Key] = true;
-                            Console.WriteLine($"[TouchControls] Menu button pressed! Key={button.Key}");
                         }
                     }
-                    
+
                     // Check Q and E buttons (only if settings buttons are visible)
                     if (_showSettingsButtons)
                     {
                         if (_qButton != null && _qButton.Bounds.Contains((int)touchPos.X, (int)touchPos.Y))
                         {
                             _keyStates[Keys.Q] = true;
-                            Console.WriteLine("[TouchControls] Q button pressed!");
                         }
-                        
+
                         if (_eButton != null && _eButton.Bounds.Contains((int)touchPos.X, (int)touchPos.Y))
                         {
                             _keyStates[Keys.E] = true;
-                            Console.WriteLine("[TouchControls] E button pressed!");
                         }
                     }
                 }
             }
         }
+        AnyTouchDown = anyDown;
     }
     
     /// <summary>
@@ -468,7 +478,8 @@ public class TouchControls
         foreach (var hitbox in _hitboxes)
         {
             // If HideTouchHitboxColors is enabled, make hitboxes completely invisible
-            float alpha = Game1.HideTouchHitboxColors ? 0f : (hitbox.IsPressed ? HITBOX_PRESSED_ALPHA : HITBOX_IDLE_ALPHA);
+            // Pressed opacity comes from Settings → Touch Hitbox Opacity (fork; was fixed at 40 %).
+            float alpha = Game1.HideTouchHitboxColors ? 0f : (hitbox.IsPressed ? Game1.TouchHitboxOpacity : HITBOX_IDLE_ALPHA);
             Color color = hitbox.Color * alpha;
             
             spriteBatch.Draw(_hitboxTexture, hitbox.Bounds, color);

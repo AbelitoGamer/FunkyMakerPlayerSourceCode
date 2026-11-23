@@ -96,9 +96,10 @@ public static class NoteSkins
 
     /// <summary>
     /// True when letting the note pass must not count as a miss (no miss count, no combo
-    /// break, no default miss health penalty). Applies to avoid-notes and to every note that
-    /// heals when pressed (optional bonus notes). The note's onMissEvent still fires.
+    /// break, no default miss health penalty): only avoid-notes. The note's onMissEvent still fires.
+    /// (Fork fix 2026-11-20: notes that heal when pressed used to be miss-free too, but in FMM levels
+    /// ordinary notes often heal on press, which made every passed note free.)
     /// </summary>
     public static bool IsMissFree(FnmmEvents? events, NoteProps props)
-        => ShouldAvoid(events, props) || GetPressEffect(events, props) > 0f;
+        => ShouldAvoid(events, props);
 }

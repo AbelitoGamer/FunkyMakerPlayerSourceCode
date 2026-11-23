@@ -1,4 +1,5 @@
 using System;
+using System.Linq;
 using System.Collections.Generic;
 using Microsoft.Xna.Framework;
 using Microsoft.Xna.Framework.Graphics;
@@ -24,6 +25,9 @@ public readonly record struct GameplayStats(
 /// Renders the in-game HUD (health bars, singleplayer/multiplayer stats, timer bar,
 /// song info, debug telemetry, FPS counter, controls status, and screen flashes).
 /// </summary>
+/// <summary>One row of the in-match scores list (fork, room system).</summary>
+public readonly record struct MatchScoreEntry(string Name, int Hue, long Score, int Misses, bool IsLocal, int Team, bool Gone);
+
 public static class GameplayHudOverlay
 {
     /// <summary>
@@ -71,9 +75,8 @@ public static class GameplayHudOverlay
         NoteStyle? noteStyle,
         List<NoteRenderer> noteRenderers,
         bool isMultiplayerMatch,
-        string? opponentName,
-        int opponentScore,
-        float opponentHealth,
+        IReadOnlyList<MatchScoreEntry>? scoreList,
+        bool teamsScoreList,
         float songTime,
         float songEndTime,
         float songBeats,
@@ -81,12 +84,12 @@ public static class GameplayHudOverlay
         bool paused,
         double lastDt,
         bool vsyncEnabled,
-        int opponentMisses = 0,
-        float opponentAccuracy = 100f,
-        int opponentColorHue = 180)
+        bool softHudEvents = false)
     {
-        // GUI event can hide the entire engine HUD (health bar, score, timer, etc.)
-        if (events?.HudVisible == false) return;
+        // GUI event can hide the entire engine HUD (health bar, score, timer, etc.).
+        // Fork: not in online matches / duel replays (isMultiplayerMatch covers both), where it
+        // only halves the strumline opacity (Game1.SoftHudEvents); Freeplay enemy mode does the same.
+        if (events?.HudVisible == false && !isMultiplayerMatch && !softHudEvents) return;
 
         var hudSettings = NoteRenderer.Downscroll
             ? HudSettings.Instance.GetDownscrollAdjusted(sh)
@@ -102,10 +105,10 @@ public static class GameplayHudOverlay
 
         bool levelHasOwnBar = level != null &&
             level.Scene.Objects.Exists(o => o.Spr == "barra" && o.Fixed);
-        bool useReworkedMpHud = isMultiplayerMatch && !levelHasOwnBar && pixel != null && noteRenderers.Count >= 2;
 
-        // Solo health bar + center icons only draw outside the reworked multiplayer VS HUD
-        if (!levelHasOwnBar && healthBar != null && !useReworkedMpHud)
+        // Fork: online matches use the normal health bar too (it shows the score difference there,
+        // see Game1.Online.cs); the old VS HUD with two bars is gone.
+        if (!levelHasOwnBar && healthBar != null)
             healthBar.Draw(sh, NoteRenderer.Downscroll);
 
         if (font == null || noteRenderers.Count == 0 || level == null) return;
@@ -115,16 +118,6 @@ public static class GameplayHudOverlay
 
         var playerStats = CalculateStats(playerRenderer);
 
-        if (useReworkedMpHud)
-        {
-            DrawMultiplayerHUD(
-                spriteBatch, font, pixel!, sw, sh, level.LevelName,
-                hudSettings, healthBar, timerBar, playerStats,
-                opponentName, opponentScore, opponentHealth,
-                opponentMisses, opponentAccuracy, opponentColorHue,
-                songTime, songEndTime, songBeats, started, paused, lastDt, vsyncEnabled);
-        }
-        else
         {
             if (!levelHasOwnBar)
                 DrawSingleplayerStats(spriteBatch, font, hudSettings, playerStats);
@@ -134,6 +127,7 @@ public static class GameplayHudOverlay
                 timerBar.ShowTimer = Game1.ShowTimer;
                 timerBar.Preset = Game1.TimerPreset;
                 timerBar.TextMode = Game1.TimerTextMode;
+                timerBar.Stars = Game1.TimerTextMode == "Song Name + Difficulty" ? StarsFor(level) : null;
                 timerBar.ForceTop = Game1.TimerForceTop;
                 timerBar.ColorPreset = Game1.TimerColorPreset;
                 timerBar.Position = new Point(hudSettings.TimerBarPosition.X, hudSettings.TimerBarPosition.Y);
@@ -145,22 +139,46 @@ public static class GameplayHudOverlay
 
             Vector2 songInfoPos = new Vector2(hudSettings.SongInfoPosition.X, hudSettings.SongInfoPosition.Y);
             if (hudSettings.SongInfoVisible)
-                DrawShadowedText(spriteBatch, font, ErrorOverlay.Safe(level.LevelName), songInfoPos, Color.White, 1.0f);
+                DrawShadowedText(spriteBatch, font, ErrorOverlay.Safe(level.LevelName), songInfoPos, Color.White, 1.0f * hudSettings.SongInfoScale);
 
             if (Game1.ShowFpsCounter)
                 DrawFpsCounter(spriteBatch, font, pixel, sw, songInfoPos, hudSettings.SongInfoVisible, lastDt, vsyncEnabled);
 
             if (hudSettings.StatusInfoVisible)
             {
-                string autoStr = NoteRenderer.Autoplay ? "[BOTPLAY]" : "[MANUAL]";
+                string autoStr = NoteRenderer.Botplay ? "[BOTPLAY]" : "[MANUAL]";
                 string scrollStr = NoteRenderer.Downscroll ? "[DOWN]" : "[UP]";
                 string pauseStr = paused ? "[PAUSED]" : "";
                 string speedStr = ErrorOverlay.Safe($"Speed:x{NoteRenderer.ScrollMultiplier:F2}");
+                // Freeplay modifiers (fork)
+                if (Math.Abs(Game1.CurrentRunRate - 1f) > 0.001f)
+                    speedStr += ErrorOverlay.Safe($" [RATE x{Game1.CurrentRunRate:F2}]");
+                if (Game1.CurrentRunEnemy) speedStr += " [ENEMY]";
                 Vector2 statusPos = new Vector2(hudSettings.StatusInfoPosition.X, hudSettings.StatusInfoPosition.Y);
                 spriteBatch.DrawString(font,
                     ErrorOverlay.Safe($"{autoStr} {scrollStr} {speedStr} {pauseStr}"),
                     statusPos,
-                    NoteRenderer.Autoplay ? Color.Yellow * 0.8f : Color.White * 0.4f);
+                    NoteRenderer.Botplay ? Color.Yellow * 0.8f : Color.White * 0.4f,
+                    0f, Vector2.Zero, hudSettings.StatusInfoScale, SpriteEffects.None, 0f);
+            }
+        }
+
+        if (isMultiplayerMatch && pixel != null)
+        {
+            var mp = Multiplayer.MultiplayerSettings.Instance;
+            if (scoreList != null && scoreList.Count > 0 && mp.ShowOpponentScore)
+                DrawMatchScoreList(spriteBatch, font, pixel, sw, sh, scoreList, mp.ScoreListPosition == Multiplayer.MultiplayerSettings.ScoreListSide.Right, teamsScoreList);
+            if (mp.ShowConnectionQuality && NetworkManager.Instance.IsConnected)
+            {
+                bool compact = mp.InterfaceMode == Multiplayer.MultiplayerSettings.UIMode.Compact;
+                float uiScale = Math.Clamp(Math.Min(sw / 1280f, sh / 720f), 0.6f, 1.6f);
+                int h = Math.Max(20, (int)MathF.Round(24 * uiScale));
+                int margin = Math.Max(8, (int)MathF.Round(10 * uiScale));
+                var pos = mp.ConnectionIndicatorPosition;
+                bool left = pos is Multiplayer.MultiplayerSettings.IndicatorPosition.TopLeft or Multiplayer.MultiplayerSettings.IndicatorPosition.BottomLeft;
+                bool top = pos is Multiplayer.MultiplayerSettings.IndicatorPosition.TopLeft or Multiplayer.MultiplayerSettings.IndicatorPosition.TopRight;
+                DrawMultiplayerPingBadge(spriteBatch, font, pixel, left ? margin : sw - margin, top ? margin : sh - h - margin, h,
+                    alignRight: !left, compact, uiScale, 1f);
             }
         }
 
@@ -184,6 +202,96 @@ public static class GameplayHudOverlay
         }
     }
 
+    // Star rating of the level on screen, computed once per level (fork).
+    private static FnmmLevel? _starsLevel;
+    private static double? _starsValue;
+    private static (float Rate, bool Enemy) _starsMods;
+
+    private static double? StarsFor(FnmmLevel level)
+    {
+        var mods = (Game1.CurrentRunRate, Game1.CurrentRunEnemy);
+        if (!ReferenceEquals(level, _starsLevel) || mods != _starsMods)
+        {
+            _starsLevel = level;
+            _starsMods = mods;
+            try
+            {
+                // Side and song rate of the Freeplay modifiers (fork)
+                double st = ChartDifficulty.Calculate(level.Data, mods.Item2 ? 1 : 0, mods.Item1);
+                _starsValue = st > 0 ? st : null;
+            }
+            catch { _starsValue = null; }
+        }
+        return _starsValue;
+    }
+
+    /// <summary>
+    /// Small list of the match's players and their live scores (fork). <paramref name="list"/> is
+    /// already sorted best first; in Teams it is grouped by team with the team averages.
+    /// </summary>
+    private static void DrawMatchScoreList(SpriteBatch sb, SpriteFont font, Texture2D pixel, int sw, int sh,
+        IReadOnlyList<MatchScoreEntry> list, bool rightSide, bool teams)
+    {
+        float uiScale = Math.Clamp(Math.Min(sw / 1280f, sh / 720f), 0.6f, 1.6f);
+        float textScale = 0.5f * uiScale;
+        int rowH = (int)MathF.Round(24 * uiScale);
+        int w = (int)MathF.Round(232 * uiScale);
+        int margin = (int)MathF.Round(12 * uiScale);
+        int x = rightSide ? sw - margin - w : margin;
+        int rows = list.Count + (teams ? 2 : 0);
+        int y = (int)(sh * 0.30f);
+        if (y + rows * rowH > sh - margin) y = Math.Max(margin, sh - margin - rows * rowH);
+
+        void Row(MatchScoreEntry e, int place, ref int yy)
+        {
+            var r = new Rectangle(x, yy, w, rowH - 2);
+            Color c = Multiplayer.MultiplayerSettings.ColorFromHue(e.Hue);
+            sb.Draw(pixel, r, (e.IsLocal ? new Color(40, 40, 64) : new Color(14, 16, 26)) * (e.Gone ? 0.45f : 0.78f));
+            sb.Draw(pixel, new Rectangle(r.X, r.Y, Math.Max(3, (int)(4 * uiScale)), r.Height), c * (e.Gone ? 0.5f : 1f));
+            float ty = r.Y + (r.Height - font.LineSpacing * textScale) / 2f;
+            string placeText = $"{place}.";
+            DrawShadowedText(sb, font, placeText, new Vector2(r.X + 8 * uiScale, ty), Color.White * 0.75f, textScale);
+            // Players who left: "LEFT" tag instead of the live score, name struck through.
+            string score = e.Gone ? $"LEFT  {e.Score:N0}" : e.Score.ToString("N0");
+            float scoreW = font.MeasureString(score).X * textScale;
+            float nameX = r.X + 30 * uiScale;
+            string name = TruncateToWidth(font, ErrorOverlay.Safe(e.Name), r.Right - 10 * uiScale - scoreW - nameX - 6, textScale);
+            Color nameColor = Color.Lerp(c, Color.White, e.IsLocal ? 0.6f : 0.35f) * (e.Gone ? 0.5f : 1f);
+            DrawShadowedText(sb, font, name, new Vector2(nameX, ty), nameColor, textScale);
+            if (e.Gone)
+            {
+                float nameW = font.MeasureString(name).X * textScale;
+                sb.Draw(pixel, new Rectangle((int)nameX, (int)(ty + font.LineSpacing * textScale * 0.55f), (int)nameW, Math.Max(1, (int)(2 * uiScale))), nameColor);
+            }
+            DrawShadowedText(sb, font, score, new Vector2(r.Right - 8 * uiScale - scoreW, ty), e.Gone ? new Color(255, 110, 120) : Color.White, textScale);
+            yy += rowH;
+        }
+
+        if (!teams)
+        {
+            int place = 0;
+            long last = long.MinValue;
+            for (int i = 0; i < list.Count; i++)
+            {
+                if (list[i].Score != last) place = i + 1;
+                last = list[i].Score;
+                Row(list[i], place, ref y);
+            }
+            return;
+        }
+
+        for (int team = 0; team <= 1; team++)
+        {
+            var members = list.Where(e => e.Team == team).ToList();
+            if (members.Count == 0) continue;
+            double avg = members.Average(e => (double)e.Score);
+            string head = $"{(team == 0 ? "TEAM PLAYER" : "TEAM ENEMY")}   avg {avg:N0}";
+            DrawShadowedText(sb, font, ErrorOverlay.Safe(head), new Vector2(x + 4, y + 2), team == 0 ? new Color(120, 210, 255) : new Color(255, 120, 140), textScale);
+            y += rowH;
+            for (int i = 0; i < members.Count; i++) Row(members[i], i + 1, ref y);
+        }
+    }
+
     private static void DrawSingleplayerStats(
         SpriteBatch spriteBatch,
         SpriteFont font,
@@ -198,7 +306,7 @@ public static class GameplayHudOverlay
                 spriteBatch, font,
                 ErrorOverlay.Safe($"Score: {stats.Score}"),
                 new Vector2(hudSettings.ScorePosition.X, hudSettings.ScorePosition.Y),
-                Color.White, statsScale);
+                Color.White, statsScale * hudSettings.ScoreScale);
         }
 
         if (hudSettings.MissesVisible)
@@ -208,7 +316,7 @@ public static class GameplayHudOverlay
                 spriteBatch, font,
                 ErrorOverlay.Safe($"Misses: {stats.Misses}"),
                 new Vector2(hudSettings.MissesPosition.X, hudSettings.MissesPosition.Y),
-                missesColor, statsScale);
+                missesColor, statsScale * hudSettings.MissesScale);
         }
 
         if (hudSettings.AccuracyVisible)
@@ -221,243 +329,7 @@ public static class GameplayHudOverlay
                 spriteBatch, font,
                 ErrorOverlay.Safe($"Accuracy: {stats.Accuracy:F1}%"),
                 new Vector2(hudSettings.AccuracyPosition.X, hudSettings.AccuracyPosition.Y),
-                accColor, statsScale);
-        }
-    }
-
-    private static void DrawMultiplayerHUD(
-        SpriteBatch spriteBatch,
-        SpriteFont font,
-        Texture2D pixel,
-        int sw,
-        int sh,
-        string levelDisplayName,
-        HudSettings hudSettings,
-        HealthBar? healthBar,
-        TimerBar? timerBar,
-        GameplayStats playerStats,
-        string? opponentName,
-        int opponentScore,
-        float opponentHealth,
-        int opponentMisses,
-        float opponentAccuracy,
-        int opponentColorHue,
-        float songTime,
-        float songEndTime,
-        float songBeats,
-        bool started,
-        bool paused,
-        double lastDt,
-        bool vsyncEnabled)
-    {
-        var mp = Multiplayer.MultiplayerSettings.Instance;
-        float hudAlpha = Math.Clamp(mp.HudOpacity / 100f, 0.1f, 1f);
-        bool compact = mp.InterfaceMode == Multiplayer.MultiplayerSettings.UIMode.Compact;
-        bool downscroll = NoteRenderer.Downscroll;
-
-        float uiScale = Math.Clamp(Math.Min(sw / 1280f, sh / 720f), 0.72f, 1.35f);
-        int marginX = Math.Max(10, (int)MathF.Round(12 * uiScale));
-        int headerY = Math.Max(6, (int)MathF.Round(8 * uiScale));
-        int headerH = Math.Max(22, (int)MathF.Round(26 * uiScale));
-
-        // Subtle beat pulse matching FNF health icon bounce
-        float beatFrac = songBeats - MathF.Floor(songBeats);
-        float iconBounce = started
-            ? 1f + 0.13f * MathF.Pow(Math.Max(0f, 1f - beatFrac * 2.6f), 2f)
-            : 1f;
-
-        string cleanSongName = Game1.SanitizeLevelDisplayName(levelDisplayName);
-        string playerName = string.IsNullOrWhiteSpace(mp.Username) ? "Player" : mp.Username.Trim();
-        string oppName = string.IsNullOrWhiteSpace(opponentName) ? "Opponent" : opponentName.Trim();
-
-        Color playerBaseColor = healthBar?.PlayerBarColor ?? mp.GetPlayerColor();
-        Color playerAccent = Color.Lerp(playerBaseColor, mp.GetPlayerColor(), 0.25f);
-        Color oppFallbackColor = Multiplayer.MultiplayerSettings.ColorFromHue(opponentColorHue);
-        Color oppBaseColor = healthBar?.OpponentBarColor ?? oppFallbackColor;
-        Color oppAccent = Color.Lerp(oppBaseColor, oppFallbackColor, 0.20f);
-
-        float playerHealth = Math.Clamp(healthBar?.Health ?? 0.5f, 0f, 1f);
-        float oppHealthClamped = Math.Clamp(opponentHealth, 0f, 1f);
-
-        // ── Top header bar (timer centered, ping + song info placed without touching receptors) ──
-        int timerW = Math.Clamp((int)MathF.Round(420 * uiScale), 200, Math.Max(200, sw - 260));
-        int timerX = (sw - timerW) / 2;
-        if (timerBar != null)
-        {
-            timerBar.ShowTimer = Game1.ShowTimer;
-            timerBar.Preset = "Custom HUD";
-            timerBar.TextMode = Game1.TimerTextMode;
-            timerBar.ForceTop = true;
-            timerBar.ColorPreset = Game1.TimerColorPreset;
-            timerBar.Position = new Point(timerX, headerY);
-            timerBar.Size = new Point(timerW, headerH);
-
-            timerBar.Draw(sw, sh, songTime, songEndTime, downscroll: false,
-                cleanSongName, playerBaseColor, oppBaseColor, started);
-        }
-
-        int pingPillW = 0;
-        if (mp.ShowConnectionQuality &&
-            (mp.ConnectionIndicatorPosition == Multiplayer.MultiplayerSettings.IndicatorPosition.TopLeft ||
-             mp.ConnectionIndicatorPosition == Multiplayer.MultiplayerSettings.IndicatorPosition.TopRight))
-        {
-            bool pingOnLeft = mp.ConnectionIndicatorPosition == Multiplayer.MultiplayerSettings.IndicatorPosition.TopLeft;
-            pingPillW = DrawMultiplayerPingBadge(
-                spriteBatch, font, pixel,
-                pingOnLeft ? marginX : sw - marginX, headerY, headerH,
-                alignRight: !pingOnLeft, compact, uiScale, hudAlpha);
-        }
-
-        // Song title pill on TopLeft cleanly bounded before TimerBar
-        int songStartX = marginX;
-        if (mp.ShowConnectionQuality &&
-            mp.ConnectionIndicatorPosition == Multiplayer.MultiplayerSettings.IndicatorPosition.TopLeft &&
-            pingPillW > 0)
-        {
-            songStartX += pingPillW + (int)MathF.Round(8 * uiScale);
-        }
-
-        int maxSongPillW = Math.Max(0, timerX - (int)MathF.Round(10 * uiScale) - songStartX);
-        if (hudSettings.SongInfoVisible && maxSongPillW >= (int)MathF.Round(90 * uiScale))
-        {
-            float songTextScale = 0.72f * uiScale;
-            int textPadX = Math.Max(8, (int)MathF.Round(10 * uiScale));
-            string fittedSong = TruncateToWidth(font, ErrorOverlay.Safe(cleanSongName), maxSongPillW - textPadX * 2, songTextScale);
-            Vector2 songSz = font.MeasureString(fittedSong) * songTextScale;
-            int pillW = Math.Min(maxSongPillW, (int)MathF.Ceiling(songSz.X) + textPadX * 2);
-            DrawBorderedCard(spriteBatch, pixel, new Rectangle(songStartX, headerY, pillW, headerH),
-                new Color(14, 16, 26) * (0.76f * hudAlpha),
-                Color.White * (0.20f * hudAlpha));
-            DrawShadowedText(spriteBatch, font, fittedSong,
-                new Vector2(songStartX + textPadX, headerY + (headerH - songSz.Y) * 0.5f),
-                Color.White * hudAlpha, songTextScale, 1.5f, hudAlpha);
-        }
-
-        // TopRight utility tags (FPS + concise scroll/speed/pause) clear of TopRight Ping if present
-        int rightCursorX = sw - marginX;
-        if (mp.ShowConnectionQuality &&
-            mp.ConnectionIndicatorPosition == Multiplayer.MultiplayerSettings.IndicatorPosition.TopRight &&
-            pingPillW > 0)
-        {
-            rightCursorX -= pingPillW + (int)MathF.Round(8 * uiScale);
-        }
-
-        int maxRightSlotW = Math.Max(0, rightCursorX - (timerX + timerW + (int)MathF.Round(10 * uiScale)));
-        if (maxRightSlotW >= (int)MathF.Round(80 * uiScale))
-        {
-            var metaParts = new List<string>();
-            if (paused) metaParts.Add("PAUSED");
-            if (hudSettings.StatusInfoVisible)
-                metaParts.Add($"{(downscroll ? "DOWN" : "UP")} x{NoteRenderer.ScrollMultiplier:F2}");
-            if (Game1.ShowFpsCounter && lastDt > 0)
-            {
-                int fps = Math.Clamp((int)Math.Round(1.0 / lastDt), 1, 999);
-                metaParts.Add(vsyncEnabled ? $"{fps} FPS VSYNC" : $"{fps} FPS");
-            }
-
-            if (metaParts.Count > 0)
-            {
-                string metaStr = ErrorOverlay.Safe(string.Join("  |  ", metaParts));
-                float metaScale = 0.64f * uiScale;
-                int padX = Math.Max(8, (int)MathF.Round(9 * uiScale));
-                string fittedMeta = TruncateToWidth(font, metaStr, maxRightSlotW - padX * 2, metaScale);
-                Vector2 metaSz = font.MeasureString(fittedMeta) * metaScale;
-                int pillW = Math.Min(maxRightSlotW, (int)MathF.Ceiling(metaSz.X) + padX * 2);
-                int pillX = rightCursorX - pillW;
-                DrawBorderedCard(spriteBatch, pixel, new Rectangle(pillX, headerY, pillW, headerH),
-                    new Color(14, 16, 26) * (0.72f * hudAlpha),
-                    Color.White * (0.16f * hudAlpha));
-                DrawShadowedText(spriteBatch, font, fittedMeta,
-                    new Vector2(pillX + padX, headerY + (headerH - metaSz.Y) * 0.5f),
-                    new Color(210, 215, 232) * (0.90f * hudAlpha), metaScale, 1.2f, hudAlpha);
-            }
-        }
-
-        // ── Symmetric 3-part VS Dock (Opponent Card | Lead Badge | Player Card) ──
-        float glyphH = MathF.Max(14f, font.MeasureString("A").Y);
-        int minFullCardH = (int)MathF.Ceiling(
-            6f * uiScale + glyphH * 0.74f * uiScale + 4f * uiScale +
-            12f * uiScale + 5f * uiScale + glyphH * 0.62f * uiScale + 7f * uiScale);
-        int minCompactCardH = (int)MathF.Ceiling(
-            6f * uiScale + glyphH * 0.68f * uiScale + 4f * uiScale +
-            10f * uiScale + 8f * uiScale);
-        int cardH = compact
-            ? Math.Max((int)MathF.Round(52 * uiScale), minCompactCardH)
-            : Math.Max((int)MathF.Round(74 * uiScale), minFullCardH);
-        int dockY = downscroll
-            ? headerY + headerH + Math.Max(6, (int)MathF.Round(8 * uiScale))
-            : sh - cardH - Math.Max(10, (int)MathF.Round(12 * uiScale));
-
-        int availableW = sw - marginX * 2;
-        int gap = Math.Max(6, (int)MathF.Round(10 * uiScale));
-        int centerW = (int)MathF.Round((compact ? 118 : 146) * uiScale);
-        int maxSideW = Math.Max(140, (availableW - centerW - gap * 2) / 2);
-        int sideW = Math.Min((int)MathF.Round(356 * uiScale), maxSideW);
-        int totalDockW = sideW * 2 + centerW + gap * 2;
-        int dockX = (sw - totalDockW) / 2;
-
-        var oppCardRect = new Rectangle(dockX, dockY, sideW, cardH);
-        var centerRect = new Rectangle(oppCardRect.Right + gap, dockY, centerW, cardH);
-        var playerCardRect = new Rectangle(centerRect.Right + gap, dockY, sideW, cardH);
-
-        DrawVsFighterCard(
-            spriteBatch, font, pixel, oppCardRect,
-            isLocalPlayer: false,
-            displayName: oppName,
-            icon: healthBar?.OpponentIcon,
-            flipIcon: healthBar?.FlipOpponentIcon ?? false,
-            accentColor: oppAccent,
-            healthRatio: oppHealthClamped,
-            score: opponentScore,
-            accuracy: opponentAccuracy,
-            misses: opponentMisses,
-            hideScore: !mp.ShowOpponentScore,
-            compact: compact,
-            iconBounce: iconBounce,
-            uiScale: uiScale,
-            hudAlpha: hudAlpha);
-
-        DrawCenterVsBadge(
-            spriteBatch, font, pixel, centerRect,
-            playerStats.Score, opponentScore, playerStats.Combo,
-            mp.ShowOpponentScore, compact, uiScale, hudAlpha);
-
-        DrawVsFighterCard(
-            spriteBatch, font, pixel, playerCardRect,
-            isLocalPlayer: true,
-            displayName: playerName,
-            icon: healthBar?.PlayerIcon,
-            flipIcon: healthBar?.FlipPlayerIcon ?? false,
-            accentColor: playerAccent,
-            healthRatio: playerHealth,
-            score: playerStats.Score,
-            accuracy: playerStats.Accuracy,
-            misses: playerStats.Misses,
-            hideScore: false,
-            compact: compact,
-            iconBounce: iconBounce,
-            uiScale: uiScale,
-            hudAlpha: hudAlpha);
-
-        // Bottom corner connection indicator (if configured for BottomLeft / BottomRight)
-        if (mp.ShowConnectionQuality &&
-            (mp.ConnectionIndicatorPosition == Multiplayer.MultiplayerSettings.IndicatorPosition.BottomLeft ||
-             mp.ConnectionIndicatorPosition == Multiplayer.MultiplayerSettings.IndicatorPosition.BottomRight))
-        {
-            bool pingLeft = mp.ConnectionIndicatorPosition == Multiplayer.MultiplayerSettings.IndicatorPosition.BottomLeft;
-            var pingMetrics = MeasureMultiplayerPingBadge(font, compact, uiScale);
-            int gapToDock = Math.Max(8, (int)MathF.Round(10 * uiScale));
-            bool fitsAlongsideDock = downscroll || (pingLeft
-                ? (oppCardRect.Left - marginX - gapToDock >= pingMetrics.BoxW)
-                : (sw - marginX - playerCardRect.Right - gapToDock >= pingMetrics.BoxW));
-            int pingY = fitsAlongsideDock
-                ? sh - headerH - Math.Max(10, (int)MathF.Round(12 * uiScale))
-                : dockY - headerH - Math.Max(6, (int)MathF.Round(8 * uiScale));
-            int pingX = pingLeft ? marginX : sw - marginX;
-            DrawMultiplayerPingBadge(
-                spriteBatch, font, pixel,
-                pingX, pingY, headerH,
-                alignRight: !pingLeft, compact, uiScale, hudAlpha);
+                accColor, statsScale * hudSettings.AccuracyScale);
         }
     }
 
@@ -530,193 +402,6 @@ public static class GameplayHudOverlay
         return m.BoxW;
     }
 
-    private static void DrawVsFighterCard(
-        SpriteBatch spriteBatch,
-        SpriteFont font,
-        Texture2D pixel,
-        Rectangle rect,
-        bool isLocalPlayer,
-        string displayName,
-        SpriteAnimator? icon,
-        bool flipIcon,
-        Color accentColor,
-        float healthRatio,
-        int score,
-        float accuracy,
-        int misses,
-        bool hideScore,
-        bool compact,
-        float iconBounce,
-        float uiScale,
-        float hudAlpha)
-    {
-        bool lowHealth = healthRatio < 0.22f;
-        Color brightAccent = Color.Lerp(accentColor, Color.White, 0.28f);
-        Color borderColor = lowHealth
-            ? new Color(255, 95, 95) * (0.80f * hudAlpha)
-            : brightAccent * ((isLocalPlayer ? 0.65f : 0.45f) * hudAlpha);
-
-        DrawBorderedCard(spriteBatch, pixel, rect,
-            new Color(14, 16, 26) * (0.88f * hudAlpha),
-            borderColor);
-
-        // Crisp side accent stripe on outer edge
-        int stripeW = Math.Max(3, (int)MathF.Round(3 * uiScale));
-        int stripeX = isLocalPlayer ? rect.Right - stripeW : rect.X;
-        spriteBatch.Draw(pixel, new Rectangle(stripeX, rect.Y + 1, stripeW, rect.Height - 2),
-            brightAccent * (0.90f * hudAlpha));
-
-        int pad = Math.Max(6, (int)MathF.Round(8 * uiScale));
-        int iconBoxSize = Math.Max(34, rect.Height - pad * 2);
-        int iconBoxX = isLocalPlayer ? rect.Right - pad - stripeW - iconBoxSize : rect.X + pad + stripeW;
-        int iconBoxY = rect.Y + (rect.Height - iconBoxSize) / 2;
-
-        // Framed animated icon slot
-        var iconBoxRect = new Rectangle(iconBoxX, iconBoxY, iconBoxSize, iconBoxSize);
-        DrawBorderedCard(spriteBatch, pixel, iconBoxRect,
-            Color.Lerp(new Color(20, 22, 34), accentColor, 0.22f) * (0.92f * hudAlpha),
-            brightAccent * (0.45f * hudAlpha));
-        DrawBoundedVsIcon(spriteBatch, icon, iconBoxRect, iconBounce, flipIcon, hudAlpha);
-
-        int contentX = isLocalPlayer ? rect.X + pad : iconBoxRect.Right + pad;
-        int contentW = Math.Max(60, (isLocalPlayer ? iconBoxRect.Left - pad : rect.Right - pad) - contentX);
-
-        // Row 1: Player Name (left) + Health % (right)
-        string hpStr = $"{healthRatio * 100f:F0}%";
-        float hpScale = (compact ? 0.68f : 0.72f) * uiScale;
-        Vector2 hpSz = font.MeasureString(hpStr) * hpScale;
-        Color hpColor = lowHealth
-            ? new Color(255, 100, 100)
-            : (healthRatio >= 0.75f ? new Color(130, 250, 155) : Color.White);
-
-        string nameTag = isLocalPlayer ? $"YOU  {displayName}" : displayName;
-        float nameScale = (compact ? 0.68f : 0.74f) * uiScale;
-        int maxNameW = Math.Max(40, contentW - (int)MathF.Ceiling(hpSz.X) - (int)MathF.Round(8 * uiScale));
-        string fittedName = TruncateToWidth(font, ErrorOverlay.Safe(nameTag), maxNameW, nameScale);
-
-        int row1Y = rect.Y + Math.Max(4, (int)MathF.Round((compact ? 5 : 6) * uiScale));
-        DrawShadowedText(spriteBatch, font, fittedName,
-            new Vector2(contentX, row1Y),
-            Color.Lerp(accentColor, Color.White, 0.55f) * hudAlpha, nameScale, 1.5f, hudAlpha);
-        DrawShadowedText(spriteBatch, font, hpStr,
-            new Vector2(contentX + contentW - hpSz.X, row1Y),
-            hpColor * hudAlpha, hpScale, 1.5f, hudAlpha);
-
-        // Row 2: Health Bar
-        int barH = Math.Max(8, (int)MathF.Round((compact ? 10 : 12) * uiScale));
-        int barY = row1Y + (int)MathF.Ceiling(font.MeasureString("A").Y * nameScale) + Math.Max(3, (int)MathF.Round(4 * uiScale));
-        DrawSplitHealthBar(
-            spriteBatch, pixel,
-            contentX, barY, contentW, barH,
-            healthRatio, lowHealth ? new Color(255, 75, 75) : accentColor, hudAlpha);
-
-        if (compact)
-            return;
-
-        // Row 3 (Full mode): Score (left) + Accuracy/Misses (right)
-        int row3Y = barY + barH + Math.Max(4, (int)MathF.Round(5 * uiScale));
-        float subScale = 0.62f * uiScale;
-
-        string scoreText = hideScore ? "Score: --" : $"Score: {score:N0}";
-        string rightText = hideScore
-            ? "Opponent"
-            : $"Acc: {accuracy:F1}%  M:{misses}";
-
-        Vector2 rightSz = font.MeasureString(rightText) * subScale;
-        int maxScoreW = Math.Max(40, contentW - (int)MathF.Ceiling(rightSz.X) - (int)MathF.Round(6 * uiScale));
-        Vector2 scoreSz = font.MeasureString(scoreText) * subScale;
-        if (scoreSz.X > maxScoreW)
-            scoreText = hideScore ? "--" : $"{score:N0}";
-
-        DrawShadowedText(spriteBatch, font, ErrorOverlay.Safe(scoreText),
-            new Vector2(contentX, row3Y),
-            new Color(230, 234, 245) * hudAlpha, subScale, 1.2f, hudAlpha);
-
-        Color rightCol = hideScore
-            ? new Color(170, 175, 195)
-            : (accuracy >= 95f ? new Color(120, 245, 145) :
-               accuracy >= 80f ? new Color(255, 225, 110) :
-                                 new Color(255, 130, 130));
-        string fittedRight = TruncateToWidth(font, ErrorOverlay.Safe(rightText), contentW, subScale);
-        Vector2 fittedRightSz = font.MeasureString(fittedRight) * subScale;
-        DrawShadowedText(spriteBatch, font, fittedRight,
-            new Vector2(contentX + contentW - fittedRightSz.X, row3Y),
-            rightCol * hudAlpha, subScale, 1.2f, hudAlpha);
-    }
-
-    private static void DrawCenterVsBadge(
-        SpriteBatch spriteBatch,
-        SpriteFont font,
-        Texture2D pixel,
-        Rectangle rect,
-        int playerScore,
-        int opponentScore,
-        int playerCombo,
-        bool showOpponentScore,
-        bool compact,
-        float uiScale,
-        float hudAlpha)
-    {
-        int diff = playerScore - opponentScore;
-        Color statusColor = !showOpponentScore
-            ? new Color(150, 175, 245)
-            : (diff > 0 ? new Color(95, 240, 140) :
-               diff < 0 ? new Color(255, 105, 105) :
-                          new Color(255, 215, 105));
-
-        DrawBorderedCard(spriteBatch, pixel, rect,
-            new Color(14, 16, 26) * (0.90f * hudAlpha),
-            statusColor * (0.55f * hudAlpha));
-
-        string topTag = !showOpponentScore ? "VS MATCH"
-            : (diff > 0 ? "WINNING" : diff < 0 ? "BEHIND" : "TIED");
-        string mainText = !showOpponentScore
-            ? "VS"
-            : (diff > 0 ? $"+{diff:N0}" : $"{diff:N0}");
-        string bottomText = playerCombo > 0 ? $"{playerCombo}x Combo" : "0x Combo";
-
-        float topScale = 0.54f * uiScale;
-        float mainScale = (compact ? 0.74f : 0.80f) * uiScale;
-        float botScale = 0.56f * uiScale;
-
-        int padX = Math.Max(6, (int)MathF.Round(6 * uiScale));
-        int innerW = Math.Max(20, rect.Width - padX * 2);
-
-        string fittedTop = TruncateToWidth(font, topTag, innerW, topScale);
-        string fittedMain = TruncateToWidth(font, mainText, innerW, mainScale);
-        string fittedBot = TruncateToWidth(font, bottomText, innerW, botScale);
-
-        Vector2 topSz = font.MeasureString(fittedTop) * topScale;
-        Vector2 mainSz = font.MeasureString(fittedMain) * mainScale;
-        Vector2 botSz = font.MeasureString(fittedBot) * botScale;
-
-        if (compact)
-        {
-            float totalH = topSz.Y + mainSz.Y + 2f;
-            float y0 = rect.Y + (rect.Height - totalH) * 0.5f;
-            DrawShadowedText(spriteBatch, font, fittedTop,
-                new Vector2(rect.Center.X - topSz.X * 0.5f, y0),
-                statusColor * hudAlpha, topScale, 1.2f, hudAlpha);
-            DrawShadowedText(spriteBatch, font, fittedMain,
-                new Vector2(rect.Center.X - mainSz.X * 0.5f, y0 + topSz.Y + 2f),
-                statusColor * hudAlpha, mainScale, 1.5f, hudAlpha);
-        }
-        else
-        {
-            float totalH = topSz.Y + mainSz.Y + botSz.Y + 6f;
-            float y0 = rect.Y + (rect.Height - totalH) * 0.5f;
-            DrawShadowedText(spriteBatch, font, fittedTop,
-                new Vector2(rect.Center.X - topSz.X * 0.5f, y0),
-                statusColor * hudAlpha, topScale, 1.2f, hudAlpha);
-            DrawShadowedText(spriteBatch, font, fittedMain,
-                new Vector2(rect.Center.X - mainSz.X * 0.5f, y0 + topSz.Y + 2f),
-                statusColor * hudAlpha, mainScale, 1.5f, hudAlpha);
-            DrawShadowedText(spriteBatch, font, fittedBot,
-                new Vector2(rect.Center.X - botSz.X * 0.5f, y0 + topSz.Y + mainSz.Y + 4f),
-                new Color(205, 212, 228) * (0.90f * hudAlpha), botScale, 1.2f, hudAlpha);
-        }
-    }
-
     private static void DrawBorderedCard(SpriteBatch sb, Texture2D pixel, Rectangle rect, Color fill, Color border)
     {
         if (rect.Width <= 0 || rect.Height <= 0) return;
@@ -742,57 +427,6 @@ public static class GameplayHudOverlay
         while (len > 0 && font.MeasureString(text.Substring(0, len) + ellipsis).X * scale > maxWidth)
             len--;
         return text.Substring(0, len) + ellipsis;
-    }
-
-    private static void DrawSplitHealthBar(
-        SpriteBatch spriteBatch,
-        Texture2D pixel,
-        int barX,
-        int barY,
-        int barWidth,
-        int barHeight,
-        float healthRatio,
-        Color baseColor,
-        float alpha = 1f)
-    {
-        spriteBatch.Draw(pixel, new Rectangle(barX - 1, barY - 1, barWidth + 2, barHeight + 2), Color.Black * (0.85f * alpha));
-        spriteBatch.Draw(pixel, new Rectangle(barX, barY, barWidth, barHeight), new Color(26, 28, 38) * alpha);
-
-        int fillW = (int)MathF.Round(Math.Clamp(healthRatio, 0f, 1f) * barWidth);
-        if (fillW > 0)
-        {
-            Color fillStart = Color.Lerp(baseColor, Color.Black, 0.25f) * alpha;
-            Color fillEnd = Color.Lerp(baseColor, Color.White, 0.25f) * alpha;
-            spriteBatch.Draw(pixel, new Rectangle(barX, barY, fillW, barHeight), fillStart);
-            int halfW = Math.Max(1, fillW / 2);
-            spriteBatch.Draw(pixel, new Rectangle(barX + fillW - halfW, barY, halfW, barHeight), fillEnd);
-
-            // Subtle top highlight for clean polish
-            int sheenH = Math.Max(1, barHeight / 4);
-            spriteBatch.Draw(pixel, new Rectangle(barX, barY, fillW, sheenH), Color.White * (0.22f * alpha));
-        }
-    }
-
-    private static void DrawBoundedVsIcon(
-        SpriteBatch spriteBatch,
-        SpriteAnimator? icon,
-        Rectangle box,
-        float bounceScale,
-        bool flipX = false,
-        float alpha = 1f)
-    {
-        if (icon == null || box.Width <= 0 || box.Height <= 0) return;
-        var (tex, src) = icon.GetCurrentFrameTexture();
-        if (tex == null || src.Width <= 0 || src.Height <= 0) return;
-
-        float innerSize = (box.Width - 6) * Math.Clamp(bounceScale, 0.9f, 1.15f);
-        float fitScale = innerSize / Math.Max(src.Width, src.Height);
-        int drawW = Math.Max(1, (int)MathF.Round(src.Width * fitScale));
-        int drawH = Math.Max(1, (int)MathF.Round(src.Height * fitScale));
-        int drawX = box.Center.X - drawW / 2;
-        int drawY = box.Center.Y - drawH / 2;
-        var fx = flipX ? SpriteEffects.FlipHorizontally : SpriteEffects.None;
-        spriteBatch.Draw(tex, new Rectangle(drawX, drawY, drawW, drawH), src, Color.White * alpha, 0f, Vector2.Zero, fx, 0f);
     }
 
     private static void DrawDebugInfo(

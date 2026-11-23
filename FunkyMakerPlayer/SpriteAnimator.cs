@@ -226,7 +226,7 @@ public class SpriteAnimator
     private bool  _wasHolding   = false;  // Track if we were holding in the previous frame
     private bool  _completingHold = false; // True when completing animation after hold release
     private bool  _setByEvent = false;  // Track if current animation was set by an event (not gameplay)
-    private const int HOLD_LOOP_FRAMES = 3;  // Loop first 3 frames during hold
+    private const int HOLD_LOOP_FRAMES = 2;  // Loop first 2 frames during hold
 
     // Seconds to hold a sing pose before returning to idle.
     // = 1 beat duration at the current BPM, minimum 0.5s.
@@ -250,7 +250,8 @@ public class SpriteAnimator
 
     // ── Public API ───────────────────────────────────────────────────────────
 
-    private int GetIdleAnimIndex() => (_def.Data.Count > 1 && _def.Data[0].FrameCount == 1) ? 1 : 0;
+    /// <summary>A character's idle is always animation 0 (fixed by the FMM format).</summary>
+    public const int IdleAnim = 0;
 
     public void SetAnimation(int animIndex, bool setByEvent = false)
     {
@@ -267,40 +268,22 @@ public class SpriteAnimator
         _completingHold = false;  // Reset hold completion flag
         _setByEvent = setByEvent;  // Mark if this was set by an event
 
-        if (IsCharacter)
+        // Characters: set sing timer for non-idle animations:
+        // - Loop=true: hold pose for minimum SingHold/animDuration before returning to idle.
+        // - Loop=false + setByEvent: hold event protection while the animation plays, without auto-returning to idle.
+        // - Loop=false + !setByEvent: stops on its last frame per FMM behavior instead of returning to idle.
+        // Non-character objects (props, backgrounds) never auto-return to idle, so a non-looping
+        // animation (e.g. a transformation) stays on its last frame.
+        var anim = _def.Data[animIndex];
+        if (IsCharacter && animIndex != IdleAnim && (anim.Loop || setByEvent))
         {
-            int idleAnim = GetIdleAnimIndex();
-            var anim = _def.Data[animIndex];
-            // Characters: set sing timer for non-idle animations:
-            // - Loop=true: hold pose for minimum SingHold/animDuration before returning to idle.
-            // - Loop=false + setByEvent: hold event protection while the animation plays, without auto-returning to idle.
-            // - Loop=false + !setByEvent: stops on its last frame per FMM behavior instead of returning to idle.
-            if (animIndex != 0 && animIndex != idleAnim && (anim.Loop || setByEvent))
-            {
-                float fps = AnimFps(anim);
-                float animDuration = fps > 0f ? GetFrameCount(animIndex) / fps : 0f;
-                float needed = anim.Loop ? Math.Max(SingHold, animDuration) : animDuration;
-                _singTimer = needed;
-            }
-            else
-            {
-                _singTimer = 0f;
-            }
+            float fps = AnimFps(anim);
+            float animDuration = fps > 0f ? GetFrameCount(animIndex) / fps : 0f;
+            _singTimer = anim.Loop ? Math.Max(SingHold, animDuration) : animDuration;
         }
         else
         {
-            // For non-character objects (props, backgrounds, etc.):
-            // If animation has Loop=false, disable sing timer so it stays on last frame
-            // This is used in charts like Execution D-side where Lord X transforms
-            var anim = _def.Data[animIndex];
-            if (!anim.Loop && animIndex != 0)
-            {
-                _singTimer = 0f; // Disable auto-return to idle for non-looping transformations
-            }
-            else
-            {
-                _singTimer = 0f; // Objects don't auto-return to idle normally
-            }
+            _singTimer = 0f;
         }
     }
 
@@ -353,8 +336,7 @@ public class SpriteAnimator
             // This happens when animation completes OR is already finished (!_playing)
             // If animation was set by an event, we now clear that flag to allow
             // the character to be controlled by notes again
-            int idleAnim = GetIdleAnimIndex();
-            if (_singTimer <= 0f && _currentAnim != 0 && _currentAnim != idleAnim && IsCharacter && _currentAnim < _def.Data.Count)
+            if (_singTimer <= 0f && _currentAnim != IdleAnim && IsCharacter && _currentAnim < _def.Data.Count)
             {
                 var currentAnim = _def.Data[_currentAnim];
 
@@ -374,7 +356,7 @@ public class SpriteAnimator
 
                     if (!_playing || animationCompleted || frameCount <= 1)
                     {
-                        SetAnimation(idleAnim);
+                        SetAnimation(IdleAnim);
                         return;  // Early return after switching to idle
                     }
                 }
@@ -390,10 +372,9 @@ public class SpriteAnimator
         if (_def.Data.Count == 0) return;
 
         var anim = _def.Data[_currentAnim];
-        int activeIdleAnim = GetIdleAnimIndex();
         // Only ignore anim.Loop when anim.Loop == true on normal character poses (so poses play once before returning to idle);
         // when anim.Loop == false, honor it so the animation stops on its last frame as in FMM.
-        bool ignorePoseLoop = IsCharacter && !_setByEvent && _currentAnim != 0 && _currentAnim != activeIdleAnim && anim.Loop;
+        bool ignorePoseLoop = IsCharacter && !_setByEvent && _currentAnim != IdleAnim && anim.Loop;
 
         // If animation finished and not looping (or ignoring Loop=true on a normal character pose), stay on last frame
         if (!_playing && (!anim.Loop || ignorePoseLoop))
@@ -409,13 +390,13 @@ public class SpriteAnimator
         // After release: continue from current frame to end (no loop)
         if (holdActive && fc > HOLD_LOOP_FRAMES)
         {
-            // Loop the first few frames (0, 1, 2, 0, 1, 2, ...)
+            // Loop the first frames (0, 1, 0, 1, ...)
             if (_currentFrame >= HOLD_LOOP_FRAMES)
                 _currentFrame = _currentFrame % HOLD_LOOP_FRAMES;
             // Ensure we're not in completion mode during hold
             _completingHold = false;
         }
-        else if (_wasHolding && !holdActive && fc > HOLD_LOOP_FRAMES)
+        else if (holdJustReleased && fc > HOLD_LOOP_FRAMES)
         {
             // Hold was just released or we're in the process of completing
             // If we're still in the loop range, jump to continuation frames
@@ -431,23 +412,15 @@ public class SpriteAnimator
             _currentFrame = HOLD_LOOP_FRAMES;
         }
         
-        // Handle animation completion
+        // Handle animation completion.
+        // A hold's release tail ends exactly like a normal note/event animation would:
+        // Loop=false freezes on the last frame, a normal Loop=true pose waits for the sing
+        // timer and then returns to idle, and a looping event animation keeps looping.
         if (_currentFrame >= fc)
         {
-            // If we're completing a hold animation, DON'T loop - just finish once
-            if (_completingHold)
-            {
-                _currentFrame = fc - 1;
-                _playing = false;
-                _completingHold = false;  // Reset flag
-                
-                // CRITICAL: After hold completion animation finishes, return to idle
-                if (_currentAnim != 0 && _currentAnim != activeIdleAnim && IsCharacter)
-                {
-                    SetAnimation(activeIdleAnim);
-                }
-            }
-            else if (anim.Loop && !ignorePoseLoop)
+            _completingHold = false;
+
+            if (anim.Loop && !ignorePoseLoop)
             {
                 // Normal loop behavior (idle, props/backgrounds, or looping event animations)
                 _currentFrame %= Math.Max(1, fc);

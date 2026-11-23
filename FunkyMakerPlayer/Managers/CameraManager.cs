@@ -17,10 +17,6 @@ public class CameraManager
     private int   _lastBeat = -1;          // Last beat that triggered zoom
     private Matrix _lastCameraMatrix = Matrix.Identity;
     
-    // ── MonoGame.Extended Camera (Beta) ───────────────────────────────────────
-    private OrthographicCamera? _extendedCamera;  // Extended camera for scrollFactor support
-    public bool UseExtendedCamera { get; set; } = false;  // Toggle for beta feature
-
     // ── Constants ─────────────────────────────────────────────────────────────
     private const float ZOOM_BEAT_AMOUNT = 0.03f;   // How much to zoom on beat (3%)
     private const float ZOOM_LERP_SPEED = 4.5f;     // How fast zoom returns to normal
@@ -45,16 +41,6 @@ public class CameraManager
         Console.WriteLine("[CameraManager] Initialized");
     }
     
-    /// <summary>
-    /// Initializes MonoGame.Extended OrthographicCamera for parallax support.
-    /// Call this after graphics device is available.
-    /// </summary>
-    public void InitializeExtendedCamera(GraphicsDevice graphicsDevice)
-    {
-        _extendedCamera = new OrthographicCamera(graphicsDevice);
-        Console.WriteLine("[CameraManager] Extended camera initialized");
-    }
-
     /// <summary>
     /// Resets camera state (called when loading new level or restarting).
     /// </summary>
@@ -87,59 +73,7 @@ public class CameraManager
         _camZoom = MathHelper.Lerp(_camZoom, 1.0f, ZOOM_LERP_SPEED * deltaTime);
     }
     
-    /// <summary>
-    /// Updates MonoGame.Extended camera position and zoom.
-    /// Call this every frame when UseExtendedCamera is enabled.
-    /// </summary>
-    public void UpdateExtendedCamera(CameraState camera, int screenWidth, int screenHeight, bool hasCameraEvents)
-    {
-        if (_extendedCamera == null) return;
-        
-        // Manual override ALWAYS takes priority
-        float scale = (_camScaleOverride > 0f) ? _camScaleOverride : camera.Scale;
-        
-        // Apply beat zoom only when no camera events and no manual override
-        float finalScale = (hasCameraEvents && _camScaleOverride == 0f) ? scale : (scale / _camZoom);
-        
-        // Set camera position (OrthographicCamera uses center position)
-        _extendedCamera.Position = new Vector2(camera.X + camera.ShakeOffsetX, camera.Y + camera.ShakeOffsetY);
-        
-        // Set zoom (Extended camera uses Zoom property, not Scale)
-        _extendedCamera.Zoom = finalScale;
-        
-        // Update viewport size if changed
-        if (_extendedCamera.BoundingRectangle.Width != screenWidth || 
-            _extendedCamera.BoundingRectangle.Height != screenHeight)
-        {
-            // OrthographicCamera adjusts to viewport automatically
-        }
-    }
-
     // ── Manual Zoom Control ───────────────────────────────────────────────────
-
-    /// <summary>
-    /// Increases manual zoom override by 0.1.
-    /// </summary>
-    public void IncreaseZoom(float currentAutoScale)
-    {
-        if (_camScaleOverride == 0f)
-            _camScaleOverride = currentAutoScale;
-        
-        _camScaleOverride = MathF.Round(Math.Min(5.0f, _camScaleOverride + 0.1f), 2);
-        Console.WriteLine($"[CameraManager] Manual zoom: {_camScaleOverride:F2}");
-    }
-
-    /// <summary>
-    /// Decreases manual zoom override by 0.1.
-    /// </summary>
-    public void DecreaseZoom(float currentAutoScale)
-    {
-        if (_camScaleOverride == 0f)
-            _camScaleOverride = currentAutoScale;
-        
-        _camScaleOverride = MathF.Round(Math.Max(0.1f, _camScaleOverride - 0.1f), 2);
-        Console.WriteLine($"[CameraManager] Manual zoom: {_camScaleOverride:F2}");
-    }
 
     /// <summary>
     /// Resets manual zoom override to use automatic camera scale.
@@ -158,13 +92,6 @@ public class CameraManager
     /// </summary>
     public Matrix BuildCameraMatrix(int screenWidth, int screenHeight, CameraState camera, bool hasCameraEvents)
     {
-        // If using Extended camera, return its view matrix
-        if (UseExtendedCamera && _extendedCamera != null)
-        {
-            _lastCameraMatrix = _extendedCamera.GetViewMatrix();
-            return _lastCameraMatrix;
-        }
-        
         // Original matrix building logic
         // Manual override ALWAYS takes priority if set (even with camera events)
         float scale = (_camScaleOverride > 0f) ? _camScaleOverride : camera.Scale;

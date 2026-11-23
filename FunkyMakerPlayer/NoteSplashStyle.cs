@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using System.Xml;
 using Microsoft.Xna.Framework;
 using Microsoft.Xna.Framework.Graphics;
@@ -104,20 +105,23 @@ public class NoteSplashStyle
             string? splashPng = null, splashXml = null;
             string[] candidates = { "noteSplashes.png", "splash.png", "notesplash.png" };
             
+            // Any letter case (fork: Android's file system is case-sensitive, "noteSplashes.PNG" from
+            // Windows wasn't found there).
             foreach (var c in candidates)
             {
-                string p = Path.Combine(folderPath, c);
-                string x = Path.ChangeExtension(p, ".xml");
+                string p = CaseInsensitivePaths.Find(folderPath, c);
+                string x = CaseInsensitivePaths.Find(folderPath, Path.ChangeExtension(c, ".xml"));
                 if (File.Exists(p) && File.Exists(x)) { splashPng = p; splashXml = x; break; }
             }
 
             // Check shared/images subfolder (VSlice layout)
             if (splashPng == null)
             {
+                string sub = Path.Combine(folderPath, "shared", "images");
                 foreach (var c in candidates)
                 {
-                    string p = Path.Combine(folderPath, "shared", "images", c);
-                    string x = Path.ChangeExtension(p, ".xml");
+                    string p = CaseInsensitivePaths.Find(sub, c);
+                    string x = CaseInsensitivePaths.Find(sub, Path.ChangeExtension(c, ".xml"));
                     if (File.Exists(p) && File.Exists(x)) { splashPng = p; splashXml = x; break; }
                 }
             }
@@ -127,10 +131,11 @@ public class NoteSplashStyle
             {
                 try
                 {
-                    var pngFiles = Directory.GetFiles(folderPath, "*.png", SearchOption.TopDirectoryOnly);
+                    var pngFiles = Directory.GetFiles(folderPath)
+                        .Where(f => f.EndsWith(".png", StringComparison.OrdinalIgnoreCase));
                     foreach (var png in pngFiles)
                     {
-                        string xml = Path.ChangeExtension(png, ".xml");
+                        string xml = CaseInsensitivePaths.Find(folderPath, Path.GetFileNameWithoutExtension(png) + ".xml");
                         if (File.Exists(xml))
                         {
                             splashPng = png;
@@ -200,7 +205,7 @@ public class NoteSplashStyle
             }
 
             // ── Optional splash.json — per-splash configuration ───────────────
-            string splashJson = Path.Combine(folderPath, "splash.json");
+            string splashJson = CaseInsensitivePaths.Find(folderPath, "splash.json");
             if (File.Exists(splashJson))
             {
                 try
@@ -284,8 +289,8 @@ public class NoteSplashStyle
                 if (string.IsNullOrEmpty(name) || DefaultMods.IsDefaultSplash(name)) continue;
 
                 // Accept any folder that has at least one PNG and one XML
-                bool hasPng = Directory.GetFiles(dir, "*.png").Length > 0;
-                bool hasXml = Directory.GetFiles(dir, "*.xml").Length > 0;
+                bool hasPng = CaseInsensitivePaths.HasFileWithExtension(dir, ".png");
+                bool hasXml = CaseInsensitivePaths.HasFileWithExtension(dir, ".xml");
                 if (hasPng && hasXml)
                     styles.Add(name);
             }

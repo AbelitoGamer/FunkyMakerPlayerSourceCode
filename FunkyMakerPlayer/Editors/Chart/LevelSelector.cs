@@ -81,7 +81,7 @@ public class LevelSelector : FunkyMakerPlayer.UI.IDirectScreen
         _pixel = pixel;
         _font = font;
         _fontRenderer = fontRenderer;
-        _prevKb = Keyboard.GetState();
+        _prevKb = LayoutKeyboard.GetState();
         _prevMs = Mouse.GetState();
         _createModalOpen = startCreateModal;
         LoadLevelList();
@@ -94,7 +94,7 @@ public class LevelSelector : FunkyMakerPlayer.UI.IDirectScreen
         _inputCooldown = 0.2f;
         BackPressed = false;
         LevelSelected = false;
-        _prevKb = Keyboard.GetState();
+        _prevKb = LayoutKeyboard.GetState();
         _prevMs = Mouse.GetState();
         _lastMousePos = _prevMs.Position;
     }
@@ -102,7 +102,7 @@ public class LevelSelector : FunkyMakerPlayer.UI.IDirectScreen
     public void SyncInputState()
     {
         _inputCooldown = Math.Max(_inputCooldown, 0.08f);
-        _prevKb = Keyboard.GetState();
+        _prevKb = LayoutKeyboard.GetState();
         _prevMs = Mouse.GetState();
         _lastMousePos = _prevMs.Position;
     }

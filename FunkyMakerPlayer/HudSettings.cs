@@ -67,7 +67,7 @@ public class HudSettings
     public HudPosition SongInfoPosition { get; set; } = new HudPosition(17, 7);
     public bool SongInfoVisible { get; set; } = true;
 
-    // ── Status Info (bottom-left: Autoplay / Scroll / Speed) ─────────────────
+    // ── Status Info (bottom-left: Botplay / Scroll / Speed) ─────────────────
     public HudPosition StatusInfoPosition { get; set; } = new HudPosition(20, 692);
     public bool StatusInfoVisible { get; set; } = true;
 
@@ -95,6 +95,30 @@ public class HudSettings
     public HudPosition PlayerStrumlineOffset { get; set; } = new HudPosition(0, 0);
     public HudPosition OpponentStrumlineOffset { get; set; } = new HudPosition(0, 0);
     public bool PlayerIconVisible { get; set; } = true;
+
+    // ── Element scales (fork: HUD editor resize handles; 1 = default size) ───
+    // Health bar / timer bar are resized through their Size instead.
+    public float ScoreScale { get; set; } = 1f;
+    public float MissesScale { get; set; } = 1f;
+    public float AccuracyScale { get; set; } = 1f;
+    public float SongInfoScale { get; set; } = 1f;
+    public float StatusInfoScale { get; set; } = 1f;
+    public float ComboScale { get; set; } = 1f;
+    public float JudgementScale { get; set; } = 1f;
+    public float OpponentIconScale { get; set; } = 1f;
+    public float PlayerIconScale { get; set; } = 1f;
+    public float PlayerStrumlineScale { get; set; } = 1f;
+    public float OpponentStrumlineScale { get; set; } = 1f;
+
+    /// <summary>Copies every element scale from <paramref name="o"/>.</summary>
+    public void CopyScalesFrom(HudSettings o)
+    {
+        ScoreScale = o.ScoreScale; MissesScale = o.MissesScale; AccuracyScale = o.AccuracyScale;
+        SongInfoScale = o.SongInfoScale; StatusInfoScale = o.StatusInfoScale;
+        ComboScale = o.ComboScale; JudgementScale = o.JudgementScale;
+        OpponentIconScale = o.OpponentIconScale; PlayerIconScale = o.PlayerIconScale;
+        PlayerStrumlineScale = o.PlayerStrumlineScale; OpponentStrumlineScale = o.OpponentStrumlineScale;
+    }
 
     // ── Strumlines (unified with NoteRenderer / Game1 static state) ──────────
     [JsonIgnore]
@@ -264,7 +288,8 @@ public class HudSettings
         PlayerStrumlineVisible = true;
         OpponentStrumlineVisible = true;
         ExtraStrumlinesVisible = true;
-        
+        CopyScalesFrom(new HudSettings());
+
         Console.WriteLine("[HudSettings] Reset to default values");
     }
 
@@ -317,7 +342,8 @@ public class HudSettings
             PlayerStrumlineOffset = PlayerStrumlineOffset,
             OpponentStrumlineOffset = OpponentStrumlineOffset
         };
-        
+        adjusted.CopyScalesFrom(this);
+
         return adjusted;
     }
 }

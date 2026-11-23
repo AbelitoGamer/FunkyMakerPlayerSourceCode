@@ -9,11 +9,19 @@
     <ImplicitUsings>disable</ImplicitUsings>
     <Version>0.5.0</Version>
     <AssemblyVersion>0.5.0</AssemblyVersion>
+    <!-- Test build gate (fork, TestGate.cs): true = the game only starts while the online server's
+         /api/testing says testing is open (needs internet). Set it here, or per build with
+         -p:FunkyTestBuild=true. Keep false for normal releases. -->
+    <FunkyTestBuild Condition="'$(FunkyTestBuild)' == ''">false</FunkyTestBuild>
     <!-- Disable Mono runtime requirement to use CoreCLR instead -->
     <UseMonoRuntime>false</UseMonoRuntime>
     <!-- Icon and manifest only apply on Windows builds -->
     <ApplicationManifest Condition="'$(RuntimeIdentifier)' != 'linux-x64' And !$(TargetFramework.Contains('android'))">app.manifest</ApplicationManifest>
     <ApplicationIcon Condition="'$(RuntimeIdentifier)' != 'linux-x64' And !$(TargetFramework.Contains('android'))">Icon.ico</ApplicationIcon>
+  </PropertyGroup>
+
+  <PropertyGroup Condition="'$(FunkyTestBuild)' == 'true'">
+    <DefineConstants>$(DefineConstants);FUNKY_TEST_BUILD</DefineConstants>
   </PropertyGroup>
 
   <!-- Android-specific properties -->
@@ -140,6 +148,18 @@
     <AndroidResource Include="Platforms\Android\Resources\mipmap-xhdpi\icon.png" />
     <AndroidResource Include="Platforms\Android\Resources\mipmap-xxhdpi\icon.png" />
     <AndroidResource Include="Platforms\Android\Resources\mipmap-xxxhdpi\icon.png" />
+  </ItemGroup>
+
+  <!-- Fork: bundled minimal ffmpeg for osu! background videos (Osu/FfmpegVideoStream.cs). Built by
+       Tools/fetch-ffmpeg.ps1 / Tools/build-ffmpeg-min.sh into Tools/ffmpeg/ (gitignored); copied next
+       to the exe when present. Android decodes with MediaCodec instead (nothing bundled). -->
+  <ItemGroup Condition="!$(TargetFramework.Contains('android')) And Exists('../Tools/ffmpeg/ffmpeg.exe')">
+    <None Include="../Tools/ffmpeg/ffmpeg.exe" Link="ffmpeg.exe" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" ExcludeFromSingleFile="true" />
+    <None Include="../Tools/ffmpeg/LICENSE.txt" Link="licenses/ffmpeg-LICENSE.txt" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" ExcludeFromSingleFile="true" Condition="Exists('../Tools/ffmpeg/LICENSE.txt')" />
+  </ItemGroup>
+  <ItemGroup Condition="!$(TargetFramework.Contains('android')) And Exists('../Tools/ffmpeg/ffmpeg')">
+    <None Include="../Tools/ffmpeg/ffmpeg" Link="ffmpeg" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" ExcludeFromSingleFile="true" />
+    <None Include="../Tools/ffmpeg/LICENSE.txt" Link="licenses/ffmpeg-LICENSE.txt" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" ExcludeFromSingleFile="true" Condition="Exists('../Tools/ffmpeg/LICENSE.txt') And !Exists('../Tools/ffmpeg/ffmpeg.exe')" />
   </ItemGroup>
 
   <!-- Copy Icon.ico next to the exe (like FNF does) -->

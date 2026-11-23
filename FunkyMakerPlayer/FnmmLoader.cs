@@ -32,6 +32,10 @@ public static class FnmmLoader
 
     public static FnmmLevel Load(string fnmmPath, Action<float, string>? progressCallback = null)
     {
+        // osu!mania difficulty (fork, Osu/): converted in memory
+        if (Osu.OsuLibrary.IsOsuChart(fnmmPath))
+            return Osu.OsuLevelLoader.Load(fnmmPath, progressCallback);
+
         progressCallback?.Invoke(0.05f, "Reading archive...");
         
         // Psych Engine mod folder or unpacked Funky Maker level folder
@@ -95,6 +99,112 @@ public static class FnmmLoader
         {
             throw new Exception($"Unknown level container format (header: {header[0]:X2} {header[1]:X2})");
         }
+    }
+
+    /// <summary>
+    /// Reads only a level's data.json (fork: freeplay difficulty). Folders and ZIP .fnmm are read
+    /// directly; old-format ZIPs, RAR and other containers go through the full <see cref="Load"/>.
+    /// Returns null if the chart can't be read.
+    /// </summary>
+    public static FnmmData? TryLoadChartData(string path)
+    {
+        try
+        {
+            if (Osu.OsuLibrary.IsOsuChart(path))
+                return Osu.OsuLevelLoader.LoadChartData(path);
+            if (Directory.Exists(path))
+            {
+                string? dir = FindLevelDir(path);
+                return dir == null ? null : ParseJson<FnmmData>(File.ReadAllText(Path.Combine(dir, "data.json")));
+            }
+
+            byte[] header = new byte[2];
+            using (var fs = File.OpenRead(path))
+                _ = fs.Read(header, 0, 2);
+
+            if (header[0] == 0x50 && header[1] == 0x4B)
+            {
+                try
+                {
+                    byte[]? converted = FnmmConverter.ConvertIfNeeded(path);
+                    using var zip = converted != null
+                        ? new ZipArchive(new MemoryStream(converted), ZipArchiveMode.Read)
+                        : ZipFile.OpenRead(path);
+                    var entry = zip.GetEntry("data.json")
+                        ?? zip.Entries.FirstOrDefault(e => e.FullName.EndsWith("/data.json", StringComparison.OrdinalIgnoreCase));
+                    if (entry != null)
+                    {
+                        using var sr = new StreamReader(entry.Open());
+                        return ParseJson<FnmmData>(sr.ReadToEnd());
+                    }
+                }
+                catch { /* fall through to the full loader */ }
+            }
+
+            return Load(path).Data;
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// Opens a level and lets <paramref name="use"/> read single files by their path inside the level
+    /// ("music.ogg", "scene.json", "sprites/x/0.png"; null when missing), without loading the rest
+    /// (fork: Freeplay audio preview and icons). Folders and ZIP .fnmm only (old-format ZIPs are
+    /// converted in memory); RAR and other containers return default.
+    /// </summary>
+    public static T? WithLevelFiles<T>(string path, Func<Func<string, byte[]?>, T?> use)
+    {
+        try
+        {
+            if (Directory.Exists(path))
+            {
+                string? dir = FindLevelDir(path);
+                if (dir == null) return default;
+                return use(rel =>
+                {
+                    string f = Path.Combine(dir, rel.Replace('/', Path.DirectorySeparatorChar));
+                    return File.Exists(f) ? File.ReadAllBytes(f) : null;
+                });
+            }
+
+            byte[] header = new byte[2];
+            using (var fs = File.OpenRead(path))
+                _ = fs.Read(header, 0, 2);
+            if (header[0] != 0x50 || header[1] != 0x4B) return default;
+
+            byte[]? converted = FnmmConverter.ConvertIfNeeded(path);
+            using var zip = converted != null
+                ? new ZipArchive(new MemoryStream(converted), ZipArchiveMode.Read)
+                : ZipFile.OpenRead(path);
+            string prefix = "";
+            if (zip.GetEntry("data.json") == null)
+            {
+                var nested = zip.Entries.FirstOrDefault(e => e.FullName.EndsWith("/data.json", StringComparison.OrdinalIgnoreCase));
+                if (nested == null) return default;
+                prefix = nested.FullName[..^"data.json".Length];
+            }
+            return use(rel => TryReadZipBytes(zip, prefix + rel));
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[FnmmLoader] WithLevelFiles({Path.GetFileName(path)}) failed: {ex.Message}");
+            return default;
+        }
+    }
+
+    /// <summary>Parses a level JSON file (same rules as the loader), or null if it's invalid.</summary>
+    public static T? TryParseJson<T>(byte[]? utf8) where T : class
+    {
+        if (utf8 == null) return null;
+        try
+        {
+            using var sr = new StreamReader(new MemoryStream(utf8)); // drops a BOM, like the loader's readers
+            return ParseJson<T>(sr.ReadToEnd());
+        }
+        catch { return null; }
     }
 
     // ── ZIP loader ──────────────────────────────────────────────────────────

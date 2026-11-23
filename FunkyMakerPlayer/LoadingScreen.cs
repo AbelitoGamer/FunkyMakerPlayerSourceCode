@@ -1,5 +1,7 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using Microsoft.Xna.Framework;
 using Microsoft.Xna.Framework.Graphics;
 
@@ -34,6 +36,18 @@ public class LoadingScreen
     public bool Player1Ready { get; set; } = false;
     public bool Player2Ready { get; set; } = false;
     public int MyPlayerRole { get; set; } = 0;  // 0=unknown, 1=Player1, 2=Player2
+
+    /// <summary>One participant of an online room match, for the loading screen list.</summary>
+    public readonly record struct RoomLoadEntry(string Name, Color Color, string Side, bool Loaded, bool IsMe);
+
+    /// <summary>
+    /// Room matches (fork): every participant and whether their level has loaded (set by Game1 each
+    /// frame). Null = the old two-player indicators.
+    /// </summary>
+    public List<RoomLoadEntry>? RoomPlayers { get; set; }
+
+    /// <summary>Room match mode (Protocol.Mode*): "Waiting for &lt;name&gt;" is only said in Versus.</summary>
+    public string RoomMode { get; set; } = "";
 
     // ── Cat grid ─────────────────────────────────────────────────────────────
     private struct CatCell
@@ -278,7 +292,17 @@ public class LoadingScreen
         }
         else
         {
-            if (_isMultiplayer)
+            if (_isMultiplayer && RoomPlayers != null)
+            {
+                var waiting = RoomPlayers.Where(p => !p.Loaded).ToList();
+                if (waiting.Count == 0)
+                    status = "Everyone is ready! Starting...";
+                else if (RoomMode == Multiplayer.Rooms.Protocol.ModeVersus && waiting.Count == 1 && !waiting[0].IsMe)
+                    status = $"Waiting for {waiting[0].Name} ({waiting[0].Side})...";
+                else
+                    status = waiting.Count == 1 ? "Waiting for 1 player to load..." : $"Waiting for {waiting.Count} players to load...";
+            }
+            else if (_isMultiplayer)
             {
                 // Show clear multiplayer status with player roles
                 if (MyPlayerRole == 1)
@@ -349,8 +373,13 @@ public class LoadingScreen
         sb.DrawString(_font, status, statusPos + new Vector2(2, 2), Color.Black   * _uiAlpha);
         sb.DrawString(_font, status, statusPos,                      statusColor   * _uiAlpha);
 
+        // Room matches: who has loaded (while I load too, below the progress bar).
+        if (_isMultiplayer && RoomPlayers != null && RoomPlayers.Count > 0)
+        {
+            DrawRoomPlayers(sb, scx, CurrentPhase == Phase.Loading ? scy + 124 : scy + 80);
+        }
         // Multiplayer: Show ready indicators
-        if (_isMultiplayer && CurrentPhase == Phase.Ready)
+        else if (_isMultiplayer && CurrentPhase == Phase.Ready)
         {
             int indicatorY = scy + 80;
             
@@ -433,6 +462,46 @@ public class LoadingScreen
                 Color fillColor = Color.Lerp(new Color(0, 180, 255), Color.Yellow, LoadingProgress);
                 sb.Draw(_pixel, new Rectangle(barX + 4, barY + 4, fillWidth, barHeight - 8), 
                     fillColor * _uiAlpha);
+            }
+        }
+    }
+
+    /// <summary>Participants in two columns: name (their colour), side, and OK / ... for loaded.</summary>
+    private void DrawRoomPlayers(SpriteBatch sb, int scx, int top)
+    {
+        if (_font == null || RoomPlayers == null) return;
+        var list = RoomPlayers;
+        int cols = list.Count > 4 ? 2 : 1;
+        int colW = 380;
+        int rowH = 30;
+        float scale = 0.6f;
+        int rows = (list.Count + cols - 1) / cols;
+        int left = scx - cols * colW / 2;
+        for (int i = 0; i < list.Count; i++)
+        {
+            var e = list[i];
+            int col = i / rows, row = i % rows;
+            int x = left + col * colW + 10;
+            int y = top + row * rowH;
+            var box = new Rectangle(x, y + 3, 22, 22);
+            sb.Draw(_pixel, box, (e.Loaded ? Color.LimeGreen : Color.Gray * 0.5f) * _uiAlpha);
+            string mark = e.Loaded ? "OK" : "...";
+            var msz = _font.MeasureString(mark) * 0.45f;
+            sb.DrawString(_font, mark, new Vector2(box.Center.X - msz.X / 2f, box.Center.Y - msz.Y / 2f), Color.White * _uiAlpha,
+                0f, Vector2.Zero, 0.45f, SpriteEffects.None, 0f);
+
+            string text = Safe(e.Name) + (e.IsMe ? " (you)" : "");
+            string side = string.IsNullOrEmpty(e.Side) ? "" : "  " + e.Side;
+            float maxW = colW - 50 - _font.MeasureString(side).X * scale;
+            while (text.Length > 1 && _font.MeasureString(text).X * scale > maxW) text = text[..^1];
+            var pos = new Vector2(x + 32, y + (rowH - _font.LineSpacing * scale) / 2f);
+            Color nameColor = Color.Lerp(e.Color, Color.White, 0.35f) * (e.Loaded ? 1f : 0.6f);
+            sb.DrawString(_font, text, pos + new Vector2(1, 1), Color.Black * _uiAlpha, 0f, Vector2.Zero, scale, SpriteEffects.None, 0f);
+            sb.DrawString(_font, text, pos, nameColor * _uiAlpha, 0f, Vector2.Zero, scale, SpriteEffects.None, 0f);
+            if (side.Length > 0)
+            {
+                var spos = pos + new Vector2(_font.MeasureString(text).X * scale, 0);
+                sb.DrawString(_font, side, spos, Color.Gray * _uiAlpha, 0f, Vector2.Zero, scale, SpriteEffects.None, 0f);
             }
         }
     }

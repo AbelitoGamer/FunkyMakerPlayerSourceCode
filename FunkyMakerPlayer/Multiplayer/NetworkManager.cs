@@ -1,7 +1,9 @@
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Threading;
 using System.Threading.Tasks;
+using FunkyMakerPlayer.Multiplayer.Rooms;
 using Microsoft.Xna.Framework;
 using Microsoft.AspNetCore.SignalR.Client;
 
@@ -21,9 +23,13 @@ namespace FunkyMakerPlayer.Multiplayer
     }
 
     /// <summary>
-    /// Manages network connections and communication with the multiplayer server.
-    /// Singleton pattern for global access.
-    /// Uses SignalR for real-time communication (websockets).
+    /// The SignalR connection to the online server (fork: room system, protocol 2).
+    /// <para>
+    /// Server messages arrive on thread-pool threads. Except Pong (timed on arrival for the clock sync)
+    /// they are queued and raised on the game thread by <see cref="Update"/>, so handlers can touch game
+    /// and UI state freely. Results of hub calls made with <see cref="Call{T}"/> are delivered the same way.
+    /// </para>
+    /// Room state itself is kept by <see cref="RoomClient"/>.
     /// </summary>
     public class NetworkManager
     {
@@ -34,69 +40,66 @@ namespace FunkyMakerPlayer.Multiplayer
         public bool IsConnected { get; private set; }
         public bool IsConnecting { get; private set; }
         public string Username { get; private set; } = "";
-        public string OpponentName { get; private set; } = "";  // Current opponent's name
-        public string OpponentPlayerId { get; private set; } = "";
-        public int OpponentColorHue { get; private set; } = 180;
-        public int PlayerRole { get; private set; } = 1;  // 1 = Player 1, 2 = Player 2
         public int Ping { get; private set; }
         public bool HasMeasuredPing { get; private set; }
         public ConnectionQuality Quality { get; private set; } = ConnectionQuality.Unknown;
+        /// <summary>Largest level the server accepts for transfers (from Hello).</summary>
+        public long MaxUploadBytes { get; private set; } = 100L * 1024 * 1024;
+        /// <summary>Highest room player limit the server allows (from Hello).</summary>
+        public int MaxRoomPlayers { get; private set; } = Protocol.MaxPlayers;
+        public string ServerVersion { get; private set; } = "";
 
-        // Server configuration
-        private string _serverUrl = "https://funkymakerserver.onrender.com";
-        private string _signalREndpoint = "/multiplayer";
-        
+        private const string SignalREndpoint = "/multiplayer";
+        private string? _serverUrlOverride;
+
+        /// <summary>Base URL of the online server (no trailing slash).</summary>
         public string ServerUrl
         {
-            get => _serverUrl;
-            set => _serverUrl = string.IsNullOrWhiteSpace(value)
-                ? "https://funkymakerserver.onrender.com"
-                : value.Trim().TrimEnd('/');
+            get => _serverUrlOverride ?? MultiplayerSettings.Instance.EffectiveServerUrl;
+            set => _serverUrlOverride = string.IsNullOrWhiteSpace(value) ? null : value.Trim().TrimEnd('/');
         }
-        
-        public string SignalRUrl => $"{_serverUrl}{_signalREndpoint}";
+
+        public string SignalRUrl => $"{ServerUrl}{SignalREndpoint}";
 
         // SignalR connection & cancellation tracking
         private HubConnection? _hubConnection;
         private CancellationTokenSource? _connectCts;
         private int _connectGeneration = 0;
         private readonly object _connectionStateLock = new object();
+        private readonly ConcurrentQueue<Action> _events = new();
 
-        // Events
+        // ── Connection events (game thread) ──────────────────────────────────
         public event Action? OnConnected;
         public event Action<string>? OnDisconnected;
-        public event Action<string>? OnConnectionError; // Specific error messages
-        public event Action<ConnectionQuality>? OnQualityChanged; // Network quality changed
-        public event Action<string, string, int>? OnMatchFound; // opponentName, roomId, playerRole
-        public event Action<bool>? OnOpponentReadyChanged; // opponent ready state changed
-        public event Action<PlayerProfilePacket>? OnOpponentProfileReceived; // opponent profile (username, avatar, color)
-        public event Action<SettingsSyncPacket>? OnOpponentSettingsReceived; // opponent settings
-        public event Action<long>? OnCountdownStart; // countdownStartTime from server
-        public event Action<long, int>? OnGameStart; // startTimestamp, playerRole (1=Player1/chart0, 2=Player2/chart1)
+        public event Action<string>? OnConnectionError;
+        public event Action<ConnectionQuality>? OnQualityChanged;
         public event Action<int>? OnPingUpdate;
-        public event Action<OpponentHitPacket>? OnOpponentHit;
-        public event Action<OpponentStatePacket>? OnOpponentState;
-        public event Action<GameEndPacket>? OnGameEnd;
         public event Action<LevelListPacket>? OnLevelListReceived;
-        public event Action<LeaderboardResponsePacket>? OnLeaderboardReceived; // v0.2.4 - Global leaderboard
-        public event Action<MatchHistoryResponsePacket>? OnMatchHistoryReceived; // v0.2.4 - Match history
-        
-        // ── PvP Character Events (v0.4.3+) ──────────────────────────────────────
-        #pragma warning disable CS0067 // Event never used
-        public event Action<int, float, string>? OnOpponentNoteHit; // direction, time, rating
-        #pragma warning restore CS0067
-        public event Action<int>? OnOpponentKeyPress; // lane index (0-3)
-        public event Action<string>? OnOpponentDisconnected; // reason
-        public event Action<string, string, int>? OnCharacterAnimation; // playerId, animState, direction
-        public event Action<string, byte[]?>? OnCharacterSprite; // playerId, spriteData
+        public event Action<LeaderboardResponsePacket>? OnLeaderboardReceived;
+        public event Action<MatchHistoryResponsePacket>? OnMatchHistoryReceived;
+        /// <summary>The connection came back after a drop (Hello done again).</summary>
+        public event Action? OnReconnected;
+
+        // ── Room events (game thread) ────────────────────────────────────────
+        public event Action<RoomStatePacket>? RoomStateReceived;
+        public event Action<ChatMessage>? ChatReceived;
+        public event Action<KickedPacket>? KickedReceived;
+        public event Action<TransferUploadPacket>? TransferUploadReceived;
+        public event Action<TransferDownloadPacket>? TransferDownloadReceived;
+        public event Action<TransferFailedPacket>? TransferFailedReceived;
+        public event Action<MatchInfo>? MatchLoadingReceived;
+        public event Action<MatchStartPacket>? MatchStartReceived;
+        public event Action<RoundResult>? MatchResultsReceived;
+        public event Action<PlayerStatePacket>? PlayerStateReceived;
+        public event Action<PlayerHitPacket>? PlayerHitReceived;
+        public event Action<PlayerKeyPressPacket>? PlayerKeyPressReceived;
 
         // Ping measurement & quality tracking
         private readonly object _pingLock = new object();
-        private long _lastPingTime;
         private float _pingTimer;
         private const float PING_INTERVAL = 2f; // seconds
         private const float PING_BOOTSTRAP_INTERVAL = 0.35f; // rapid initial clock sync samples
-        private List<int> _pingHistory = new List<int>();
+        private readonly List<int> _pingHistory = new List<int>();
         private const int PING_HISTORY_SIZE = 10;
         private float _lastPacketReceivedTime;
         private const float CONNECTION_TIMEOUT = 70f; // Match server ClientTimeoutInterval (60s) + 10s buffer
@@ -106,23 +109,22 @@ namespace FunkyMakerPlayer.Multiplayer
         private float _reconnectTimer = 0f;
         private int _reconnectAttempts = 0;
         private const int MAX_RECONNECT_ATTEMPTS = 5;
-        private float _currentReconnectDelay = 2f; // Start with 2 seconds
+        private float _currentReconnectDelay = 2f;
         private const float MIN_RECONNECT_DELAY = 2f;
         private const float MAX_RECONNECT_DELAY = 30f;
-        
-        // Connection timeout
+
+        // Connection timeout. A sleeping free Render instance can take up to a minute to wake up.
         private float _connectionTimeoutTimer = 0f;
-        private const float CONNECTION_ATTEMPT_TIMEOUT = 10f; // Timeout for initial connection
+        private const float CONNECTION_ATTEMPT_TIMEOUT = 90f;
 
         // KeyPress throttling (prevent spam)
-        private Dictionary<int, long> _lastKeyPressSent = new Dictionary<int, long>();
-        private const long KEY_PRESS_THROTTLE_MS = 50; // Min 50ms between keypress packets per lane
+        private readonly Dictionary<int, long> _lastKeyPressSent = new Dictionary<int, long>();
+        private const long KEY_PRESS_THROTTLE_MS = 50;
 
-        private NetworkManager()
-        {
-            IsConnected = false;
-            IsConnecting = false;
-        }
+        private NetworkManager() { }
+
+        /// <summary>Queues work to run on the game thread at the next <see cref="Update"/>.</summary>
+        public void Post(Action action) => _events.Enqueue(action);
 
         private bool IsActiveAttemptLocked(HubConnection hub, int generation) =>
             generation == _connectGeneration && ReferenceEquals(_hubConnection, hub);
@@ -140,18 +142,14 @@ namespace FunkyMakerPlayer.Multiplayer
 
         private static void CancelAndDisposeCts(CancellationTokenSource? cts)
         {
-            if (cts == null)
-                return;
-
+            if (cts == null) return;
             try { cts.Cancel(); } catch { }
             try { cts.Dispose(); } catch { }
         }
 
         private static async Task DisposeHubQuietlyAsync(HubConnection? hub)
         {
-            if (hub == null)
-                return;
-
+            if (hub == null) return;
             try { await hub.StopAsync().ConfigureAwait(false); } catch { }
             try { await hub.DisposeAsync().ConfigureAwait(false); } catch { }
         }
@@ -166,22 +164,32 @@ namespace FunkyMakerPlayer.Multiplayer
             {
                 wasActiveAttempt = IsActiveAttemptLocked(hub, generation);
                 if (wasActiveAttempt)
-                {
                     DetachConnectionLocked(out hubToDispose, out ctsToDispose);
-                }
             }
 
             CancelAndDisposeCts(ctsToDispose);
             _ = DisposeHubQuietlyAsync(wasActiveAttempt ? hubToDispose : hub);
 
             if (wasActiveAttempt)
+                Post(() => OnConnectionError?.Invoke(errorMessage));
+        }
+
+        private HelloRequest BuildHello()
+        {
+            var settings = MultiplayerSettings.Instance;
+            return new HelloRequest
             {
-                OnConnectionError?.Invoke(errorMessage);
-            }
+                PlayerId = settings.PlayerId,
+                Username = string.IsNullOrWhiteSpace(settings.Username) ? "Player" : settings.Username.Trim(),
+                ColorHue = settings.PlayerColorHue,
+                ClientVersion = typeof(NetworkManager).Assembly.GetName().Version?.ToString(3) ?? "",
+                ProtocolVersion = Protocol.Version,
+                OsuSkipVideo = settings.OsuSkipVideo,
+            };
         }
 
         /// <summary>
-        /// Connect to the multiplayer server with improved error handling.
+        /// Connect to the online server and say Hello (protocol / profile).
         /// </summary>
         public async void Connect(string username)
         {
@@ -199,11 +207,8 @@ namespace FunkyMakerPlayer.Multiplayer
                     return;
                 }
 
-                // Clear any leftover hub/CTS from a previous timed-out or failed attempt
                 if (_hubConnection != null || _connectCts != null)
-                {
                     DetachConnectionLocked(out staleHub, out staleCts);
-                }
 
                 generation = unchecked(++_connectGeneration);
                 cts = new CancellationTokenSource();
@@ -220,19 +225,20 @@ namespace FunkyMakerPlayer.Multiplayer
                 Quality = ConnectionQuality.Unknown;
                 lock (_pingLock) _pingHistory.Clear();
 
-                Console.WriteLine($"[Multiplayer] Connecting to {_serverUrl} as {username}...");
+                Console.WriteLine($"[Multiplayer] Connecting to {ServerUrl} as {username}...");
 
                 hub = new HubConnectionBuilder()
                     .WithUrl(SignalRUrl)
-                    .WithAutomaticReconnect(new[] {
-                        TimeSpan.FromSeconds(0),    // First retry: immediate
-                        TimeSpan.FromSeconds(2),    // Second retry: 2s
-                        TimeSpan.FromSeconds(5),    // Third retry: 5s
-                        TimeSpan.FromSeconds(10)    // Fourth+ retry: 10s
+                    .WithAutomaticReconnect(new[]
+                    {
+                        TimeSpan.FromSeconds(0),
+                        TimeSpan.FromSeconds(2),
+                        TimeSpan.FromSeconds(5),
+                        TimeSpan.FromSeconds(10),
+                        TimeSpan.FromSeconds(20),
                     })
                     .Build();
 
-                // Match server SignalR settings (KeepAlive: 10s, ClientTimeout: 60s)
                 hub.KeepAliveInterval = TimeSpan.FromSeconds(10);
                 hub.ServerTimeout = TimeSpan.FromSeconds(60);
                 hub.HandshakeTimeout = TimeSpan.FromSeconds(CONNECTION_ATTEMPT_TIMEOUT);
@@ -246,8 +252,7 @@ namespace FunkyMakerPlayer.Multiplayer
 
             try
             {
-                // Register disconnection handler
-                hub.Closed += async (error) =>
+                hub.Closed += error =>
                 {
                     bool shouldHandle;
                     lock (_connectionStateLock)
@@ -258,53 +263,52 @@ namespace FunkyMakerPlayer.Multiplayer
                             bool wasConnected = IsConnected;
                             IsConnected = false;
                             IsConnecting = false;
-
-                            // Trigger reconnection if enabled after an established session
                             if (wasConnected && _shouldReconnect && _reconnectAttempts < MAX_RECONNECT_ATTEMPTS)
                             {
-                                Console.WriteLine($"[Multiplayer] Will attempt reconnection in {_currentReconnectDelay:F1}s");
                                 _reconnectTimer = _currentReconnectDelay;
                                 _reconnectAttempts++;
-
-                                // Exponential backoff
                                 _currentReconnectDelay = Math.Min(_currentReconnectDelay * 1.5f, MAX_RECONNECT_DELAY);
                             }
                         }
                     }
-
-                    if (!shouldHandle)
-                        return;
+                    if (!shouldHandle) return Task.CompletedTask;
 
                     string reason = error?.Message ?? "Connection closed";
                     Console.WriteLine($"[Multiplayer] Connection closed: {reason}");
-                    OnDisconnected?.Invoke(reason);
-                    await Task.CompletedTask;
+                    Post(() => OnDisconnected?.Invoke(reason));
+                    return Task.CompletedTask;
                 };
-                
-                // Register reconnecting handler
-                hub.Reconnecting += (error) =>
+
+                hub.Reconnecting += error =>
                 {
                     lock (_connectionStateLock)
                     {
-                        if (!IsActiveAttemptLocked(hub, generation))
-                            return Task.CompletedTask;
-
+                        if (!IsActiveAttemptLocked(hub, generation)) return Task.CompletedTask;
                         IsConnected = false;
                         IsConnecting = true;
                     }
-
                     Console.WriteLine($"[Multiplayer] Reconnecting... {error?.Message ?? ""}");
                     return Task.CompletedTask;
                 };
-                
-                // Register reconnected handler
-                hub.Reconnected += (connectionId) =>
+
+                hub.Reconnected += async connectionId =>
                 {
                     lock (_connectionStateLock)
                     {
-                        if (!IsActiveAttemptLocked(hub, generation))
-                            return Task.CompletedTask;
-
+                        if (!IsActiveAttemptLocked(hub, generation)) return;
+                    }
+                    try
+                    {
+                        var hello = await hub.InvokeAsync<HelloResult>("Hello", BuildHello());
+                        if (!hello.Ok) throw new InvalidOperationException(hello.Error);
+                    }
+                    catch (Exception ex)
+                    {
+                        Console.WriteLine($"[Multiplayer] Hello after reconnect failed: {ex.Message}");
+                    }
+                    lock (_connectionStateLock)
+                    {
+                        if (!IsActiveAttemptLocked(hub, generation)) return;
                         IsConnecting = false;
                         IsConnected = true;
                         _reconnectAttempts = 0;
@@ -312,41 +316,40 @@ namespace FunkyMakerPlayer.Multiplayer
                         _lastPacketReceivedTime = 0f;
                         _pingTimer = 0f;
                     }
-
-                    Console.WriteLine($"[Multiplayer] Reconnected successfully! ConnectionId: {connectionId}");
-                    OnConnected?.Invoke();
-                    SendPlayerProfile();
-                    SendSettingsSync();
+                    Console.WriteLine($"[Multiplayer] Reconnected ({connectionId})");
                     SendPing();
-                    return Task.CompletedTask;
+                    Post(() => OnReconnected?.Invoke());
                 };
-                
-                // Register server event handlers
-                hub.On<MatchFoundPacket>("MatchFound", OnMatchFoundPacket);
-                hub.On<ReadyStatePacket>("OpponentReady", OnOpponentReadyPacket);
-                hub.On<PlayerProfilePacket>("OpponentProfile", OnOpponentProfilePacket);
-                hub.On<SettingsSyncPacket>("OpponentSettings", OnOpponentSettingsPacket);
-                hub.On<CountdownStartPacket>("CountdownStart", OnCountdownStartPacket);
-                hub.On<OpponentHitPacket>("OpponentHit", OnOpponentHitPacket);
-                hub.On<OpponentStatePacket>("OpponentState", OnOpponentStatePacket);
-                hub.On<GameStartPacket>("GameStart", OnGameStartPacket);
-                hub.On<GameEndPacket>("GameEnd", OnGameEndPacket);
-                hub.On<PongPacket>("Pong", OnPongPacket);
-                hub.On<LeaderboardResponsePacket>("LeaderboardResponse", OnLeaderboardResponse);
-                hub.On<MatchHistoryResponsePacket>("MatchHistoryResponse", OnMatchHistoryResponse);
-                hub.On<System.Text.Json.JsonElement>("MatchRecorded", _ =>
-                    Console.WriteLine("[Multiplayer] Server confirmed match recorded"));
-                
-                // PvP Character handlers (v0.4.3+)
-                hub.On<PlayerCharacterPacket>("CharacterInfo", OnCharacterInfoPacket);
-                hub.On<CharacterAnimationPacket>("CharacterAnimation", OnCharacterAnimationPacket);
-                hub.On<OpponentKeyPressPacket>("OpponentKeyPress", OnOpponentKeyPressPacket);
-                
-                // Opponent disconnection handler
-                hub.On<OpponentDisconnectedPacket>("OpponentDisconnected", OnOpponentDisconnectedPacket);
-                
+
+                // Server → client. Queued for the game thread (Pong is handled right away).
+                On<RoomStatePacket>(hub, generation, Protocol.RoomState, p => RoomStateReceived?.Invoke(p));
+                On<ChatMessage>(hub, generation, Protocol.Chat, p => ChatReceived?.Invoke(p));
+                On<KickedPacket>(hub, generation, Protocol.Kicked, p => KickedReceived?.Invoke(p));
+                On<TransferUploadPacket>(hub, generation, Protocol.TransferUpload, p => TransferUploadReceived?.Invoke(p));
+                On<TransferDownloadPacket>(hub, generation, Protocol.TransferDownload, p => TransferDownloadReceived?.Invoke(p));
+                On<TransferFailedPacket>(hub, generation, Protocol.TransferFailed, p => TransferFailedReceived?.Invoke(p));
+                On<MatchInfo>(hub, generation, Protocol.MatchLoading, p => MatchLoadingReceived?.Invoke(p));
+                On<MatchStartPacket>(hub, generation, Protocol.MatchStart, p => MatchStartReceived?.Invoke(p));
+                On<RoundResult>(hub, generation, Protocol.MatchResults, p => MatchResultsReceived?.Invoke(p));
+                On<PlayerStatePacket>(hub, generation, Protocol.PlayerState, p => PlayerStateReceived?.Invoke(p));
+                On<PlayerHitPacket>(hub, generation, Protocol.PlayerHit, p => PlayerHitReceived?.Invoke(p));
+                On<PlayerKeyPressPacket>(hub, generation, Protocol.PlayerKeyPress, p => PlayerKeyPressReceived?.Invoke(p));
+                On<LeaderboardResponsePacket>(hub, generation, "LeaderboardResponse", p => OnLeaderboardReceived?.Invoke(p));
+                On<MatchHistoryResponsePacket>(hub, generation, "MatchHistoryResponse", p => OnMatchHistoryReceived?.Invoke(p));
+                hub.On<PongPacket>(Protocol.Pong, p =>
+                {
+                    if (generation == _connectGeneration) OnPongPacket(p);
+                });
+
                 Console.WriteLine($"[Multiplayer] Starting SignalR connection: {SignalRUrl}");
                 await hub.StartAsync(cts.Token);
+
+                var hello = await hub.InvokeAsync<HelloResult>("Hello", BuildHello(), cts.Token);
+                if (!hello.Ok)
+                {
+                    HandleFailedInitialAttempt(hub, generation, string.IsNullOrWhiteSpace(hello.Error) ? "The server refused the connection." : hello.Error);
+                    return;
+                }
 
                 bool promoted = false;
                 CancellationTokenSource? completedCts = null;
@@ -356,10 +359,13 @@ namespace FunkyMakerPlayer.Multiplayer
                     {
                         IsConnecting = false;
                         IsConnected = true;
-                        _reconnectAttempts = 0; // Reset on successful connection
+                        _reconnectAttempts = 0;
                         _currentReconnectDelay = MIN_RECONNECT_DELAY;
                         _lastPacketReceivedTime = 0f;
                         _pingTimer = 0f;
+                        MaxUploadBytes = hello.MaxUploadBytes > 0 ? hello.MaxUploadBytes : MaxUploadBytes;
+                        MaxRoomPlayers = hello.MaxRoomPlayers >= Protocol.MinPlayers ? hello.MaxRoomPlayers : Protocol.MaxPlayers;
+                        ServerVersion = hello.ServerVersion;
                         promoted = true;
 
                         if (ReferenceEquals(_connectCts, cts))
@@ -378,15 +384,10 @@ namespace FunkyMakerPlayer.Multiplayer
                     _ = DisposeHubQuietlyAsync(hub);
                     return;
                 }
-                
-                OnConnected?.Invoke();
-                
-                Console.WriteLine("[Multiplayer] [OK] Connected successfully to SignalR hub");
-                
-                // Send player profile, settings, and immediate ping after connecting
-                SendPlayerProfile();
-                SendSettingsSync();
+
+                Console.WriteLine($"[Multiplayer] [OK] Connected (server {hello.ServerVersion}, protocol {hello.ProtocolVersion})");
                 SendPing();
+                Post(() => OnConnected?.Invoke());
             }
             catch (OperationCanceledException)
             {
@@ -406,10 +407,17 @@ namespace FunkyMakerPlayer.Multiplayer
             catch (Exception ex)
             {
                 Console.WriteLine($"[Multiplayer] [X] Connection failed: {ex.Message}");
-                Console.WriteLine($"[Multiplayer] Exception type: {ex.GetType().Name}");
                 HandleFailedInitialAttempt(hub, generation, $"Connection failed: {ex.Message}");
             }
         }
+
+        private void On<T>(HubConnection hub, int generation, string method, Action<T> handler) =>
+            hub.On<T>(method, payload =>
+            {
+                if (generation != _connectGeneration) return;
+                _lastPacketReceivedTime = 0f;
+                Post(() => handler(payload));
+            });
 
         /// <summary>
         /// Disconnect from the server or abort any pending connection attempt.
@@ -433,12 +441,9 @@ namespace FunkyMakerPlayer.Multiplayer
             }
 
             CancelAndDisposeCts(ctsToDispose);
-
-            if (!hadPendingState && hubToStop == null)
-                return;
+            if (!hadPendingState && hubToStop == null) return;
 
             Console.WriteLine("[Multiplayer] Disconnecting...");
-
             try
             {
                 if (hubToStop != null)
@@ -457,483 +462,138 @@ namespace FunkyMakerPlayer.Multiplayer
                 Ping = 0;
                 Quality = ConnectionQuality.Unknown;
                 lock (_pingLock) _pingHistory.Clear();
-                
-                // Reset time synchronization
                 TimeSyncManager.Instance.Reset();
-                
                 if (wasConnected)
-                    OnDisconnected?.Invoke("User disconnected");
+                    Post(() => OnDisconnected?.Invoke("User disconnected"));
             }
         }
 
+        // ══════════════════════════════════════════════════════════════════════
+        // Hub calls
+        // ══════════════════════════════════════════════════════════════════════
+
         /// <summary>
-        /// Find a match with specified level (and optional private room code).
+        /// Invokes a hub method; <paramref name="onResult"/> / <paramref name="onError"/> run on the game thread.
         /// </summary>
-        public async void FindMatch(string levelHash, string levelName = "Unknown", LevelSource source = LevelSource.Local, string levelPath = "", string roomCode = "")
+        public void Call<T>(string method, object?[] args, Action<T>? onResult, Action<string>? onError = null)
         {
-            if (!IsConnected)
+            var hub = _hubConnection;
+            if (hub == null || !IsConnected)
             {
-                Console.WriteLine("[Multiplayer] Not connected to server");
+                if (onError != null) Post(() => onError("Not connected to the server."));
                 return;
             }
-
-            // Calculate hash if not provided and levelPath is given
-            if (string.IsNullOrEmpty(levelHash) && !string.IsNullOrEmpty(levelPath))
+            _ = Task.Run(async () =>
             {
-                levelHash = LevelHasher.CalculateHash(levelPath);
-                if (string.IsNullOrEmpty(levelHash))
+                try
                 {
-                    Console.WriteLine("[Multiplayer] Failed to calculate level hash");
-                    return;
+                    var result = await hub.InvokeCoreAsync<T>(method, args);
+                    if (onResult != null) Post(() => onResult(result));
                 }
-            }
-
-            string hashPreview = levelHash.Length >= 8 ? levelHash[..8] : levelHash;
-            string cleanUsername = string.IsNullOrWhiteSpace(MultiplayerSettings.Instance.Username)
-                ? "Player"
-                : MultiplayerSettings.Instance.Username.Trim();
-            string cleanRoomCode = string.IsNullOrWhiteSpace(roomCode) ? "" : roomCode.Trim().ToUpperInvariant();
-
-            Console.WriteLine($"[Multiplayer] Finding match for level: {levelName} (Hash: {hashPreview}..., Source: {source}, Room: {(string.IsNullOrEmpty(cleanRoomCode) ? "Public" : cleanRoomCode)})");
-
-            var packet = new FindMatchPacket
-            {
-                LevelHash = levelHash,
-                LevelName = levelName,
-                Difficulty = "Normal",
-                Source = source,
-                Username = cleanUsername,
-                RoomCode = cleanRoomCode,
-                Timestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()
-            };
-
-            try
-            {
-                await _hubConnection?.SendAsync("FindMatch", packet)!;
-                Console.WriteLine($"[Multiplayer] FindMatch request sent to server (Hash: {hashPreview}..., Source: {source})");
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"[Multiplayer] FindMatch error: {ex.Message}");
-            }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"[Multiplayer] {method} failed: {ex.Message}");
+                    if (onError != null) Post(() => onError(ex.Message));
+                }
+            });
         }
 
-        /// <summary>
-        /// Notify the server that this client is leaving the active match room.
-        /// </summary>
-        public async void LeaveMatch(bool notifyOpponent = false)
+        /// <summary>Fire-and-forget hub method (errors are only logged).</summary>
+        public void Send(string method, params object?[] args)
         {
-            if (!IsConnected || _hubConnection == null)
-                return;
-
-            try
+            var hub = _hubConnection;
+            if (hub == null || !IsConnected || hub.State != HubConnectionState.Connected) return;
+            _ = Task.Run(async () =>
             {
-                await _hubConnection.SendAsync("LeaveMatch", notifyOpponent);
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"[Multiplayer] LeaveMatch error: {ex.Message}");
-            }
+                try { await hub.SendCoreAsync(method, args); }
+                catch (Exception ex) { Console.WriteLine($"[Multiplayer] {method} failed: {ex.Message}"); }
+            });
         }
 
-        /// <summary>
-        /// Register a private room code on the server when the host creates a room.
-        /// </summary>
-        public async Task<bool> CreatePrivateRoomAsync(string roomCode)
+        /// <summary>Sends the (changed) username / color again.</summary>
+        public void ResendProfile() => Call<HelloResult>("Hello", new object?[] { BuildHello() }, null);
+
+        // ── In-match relay ───────────────────────────────────────────────────
+
+        public void SendState(PlayerStatePacket packet) => Send("SendState", packet);
+
+        public void SendHit(int lane, string rating, float holdEnd, float songTime) =>
+            Send("SendHit", new PlayerHitPacket { Lane = lane, Rating = rating, HoldEnd = holdEnd, SongTime = songTime });
+
+        /// <summary>Key press for the other players' visuals. Throttled to one per 50 ms per lane.</summary>
+        public void SendKeyPress(int lane, float songTime)
         {
-            if (!IsConnected || _hubConnection == null)
-                return false;
-
-            string clean = string.IsNullOrWhiteSpace(roomCode) ? "" : roomCode.Trim().ToUpperInvariant();
-            if (clean.Length != 6)
-                return false;
-
-            try
-            {
-                return await _hubConnection.InvokeAsync<bool>("CreatePrivateRoom", clean);
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"[Multiplayer] CreatePrivateRoom error: {ex.Message}");
-                return false;
-            }
+            long now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+            if (_lastKeyPressSent.TryGetValue(lane, out long last) && now - last < KEY_PRESS_THROTTLE_MS) return;
+            _lastKeyPressSent[lane] = now;
+            Send("SendKeyPress", new PlayerKeyPressPacket { Lane = lane, SongTime = songTime });
         }
 
-        /// <summary>
-        /// Unregister the host's private room on the server when leaving the room/lobby.
-        /// </summary>
-        public async Task LeavePrivateRoomAsync()
-        {
-            if (!IsConnected || _hubConnection == null)
-                return;
+        // ── Official levels (HTTP) ───────────────────────────────────────────
 
-            try
-            {
-                await _hubConnection.SendAsync("LeavePrivateRoom");
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"[Multiplayer] LeavePrivateRoom error: {ex.Message}");
-            }
-        }
-
-        /// <summary>
-        /// Check whether a private room code currently exists on the server.
-        /// </summary>
-        public async Task<bool> CheckPrivateRoomAsync(string roomCode)
-        {
-            if (!IsConnected || _hubConnection == null)
-                throw new InvalidOperationException("Not connected to server");
-
-            string clean = string.IsNullOrWhiteSpace(roomCode) ? "" : roomCode.Trim().ToUpperInvariant();
-            if (clean.Length != 6)
-                return false;
-
-            return await _hubConnection.InvokeAsync<bool>("CheckPrivateRoom", clean);
-        }
-
-        /// <summary>
-        /// Request list of official levels from server.
-        /// </summary>
+        /// <summary>Fetches /api/verified_levels; raises <see cref="OnLevelListReceived"/> on the game thread.</summary>
         public async void RequestOfficialLevels()
         {
-            if (!IsConnected)
-            {
-                Console.WriteLine("[Multiplayer] Not connected to server");
-                return;
-            }
-
-            Console.WriteLine("[Multiplayer] Requesting official levels list...");
-
             try
             {
-                // Make HTTP GET request to /api/verified_levels
-                using var httpClient = new System.Net.Http.HttpClient();
-                httpClient.Timeout = TimeSpan.FromSeconds(10);
-                
-                string levelsUrl = $"{_serverUrl}/api/verified_levels";
-                Console.WriteLine($"[Multiplayer] Fetching from: {levelsUrl}");
-                
-                var response = await httpClient.GetStringAsync(levelsUrl);
-                Console.WriteLine($"[Multiplayer] Raw response: {response}");
-                
-                // Use case-insensitive deserialization to handle lowercase JSON from server
-                var options = new System.Text.Json.JsonSerializerOptions
+                using var httpClient = new System.Net.Http.HttpClient { Timeout = TimeSpan.FromSeconds(100) };
+                var response = await httpClient.GetStringAsync($"{ServerUrl}/api/verified_levels");
+                var options = new System.Text.Json.JsonSerializerOptions { PropertyNameCaseInsensitive = true };
+                var packet = System.Text.Json.JsonSerializer.Deserialize<LevelListPacket>(response, options);
+                if (packet?.Levels != null)
                 {
-                    PropertyNameCaseInsensitive = true
-                };
-                
-                var levelListPacket = System.Text.Json.JsonSerializer.Deserialize<LevelListPacket>(response, options);
-                
-                if (levelListPacket != null && levelListPacket.Levels != null)
-                {
-                    Console.WriteLine($"[Multiplayer] Received {levelListPacket.Levels.Count} official levels");
-                    foreach (var level in levelListPacket.Levels)
-                    {
-                        Console.WriteLine($"[Multiplayer]   - {level.Name} (ID: {level.Id}, Size: {level.FileSize} bytes)");
-                    }
-                    OnLevelListReceived?.Invoke(levelListPacket);
-                }
-                else
-                {
-                    Console.WriteLine("[Multiplayer] Failed to parse level list or levels array is null");
+                    Console.WriteLine($"[Multiplayer] Received {packet.Levels.Count} official levels");
+                    Post(() => OnLevelListReceived?.Invoke(packet));
                 }
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"[Multiplayer] RequestOfficialLevels error: {ex.Message}");
+                Console.WriteLine($"[Multiplayer] Error fetching official levels: {ex.Message}");
             }
         }
 
-        /// <summary>
-        /// Cancel matchmaking search.
-        /// </summary>
-        public async void CancelMatchmaking()
-        {
-            if (!IsConnected)
-                return;
+        // ── Leaderboard ──────────────────────────────────────────────────────
 
-            Console.WriteLine("[Multiplayer] Canceling matchmaking");
+        public void RequestGlobalLeaderboard(int skip = 0, int take = 100) =>
+            Send("GetLeaderboard", new GetLeaderboardPacket { Skip = skip, Take = take, Timestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() });
 
-            var packet = new CancelMatchmakingPacket
-            {
-                Timestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()
-            };
+        public void RequestMatchHistory(string? playerId = null, int skip = 0, int take = 50) =>
+            Send("GetMatchHistory", new GetMatchHistoryPacket { PlayerId = playerId, Skip = skip, Take = take, Timestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() });
 
-            try
-            {
-                await _hubConnection?.SendAsync("CancelMatchmaking", packet)!;
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"[Multiplayer] CancelMatchmaking error: {ex.Message}");
-            }
-        }
+        // ══════════════════════════════════════════════════════════════════════
+        // Ping, health, reconnect
+        // ══════════════════════════════════════════════════════════════════════
 
-        /// <summary>
-        /// Send Ready signal to server (level is loaded and ready to start).
-        /// Server will wait for both players to be ready before starting countdown.
-        /// </summary>
-        /// <summary>
-        /// Send player profile (username, avatar, color) to server.
-        /// Should be called after connecting.
-        /// </summary>
-        public async void SendPlayerProfile()
-        {
-            if (!IsConnected)
-            {
-                Console.WriteLine("[Multiplayer] Cannot send PlayerProfile - not connected");
-                return;
-            }
-
-            var settings = MultiplayerSettings.Instance;
-            string cleanUsername = string.IsNullOrWhiteSpace(settings.Username) ? "Player" : settings.Username.Trim();
-            var packet = new PlayerProfilePacket
-            {
-                PlayerId = settings.PlayerId,
-                Username = cleanUsername,
-                AvatarIndex = 0,
-                PlayerColorHue = settings.PlayerColorHue,
-                ColorHue = settings.PlayerColorHue,
-                ClientVersion = typeof(PlayerProfilePacket).Assembly.GetName().Version?.ToString(3) ?? "0.4.3"
-            };
-
-            try
-            {
-                await _hubConnection?.SendAsync("PlayerProfile", packet)!;
-                Console.WriteLine($"[Multiplayer] PlayerProfile sent: {cleanUsername} (ID={settings.PlayerId}), Color={settings.PlayerColorHue}");
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"[Multiplayer] SendPlayerProfile error: {ex.Message}");
-            }
-        }
-        
-        /// <summary>
-        /// Send settings sync packet to server.
-        /// Server will forward opponent's settings to us.
-        /// </summary>
-        public async void SendSettingsSync()
-        {
-            if (!IsConnected)
-            {
-                Console.WriteLine("[Multiplayer] Cannot send SettingsSync - not connected");
-                return;
-            }
-
-            var settings = MultiplayerSettings.Instance;
-            var packet = new SettingsSyncPacket
-            {
-                PlayerId = settings.PlayerId,
-                // Gameplay settings
-                ShowOpponentNotes = settings.ShowOpponentNotes,
-                ShowOpponentScore = settings.ShowOpponentScore,
-                ShowConnectionQuality = settings.ShowConnectionQuality,
-                GhostTransparency = settings.GhostTransparency,
-                
-                // Visual
-                HudOpacity = settings.HudOpacity,
-                ConnectionIndicatorPosition = (int)settings.ConnectionIndicatorPosition,
-                InterfaceMode = (int)settings.InterfaceMode,
-                
-                // Performance
-                NetworkUpdateRate = (int)settings.UpdateRate,
-                EnableInterpolation = settings.EnableInterpolation
-            };
-
-            try
-            {
-                await _hubConnection?.SendAsync("SettingsSync", packet)!;
-                Console.WriteLine("[Multiplayer] SettingsSync sent to server");
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"[Multiplayer] SendSettingsSync error: {ex.Message}");
-            }
-        }
-        
-        public async void SendReady(bool isReady = true)
-        {
-            if (!IsConnected)
-            {
-                Console.WriteLine("[Multiplayer] Cannot send Ready - not connected");
-                return;
-            }
-
-            Console.WriteLine($"[Multiplayer] ===== SENDING READY SIGNAL: {isReady} =====");
-            Console.WriteLine($"[Multiplayer] Connection State: {_hubConnection?.State}");
-            Console.WriteLine($"[Multiplayer] OpponentName: {OpponentName}");
-
-            var packet = new ReadyPacket
-            {
-                IsReady = isReady,
-                Timestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()
-            };
-
-            try
-            {
-                await _hubConnection?.SendAsync("Ready", packet)!;
-                Console.WriteLine("[Multiplayer] ===== Ready packet SENT to server =====");
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"[Multiplayer] SendReady ERROR: {ex.Message}");
-                Console.WriteLine($"[Multiplayer] Stack trace: {ex.StackTrace}");
-            }
-        }
-
-        /// <summary>
-        /// Send note hit event to opponent with validation.
-        /// </summary>
-        public async void SendNoteHit(int noteId, int lane, long timestamp, string rating, int combo)
-        {
-            if (!IsConnected)
-            {
-                Console.WriteLine("[Multiplayer] Cannot send NoteHit - not connected");
-                return;
-            }
-            
-            if (_hubConnection?.State != HubConnectionState.Connected)
-            {
-                Console.WriteLine($"[Multiplayer] Cannot send NoteHit - connection state: {_hubConnection?.State}");
-                return;
-            }
-
-            var packet = new NoteHitPacket
-            {
-                NoteId = noteId,
-                Lane = lane,
-                Timestamp = timestamp,
-                Rating = rating,
-                Combo = combo
-            };
-
-            try
-            {
-                await _hubConnection.SendAsync("NoteHit", packet);
-                _lastPacketReceivedTime = 0f; // Reset timeout on successful send
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"[Multiplayer] SendNoteHit error: {ex.Message}");
-                // Don't spam console, this might happen frequently
-            }
-        }
-
-        /// <summary>
-        /// Send player state update with validation.
-        /// </summary>
-        public async void SendStateUpdate(int score, int combo, float health, 
-            int sickCount, int goodCount, int badCount, int shitCount, int missCount)
-        {
-            if (!IsConnected)
-                return;
-                
-            if (_hubConnection?.State != HubConnectionState.Connected)
-                return;
-
-            var packet = new PlayerStatePacket
-            {
-                Score = score,
-                Combo = combo,
-                Health = health,
-                SickCount = sickCount,
-                GoodCount = goodCount,
-                BadCount = badCount,
-                ShitCount = shitCount,
-                MissCount = missCount,
-                Timestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()
-            };
-
-            try
-            {
-                await _hubConnection?.SendAsync("PlayerState", packet)!;
-                _lastPacketReceivedTime = 0f;
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"[Multiplayer] SendStateUpdate error: {ex.Message}");
-            }
-        }
-
-        /// <summary>
-        /// Send ping packet to measure latency.
-        /// </summary>
         private async void SendPing()
         {
-            if (!IsConnected)
-                return;
-
-            _lastPingTime = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
-
-            var packet = new PingPacket
-            {
-                ClientTimestamp = _lastPingTime
-            };
-
+            var hub = _hubConnection;
+            if (hub == null || hub.State != HubConnectionState.Connected) return;
             try
             {
-                await _hubConnection?.SendAsync("Ping", packet)!;
+                await hub.SendAsync("Ping", new PingPacket { ClientTimestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() });
             }
             catch (Exception ex)
             {
                 Console.WriteLine($"[Multiplayer] SendPing error: {ex.Message}");
             }
         }
-        
-        /// <summary>
-        /// Send key press event to opponent for real-time animation.
-        /// Called every time player presses an arrow key (not just on successful hits).
-        /// Throttled to prevent network spam (max 1 per 50ms per lane).
-        /// </summary>
-        public async void SendKeyPress(int lane)
-        {
-            if (!IsConnected || _hubConnection?.State != HubConnectionState.Connected)
-                return;
-
-            long now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
-            
-            // Throttle: Only send if enough time has passed since last send for this lane
-            if (_lastKeyPressSent.TryGetValue(lane, out long lastSent))
-            {
-                if (now - lastSent < KEY_PRESS_THROTTLE_MS)
-                {
-                    // Too soon, skip this packet
-                    return;
-                }
-            }
-            
-            _lastKeyPressSent[lane] = now;
-
-            var packet = new KeyPressPacket
-            {
-                Lane = lane,
-                Timestamp = now
-            };
-
-            try
-            {
-                await _hubConnection.SendAsync("KeyPress", packet);
-            }
-            catch (Exception)
-            {
-                // Don't spam console - key presses happen frequently
-                // Console.WriteLine($"[Multiplayer] SendKeyPress error: {ex.Message}");
-            }
-        }
 
         /// <summary>
-        /// Update method called from Game1.Update - handles ping, reconnection, and connection health.
+        /// Called every frame from Game1: raises queued server messages, pings, connection health, reconnects.
         /// </summary>
         public void Update(GameTime gameTime)
         {
             float dt = (float)gameTime.ElapsedGameTime.TotalSeconds;
 
-            // Track connection timeout during initial connection
+            while (_events.TryDequeue(out var action))
+            {
+                try { action(); }
+                catch (Exception ex) { Console.WriteLine($"[Multiplayer] Event handler error: {ex}"); }
+            }
+
             bool timedOut = false;
             HubConnection? timedOutHub = null;
             CancellationTokenSource? timedOutCts = null;
-
             lock (_connectionStateLock)
             {
                 if (IsConnecting)
@@ -946,7 +606,6 @@ namespace FunkyMakerPlayer.Multiplayer
                     }
                 }
             }
-
             if (timedOut)
             {
                 Console.WriteLine("[Multiplayer] Connection attempt timed out");
@@ -955,27 +614,18 @@ namespace FunkyMakerPlayer.Multiplayer
                 OnConnectionError?.Invoke("Connection timeout");
             }
 
-            // Periodic ping and connection health check
             if (IsConnected)
             {
                 _lastPacketReceivedTime += dt;
-                
-                // Detect connection loss (no packets received for too long)
                 if (_lastPacketReceivedTime >= CONNECTION_TIMEOUT)
                 {
                     Console.WriteLine("[Multiplayer] Connection lost - no packets received");
                     IsConnected = false;
                     OnConnectionError?.Invoke("Connection lost");
                     OnDisconnected?.Invoke("Connection lost - no response from server");
-                    
-                    // Attempt to reconnect
-                    if (_shouldReconnect)
-                    {
-                        _reconnectTimer = _currentReconnectDelay;
-                    }
+                    if (_shouldReconnect) _reconnectTimer = _currentReconnectDelay;
                 }
-                
-                // Send periodic ping (faster initial burst until TimeSync reaches 3 samples)
+
                 float pingInterval = TimeSyncManager.Instance.IsSynced ? PING_INTERVAL : PING_BOOTSTRAP_INTERVAL;
                 _pingTimer += dt;
                 if (_pingTimer >= pingInterval)
@@ -983,12 +633,9 @@ namespace FunkyMakerPlayer.Multiplayer
                     _pingTimer = 0f;
                     SendPing();
                 }
-                
-                // Update connection quality based on ping history
                 UpdateConnectionQuality();
             }
 
-            // Reconnection logic with exponential backoff
             if (_shouldReconnect && !IsConnected && !IsConnecting)
             {
                 _reconnectTimer -= dt;
@@ -1009,10 +656,7 @@ namespace FunkyMakerPlayer.Multiplayer
                 }
             }
         }
-        
-        /// <summary>
-        /// Update connection quality based on ping history.
-        /// </summary>
+
         private void UpdateConnectionQuality()
         {
             ConnectionQuality newQuality;
@@ -1024,18 +668,14 @@ namespace FunkyMakerPlayer.Multiplayer
             {
                 if (_pingHistory.Count == 0)
                 {
-                    if (Quality != ConnectionQuality.Unknown)
-                        Quality = ConnectionQuality.Unknown;
+                    Quality = ConnectionQuality.Unknown;
                     return;
                 }
 
-                // Calculate average ping
                 int sum = 0;
-                foreach (int p in _pingHistory)
-                    sum += p;
+                foreach (int p in _pingHistory) sum += p;
                 avgPing = sum / _pingHistory.Count;
 
-                // Calculate ping variance for stability check
                 int variance = 0;
                 foreach (int p in _pingHistory)
                 {
@@ -1045,17 +685,12 @@ namespace FunkyMakerPlayer.Multiplayer
                 variance /= _pingHistory.Count;
                 stdDev = (int)Math.Sqrt(variance);
 
-                bool isStable = stdDev < 30; // Low variance = stable connection
-                if (avgPing < 50 && isStable)
-                    newQuality = ConnectionQuality.Excellent;
-                else if (avgPing < 100 && isStable)
-                    newQuality = ConnectionQuality.Good;
-                else if (avgPing < 200)
-                    newQuality = ConnectionQuality.Fair;
-                else if (avgPing < 500)
-                    newQuality = ConnectionQuality.Poor;
-                else
-                    newQuality = ConnectionQuality.Critical;
+                bool isStable = stdDev < 30;
+                if (avgPing < 50 && isStable) newQuality = ConnectionQuality.Excellent;
+                else if (avgPing < 100 && isStable) newQuality = ConnectionQuality.Good;
+                else if (avgPing < 200) newQuality = ConnectionQuality.Fair;
+                else if (avgPing < 500) newQuality = ConnectionQuality.Poor;
+                else newQuality = ConnectionQuality.Critical;
 
                 if (newQuality != Quality)
                 {
@@ -1064,7 +699,6 @@ namespace FunkyMakerPlayer.Multiplayer
                 }
             }
 
-            // Notify outside lock to prevent deadlocks
             if (changed)
             {
                 Console.WriteLine($"[Multiplayer] Connection quality: {newQuality} (Ping: {avgPing}ms, StdDev: {stdDev}ms)");
@@ -1072,146 +706,18 @@ namespace FunkyMakerPlayer.Multiplayer
             }
         }
 
-        // ══════════════════════════════════════════════════════════════════════
-        // Packet Handlers (Called by SignalR when server sends data)
-        // ══════════════════════════════════════════════════════════════════════
-
-        private void OnMatchFoundPacket(MatchFoundPacket packet)
-        {
-            _lastPacketReceivedTime = 0f; // Reset timeout
-            
-            Console.WriteLine($"[Multiplayer] Match found: {packet.OpponentName} in room {packet.RoomId}");
-            Console.WriteLine($"[Multiplayer] Assigned role: Player {packet.PlayerRole} (plays chart {(packet.PlayerRole == 1 ? "1 - BF" : "0 - Enemy")})");
-            OpponentPlayerId = "";
-            OpponentColorHue = 180;
-            OpponentName = string.IsNullOrWhiteSpace(packet.OpponentName) ? "Opponent" : packet.OpponentName;
-            PlayerRole = packet.PlayerRole;
-            // Re-send profile once matched in _activeMatches so opponent receives real Username/PlayerId/ColorHue
-            // (workaround for server FindMatch setting _playerNames[id] = LevelName).
-            SendPlayerProfile();
-            OnMatchFound?.Invoke(packet.OpponentName, packet.RoomId, packet.PlayerRole);
-        }
-        
-        private void OnOpponentReadyPacket(ReadyStatePacket packet)
-        {
-            _lastPacketReceivedTime = 0f; // Reset timeout
-            
-            Console.WriteLine($"[Multiplayer] ===== RECEIVED OPPONENT READY =====");
-            Console.WriteLine($"[Multiplayer] Opponent ready state: {packet.IsReady}");
-            Console.WriteLine($"[Multiplayer] Timestamp: {packet.Timestamp}");
-            Console.WriteLine($"[Multiplayer] Firing OnOpponentReadyChanged event...");
-            
-            OnOpponentReadyChanged?.Invoke(packet.IsReady);
-            
-            Console.WriteLine($"[Multiplayer] ===== OnOpponentReadyChanged event fired =====");
-        }
-        
-        private void OnOpponentProfilePacket(PlayerProfilePacket packet)
-        {
-            _lastPacketReceivedTime = 0f; // Reset timeout
-            
-            Console.WriteLine($"[Multiplayer] Received opponent profile: {packet.Username}, ID: {packet.PlayerId}, Color: {packet.PlayerColorHue}");
-            if (!string.IsNullOrWhiteSpace(packet.Username))
-                OpponentName = packet.Username;
-            if (!string.IsNullOrWhiteSpace(packet.PlayerId))
-                OpponentPlayerId = packet.PlayerId;
-            OpponentColorHue = packet.PlayerColorHue;
-            
-            OnOpponentProfileReceived?.Invoke(packet);
-        }
-        
-        private void OnOpponentSettingsPacket(SettingsSyncPacket packet)
-        {
-            _lastPacketReceivedTime = 0f; // Reset timeout
-            
-            Console.WriteLine($"[Multiplayer] Received opponent settings");
-            
-            OnOpponentSettingsReceived?.Invoke(packet);
-        }
-
-        private void OnCountdownStartPacket(CountdownStartPacket packet)
-        {
-            _lastPacketReceivedTime = 0f; // Reset timeout
-            
-            Console.WriteLine($"[Multiplayer] [COUNTDOWN] START RECEIVED!");
-            Console.WriteLine($"[Multiplayer]   Countdown starts at: {packet.CountdownStartTime}");
-            
-            long now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
-            long delay = packet.CountdownStartTime - now;
-            Console.WriteLine($"[Multiplayer]   Delay until countdown: {delay}ms");
-            
-            OnCountdownStart?.Invoke(packet.CountdownStartTime);
-        }
-
-        private void OnOpponentHitPacket(OpponentHitPacket packet)
-        {
-            _lastPacketReceivedTime = 0f; // Reset timeout
-            OnOpponentHit?.Invoke(packet);
-        }
-
-        private void OnOpponentStatePacket(OpponentStatePacket packet)
-        {
-            _lastPacketReceivedTime = 0f; // Reset timeout
-            OnOpponentState?.Invoke(packet);
-        }
-
-        private void OnOpponentKeyPressPacket(OpponentKeyPressPacket packet)
-        {
-            _lastPacketReceivedTime = 0f; // Reset timeout
-            OnOpponentKeyPress?.Invoke(packet.Lane);
-        }
-
-        private void OnOpponentDisconnectedPacket(OpponentDisconnectedPacket packet)
-        {
-            _lastPacketReceivedTime = 0f; // Reset timeout
-            
-            Console.WriteLine($"[Multiplayer] Opponent disconnected: {packet.Reason}");
-            OnOpponentDisconnected?.Invoke(packet.Reason);
-        }
-
-        private void OnGameStartPacket(GameStartPacket packet)
-        {
-            _lastPacketReceivedTime = 0f; // Reset timeout
-            
-            Console.WriteLine($"[Multiplayer] [GAME START] RECEIVED!");
-            Console.WriteLine($"[Multiplayer]   Opponent: {packet.OpponentName}");
-            Console.WriteLine($"[Multiplayer]   Player Role: {packet.PlayerRole} ({(packet.PlayerRole == 1 ? "Player 1 / Chart 0" : "Player 2 / Chart 1")})");
-            Console.WriteLine($"[Multiplayer]   Level Hash: {packet.LevelHash[..8]}...");
-            Console.WriteLine($"[Multiplayer]   Start Time: {packet.StartTimestamp}");
-            
-            if (string.IsNullOrWhiteSpace(OpponentPlayerId) && !string.IsNullOrWhiteSpace(packet.OpponentName))
-                OpponentName = packet.OpponentName;
-            
-            long now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
-            long timeUntilStart = packet.StartTimestamp - now;
-            Console.WriteLine($"[Multiplayer]   Starting in: {timeUntilStart}ms ({timeUntilStart / 1000.0:F1}s)");
-            
-            OnGameStart?.Invoke(packet.StartTimestamp, packet.PlayerRole);
-        }
-
-        private void OnGameEndPacket(GameEndPacket packet)
-        {
-            _lastPacketReceivedTime = 0f; // Reset timeout
-            
-            Console.WriteLine($"[Multiplayer] Game ended. Winner: {packet.WinnerName}");
-            OnGameEnd?.Invoke(packet);
-        }
-
         private void OnPongPacket(PongPacket packet)
         {
-            // Calculate ping (clamp >= 0 even on fast loopback or clock adjustment)
             long now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
             int currentPing = (int)Math.Clamp(now - packet.ClientTimestamp, 0, 60000);
             Ping = currentPing;
             HasMeasuredPing = true;
 
-            // Update time synchronization with server using real ServerTimestamp when provided
             if (packet.ServerTimestamp > 0)
                 TimeSyncManager.Instance.UpdateClockOffset(packet.ClientTimestamp, packet.ServerTimestamp, packet.ServerTimestamp, now);
             else
                 TimeSyncManager.Instance.UpdateClockOffsetSimple(packet.ClientTimestamp, currentPing);
 
-            // Update ping history for quality tracking
             lock (_pingLock)
             {
                 _pingHistory.Add(currentPing);
@@ -1219,20 +725,10 @@ namespace FunkyMakerPlayer.Multiplayer
                     _pingHistory.RemoveAt(0);
             }
 
-            // Reset packet received timer (connection is alive)
             _lastPacketReceivedTime = 0f;
-
-            UpdateConnectionQuality();
-            OnPingUpdate?.Invoke(Ping);
-
-            // Log if ping is unusually high
-            if (currentPing > 300)
-                Console.WriteLine($"[Multiplayer] [!] High ping detected: {currentPing}ms");
+            Post(() => OnPingUpdate?.Invoke(currentPing));
         }
 
-        /// <summary>
-        /// Enable automatic reconnection on disconnect.
-        /// </summary>
         public void EnableAutoReconnect(bool enable)
         {
             _shouldReconnect = enable;
@@ -1243,41 +739,18 @@ namespace FunkyMakerPlayer.Multiplayer
                 _currentReconnectDelay = MIN_RECONNECT_DELAY;
             }
         }
-        
-        /// <summary>
-        /// Get connection diagnostics for debugging or display.
-        /// </summary>
+
         public string GetConnectionDiagnostics()
         {
-            if (!IsConnected && !IsConnecting)
-                return "Not connected";
-                
-            if (IsConnecting)
-                return $"Connecting... (Attempt {_reconnectAttempts + 1}/{MAX_RECONNECT_ATTEMPTS})";
-            
+            if (!IsConnected && !IsConnecting) return "Not connected";
+            if (IsConnecting) return $"Connecting... (Attempt {_reconnectAttempts + 1}/{MAX_RECONNECT_ATTEMPTS})";
             string status = $"Connected | Ping: {Ping}ms | Quality: {Quality}";
-            
-            if (_pingHistory.Count > 0)
-            {
-                int sum = 0;
-                foreach (int p in _pingHistory) sum += p;
-                int avg = sum / _pingHistory.Count;
-                status += $" | Avg: {avg}ms";
-            }
-            
-            if (_hubConnection != null)
-                status += $" | State: {_hubConnection.State}";
-            
+            if (_hubConnection != null) status += $" | State: {_hubConnection.State}";
             return status;
         }
-        
-        /// <summary>
-        /// Force reset connection state (use with caution).
-        /// </summary>
+
         public void ForceReset()
         {
-            Console.WriteLine("[Multiplayer] Force resetting connection...");
-
             HubConnection? hubToReset;
             CancellationTokenSource? ctsToReset;
             lock (_connectionStateLock)
@@ -1289,224 +762,18 @@ namespace FunkyMakerPlayer.Multiplayer
                 _currentReconnectDelay = MIN_RECONNECT_DELAY;
                 DetachConnectionLocked(out hubToReset, out ctsToReset);
             }
-
             CancelAndDisposeCts(ctsToReset);
             lock (_pingLock) _pingHistory.Clear();
             Quality = ConnectionQuality.Unknown;
             HasMeasuredPing = false;
             Ping = 0;
-            
-            if (hubToReset != null)
-            {
-                try
-                {
-                    hubToReset.StopAsync().Wait(1000);
-                    hubToReset.DisposeAsync().AsTask().Wait(1000);
-                }
-                catch (Exception ex)
-                {
-                    Console.WriteLine($"[Multiplayer] Error during force reset: {ex.Message}");
-                }
-            }
+            _ = DisposeHubQuietlyAsync(hubToReset);
         }
 
-        /// <summary>
-        /// Clean up resources.
-        /// </summary>
         public void Cleanup()
         {
             if (IsConnected || IsConnecting || _hubConnection != null || _connectCts != null)
                 Disconnect();
         }
-        
-        // ══════════════════════════════════════════════════════════════════════
-        // LEADERBOARD METHODS (v0.2.4)
-        // ══════════════════════════════════════════════════════════════════════
-        
-        /// <summary>
-        /// Request global leaderboard from server.
-        /// </summary>
-        public async void RequestGlobalLeaderboard(int skip = 0, int take = 100)
-        {
-            if (_hubConnection == null || _hubConnection.State != HubConnectionState.Connected)
-            {
-                Console.WriteLine("[Multiplayer] ERROR: Cannot request leaderboard - not connected");
-                return;
-            }
-            
-            try
-            {
-                var packet = new GetLeaderboardPacket
-                {
-                    Skip = skip,
-                    Take = take,
-                    Timestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()
-                };
-                
-                Console.WriteLine($"[Multiplayer] Requesting global leaderboard (skip={skip}, take={take})...");
-                await _hubConnection.InvokeAsync("GetLeaderboard", packet);
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"[Multiplayer] ERROR requesting leaderboard: {ex.Message}");
-            }
-        }
-        
-        /// <summary>
-        /// Request match history from server.
-        /// </summary>
-        public async void RequestMatchHistory(string? playerId = null, int skip = 0, int take = 50)
-        {
-            if (_hubConnection == null || _hubConnection.State != HubConnectionState.Connected)
-            {
-                Console.WriteLine("[Multiplayer] ERROR: Cannot request match history - not connected");
-                return;
-            }
-            
-            try
-            {
-                var packet = new GetMatchHistoryPacket
-                {
-                    PlayerId = playerId,
-                    Skip = skip,
-                    Take = take,
-                    Timestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()
-                };
-                
-                Console.WriteLine($"[Multiplayer] Requesting match history (playerId={playerId ?? "ALL"}, skip={skip}, take={take})...");
-                await _hubConnection.InvokeAsync("GetMatchHistory", packet);
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"[Multiplayer] ERROR requesting match history: {ex.Message}");
-            }
-        }
-        
-        /// <summary>
-        /// Submit match result to server for global leaderboard.
-        /// </summary>
-        public async void SubmitMatchResult(MatchHistoryPacket matchData)
-        {
-            if (_hubConnection == null || _hubConnection.State != HubConnectionState.Connected)
-            {
-                Console.WriteLine("[Multiplayer] WARNING: Cannot submit match result - not connected (will save locally only)");
-                return;
-            }
-            
-            try
-            {
-                Console.WriteLine($"[Multiplayer] Submitting match result: {matchData.Player1.Username} vs {matchData.Player2.Username}");
-                await _hubConnection.InvokeAsync("SubmitMatchResult", matchData);
-                Console.WriteLine("[Multiplayer] Match result submitted successfully");
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"[Multiplayer] ERROR submitting match result: {ex.Message}");
-            }
-        }
-        
-        // ══════════════════════════════════════════════════════════════════════
-        // LEADERBOARD HANDLERS (v0.2.4)
-        // ══════════════════════════════════════════════════════════════════════
-        
-        private void OnLeaderboardResponse(LeaderboardResponsePacket packet)
-        {
-            _lastPacketReceivedTime = 0f; // Reset timeout
-            Console.WriteLine($"[Multiplayer] Received leaderboard: {packet.Entries.Count}/{packet.TotalPlayers} players");
-            OnLeaderboardReceived?.Invoke(packet);
-        }
-        
-        private void OnMatchHistoryResponse(MatchHistoryResponsePacket packet)
-        {
-            _lastPacketReceivedTime = 0f; // Reset timeout
-            Console.WriteLine($"[Multiplayer] Received match history: {packet.Matches.Count}/{packet.TotalMatches} matches");
-            OnMatchHistoryReceived?.Invoke(packet);
-        }
-        
-        // ══════════════════════════════════════════════════════════════════════
-        // PVP CHARACTER SYNC METHODS (v0.4.3+)
-        // ══════════════════════════════════════════════════════════════════════
-        
-        /// <summary>
-        /// Send character sprite and info to opponent
-        /// </summary>
-        public async void SendCharacterInfo(PlayerCharacterPacket packet)
-        {
-            if (!IsConnected || _hubConnection == null) return;
-            
-            try
-            {
-                await _hubConnection.InvokeAsync("SendCharacterInfo", packet);
-                Console.WriteLine($"[Multiplayer] Sent character info: {packet.CharacterName}");
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"[Multiplayer] Error sending character info: {ex.Message}");
-            }
-        }
-        
-        /// <summary>
-        /// Send character animation state to opponent
-        /// </summary>
-        public async void SendCharacterAnimation(CharacterAnimationPacket packet)
-        {
-            if (!IsConnected || _hubConnection == null) return;
-            
-            try
-            {
-                await _hubConnection.InvokeAsync("SendCharacterAnimation", packet);
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"[Multiplayer] Error sending character animation: {ex.Message}");
-            }
-        }
-        
-        /// <summary>
-        /// Simplified note hit for PvP (just direction and timing)
-        /// </summary>
-        public async void SendNoteHit(int direction, float time, string rating)
-        {
-            if (!IsConnected || _hubConnection == null) return;
-            
-            try
-            {
-                var packet = new NoteHitPacket
-                {
-                    NoteId = direction,
-                    Lane = direction,
-                    Timestamp = (long)time,
-                    Rating = rating,
-                    Combo = 0
-                };
-                
-                await _hubConnection.InvokeAsync("SendNoteHit", packet);
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"[Multiplayer] Error sending note hit: {ex.Message}");
-            }
-        }
-        
-        private void OnCharacterInfoPacket(PlayerCharacterPacket packet)
-        {
-            Console.WriteLine($"[Multiplayer] Received character info: {packet.CharacterName}");
-            OnCharacterSprite?.Invoke(packet.PlayerId, packet.SpriteData);
-        }
-        
-        private void OnCharacterAnimationPacket(CharacterAnimationPacket packet)
-        {
-            OnCharacterAnimation?.Invoke(packet.PlayerId, packet.AnimationState, packet.Direction);
-        }
-        
-        /// <summary>
-        /// Property to expose PlayerId for GameMultiplayer
-        /// </summary>
-        public string PlayerId { get; private set; } = Guid.NewGuid().ToString();
-        
-        /// <summary>
-        /// Property to expose PlayerName for GameMultiplayer
-        /// </summary>
-        public string PlayerName => Username;
     }
 }

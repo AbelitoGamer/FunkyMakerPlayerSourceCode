@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Net.Http;
 using System.Text.Json;
 using System.Threading;
@@ -10,29 +11,28 @@ using Microsoft.Xna.Framework.Input;
 using Microsoft.Xna.Framework.Input.Touch;
 using UiSfx = FunkyMakerPlayer.UI.UiSfx;
 using UiSound = FunkyMakerPlayer.UI.UiSound;
+using FunkyMakerPlayer.Multiplayer.Rooms;
 
 namespace FunkyMakerPlayer.Multiplayer
 {
     /// <summary>
-    /// Dedicated multiplayer UI menu with connection, lobby, and matchmaking.
+    /// Online menu: connection, room browser, room settings, waiting room, song select, settings, leaderboard.
     /// </summary>
-    public class MultiplayerMenu
+    public partial class MultiplayerMenu
     {
-        // Menu states
+        // Menu states (fork: room system)
         private enum MenuState
         {
-            MainMenu,      // Connect / Settings / Back
+            MainMenu,      // Connect / Leaderboard / Settings / Back
             Connecting,    // Connecting to server...
-            ModeSelect,    // Choose: Matchmaking or Private Room
-            Lobby,         // Connected, select level
-            CreateRoom,    // Create private room with code
-            JoinRoom,      // Join private room with code
-            Searching,     // Searching for match...
-            MatchFound,    // Match found, waiting for ready (launches GameMultiplayer after countdown)
+            RoomBrowser,   // List of rooms + search + create
+            RoomSettings,  // Create a room / edit (host) / view its settings
+            WaitingRoom,   // Players, rounds, chat
+            SongSelect,    // Pick the round's song (OFFICIAL / LOCAL)
             Settings,      // Settings menu
             Leaderboard    // Leaderboard and stats
         }
-        
+
         // ══════════════════════════════════════════════════════════════════════
         // Public Properties for Game1 Integration
         // ══════════════════════════════════════════════════════════════════════
@@ -41,63 +41,8 @@ namespace FunkyMakerPlayer.Multiplayer
         public bool IsConnectingScreen => _state == MenuState.Connecting;
 
         /// <summary>True while a text field is being edited (Game1 skips the -/+ volume keys then).</summary>
-        public bool IsEditingText => _isEditingText;
+        public bool IsEditingText => _isEditingText || TextFieldActive || PickerTyping;
 
-        /// <summary>
-        /// Returns the file path of the selected level for gameplay.
-        /// For Official levels: returns temp file path from LevelCache
-        /// For Local levels: returns full path from levels/ folder
-        /// </summary>
-        public string? SelectedLevelPath
-        {
-            get
-            {
-                if (_selectedSource == LevelSource.Official && _officialLevels.Count > 0 && _levelSelection < _officialLevels.Count)
-                {
-                    var level = _officialLevels[_levelSelection];
-                    return LevelCache.Instance.WriteTempFile(level.Id);
-                }
-                else if (_selectedSource == LevelSource.Local && _availableLevels.Count > 0 && _levelSelection < _availableLevels.Count)
-                {
-                    return System.IO.Path.Combine(_levelsFolder, _availableLevels[_levelSelection]);
-                }
-                return null;
-            }
-        }
-        
-        /// <summary>
-        /// Returns the display name of the selected level.
-        /// </summary>
-        public string? SelectedLevelName
-        {
-            get
-            {
-                if (_selectedSource == LevelSource.Official && _officialLevels.Count > 0 && _levelSelection < _officialLevels.Count)
-                {
-                    return _officialLevels[_levelSelection].Name;
-                }
-                else if (_selectedSource == LevelSource.Local && _availableLevels.Count > 0 && _levelSelection < _availableLevels.Count)
-                {
-                    return _availableLevels[_levelSelection];
-                }
-                return null;
-            }
-        }
-        
-        /// <summary>
-        /// Returns the hash of the selected level (used for matchmaking).
-        /// </summary>
-        public string? SelectedLevelHash
-        {
-            get
-            {
-                string? path = SelectedLevelPath;
-                if (string.IsNullOrEmpty(path) || !System.IO.File.Exists(path))
-                    return null;
-                return LevelHasher.CalculateHash(path);
-            }
-        }
-        
         public bool GameplaySettingsRequested { get; private set; }
         public void ConsumeGameplaySettingsRequest() => GameplaySettingsRequested = false;
 
@@ -142,8 +87,9 @@ namespace FunkyMakerPlayer.Multiplayer
         private int _settingsScrollOffset = 0;
         private bool _isSettingFocused = false;
         private const int MAX_SETTINGS_VISIBLE = 6;
-        private bool _isEditingText = false;
-        private string _editingTextValue = "";
+        /// <summary>Editing the username (fork: the shared text field, so Android gets the system keyboard).</summary>
+        private bool _isEditingText => IsTextField("username");
+        private string _editingTextValue => _textFieldValue;
         private float _backspaceHoldTimer = 0f;
         private float _backspaceRepeatTimer = 0f;
         
@@ -164,45 +110,17 @@ namespace FunkyMakerPlayer.Multiplayer
             public List<MatchHistoryPacket>? Matches { get; set; }
         }
 
-        // Lobby
+        // Song select (fork: was the matchmaking lobby)
         private List<string> _availableLevels = new();
         private int _levelSelection = 0;
-        private int _levelScrollOffset = 0; // NEW: For scrolling
-        private const int MAX_VISIBLE_LEVELS = 5; // Show 5 levels at a time
-        private LevelSource _selectedSource = LevelSource.Local;
-        private List<OfficialLevelInfo> _officialLevels = new();
-        private LevelDownloader? _levelDownloader = null;
-        private volatile bool _isDownloading = false;
-        private volatile int _downloadProgress = 0;
-        private long _downloadBytesReceived = 0;
-        private long _downloadBytesTotal = 0;
-        private string? _pendingAutoMatchmakingLevelId = null;
-        private string? _pendingDownloadError = null;
-        private string _levelsFolder = ""; // Will be set in constructor
+        private int _levelScrollOffset = 0;
+        private LevelSource _selectedSource = LevelSource.Official;
+        private List<OfficialLevelInfo> _officialLevels => RoomClient.Instance.OfficialLevels;
+        // Same folder as Freeplay, looked up each time (it moves with Settings → Move Mods Folder).
+        private string _levelsFolder => FreeplayMenu.GetDefaultLevelsFolder();
         private Game1? _game = null; // Reference to main game instance
-
-        // Matchmaking
         private float _searchTimer = 0f;
-        private string? _opponentName = null;
-        private string? _roomId = null;
-        private bool _isReady = false;
-        private bool _opponentReady = false;
-        private long _gameStartTimestamp = 0; // Server timestamp for synchronized start
-        
-        // Countdown system
-        private bool _isCountdownActive = false;
-        private long _countdownStartTime = 0; // Server timestamp when countdown should start
-        private float _countdownValue = 0f; // Current countdown value (3, 2, 1, GO!)
-        
-        // Room system
-        private string _roomCode = "";
-        private bool _isPrivateRoom = false;
-        private bool _isRoomHost = false;
-        private bool _isCreatingRoom = false;
-        private bool _isCheckingRoom = false;
-        private string? _joinRoomError = null;
-        private int _modeSelection = 0; // 0 = Matchmaking, 1 = Private Room
-        
+
         // Server info
         private string _serverVersion = "Unknown";
         private int _serverLevelCount = 0;
@@ -248,8 +166,8 @@ namespace FunkyMakerPlayer.Multiplayer
 
         public MultiplayerMenu()
         {
-            // Use the same levels folder as Freeplay
-            _levelsFolder = System.IO.Path.Combine(AppContext.BaseDirectory, "mods", "levels");
+            // Levels folder: same as Freeplay (fork: was AppContext.BaseDirectory/mods/levels, which is a
+            // different folder on Android and in single-file desktop builds). See _levelsFolder.
             
             // Load settings
             var settings = MultiplayerSettings.Instance;
@@ -259,7 +177,7 @@ namespace FunkyMakerPlayer.Multiplayer
             RefreshLevelList();
             
             // Initialize previous keyboard state
-            _prevKb = Keyboard.GetState();
+            _prevKb = LayoutKeyboard.GetState();
             _prevMouse = Mouse.GetState();
             
             // Initialize connection indicator with settings
@@ -271,26 +189,7 @@ namespace FunkyMakerPlayer.Multiplayer
                 Position = (UI.ConnectionIndicator.IndicatorPosition)((int)settings.ConnectionIndicatorPosition)
             };
             
-            // Initialize level downloader
-            _levelDownloader = new LevelDownloader();
-            _levelDownloader.OnDownloadProgress += (progress) => {
-                _downloadProgress = progress;
-            };
-            _levelDownloader.OnDownloadBytesProgress += (progress, received, total) => {
-                _downloadProgress = progress;
-                Interlocked.Exchange(ref _downloadBytesReceived, received);
-                Interlocked.Exchange(ref _downloadBytesTotal, total);
-            };
-            _levelDownloader.OnDownloadComplete += (levelId, info) => {
-                _isDownloading = false;
-                Interlocked.Exchange(ref _pendingAutoMatchmakingLevelId, levelId);
-                Console.WriteLine($"[Multiplayer] Downloaded and cached: {info.Name}");
-            };
-            _levelDownloader.OnDownloadError += (error) => {
-                _isDownloading = false;
-                Interlocked.Exchange(ref _pendingDownloadError, error);
-                Console.WriteLine($"[Multiplayer] Download error: {error}");
-            };
+            HookRoomEvents();
 
             NetworkManager.Instance.OnLeaderboardReceived -= OnLeaderboardReceived;
             NetworkManager.Instance.OnLeaderboardReceived += OnLeaderboardReceived;
@@ -401,6 +300,10 @@ namespace FunkyMakerPlayer.Multiplayer
             _touchControls = new TouchControls();
             _touchControls.Initialize(graphicsDevice, screenWidth, screenHeight);
             _touchControls.SetMode(TouchControls.ControlMode.Menu);
+            // Room screens are made for tapping: their buttons win over the D-pad drawn on top of them
+            // (READY sits under the D-pad, the chat box under A/B on most phones).
+            _touchControls.IgnorePoint = IsRoomHitAt;
+            _touchScreenHeight = screenHeight;
             Console.WriteLine("[MultiplayerMenu] Touch controls initialized for Android (Menu mode)");
 #endif
         }
@@ -424,8 +327,8 @@ namespace FunkyMakerPlayer.Multiplayer
 
                     if (FreeplayMenu.IsSupportedLevelFile(file))
                     {
-                        string filename = System.IO.Path.GetFileName(file);
-                        _availableLevels.Add(filename);
+                        // Relative to the levels folder, so levels in subfolders (e.g. Received/) resolve.
+                        _availableLevels.Add(System.IO.Path.GetRelativePath(_levelsFolder, file));
                     }
                 }
             }
@@ -435,6 +338,8 @@ namespace FunkyMakerPlayer.Multiplayer
             {
                 Console.WriteLine("[Multiplayer] No levels found in mods/levels/ folder");
             }
+
+            RebuildLocalRows();
         }
 
         /// <summary>
@@ -454,18 +359,23 @@ namespace FunkyMakerPlayer.Multiplayer
         }
 
         private readonly record struct SfxState(
-            MenuState _state, int _selection, int _modeSelection, int _settingsCategory, int _settingsSelection,
+            MenuState _state, int _selection, int _settingsCategory, int _settingsSelection,
             bool _isSettingFocused, bool _isEditingText, string _editingTextValue, int _leaderboardTab,
-            int _leaderboardSelection, int _levelSelection, LevelSource _selectedSource, bool _isReady,
-            bool _opponentReady, string _roomCode, string _errorMessage, bool _isDownloading, string? _pendingDownloadError);
+            int _leaderboardSelection, int _levelSelection, LevelSource _selectedSource, bool _amReady,
+            int _readyCount, string _errorMessage, int _chatCount, bool _myTurn, int _roomListSelection, string _textField);
 
         private SfxState _sfxPrev;
         private long _sfxPrevFrame = -10;
 
-        private SfxState CaptureSfxState() => new(
-            _state, _selection, _modeSelection, _settingsCategory, _settingsSelection, _isSettingFocused,
-            _isEditingText, _editingTextValue, _leaderboardTab, _leaderboardSelection, _levelSelection,
-            _selectedSource, _isReady, _opponentReady, _roomCode, _errorMessage, _isDownloading, _pendingDownloadError);
+        private SfxState CaptureSfxState()
+        {
+            var room = RoomClient.Instance;
+            int ready = room.State?.Members.Count(m => m.Status == Protocol.StatusReady) ?? 0;
+            return new(_state, _selection, _settingsCategory, _settingsSelection, _isSettingFocused,
+                _isEditingText, _editingTextValue, _leaderboardTab, _leaderboardSelection, _levelSelection,
+                _selectedSource, room.Me?.Status == Protocol.StatusReady, ready, _errorMessage, room.Chat.Count,
+                room.IsMyTurn, _roomListSelection, _textFieldValue);
+        }
 
         /// <summary>Queues UI sounds for what changed since <paramref name="b"/>.</summary>
         private void QueueSfx(SfxState b)
@@ -473,14 +383,12 @@ namespace FunkyMakerPlayer.Multiplayer
 
             if (_state != b._state)
             {
-                if (_state == MenuState.MatchFound) UiSfx.Play(UiSound.Receive);
-                else if (_state == MenuState.Searching) UiSfx.Play(UiSound.Wait);
-                else if (b._state == MenuState.Connecting && _state == MenuState.ModeSelect) UiSfx.Play(UiSound.Notice);
+                if (b._state == MenuState.Connecting && _state == MenuState.RoomBrowser) UiSfx.Play(UiSound.Notice);
                 else UiSfx.Play(StateDepth(_state) > StateDepth(b._state) ? UiSound.Confirm : UiSound.Back);
             }
             else
             {
-                if (_selection != b._selection || _modeSelection != b._modeSelection) UiSfx.Play(UiSound.Move);
+                if (_selection != b._selection || _roomListSelection != b._roomListSelection) UiSfx.Play(UiSound.Move);
                 if (_settingsSelection != b._settingsSelection) UiSfx.Play(UiSound.MoveRow);
                 if (_leaderboardSelection != b._leaderboardSelection || _levelSelection != b._levelSelection) UiSfx.Play(UiSound.MoveList);
                 if (_settingsCategory != b._settingsCategory || _leaderboardTab != b._leaderboardTab || _selectedSource != b._selectedSource)
@@ -488,31 +396,37 @@ namespace FunkyMakerPlayer.Multiplayer
                 if (_isSettingFocused != b._isSettingFocused) UiSfx.Play(_isSettingFocused ? UiSound.Focus : UiSound.Back);
                 if (_isEditingText != b._isEditingText) UiSfx.Play(_isEditingText ? UiSound.Focus : UiSound.Confirm);
                 else if (_isEditingText && _editingTextValue != b._editingTextValue) UiSfx.Play(UiSound.Type);
-                if (_roomCode != b._roomCode && _roomCode.Length > 0) UiSfx.Play(UiSound.Type);
-                if (_isReady != b._isReady) UiSfx.Play(UiSound.Toggle);
-                if (_opponentReady && !b._opponentReady) UiSfx.Play(UiSound.Notice);
+                if (_textFieldValue != b._textField && _textFieldValue.Length > b._textField.Length) UiSfx.Play(UiSound.Type);
+                if (_amReadyChanged(b)) UiSfx.Play(UiSound.Toggle);
+                else if (b._readyCount < CaptureReadyCount()) UiSfx.Play(UiSound.Notice);
+                if (RoomClient.Instance.IsMyTurn && !b._myTurn && _state == MenuState.WaitingRoom) UiSfx.Play(UiSound.Receive);
+                if (RoomClient.Instance.Chat.Count > b._chatCount && _state == MenuState.WaitingRoom) UiSfx.Play(UiSound.Notice);
             }
 
-            if (_isDownloading && !b._isDownloading) UiSfx.Play(UiSound.Wait);
             if (!string.IsNullOrEmpty(_errorMessage) && _errorMessage != b._errorMessage) UiSfx.Play(UiSound.Error);
-            if (_pendingDownloadError != null && _pendingDownloadError != b._pendingDownloadError) UiSfx.Play(UiSound.Error);
         }
 
         /// <summary>Navigation depth of each menu state (for Confirm vs Back sounds).</summary>
         private static int StateDepth(MenuState state) => state switch
         {
             MenuState.MainMenu => 0,
-            MenuState.Settings or MenuState.Leaderboard or MenuState.Connecting or MenuState.ModeSelect => 1,
-            MenuState.Lobby or MenuState.CreateRoom or MenuState.JoinRoom => 2,
-            MenuState.Searching => 3,
-            _ => 4, // MatchFound
+            MenuState.Settings or MenuState.Leaderboard or MenuState.Connecting or MenuState.RoomBrowser => 1,
+            MenuState.RoomSettings => 2,
+            MenuState.WaitingRoom => 3,
+            _ => 4, // SongSelect
         };
+
+        private bool _amReadyChanged(SfxState b) => (RoomClient.Instance.Me?.Status == Protocol.StatusReady) != b._amReady;
+        private static int CaptureReadyCount() => RoomClient.Instance.State?.Members.Count(m => m.Status == Protocol.StatusReady) ?? 0;
 
         private void UpdateCore(GameTime gameTime)
         {
             float dt = (float)gameTime.ElapsedGameTime.TotalSeconds;
             _pulseTimer += dt * PULSE_SPEED;
             _searchTimer += dt;
+
+            UpdateRoomScreens(dt);
+            UpdateLevelFolderWatch(dt);
 
             var pendingLeaderboard = Interlocked.Exchange(ref _pendingHttpLeaderboard, null);
             if (pendingLeaderboard != null)
@@ -530,26 +444,6 @@ namespace FunkyMakerPlayer.Multiplayer
                 _leaderboardSyncedOnline = true;
             }
 
-            string? dlError = Interlocked.Exchange(ref _pendingDownloadError, null);
-            if (!string.IsNullOrEmpty(dlError))
-            {
-                ShowError($"Download failed: {dlError}");
-            }
-
-            string? completedLevelId = Interlocked.Exchange(ref _pendingAutoMatchmakingLevelId, null);
-            if (!string.IsNullOrEmpty(completedLevelId) &&
-                _state == MenuState.Lobby &&
-                _selectedSource == LevelSource.Official &&
-                _officialLevels.Count > 0)
-            {
-                int idx = _officialLevels.FindIndex(l => string.Equals(l.Id, completedLevelId, StringComparison.OrdinalIgnoreCase));
-                if (idx >= 0)
-                {
-                    _levelSelection = idx;
-                    StartMatchmaking();
-                }
-            }
-            
             // Update connection indicator
             _connectionIndicator?.Update(dt);
             
@@ -600,18 +494,6 @@ namespace FunkyMakerPlayer.Multiplayer
                 CompleteServerConnection();
             }
 
-            if (_state == MenuState.MatchFound)
-            {
-                string? resolvedOpp = UserDirectoryClient.Instance.ResolveUsername(
-                    NetworkManager.Instance.OpponentPlayerId,
-                    _opponentName);
-                if (!string.IsNullOrWhiteSpace(resolvedOpp) && !UserDirectoryClient.IsGenericUsername(resolvedOpp))
-                    _opponentName = resolvedOpp;
-
-                if (AdvanceMatchCountdown())
-                    return;
-            }
-
             // Input cooldown
             if (_inputCooldown > 0f)
                 _inputCooldown -= dt;
@@ -625,8 +507,14 @@ namespace FunkyMakerPlayer.Multiplayer
                 return;
             }
 
-            var kb = Keyboard.GetState();
+            var kb = LayoutKeyboard.GetState();
+#if ANDROID
+            // Taps act as mouse clicks here (Mouse.GetState does not see touches on Android).
+            var mouse = TouchAsMouse();
+#else
             var mouse = Mouse.GetState();
+#endif
+            _frameMouse = mouse;
             
 #if ANDROID
             // Update touch controls
@@ -644,9 +532,9 @@ namespace FunkyMakerPlayer.Multiplayer
             UpdateMouseHover(mouse);
 
             // Global shortcut: F1 or clicking "Keybinds & Settings" pill opens Gameplay Settings without leaving Multiplayer
-            if (!_isEditingText && _state != MenuState.Connecting && _state != MenuState.MatchFound &&
+            if (!_isEditingText && !TextFieldActive && _state != MenuState.Connecting &&
                 _inputCooldown <= 0f &&
-                (IsKeyPressed(kb, Keys.F1) || IsRectClicked(mouse, _gameplaySettingsRect)))
+                (IsKeyPressed(kb, HotkeyAction.MultiplayerSettings) || IsRectClicked(mouse, _gameplaySettingsRect)))
             {
                 GameplaySettingsRequested = true;
                 _inputCooldown = INPUT_COOLDOWN_TIME;
@@ -664,23 +552,17 @@ namespace FunkyMakerPlayer.Multiplayer
                 case MenuState.Connecting:
                     UpdateConnecting(kb, mouse, dt);
                     break;
-                case MenuState.ModeSelect:
-                    UpdateModeSelect(kb, mouse, dt);
+                case MenuState.RoomBrowser:
+                    UpdateRoomBrowser(kb, mouse, dt);
                     break;
-                case MenuState.Lobby:
-                    UpdateLobby(kb, mouse, dt);
+                case MenuState.RoomSettings:
+                    UpdateRoomSettings(kb, mouse, dt);
                     break;
-                case MenuState.CreateRoom:
-                    UpdateCreateRoom(kb, mouse, dt);
+                case MenuState.WaitingRoom:
+                    UpdateWaitingRoom(kb, mouse, dt);
                     break;
-                case MenuState.JoinRoom:
-                    UpdateJoinRoom(kb, mouse, dt);
-                    break;
-                case MenuState.Searching:
-                    UpdateSearching(kb, mouse, dt);
-                    break;
-                case MenuState.MatchFound:
-                    UpdateMatchFound(kb, mouse, dt);
+                case MenuState.SongSelect:
+                    UpdateSongSelect(kb, mouse, dt);
                     break;
                 case MenuState.Settings:
                     UpdateSettings(kb, mouse, dt);
@@ -695,6 +577,9 @@ namespace FunkyMakerPlayer.Multiplayer
         }
 
         private bool IsKeyPressed(KeyboardState kb, Keys key) => kb.IsKeyDown(key) && !_prevKb.IsKeyDown(key);
+
+        /// <summary>Rebindable hotkey (fork: Settings → CONTROLS).</summary>
+        private bool IsKeyPressed(KeyboardState kb, HotkeyAction action) => Controls.Pressed(action, kb, _prevKb);
 
         private bool IsLeftClickReleased(MouseState mouse) =>
             mouse.LeftButton == ButtonState.Released && _prevMouse.LeftButton == ButtonState.Pressed;
@@ -714,9 +599,8 @@ namespace FunkyMakerPlayer.Multiplayer
             _shareButtonRect = Rectangle.Empty;
             _hoveredButton = -1;
             _isSettingFocused = false;
-            _isEditingText = false;
-            _editingTextValue = "";
-            _prevKb = Keyboard.GetState();
+            if (TextFieldActive) EndTextField();
+            _prevKb = LayoutKeyboard.GetState();
             _prevMouse = Mouse.GetState();
             _inputCooldown = INPUT_COOLDOWN_TIME;
         }
@@ -887,509 +771,12 @@ namespace FunkyMakerPlayer.Multiplayer
             }
         }
         
-        private void UpdateModeSelect(KeyboardState kb, MouseState mouse, float dt)
-        {
-            if (_inputCooldown > 0f) return;
-            
-            // Mouse hover updates selection only when mouse moved
-            if (_mouseMovedThisFrame && _hoveredButton >= 0 && _hoveredButton < 2)
-            {
-                _modeSelection = _hoveredButton;
-            }
-
-            // Navigate modes with LEFT/RIGHT or Q/E
-            if (IsKeyPressed(kb, Keys.Right) || IsKeyPressed(kb, Keys.E))
-            {
-                _modeSelection = (_modeSelection + 1) % 2;
-                _inputCooldown = INPUT_COOLDOWN_TIME;
-            }
-            if (IsKeyPressed(kb, Keys.Left) || IsKeyPressed(kb, Keys.Q))
-            {
-                _modeSelection = (_modeSelection - 1 + 2) % 2;
-                _inputCooldown = INPUT_COOLDOWN_TIME;
-            }
-
-            // Select mode with keyboard
-            if (IsKeyPressed(kb, Keys.Enter) || IsKeyPressed(kb, Keys.Space))
-            {
-                ExecuteModeSelectAction(_modeSelection);
-                return;
-            }
-            
-            // Select mode with mouse single-click
-            for (int i = 0; i < 2; i++)
-            {
-                if (IsButtonClicked(mouse, i))
-                {
-                    _modeSelection = i;
-                    ExecuteModeSelectAction(i);
-                    return;
-                }
-            }
-
-            // Back
-            if (IsKeyPressed(kb, Keys.Escape) || IsRectClicked(mouse, _backButtonRect))
-            {
-                NetworkManager.Instance.Disconnect();
-                TransitionToState(MenuState.MainMenu);
-            }
-        }
-        
-        private void ExecuteModeSelectAction(int mode)
-        {
-            if (mode == 0)
-            {
-                // Quick Play (Matchmaking)
-                _isPrivateRoom = false;
-                TransitionToState(MenuState.Lobby);
-            }
-            else
-            {
-                // Private Room
-                _isPrivateRoom = true;
-                _selection = 0;
-                TransitionToState(MenuState.CreateRoom);
-                _roomCode = GenerateRoomCode();
-            }
-        }
-        
-        private void UpdateCreateRoom(KeyboardState kb, MouseState mouse, float dt)
-        {
-            if (_inputCooldown > 0f) return;
-
-            if (_mouseMovedThisFrame && _hoveredButton >= 0 && _hoveredButton < 2)
-            {
-                _selection = _hoveredButton;
-            }
-
-            // Navigate options with LEFT/RIGHT or Q/E
-            if (IsKeyPressed(kb, Keys.Right) || IsKeyPressed(kb, Keys.E))
-            {
-                _selection = (_selection + 1) % 2; // 0 = Create, 1 = Join Existing
-                _inputCooldown = INPUT_COOLDOWN_TIME;
-            }
-            if (IsKeyPressed(kb, Keys.Left) || IsKeyPressed(kb, Keys.Q))
-            {
-                _selection = (_selection - 1 + 2) % 2;
-                _inputCooldown = INPUT_COOLDOWN_TIME;
-            }
-
-            if (IsKeyPressed(kb, Keys.Enter) || IsKeyPressed(kb, Keys.Space))
-            {
-                ExecuteCreateRoomAction(_selection);
-                return;
-            }
-
-            for (int i = 0; i < 2; i++)
-            {
-                if (IsButtonClicked(mouse, i))
-                {
-                    _selection = i;
-                    ExecuteCreateRoomAction(i);
-                    return;
-                }
-            }
-
-            // Back
-            if (IsKeyPressed(kb, Keys.Escape) || IsRectClicked(mouse, _backButtonRect))
-            {
-                TransitionToState(MenuState.ModeSelect);
-            }
-        }
-
-        private void ExecuteCreateRoomAction(int action)
-        {
-            if (action == 0)
-            {
-                if (_isCreatingRoom) return;
-                _ = CreateAndEnterRoomAsync();
-            }
-            else
-            {
-                _roomCode = "";
-                _isRoomHost = false;
-                _isCheckingRoom = false;
-                _joinRoomError = null;
-                TransitionToState(MenuState.JoinRoom);
-            }
-        }
-
-        private async Task CreateAndEnterRoomAsync()
-        {
-            _isCreatingRoom = true;
-            try
-            {
-                Console.WriteLine($"[Multiplayer] Creating room on server: {_roomCode}");
-                bool created = await NetworkManager.Instance.CreatePrivateRoomAsync(_roomCode);
-                if (!created)
-                {
-                    // Collision or transient reject — try once more with a fresh code
-                    _roomCode = GenerateRoomCode();
-                    created = await NetworkManager.Instance.CreatePrivateRoomAsync(_roomCode);
-                }
-
-                if (created)
-                {
-                    _isRoomHost = true;
-                    TransitionToState(MenuState.Lobby);
-                }
-                else
-                {
-                    _errorMessage = "Could not create room on server.";
-                    _errorMessageTimer = 3f;
-                    UiSfx.Play(UiSound.Error);
-                }
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"[Multiplayer] Create room error: {ex.Message}");
-                _errorMessage = "Could not reach server to create room.";
-                _errorMessageTimer = 3f;
-                UiSfx.Play(UiSound.Error);
-            }
-            finally
-            {
-                _isCreatingRoom = false;
-            }
-        }
-
-        private async Task CheckAndJoinRoomAsync(string code)
-        {
-            _isCheckingRoom = true;
-            _joinRoomError = null;
-            try
-            {
-                bool exists = await NetworkManager.Instance.CheckPrivateRoomAsync(code);
-                if (_state != MenuState.JoinRoom) return;
-
-                if (exists)
-                {
-                    Console.WriteLine($"[Multiplayer] Verified room exists: {code}");
-                    _isRoomHost = false;
-                    TransitionToState(MenuState.Lobby);
-                }
-                else
-                {
-                    Console.WriteLine($"[Multiplayer] Room not found on server: {code}");
-                    _joinRoomError = "Room not found. Check the code and try again.";
-                    UiSfx.Play(UiSound.Error);
-                }
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"[Multiplayer] CheckPrivateRoom error: {ex.Message}");
-                if (_state == MenuState.JoinRoom)
-                {
-                    _joinRoomError = "Could not verify room with server.";
-                    UiSfx.Play(UiSound.Error);
-                }
-            }
-            finally
-            {
-                _isCheckingRoom = false;
-            }
-        }
-        
-        private void UpdateJoinRoom(KeyboardState kb, MouseState mouse, float dt)
-        {
-            // Back / Cancel first
-            if (IsKeyPressed(kb, Keys.Escape) || IsRectClicked(mouse, _backButtonRect))
-            {
-                _isCheckingRoom = false;
-                _joinRoomError = null;
-                _selection = 0;
-                TransitionToState(MenuState.CreateRoom);
-                return;
-            }
-
-            if (_isCheckingRoom) return;
-
-            // Backspace with hold repeat
-            if (kb.IsKeyDown(Keys.Back))
-            {
-                if (!_prevKb.IsKeyDown(Keys.Back))
-                {
-                    if (_roomCode.Length > 0)
-                    {
-                        _roomCode = _roomCode.Substring(0, _roomCode.Length - 1);
-                        _joinRoomError = null;
-                    }
-                    _backspaceHoldTimer = 0f;
-                    _backspaceRepeatTimer = 0f;
-                }
-                else
-                {
-                    _backspaceHoldTimer += dt;
-                    if (_backspaceHoldTimer >= 0.4f)
-                    {
-                        _backspaceRepeatTimer += dt;
-                        if (_backspaceRepeatTimer >= 0.05f && _roomCode.Length > 0)
-                        {
-                            _roomCode = _roomCode.Substring(0, _roomCode.Length - 1);
-                            _joinRoomError = null;
-                            _backspaceRepeatTimer = 0f;
-                        }
-                    }
-                }
-            }
-            else
-            {
-                _backspaceHoldTimer = 0f;
-                _backspaceRepeatTimer = 0f;
-            }
-
-            // Type room code (A-Z, 0-9, max 6 characters) without inputCooldown interference
-            foreach (var key in kb.GetPressedKeys())
-            {
-                if (_prevKb.IsKeyUp(key) && _roomCode.Length < 6)
-                {
-                    if (key >= Keys.A && key <= Keys.Z)
-                    {
-                        _roomCode += key.ToString();
-                        _joinRoomError = null;
-                    }
-                    else if (key >= Keys.D0 && key <= Keys.D9)
-                    {
-                        _roomCode += ((int)key - (int)Keys.D0).ToString();
-                        _joinRoomError = null;
-                    }
-                    else if (key >= Keys.NumPad0 && key <= Keys.NumPad9)
-                    {
-                        _roomCode += ((int)key - (int)Keys.NumPad0).ToString();
-                        _joinRoomError = null;
-                    }
-                }
-            }
-
-            // Enter or click JOIN button when complete — ask the server if the room exists
-            if (_roomCode.Length == 6 && (IsKeyPressed(kb, Keys.Enter) || IsButtonClicked(mouse, 0)))
-            {
-                Console.WriteLine($"[Multiplayer] Checking room on server: {_roomCode}");
-                _ = CheckAndJoinRoomAsync(_roomCode);
-            }
-        }
-
-        private void UpdateLobby(KeyboardState kb, MouseState mouse, float dt)
-        {
-            if (_inputCooldown > 0f) return;
-            if (_isDownloading) return; // Disable input during download
-
-            int currentLevelCount = _selectedSource == LevelSource.Official ? _officialLevels.Count : _availableLevels.Count;
-
-            // Mouse hover highlights level ONLY when mouse moved — NEVER switches source tabs on hover!
-            if (_mouseMovedThisFrame && _hoveredButton >= 2)
-            {
-                int levelIndex = _hoveredButton - 2 + _levelScrollOffset;
-                if (levelIndex >= 0 && levelIndex < currentLevelCount)
-                    _levelSelection = levelIndex;
-            }
-
-            // Mouse wheel scrolls level selection
-            int wheelDelta = mouse.ScrollWheelValue - _prevMouse.ScrollWheelValue;
-            if (wheelDelta != 0 && currentLevelCount > 0)
-            {
-                int step = wheelDelta > 0 ? -1 : 1;
-                _levelSelection = (_levelSelection + step + currentLevelCount) % currentLevelCount;
-                AdjustLobbyScroll();
-            }
-
-            // Navigate levels with UP/DOWN
-            if (currentLevelCount > 0)
-            {
-                if (IsKeyPressed(kb, Keys.Down))
-                {
-                    _levelSelection = (_levelSelection + 1) % currentLevelCount;
-                    AdjustLobbyScroll();
-                    _inputCooldown = INPUT_COOLDOWN_TIME;
-                }
-                if (IsKeyPressed(kb, Keys.Up))
-                {
-                    _levelSelection = (_levelSelection - 1 + currentLevelCount) % currentLevelCount;
-                    AdjustLobbyScroll();
-                    _inputCooldown = INPUT_COOLDOWN_TIME;
-                }
-            }
-
-            // Switch between Official and Local with LEFT/RIGHT, Q/E, or tab click
-            if (IsKeyPressed(kb, Keys.Left) || IsKeyPressed(kb, Keys.Q) || IsButtonClicked(mouse, 0))
-            {
-                if (_selectedSource != LevelSource.Official)
-                {
-                    _selectedSource = LevelSource.Official;
-                    _levelSelection = 0;
-                    _levelScrollOffset = 0;
-                    _inputCooldown = INPUT_COOLDOWN_TIME;
-                }
-            }
-            if (IsKeyPressed(kb, Keys.Right) || IsKeyPressed(kb, Keys.E) || IsButtonClicked(mouse, 1))
-            {
-                if (_selectedSource != LevelSource.Local)
-                {
-                    _selectedSource = LevelSource.Local;
-                    _levelSelection = 0;
-                    _levelScrollOffset = 0;
-                    _inputCooldown = INPUT_COOLDOWN_TIME;
-                }
-            }
-
-            // ENTER or SPACE: Search match OR Download (Official)
-            if (IsKeyPressed(kb, Keys.Enter) || IsKeyPressed(kb, Keys.Space))
-            {
-                ExecuteLobbyAction();
-                _inputCooldown = INPUT_COOLDOWN_TIME;
-            }
-            
-            // S key or the SHARE button on the selected card: share the level file (Local mode only).
-            // Checked before the card click, since the button sits inside the card.
-            if (_selectedSource == LevelSource.Local && (IsKeyPressed(kb, Keys.S) || IsRectClicked(mouse, _shareButtonRect)))
-            {
-                if (_availableLevels.Count > 0 && _levelSelection < _availableLevels.Count)
-                    ShareLevel(_availableLevels[_levelSelection]);
-                _inputCooldown = INPUT_COOLDOWN_TIME;
-                return;
-            }
-
-            // Click on level items to select and start
-            for (int i = 2; i < _clickableAreas.Count; i++)
-            {
-                if (IsButtonClicked(mouse, i))
-                {
-                    int levelIndex = i - 2 + _levelScrollOffset;
-                    if (levelIndex >= 0 && levelIndex < currentLevelCount)
-                    {
-                        _levelSelection = levelIndex;
-                        ExecuteLobbyAction();
-                        _inputCooldown = INPUT_COOLDOWN_TIME;
-                        break;
-                    }
-                }
-            }
-            
-            // R key or clicking Refresh button refreshes both local mods/levels and official server charts
-            if (IsKeyPressed(kb, Keys.R) || IsRectClicked(mouse, _refreshButtonRect))
-            {
-                RefreshLevelList();
-                if (NetworkManager.Instance.IsConnected)
-                    NetworkManager.Instance.RequestOfficialLevels();
-                _inputCooldown = INPUT_COOLDOWN_TIME;
-                return;
-            }
-
-            // Back
-            if (IsKeyPressed(kb, Keys.Escape) || IsRectClicked(mouse, _backButtonRect))
-            {
-                TransitionToState(_isPrivateRoom ? MenuState.CreateRoom : MenuState.ModeSelect);
-            }
-        }
-
-        private void AdjustLobbyScroll()
-        {
-            if (_levelSelection >= _levelScrollOffset + MAX_VISIBLE_LEVELS)
-                _levelScrollOffset = _levelSelection - MAX_VISIBLE_LEVELS + 1;
-            else if (_levelSelection < _levelScrollOffset)
-                _levelScrollOffset = _levelSelection;
-        }
-        
-        private void ExecuteLobbyAction()
-        {
-            if (_selectedSource == LevelSource.Official)
-            {
-                if (_officialLevels.Count > 0 && _levelSelection < _officialLevels.Count)
-                {
-                    var level = _officialLevels[_levelSelection];
-                    
-                    if (LevelCache.Instance.IsCached(level.Id) || LevelCache.Instance.TryRestoreFromDisk(level))
-                    {
-                        StartMatchmaking();
-                    }
-                    else
-                    {
-                        DownloadOfficialLevel(level);
-                    }
-                }
-            }
-            else // Local
-            {
-                StartMatchmaking();
-            }
-        }
-
-        private void UpdateSearching(KeyboardState kb, MouseState mouse, float dt)
-        {
-            // Cancel search via keyboard or mouse
-            if (IsKeyPressed(kb, Keys.Escape) || IsRectClicked(mouse, _backButtonRect))
-            {
-                NetworkManager.Instance.CancelMatchmaking();
-                TransitionToState(MenuState.Lobby);
-                _searchTimer = 0f;
-            }
-        }
-
-        private bool AdvanceMatchCountdown()
-        {
-            if (!_isCountdownActive)
-                return false;
-
-            long now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
-            long timeSinceStart = now - _countdownStartTime;
-
-            if (timeSinceStart < 1000)
-                _countdownValue = 3;
-            else if (timeSinceStart < 2000)
-                _countdownValue = 2;
-            else if (timeSinceStart < 3000)
-                _countdownValue = 1;
-            else
-            {
-                _countdownValue = 0;
-                _isCountdownActive = false;
-                Console.WriteLine("[MultiplayerMenu] Countdown complete! Launching GameMultiplayer...");
-                LaunchGameMultiplayer();
-                return true;
-            }
-            return false;
-        }
-
-        private void UpdateMatchFound(KeyboardState kb, MouseState mouse, float dt)
-        {
-            if (_inputCooldown > 0f) return;
-
-            if (_isCountdownActive)
-                return;
-
-            // Toggle ready with ENTER, SPACE, or clicking READY button/card (only when countdown is not active)
-            if (!_isCountdownActive &&
-                (IsKeyPressed(kb, Keys.Enter) || IsKeyPressed(kb, Keys.Space) || IsButtonClicked(mouse, 0)))
-            {
-                _isReady = !_isReady;
-                NetworkManager.Instance.SendReady(_isReady);
-                Console.WriteLine($"[Multiplayer] Ready: {_isReady}");
-                _inputCooldown = INPUT_COOLDOWN_TIME;
-            }
-
-            // Cancel match with ESC or Cancel button (only when countdown is not active)
-            if (!_isCountdownActive && (IsKeyPressed(kb, Keys.Escape) || IsRectClicked(mouse, _backButtonRect)))
-            {
-                NetworkManager.Instance.LeaveMatch(notifyOpponent: true);
-                TransitionToState(MenuState.Lobby);
-                _opponentName = null;
-                _roomId = null;
-                _isReady = false;
-                _opponentReady = false;
-                _isCountdownActive = false;
-            }
-        }
-        
         private void UpdateSettings(KeyboardState kb, MouseState mouse, float dt)
         {
             var settings = MultiplayerSettings.Instance;
 
-            // Handle text editing mode BEFORE cooldown so typed characters are never dropped
-            if (_isEditingText)
-            {
-                HandleTextEditing(kb, mouse, dt);
-                return;
-            }
+            // Handle text editing BEFORE cooldown so typed characters are never dropped
+            if (UpdateTextField(kb, dt)) return;
 
             if (_inputCooldown > 0f) return;
 
@@ -1470,8 +857,7 @@ namespace FunkyMakerPlayer.Multiplayer
                     _settingsSelection = actualIndex;
                     if (_settingsCategory == 0 && actualIndex == 0)
                     {
-                        _isEditingText = true;
-                        _editingTextValue = settings.Username;
+                        BeginUsernameEdit();
                         _isSettingFocused = false;
                     }
                     else if (categorySettings[actualIndex].IsToggle)
@@ -1496,7 +882,7 @@ namespace FunkyMakerPlayer.Multiplayer
             }
 
             // Q / E always switch categories (matching SettingsManager)
-            if (IsKeyPressed(kb, Keys.Q))
+            if (IsKeyPressed(kb, HotkeyAction.PrevTab))
             {
                 _settingsCategory = (_settingsCategory - 1 + 4) % 4;
                 _settingsSelection = 0;
@@ -1505,7 +891,7 @@ namespace FunkyMakerPlayer.Multiplayer
                 _inputCooldown = INPUT_COOLDOWN_TIME;
                 return;
             }
-            if (IsKeyPressed(kb, Keys.E))
+            if (IsKeyPressed(kb, HotkeyAction.NextTab))
             {
                 _settingsCategory = (_settingsCategory + 1) % 4;
                 _settingsSelection = 0;
@@ -1578,8 +964,7 @@ namespace FunkyMakerPlayer.Multiplayer
                 {
                     if (_settingsCategory == 0 && _settingsSelection == 0)
                     {
-                        _isEditingText = true;
-                        _editingTextValue = settings.Username;
+                        BeginUsernameEdit();
                         _isSettingFocused = false;
                     }
                     else if (_settingsSelection < categorySettings.Count && categorySettings[_settingsSelection].IsToggle)
@@ -1596,7 +981,7 @@ namespace FunkyMakerPlayer.Multiplayer
             }
 
             // R to reset to defaults
-            if (IsKeyPressed(kb, Keys.R))
+            if (IsKeyPressed(kb, HotkeyAction.ResetOnlineSettings))
             {
                 settings.ResetToDefaults();
                 SaveSettings();
@@ -1643,116 +1028,9 @@ namespace FunkyMakerPlayer.Multiplayer
             
             // Send updated settings to server if connected
             if (NetworkManager.Instance.IsConnected)
-            {
-                NetworkManager.Instance.SendPlayerProfile();
-                NetworkManager.Instance.SendSettingsSync();
-            }
+                ResendProfile();
             
             Console.WriteLine("[Settings] Settings saved and synced");
-        }
-        
-        private void HandleTextEditing(KeyboardState kb, MouseState mouse, float dt)
-        {
-            var settings = MultiplayerSettings.Instance;
-            bool shift = kb.IsKeyDown(Keys.LeftShift) || kb.IsKeyDown(Keys.RightShift);
-            bool upper = shift ^ kb.CapsLock;
-
-            // Backspace with hold repeat
-            if (kb.IsKeyDown(Keys.Back))
-            {
-                if (!_prevKb.IsKeyDown(Keys.Back))
-                {
-                    if (_editingTextValue.Length > 0)
-                        _editingTextValue = _editingTextValue.Substring(0, _editingTextValue.Length - 1);
-                    _backspaceHoldTimer = 0f;
-                    _backspaceRepeatTimer = 0f;
-                }
-                else
-                {
-                    _backspaceHoldTimer += dt;
-                    if (_backspaceHoldTimer >= 0.4f)
-                    {
-                        _backspaceRepeatTimer += dt;
-                        if (_backspaceRepeatTimer >= 0.05f && _editingTextValue.Length > 0)
-                        {
-                            _editingTextValue = _editingTextValue.Substring(0, _editingTextValue.Length - 1);
-                            _backspaceRepeatTimer = 0f;
-                        }
-                    }
-                }
-            }
-            else
-            {
-                _backspaceHoldTimer = 0f;
-                _backspaceRepeatTimer = 0f;
-            }
-
-            foreach (var key in kb.GetPressedKeys())
-            {
-                if (!_prevKb.IsKeyUp(key) || _editingTextValue.Length >= 20)
-                    continue;
-
-                if (key == Keys.Space)
-                {
-                    _editingTextValue += " ";
-                }
-                else if (key >= Keys.A && key <= Keys.Z)
-                {
-                    char c = upper ? key.ToString()[0] : char.ToLower(key.ToString()[0]);
-                    _editingTextValue += c;
-                }
-                else if (key >= Keys.D0 && key <= Keys.D9 && !shift)
-                {
-                    _editingTextValue += ((int)key - (int)Keys.D0).ToString();
-                }
-                else if (key >= Keys.NumPad0 && key <= Keys.NumPad9)
-                {
-                    _editingTextValue += ((int)key - (int)Keys.NumPad0).ToString();
-                }
-                else if (key == Keys.OemMinus)
-                {
-                    _editingTextValue += shift ? '_' : '-';
-                }
-                else if (key == Keys.Subtract)
-                {
-                    _editingTextValue += '-';
-                }
-                else if (key == Keys.OemPeriod || key == Keys.Decimal)
-                {
-                    _editingTextValue += '.';
-                }
-            }
-
-            // Clicking outside row OR pressing ENTER confirms
-            bool clickedElsewhere = IsLeftClickReleased(mouse) &&
-                (_clickableAreas.Count == 0 || !_clickableAreas[0].Contains(new Point(mouse.X, mouse.Y)));
-
-            if (IsKeyPressed(kb, Keys.Enter) || clickedElsewhere)
-            {
-                string trimmed = _editingTextValue.Trim();
-                if (!string.IsNullOrWhiteSpace(trimmed))
-                {
-                    settings.Username = trimmed;
-                    _username = trimmed;
-                    settings.Save();
-                    if (NetworkManager.Instance.IsConnected)
-                        NetworkManager.Instance.SendPlayerProfile();
-                    Console.WriteLine($"[Settings] Username changed to: {settings.Username}");
-                }
-                _isEditingText = false;
-                _editingTextValue = "";
-                _inputCooldown = INPUT_COOLDOWN_TIME;
-                return;
-            }
-
-            // ESC to cancel
-            if (IsKeyPressed(kb, Keys.Escape))
-            {
-                _isEditingText = false;
-                _editingTextValue = "";
-                _inputCooldown = INPUT_COOLDOWN_TIME;
-                Console.WriteLine("[Settings] Username editing cancelled");
-            }
         }
         
         private int GetSettingsCategoryItemCount(int category)
@@ -1760,8 +1038,8 @@ namespace FunkyMakerPlayer.Multiplayer
             return category switch
             {
                 0 => 2,  // User: Username, Player Color
-                1 => 4,  // Gameplay: ShowOpponentNotes, ShowOpponentScore, ShowConnectionQuality, GhostTransparency
-                2 => 2,  // Performance: UpdateRate, EnableInterpolation
+                1 => 6,  // Gameplay: ShowOpponentNotes, Scores list, Scores list side, ShowConnectionQuality, Opponent Notes Opacity, Teams rival strumline
+                2 => 3,  // Performance: UpdateRate, EnableInterpolation, osu! videos
                 _ => 3,  // Visual: HudOpacity, ConnectionIndicatorPosition, InterfaceMode
             };
         }
@@ -1778,8 +1056,10 @@ namespace FunkyMakerPlayer.Multiplayer
                     break;
                     
                 case 1: // Gameplay
-                    if (selection == 3) // GhostTransparency
+                    if (selection == 4) // GhostTransparency
                         settings.GhostTransparency = Math.Clamp(settings.GhostTransparency + direction * 10, 0, 100);
+                    else
+                        ToggleSettingValue(category, selection);
                     break;
                     
                 case 2: // Performance
@@ -1803,6 +1083,11 @@ namespace FunkyMakerPlayer.Multiplayer
                                 _ => MultiplayerSettings.NetworkUpdateRate.Low
                             };
                         }
+                    }
+                    else
+                    {
+                        ToggleSettingValue(category, selection);
+                        return; // saved there
                     }
                     break;
                     
@@ -1833,11 +1118,24 @@ namespace FunkyMakerPlayer.Multiplayer
             settings.Save();
             if (NetworkManager.Instance.IsConnected)
             {
-                if (category == 0) NetworkManager.Instance.SendPlayerProfile();
-                else if (category == 2) NetworkManager.Instance.SendSettingsSync();
+                if (category == 0) ResendProfile();
             }
         }
         
+        private void BeginUsernameEdit()
+        {
+            var settings = MultiplayerSettings.Instance;
+            BeginTextField("username", settings.Username, 20, v =>
+            {
+                string trimmed = v.Trim();
+                if (trimmed.Length == 0) return;
+                settings.Username = trimmed;
+                _username = trimmed;
+                settings.Save();
+                if (NetworkManager.Instance.IsConnected) ResendProfile();
+            }, title: "Username");
+        }
+
         private void ToggleSettingValue(int category, int selection)
         {
             var settings = MultiplayerSettings.Instance;
@@ -1846,31 +1144,42 @@ namespace FunkyMakerPlayer.Multiplayer
             {
                 case 0: // User
                     if (selection == 0) // Username - start text editing
-                    {
-                        _isEditingText = true;
-                        _editingTextValue = settings.Username;
-                        Console.WriteLine("[Settings] Started editing username");
-                    }
+                        BeginUsernameEdit();
                     break;
                     
                 case 1: // Gameplay
                     switch (selection)
                     {
-                        case 0: settings.ShowOpponentNotes = !settings.ShowOpponentNotes; break;
+                        case 0:
+                            // Same setting as Settings → Opponent Strumline (saved in settings.json)
+                            settings.ShowOpponentNotes = !settings.ShowOpponentNotes;
+                            Game1.SaveSettings();
+                            break;
                         case 1: settings.ShowOpponentScore = !settings.ShowOpponentScore; break;
-                        case 2: settings.ShowConnectionQuality = !settings.ShowConnectionQuality; break;
+                        case 2:
+                            settings.ScoreListPosition = settings.ScoreListPosition == MultiplayerSettings.ScoreListSide.Left
+                                ? MultiplayerSettings.ScoreListSide.Right : MultiplayerSettings.ScoreListSide.Left;
+                            break;
+                        case 3: settings.ShowConnectionQuality = !settings.ShowConnectionQuality; break;
+                        case 5:
+                            settings.TeamsRivalStrumline = settings.TeamsRivalStrumline == MultiplayerSettings.RivalStrumlineMode.RealPlayer
+                                ? MultiplayerSettings.RivalStrumlineMode.Cpu : MultiplayerSettings.RivalStrumlineMode.RealPlayer;
+                            break;
                     }
                     break;
                     
                 case 2: // Performance
                     if (selection == 1) // EnableInterpolation
                         settings.EnableInterpolation = !settings.EnableInterpolation;
+                    else if (selection == 2) // osu! songs without video
+                    {
+                        settings.OsuSkipVideo = !settings.OsuSkipVideo;
+                        if (NetworkManager.Instance.IsConnected) ResendProfile(); // the server picks the variant
+                    }
                     break;
             }
-            
+
             settings.Save();
-            if (NetworkManager.Instance.IsConnected && category == 2)
-                NetworkManager.Instance.SendSettingsSync();
         }
 
         /// <summary>
@@ -1892,18 +1201,6 @@ namespace FunkyMakerPlayer.Multiplayer
             NetworkManager.Instance.OnDisconnected += OnDisconnected;
             NetworkManager.Instance.OnConnectionError -= OnNetworkConnectionError;
             NetworkManager.Instance.OnConnectionError += OnNetworkConnectionError;
-            NetworkManager.Instance.OnMatchFound -= OnMatchFound;
-            NetworkManager.Instance.OnMatchFound += OnMatchFound;
-            NetworkManager.Instance.OnOpponentProfileReceived -= OnMenuOpponentProfile;
-            NetworkManager.Instance.OnOpponentProfileReceived += OnMenuOpponentProfile;
-            NetworkManager.Instance.OnOpponentDisconnected -= OnMenuOpponentDisconnected;
-            NetworkManager.Instance.OnOpponentDisconnected += OnMenuOpponentDisconnected;
-            NetworkManager.Instance.OnOpponentReadyChanged -= OnOpponentReadyChanged;
-            NetworkManager.Instance.OnOpponentReadyChanged += OnOpponentReadyChanged;
-            NetworkManager.Instance.OnCountdownStart -= OnCountdownStart;
-            NetworkManager.Instance.OnCountdownStart += OnCountdownStart;
-            NetworkManager.Instance.OnGameStart -= OnGameStart;
-            NetworkManager.Instance.OnGameStart += OnGameStart;
             NetworkManager.Instance.OnLevelListReceived -= OnLevelListReceived;
             NetworkManager.Instance.OnLevelListReceived += OnLevelListReceived;
 
@@ -1937,162 +1234,20 @@ namespace FunkyMakerPlayer.Multiplayer
         /// </summary>
         private void TransitionToState(MenuState newState)
         {
-            if (_isRoomHost && (newState == MenuState.CreateRoom || newState == MenuState.ModeSelect || newState == MenuState.MainMenu))
+            if (newState == MenuState.SongSelect)
             {
-                _isRoomHost = false;
-                _ = NetworkManager.Instance.LeavePrivateRoomAsync();
+                _deleteConfirmPath = null;
+                // Pick up levels added or removed while we were elsewhere (fork).
+                if (_state != MenuState.SongSelect)
+                {
+                    RefreshLevelListKeepingSelection();
+                    OpenSongPicker();
+                }
             }
             _state = newState;
             _stateTransitionTimer = TRANSITION_DURATION;
             _fadeAlpha = 0f;
             ResetHitboxes();
-        }
-
-        /// <summary>
-        /// Start matchmaking for selected level.
-        /// </summary>
-        private void StartMatchmaking()
-        {
-            if (_selectedSource == LevelSource.Official)
-            {
-                if (_officialLevels.Count == 0)
-                {
-                    Console.WriteLine("[Multiplayer] No official levels available");
-                    return;
-                }
-
-                if (_levelSelection >= _officialLevels.Count)
-                    _levelSelection = 0;
-
-                var level = _officialLevels[_levelSelection];
-                
-                // Check if cached in memory or verified disk cache
-                if (!LevelCache.Instance.IsCached(level.Id) && !LevelCache.Instance.TryRestoreFromDisk(level))
-                {
-                    Console.WriteLine("[Multiplayer] Level not cached, download first");
-                    return;
-                }
-
-                // Create temporary file for gameplay (reuses unchanged temp file)
-                string? tempPath = LevelCache.Instance.WriteTempFile(level.Id);
-                if (tempPath == null)
-                {
-                    Console.WriteLine("[Multiplayer] Failed to create temp file");
-                    return;
-                }
-
-                // Reuse cached SHA-256 hash instead of re-reading 20+ MB from disk
-                string actualHash = LevelCache.Instance.GetCachedHash(level.Id);
-                if (string.IsNullOrEmpty(actualHash))
-                    actualHash = LevelHasher.CalculateHash(tempPath);
-                
-                _state = MenuState.Searching;
-                _searchTimer = 0f;
-                NetworkManager.Instance.FindMatch(actualHash, level.Name, LevelSource.Official, tempPath, _isPrivateRoom ? _roomCode : "");
-            }
-            else // Local
-            {
-                if (_availableLevels.Count == 0)
-                {
-                    Console.WriteLine("[Multiplayer] No local levels available");
-                    return;
-                }
-
-                string levelFilename = _availableLevels[_levelSelection];
-                string levelPath = System.IO.Path.Combine(_levelsFolder, levelFilename);
-                string levelHash = LevelHasher.CalculateHash(levelPath);
-                
-                if (string.IsNullOrEmpty(levelHash))
-                {
-                    Console.WriteLine("[Multiplayer] Failed to calculate level hash");
-                    return;
-                }
-
-                _state = MenuState.Searching;
-                _searchTimer = 0f;
-                NetworkManager.Instance.FindMatch(levelHash, levelFilename, LevelSource.Local, levelPath, _isPrivateRoom ? _roomCode : "");
-            }
-        }
-
-        /// <summary>
-        /// Generate hash for level using SHA256.
-        /// </summary>
-        private string GenerateLevelHash(string levelFilename)
-        {
-            string levelPath = System.IO.Path.Combine(_levelsFolder, levelFilename);
-            return LevelHasher.CalculateHash(levelPath);
-        }
-        
-        /// <summary>
-        /// Download an official level from the server to memory cache.
-        /// </summary>
-        private async void DownloadOfficialLevel(OfficialLevelInfo level)
-        {
-            if (_levelDownloader == null) return;
-            if (_isDownloading) return;
-
-            _isDownloading = true;
-            _downloadProgress = 0;
-            Interlocked.Exchange(ref _downloadBytesReceived, 0);
-            Interlocked.Exchange(ref _downloadBytesTotal, level.FileSize);
-
-            Console.WriteLine($"[Multiplayer] Downloading: {level.Name}");
-
-            // Get server base URL (remove /multiplayer)
-            string serverUrl = NetworkManager.Instance.ServerUrl.Replace("/multiplayer", "").TrimEnd('/');
-
-            await _levelDownloader.DownloadLevel(level, serverUrl);
-        }
-        
-        /// <summary>
-        /// Share a local level: reveal it in the file manager and copy its path (desktop), or open the
-        /// share sheet (Android). In Local mode players are matched by file hash, so the opponent needs
-        /// this exact file in their levels folder; the short ID lets both players check that.
-        /// </summary>
-        private void ShareLevel(string levelFilename)
-        {
-            string levelPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(_levelsFolder, levelFilename));
-            if (!System.IO.File.Exists(levelPath))
-            {
-                ShowError($"Level file not found: {levelFilename}");
-                return;
-            }
-
-            var result = PlatformShare.ShareFile(levelPath);
-#if ANDROID
-            if (!result.Opened)
-            {
-                ShowError("Could not open the share menu.");
-                return;
-            }
-            string what = "Pick an app to send the level file.";
-#else
-            string what = (result.Opened, result.PathCopied) switch
-            {
-                (true, true) => "Level file shown in your file manager, path copied.",
-                (true, false) => "Level file shown in your file manager.",
-                (false, true) => "Level file path copied to the clipboard.",
-                _ => $"Level file: {levelPath}",
-            };
-#endif
-            string hash = LevelHasher.CalculateHash(levelPath);
-            string id = string.IsNullOrEmpty(hash) ? "" : $" (ID {hash[..8].ToUpperInvariant()})";
-            ShowInfo($"{what} Your opponent needs this exact file{id}.");
-        }
-
-        /// <summary>
-        /// Generate a random 6-character room code (letters and numbers).
-        /// </summary>
-        private string GenerateRoomCode()
-        {
-            const string chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
-            var random = new Random();
-            var code = new char[6];
-            for (int i = 0; i < 6; i++)
-            {
-                code[i] = chars[random.Next(chars.Length)];
-            }
-            return new string(code);
         }
 
         // ══════════════════════════════════════════════════════════════════════
@@ -2209,8 +1364,8 @@ namespace FunkyMakerPlayer.Multiplayer
             _connectionAttempts = 0;
             _connectionRetryTimer = 0f;
             CheckServerInfo();
-            TransitionToState(MenuState.ModeSelect);
-            _modeSelection = 0;
+            NetworkManager.Instance.EnableAutoReconnect(true);
+            OpenRoomBrowser();
             NetworkManager.Instance.RequestOfficialLevels();
             NetworkManager.Instance.RequestGlobalLeaderboard(0, 50);
             NetworkManager.Instance.RequestMatchHistory(null, 0, 50);
@@ -2233,73 +1388,10 @@ namespace FunkyMakerPlayer.Multiplayer
                 Interlocked.Exchange(ref _pendingConnectionError, error);
         }
 
-        private void OnMatchFound(string opponentName, string roomId, int playerRole)
-        {
-            Console.WriteLine($"[Multiplayer] Match found! Opponent: {opponentName}, Role: Player {playerRole}");
-            string rawName = string.IsNullOrWhiteSpace(NetworkManager.Instance.OpponentName) ? opponentName : NetworkManager.Instance.OpponentName;
-            string? oppId = NetworkManager.Instance.OpponentPlayerId;
-            _opponentName = UserDirectoryClient.Instance.ResolveUsername(oppId, rawName);
-            if (!string.IsNullOrWhiteSpace(oppId))
-            {
-                UserDirectoryClient.Instance.RegisterKnownUser(oppId, _opponentName);
-                _ = UserDirectoryClient.Instance.FetchUserByIdAsync(NetworkManager.Instance.ServerUrl, oppId);
-            }
-            _roomId = roomId;
-            TransitionToState(MenuState.MatchFound);
-            _isReady = false;
-            _opponentReady = false;
-            _isCountdownActive = false;
-        }
-
-        private void OnMenuOpponentProfile(PlayerProfilePacket packet)
-        {
-            UserDirectoryClient.Instance.RegisterKnownUser(packet.PlayerId, packet.Username, packet.ColorHue);
-            string resolved = UserDirectoryClient.Instance.ResolveUsername(packet.PlayerId, packet.Username);
-            if (!string.IsNullOrWhiteSpace(resolved))
-                _opponentName = resolved;
-            if (!string.IsNullOrWhiteSpace(packet.PlayerId) && UserDirectoryClient.IsGenericUsername(resolved))
-                _ = UserDirectoryClient.Instance.FetchUserByIdAsync(NetworkManager.Instance.ServerUrl, packet.PlayerId);
-        }
-
-        private void OnMenuOpponentDisconnected(string reason)
-        {
-            if (_state != MenuState.MatchFound)
-                return;
-
-            _opponentName = null;
-            _roomId = null;
-            _isReady = false;
-            _opponentReady = false;
-            _isCountdownActive = false;
-            _countdownValue = 0f;
-            TransitionToState(MenuState.Lobby);
-            ShowError(string.IsNullOrWhiteSpace(reason) ? "Opponent left the room" : reason);
-        }
-        
-        private void OnOpponentReadyChanged(bool isReady)
-        {
-            Console.WriteLine($"[Multiplayer] Opponent ready: {isReady}");
-            _opponentReady = isReady;
-        }
-        
-        private void OnCountdownStart(long countdownStartTime)
-        {
-            Console.WriteLine($"[Multiplayer] Countdown starting at: {countdownStartTime}");
-            _isCountdownActive = true;
-            _countdownStartTime = countdownStartTime;
-        }
-        
-        private void OnGameStart(long startTimestamp, int playerRole)
-        {
-            Console.WriteLine($"[Multiplayer] Game starting at timestamp: {startTimestamp}, role: {playerRole}");
-            _gameStartTimestamp = startTimestamp;
-        }
-
         private void OnLevelListReceived(LevelListPacket packet)
         {
             Console.WriteLine($"[Multiplayer] Received {packet.Levels.Count} official levels");
-            _officialLevels = packet.Levels;
-            _ = Task.Run(() => LevelCache.Instance.WarmFromDisk(packet.Levels));
+            // RoomClient keeps the list (and warms the disk cache).
         }
 
         // ══════════════════════════════════════════════════════════════════════
@@ -2323,6 +1415,11 @@ namespace FunkyMakerPlayer.Multiplayer
             _refreshButtonRect = Rectangle.Empty;
             _gameplaySettingsRect = Rectangle.Empty;
             _shareButtonRect = Rectangle.Empty;
+            _importButtonRect = Rectangle.Empty;
+            _deleteButtonRect = Rectangle.Empty;
+            _deleteYesRect = Rectangle.Empty;
+            _deleteNoRect = Rectangle.Empty;
+            _roomHit.Clear();
 
             float uiScale = GetUiScale(screenWidth, screenHeight);
 
@@ -2338,23 +1435,18 @@ namespace FunkyMakerPlayer.Multiplayer
                 case MenuState.Connecting:
                     DrawConnectingModern(sb, font, pixel, screenWidth, screenHeight);
                     break;
-                case MenuState.ModeSelect:
-                    DrawModeSelectModern(sb, font, pixel, screenWidth, screenHeight);
+                case MenuState.RoomBrowser:
+                    DrawRoomBrowser(sb, font, pixel, screenWidth, screenHeight);
                     break;
-                case MenuState.Lobby:
-                    DrawLobbyModern(sb, font, pixel, screenWidth, screenHeight);
+                case MenuState.RoomSettings:
+                    DrawRoomSettings(sb, font, pixel, screenWidth, screenHeight);
                     break;
-                case MenuState.CreateRoom:
-                    DrawCreateRoomModern(sb, font, pixel, screenWidth, screenHeight);
+                case MenuState.WaitingRoom:
+                    DrawWaitingRoom(sb, font, pixel, screenWidth, screenHeight);
                     break;
-                case MenuState.JoinRoom:
-                    DrawJoinRoomModern(sb, font, pixel, screenWidth, screenHeight);
-                    break;
-                case MenuState.Searching:
-                    DrawSearchingModern(sb, font, pixel, screenWidth, screenHeight);
-                    break;
-                case MenuState.MatchFound:
-                    DrawMatchFoundModern(sb, font, pixel, screenWidth, screenHeight);
+                case MenuState.SongSelect:
+                    DrawSongSelect(sb, font, pixel, screenWidth, screenHeight);
+                    DrawDeleteConfirm(sb, font, pixel, screenWidth, screenHeight);
                     break;
                 case MenuState.Settings:
                     DrawSettingsModern(sb, font, pixel, screenWidth, screenHeight);
@@ -2367,7 +1459,8 @@ namespace FunkyMakerPlayer.Multiplayer
             // Draw connection indicator (shown when connected outside main/connecting screens)
             if (NetworkManager.Instance.IsConnected && 
                 _state != MenuState.MainMenu && 
-                _state != MenuState.Connecting)
+                _state != MenuState.Connecting &&
+                _state != MenuState.SongSelect) // the Freeplay browser uses the whole screen (fork)
             {
                 _connectionIndicator?.SetFontRenderer(_fontRenderer);
                 int topRightSafeY = _backButtonRect != Rectangle.Empty ? _backButtonRect.Bottom + 8 : 0;
@@ -2406,6 +1499,13 @@ namespace FunkyMakerPlayer.Multiplayer
 
         private static int Px(float value, float scale, int min = 1) =>
             Math.Max(min, (int)MathF.Round(value * scale));
+
+        /// <summary>
+        /// Layout clamp that never throws: when the window is small enough that <paramref name="max"/>
+        /// drops below <paramref name="min"/>, <paramref name="min"/> wins. Math.Clamp throws there, and a
+        /// Draw exception closes the game (players resizing the window in the online menu hit it).
+        /// </summary>
+        private static int ClampUi(int value, int min, int max) => Math.Max(min, Math.Min(value, max));
 
         private static int FontPx(float baseSize, float scale, int min = 11, int max = 128) =>
             Math.Clamp((int)MathF.Round(baseSize * scale), min, max);
@@ -2493,11 +1593,28 @@ namespace FunkyMakerPlayer.Multiplayer
         private string WrapTextToWidth(SpriteFont? font, string text, float maxWidth, int fontSize)
         {
             if (string.IsNullOrEmpty(text)) return "";
-            var words = text.Split(' ');
+            var words = text.Replace('\n', ' ').Split(' ');
             var sb = new System.Text.StringBuilder();
             string line = "";
-            foreach (var w in words)
+            foreach (var word in words)
             {
+                string w = word;
+                // A word wider than the line (links, "aaaaaa...") is cut by characters; it used to run
+                // off the chat panel because lines only broke at spaces.
+                while (MeasureText(font, w, fontSize).X > maxWidth && w.Length > 1)
+                {
+                    if (line.Length > 0)
+                    {
+                        if (sb.Length > 0) sb.Append('\n');
+                        sb.Append(line);
+                        line = "";
+                    }
+                    int fit = 1;
+                    while (fit < w.Length && MeasureText(font, w[..(fit + 1)], fontSize).X <= maxWidth) fit++;
+                    if (sb.Length > 0) sb.Append('\n');
+                    sb.Append(w[..fit]);
+                    w = w[fit..];
+                }
                 string candidate = line.Length == 0 ? w : $"{line} {w}";
                 if (MeasureText(font, candidate, fontSize).X > maxWidth && line.Length > 0)
                 {
@@ -2614,7 +1731,8 @@ namespace FunkyMakerPlayer.Multiplayer
 
         private void DrawGameplaySettingsButton(SpriteBatch sb, SpriteFont font, Texture2D pixel, int x, int y, float uiScale)
         {
-            string label = "F1  Keybinds & Gameplay";
+            string key = Controls.Hint(HotkeyAction.MultiplayerSettings);
+            string label = key == "-" ? "Settings" : $"{key}  Settings";
             int fontSize = FontPx(13, uiScale, 10, 18);
             Vector2 sz = MeasureText(font, label, fontSize);
             int btnW = (int)MathF.Ceiling(sz.X) + Px(24, uiScale);
@@ -2632,7 +1750,8 @@ namespace FunkyMakerPlayer.Multiplayer
 
         private void DrawGameplaySettingsButtonTopRight(SpriteBatch sb, SpriteFont font, Texture2D pixel, int screenWidth, float uiScale)
         {
-            string label = "F1  Keybinds & Gameplay";
+            string key = Controls.Hint(HotkeyAction.MultiplayerSettings);
+            string label = key == "-" ? "Settings" : $"{key}  Settings";
             int fontSize = FontPx(13, uiScale, 10, 18);
             Vector2 sz = MeasureText(font, label, fontSize);
             int btnW = (int)MathF.Ceiling(sz.X) + Px(24, uiScale);
@@ -2806,7 +1925,7 @@ namespace FunkyMakerPlayer.Multiplayer
             string wrapped = WrapTextToWidth(font, message, maxW - Px(72, uiScale), fontSize);
             Vector2 textSz = MeasureText(font, wrapped, fontSize);
 
-            int toastW = Math.Clamp((int)MathF.Ceiling(textSz.X) + Px(84, uiScale), Px(340, uiScale), maxW);
+            int toastW = ClampUi((int)MathF.Ceiling(textSz.X) + Px(84, uiScale), Px(340, uiScale), maxW);
             int toastH = Math.Max(Px(54, uiScale), (int)MathF.Ceiling(textSz.Y) + Px(24, uiScale));
             int toastX = screenWidth / 2 - toastW / 2;
             int toastY = Px(20, uiScale, 12) + yOffset;
@@ -2883,11 +2002,11 @@ namespace FunkyMakerPlayer.Multiplayer
             DrawText(sb, font, title, new Vector2(titleX, heroTop), ACCENT_PRIMARY * titlePulse * _fadeAlpha, titleSize, shadow: true);
 
             int accentY = heroTop + (int)MathF.Ceiling(titleSz.Y) + Px(6, uiScale);
-            int lineW = Math.Clamp((int)(titleSz.X * 0.92f), Px(180, uiScale), screenWidth - 80);
+            int lineW = ClampUi((int)(titleSz.X * 0.92f), Px(180, uiScale), screenWidth - 80);
             int lineX = screenWidth / 2 - lineW / 2;
             sb.Draw(pixel, new Rectangle(lineX, accentY, lineW, Math.Max(2, Px(3, uiScale))), ACCENT_PRIMARY * (0.55f * _fadeAlpha));
 
-            string subtitle = "Real-time 1v1 battles, private rooms & global rankings";
+            string subtitle = "Rooms for 2-8 players: Versus, Teams & Mirror, global rankings";
             int subSize = FontPx(15, uiScale, 12, 22);
             Vector2 subSz = MeasureText(font, subtitle, subSize);
             int subY = accentY + Px(12, uiScale);
@@ -2900,16 +2019,16 @@ namespace FunkyMakerPlayer.Multiplayer
             int contentTop = subY + (int)MathF.Ceiling(subSz.Y) + Px(20, uiScale);
             int availableH = Math.Max(200, footerY - contentTop - Px(16, uiScale));
             int cardSpacing = Math.Clamp(Px(14, uiScale), 8, 22);
-            int cardHeight = Math.Clamp((availableH - cardSpacing * 3) / 4, 48, Px(84, uiScale));
+            int cardHeight = ClampUi((availableH - cardSpacing * 3) / 4, 48, Px(84, uiScale));
             int totalStackH = cardHeight * 4 + cardSpacing * 3;
             int startY = contentTop + Math.Max(0, (availableH - totalStackH) / 2);
-            int cardWidth = Math.Clamp(Px(460, uiScale), 300, screenWidth - Px(60, uiScale));
+            int cardWidth = ClampUi(Px(460, uiScale), 300, screenWidth - Px(60, uiScale));
             int cardX = screenWidth / 2 - cardWidth / 2;
 
             string[] options = { "CONNECT TO SERVER", "LEADERBOARD", "SETTINGS", "BACK TO MENU" };
             string[] sublabels =
             {
-                "Quick Play matchmaking or Private Rooms",
+                "Browse rooms or create your own",
                 "Global top players, match history & your stats",
                 "Profile name, player color, HUD & sync options",
                 "Return to the main title menu"
@@ -2929,7 +2048,7 @@ namespace FunkyMakerPlayer.Multiplayer
                 DrawCard(sb, font, pixel, cardX, cardY, cardWidth, cardHeight, "", "", selected, glowing: true, accentOverride: accentColors[i]);
 
                 // Icon badge box on left
-                int iconBoxSize = Math.Clamp(cardHeight - Px(22, uiScale), 28, Px(52, uiScale));
+                int iconBoxSize = ClampUi(cardHeight - Px(22, uiScale), 28, Px(52, uiScale));
                 int iconBoxX = cardX + Px(18, uiScale);
                 int iconBoxY = cardY + (cardHeight - iconBoxSize) / 2;
                 Color cAccent = accentColors[i];
@@ -2961,7 +2080,7 @@ namespace FunkyMakerPlayer.Multiplayer
             float uiScale = GetUiScale(screenWidth, screenHeight);
             DrawBackButton(sb, font, pixel, screenWidth, uiScale, "ESC  Cancel");
 
-            int panelW = Math.Clamp(Px(520, uiScale), 300, screenWidth - 40);
+            int panelW = ClampUi(Px(520, uiScale), 300, screenWidth - 40);
             int panelH = Px(250, uiScale, 190);
             int panelX = screenWidth / 2 - panelW / 2;
             int panelY = screenHeight / 2 - panelH / 2;
@@ -3004,7 +2123,7 @@ namespace FunkyMakerPlayer.Multiplayer
             }
 
             // Progress bar
-            int barW = Math.Clamp(panelW - Px(96, uiScale), 180, Px(380, uiScale));
+            int barW = ClampUi(panelW - Px(96, uiScale), 180, Px(380, uiScale));
             int barH = Px(10, uiScale, 8);
             int barX = screenWidth / 2 - barW / 2;
             int barY = panelY + Px(160, uiScale);
@@ -3035,771 +2154,13 @@ namespace FunkyMakerPlayer.Multiplayer
             DrawFooterBar(sb, font, pixel, screenWidth, screenHeight, uiScale, "ESC or CLICK Cancel: Abort connection");
         }
 
-        private void DrawModeSelectModern(SpriteBatch sb, SpriteFont font, Texture2D pixel, int screenWidth, int screenHeight)
-        {
-            _clickableAreas.Clear();
-            float uiScale = GetUiScale(screenWidth, screenHeight);
-
-            int headerBottom = DrawScreenHeader(sb, font, pixel, screenWidth, uiScale,
-                "SELECT GAME MODE", "Choose how you want to find an opponent", ACCENT_PRIMARY, "ESC  Disconnect");
-            DrawGameplaySettingsButtonTopRight(sb, font, pixel, screenWidth, uiScale);
-            int chipRightX = _backButtonRect != Rectangle.Empty ? _backButtonRect.Right : screenWidth - Px(24, uiScale, 12);
-            int chipY = Math.Max(_backButtonRect.Bottom, _gameplaySettingsRect.Bottom) + Px(8, uiScale);
-            DrawPlayerIdentityChip(sb, font, pixel, chipRightX, chipY, uiScale, alignRight: true);
-            int footerY = DrawFooterBar(sb, font, pixel, screenWidth, screenHeight, uiScale,
-                "LEFT/RIGHT or Q/E: Select Mode  |  ENTER or CLICK: Confirm  |  ESC: Disconnect");
-
-            int spacing = Px(36, uiScale, 16);
-            int maxCardW = (screenWidth - Px(80, uiScale) - spacing) / 2;
-            int cardW = Math.Clamp(Px(380, uiScale), 240, maxCardW);
-            int availH = Math.Max(220, footerY - headerBottom - Px(24, uiScale));
-            int cardH = Math.Clamp(Px(330, uiScale), 220, availH);
-            int totalW = cardW * 2 + spacing;
-            int startX = screenWidth / 2 - totalW / 2;
-            int cardY = headerBottom + Math.Max(8, (availH - cardH) / 2);
-
-            DrawModeCard(sb, font, pixel, uiScale, startX, cardY, cardW, cardH,
-                selected: _modeSelection == 0,
-                accent: ACCENT_PRIMARY,
-                iconKind: 7,
-                title: "QUICK PLAY",
-                subtitle: "Random Matchmaking",
-                feature1: "Instant public queue",
-                feature2: "Fast & casual battles",
-                badgeText: "MATCHMAKING");
-
-            DrawModeCard(sb, font, pixel, uiScale, startX + cardW + spacing, cardY, cardW, cardH,
-                selected: _modeSelection == 1,
-                accent: ACCENT_SUCCESS,
-                iconKind: 4,
-                title: "PRIVATE ROOM",
-                subtitle: "Play with Friends",
-                feature1: "Create a 6-char room code",
-                feature2: "Invite-only lobbies",
-                badgeText: "PRIVATE LOBBY");
-        }
-
-        private void DrawModeCard(SpriteBatch sb, SpriteFont font, Texture2D pixel, float uiScale, int x, int y, int w, int h,
-            bool selected, Color accent, int iconKind, string title, string subtitle, string feature1, string feature2, string badgeText)
-        {
-            _clickableAreas.Add(new Rectangle(x, y, w, h));
-
-            Color bg = selected ? BG_LIGHT : BG_MEDIUM;
-            Color border = selected ? accent : BORDER_SUBTLE;
-            if (selected)
-            {
-                float pulse = (float)Math.Sin(_pulseTimer * 1.4f) * 0.25f + 0.75f;
-                sb.Draw(pixel, new Rectangle(x - 6, y - 6, w + 12, h + 12), accent * (0.14f * pulse * _fadeAlpha));
-            }
-            DrawPanel(sb, pixel, x, y, w, h, bg, border, selected ? 2 : 1);
-
-            // Top color strip
-            sb.Draw(pixel, new Rectangle(x, y, w, Px(4, uiScale, 3)), (selected ? accent : accent * 0.4f) * _fadeAlpha);
-
-            // Badge pill at top center
-            int badgeFont = FontPx(11, uiScale, 10, 16);
-            int badgeH = Px(24, uiScale, 20);
-            Vector2 bSz = MeasureText(font, badgeText, badgeFont);
-            int badgeW = (int)MathF.Ceiling(bSz.X) + Px(20, uiScale);
-            DrawPillBadge(sb, font, pixel, x + w / 2 - badgeW / 2, y + Px(22, uiScale), badgeH, badgeText, accent, badgeFont, Px(10, uiScale), filledStrong: selected);
-
-            // Emblem box
-            int emblemSize = Px(56, uiScale, 40);
-            int emblemX = x + w / 2 - emblemSize / 2;
-            int emblemY = y + Px(62, uiScale);
-            sb.Draw(pixel, new Rectangle(emblemX, emblemY, emblemSize, emblemSize), accent * ((selected ? 0.22f : 0.1f) * _fadeAlpha));
-            DrawBorder(sb, pixel, emblemX, emblemY, emblemSize, emblemSize, accent * ((selected ? 0.9f : 0.4f) * _fadeAlpha), 1);
-            DrawMenuIcon(sb, pixel, x + w / 2, emblemY + emblemSize / 2, emblemSize - Px(14, uiScale), iconKind, selected ? accent : accent * 0.75f);
-
-            int titleY = emblemY + emblemSize + Px(18, uiScale);
-            DrawCenteredTextInPanel(sb, font, title, x, titleY, w, selected ? accent : TEXT_PRIMARY, FontPx(23, uiScale, 16, 32), shadow: selected);
-            DrawCenteredTextInPanel(sb, font, subtitle, x, titleY + Px(32, uiScale), w, selected ? TEXT_PRIMARY : TEXT_SECONDARY, FontPx(15, uiScale, 12, 22));
-
-            int divY = titleY + Px(66, uiScale);
-            sb.Draw(pixel, new Rectangle(x + Px(36, uiScale), divY, w - Px(72, uiScale), 1), Color.White * (0.08f * _fadeAlpha));
-
-            int featSize = FontPx(13, uiScale, 10, 18);
-            DrawCenteredTextInPanel(sb, font, feature1, x, divY + Px(14, uiScale), w, TEXT_SECONDARY, featSize);
-            DrawCenteredTextInPanel(sb, font, feature2, x, divY + Px(36, uiScale), w, TEXT_DISABLED, featSize);
-        }
-
-        private void DrawCreateRoomModern(SpriteBatch sb, SpriteFont font, Texture2D pixel, int screenWidth, int screenHeight)
-        {
-            float uiScale = GetUiScale(screenWidth, screenHeight);
-            int headerBottom = DrawScreenHeader(sb, font, pixel, screenWidth, uiScale,
-                "PRIVATE ROOM", "Host a private room or join using a friend's code", ACCENT_SUCCESS);
-            int footerY = DrawFooterBar(sb, font, pixel, screenWidth, screenHeight, uiScale,
-                "LEFT/RIGHT: Select Option  |  ENTER or CLICK: Confirm  |  ESC: Back");
-
-            int panelW = Math.Clamp(Px(680, uiScale), 340, screenWidth - 48);
-            int availH = Math.Max(260, footerY - headerBottom - Px(20, uiScale));
-            int panelH = Math.Clamp(Px(430, uiScale), 260, availH);
-            int panelX = screenWidth / 2 - panelW / 2;
-            int panelY = headerBottom + Math.Max(6, (availH - panelH) / 2);
-
-            DrawPanel(sb, pixel, panelX, panelY, panelW, panelH, BG_MEDIUM, ACCENT_SUCCESS * 0.7f, 2);
-
-            int cardGap = Px(28, uiScale, 14);
-            int cardW = (panelW - Px(64, uiScale) - cardGap) / 2;
-            int cardH = Px(132, uiScale, 92);
-            int cardsY = panelY + Px(34, uiScale);
-
-            int card1X = panelX + Px(32, uiScale);
-            int card2X = card1X + cardW + cardGap;
-
-            DrawRoomActionCard(sb, font, pixel, uiScale, card1X, cardsY, cardW, cardH,
-                selected: _selection == 0, accent: ACCENT_SUCCESS, iconKind: 5,
-                title: "CREATE ROOM", subtitle: "Generate room code");
-            DrawRoomActionCard(sb, font, pixel, uiScale, card2X, cardsY, cardW, cardH,
-                selected: _selection == 1, accent: ACCENT_PRIMARY, iconKind: 6,
-                title: "JOIN ROOM", subtitle: "Enter 6-char code");
-
-            int bottomAreaY = cardsY + cardH + Px(28, uiScale);
-            int divW = panelW - Px(64, uiScale);
-            sb.Draw(pixel, new Rectangle(panelX + Px(32, uiScale), bottomAreaY - Px(14, uiScale), divW, 1), Color.White * (0.08f * _fadeAlpha));
-
-            if (_selection == 0 && !string.IsNullOrEmpty(_roomCode))
-            {
-                DrawCenteredTextInPanel(sb, font, "YOUR PRIVATE ROOM CODE", panelX, bottomAreaY, panelW, TEXT_SECONDARY, FontPx(13, uiScale, 11, 18));
-
-                int slotW = Px(44, uiScale, 32);
-                int slotH = Px(56, uiScale, 40);
-                int slotGap = Px(8, uiScale, 5);
-                int totalCodeW = _roomCode.Length * slotW + Math.Max(0, _roomCode.Length - 1) * slotGap;
-                int codeStartX = screenWidth / 2 - totalCodeW / 2;
-                int codeBoxY = bottomAreaY + Px(28, uiScale);
-                float pulse = (float)Math.Sin(_pulseTimer * 2.2f) * 0.25f + 0.75f;
-                int charFont = FontPx(26, uiScale, 18, 36);
-
-                for (int i = 0; i < _roomCode.Length; i++)
-                {
-                    int sx = codeStartX + i * (slotW + slotGap);
-                    DrawPanel(sb, pixel, sx, codeBoxY, slotW, slotH, BG_DARK, ACCENT_WARNING * pulse, 2);
-                    string ch = _roomCode[i].ToString();
-                    Vector2 cSz = MeasureText(font, ch, charFont);
-                    DrawText(sb, font, ch, new Vector2(sx + (slotW - cSz.X) / 2f, codeBoxY + (slotH - cSz.Y) / 2f), ACCENT_WARNING * _fadeAlpha, charFont, shadow: true);
-                }
-
-                DrawCenteredTextInPanel(sb, font, "Share this code with your friend, then press ENTER to open lobby",
-                    panelX, codeBoxY + slotH + Px(16, uiScale), panelW, TEXT_SECONDARY, FontPx(14, uiScale, 11, 20));
-            }
-            else if (_selection == 0)
-            {
-                DrawCenteredTextInPanel(sb, font, "Press ENTER to host a new Private Room and receive a code",
-                    panelX, bottomAreaY + Px(36, uiScale), panelW, TEXT_SECONDARY, FontPx(15, uiScale, 12, 22));
-            }
-            else
-            {
-                DrawCenteredTextInPanel(sb, font, "Press ENTER to type your friend's 6-character invite code",
-                    panelX, bottomAreaY + Px(36, uiScale), panelW, TEXT_SECONDARY, FontPx(15, uiScale, 12, 22));
-            }
-        }
-
-        private void DrawRoomActionCard(SpriteBatch sb, SpriteFont font, Texture2D pixel, float uiScale, int x, int y, int w, int h,
-            bool selected, Color accent, int iconKind, string title, string subtitle)
-        {
-            _clickableAreas.Add(new Rectangle(x, y, w, h));
-            DrawCard(sb, font, pixel, x, y, w, h, "", "", selected, glowing: true, accentOverride: accent);
-
-            int iconSize = Px(36, uiScale, 26);
-            int iconX = x + w / 2 - iconSize / 2;
-            int iconY = y + Px(18, uiScale);
-            sb.Draw(pixel, new Rectangle(iconX, iconY, iconSize, iconSize), accent * ((selected ? 0.22f : 0.1f) * _fadeAlpha));
-            DrawBorder(sb, pixel, iconX, iconY, iconSize, iconSize, accent * ((selected ? 0.85f : 0.35f) * _fadeAlpha), 1);
-            DrawMenuIcon(sb, pixel, x + w / 2, iconY + iconSize / 2, iconSize - Px(10, uiScale), iconKind, selected ? accent : accent * 0.75f);
-
-            int titleY = iconY + iconSize + Px(12, uiScale);
-            DrawCenteredTextInPanel(sb, font, title, x, titleY, w, selected ? accent : TEXT_PRIMARY, FontPx(18, uiScale, 13, 26), shadow: selected);
-            DrawCenteredTextInPanel(sb, font, subtitle, x, titleY + Px(26, uiScale), w, TEXT_SECONDARY, FontPx(13, uiScale, 10, 18));
-        }
-
-        private void DrawJoinRoomModern(SpriteBatch sb, SpriteFont font, Texture2D pixel, int screenWidth, int screenHeight)
-        {
-            float uiScale = GetUiScale(screenWidth, screenHeight);
-            int headerBottom = DrawScreenHeader(sb, font, pixel, screenWidth, uiScale,
-                "JOIN PRIVATE ROOM", "Enter the 6-character code shared by your friend", ACCENT_SUCCESS, "ESC  Cancel");
-            int footerY = DrawFooterBar(sb, font, pixel, screenWidth, screenHeight, uiScale,
-                "TYPE: A-Z / 0-9  |  BACKSPACE: Delete  |  ENTER or CLICK Join: Connect  |  ESC: Cancel");
-
-            int panelW = Math.Clamp(Px(600, uiScale), 340, screenWidth - 48);
-            int availH = Math.Max(240, footerY - headerBottom - Px(20, uiScale));
-            int panelH = Math.Clamp(Px(350, uiScale), 230, availH);
-            int panelX = screenWidth / 2 - panelW / 2;
-            int panelY = headerBottom + Math.Max(6, (availH - panelH) / 2);
-
-            DrawPanel(sb, pixel, panelX, panelY, panelW, panelH, BG_MEDIUM, ACCENT_SUCCESS * 0.75f, 2);
-
-            DrawCenteredTextInPanel(sb, font, "ROOM INVITE CODE", panelX, panelY + Px(36, uiScale), panelW, TEXT_SECONDARY, FontPx(14, uiScale, 11, 20));
-
-            int slotW = Px(58, uiScale, 38);
-            int slotH = Px(74, uiScale, 50);
-            int slotSpacing = Px(14, uiScale, 8);
-            int totalW = slotW * 6 + slotSpacing * 5;
-            if (totalW > panelW - 40)
-            {
-                slotW = Math.Max(30, (panelW - 40 - slotSpacing * 5) / 6);
-                totalW = slotW * 6 + slotSpacing * 5;
-            }
-
-            int startX = screenWidth / 2 - totalW / 2;
-            int slotY = panelY + Px(82, uiScale);
-            int charFont = FontPx(30, uiScale, 20, 42);
-
-            for (int i = 0; i < 6; i++)
-            {
-                int slotX = startX + i * (slotW + slotSpacing);
-                bool hasChar = i < _roomCode.Length;
-                bool isCurrent = i == _roomCode.Length;
-
-                Color slotBg = hasChar ? BG_LIGHT : BG_DARK;
-                float pulse = (float)Math.Sin(_pulseTimer * 4f) * 0.35f + 0.65f;
-                Color slotBorder = isCurrent ? ACCENT_WARNING * pulse : (hasChar ? ACCENT_SUCCESS : BORDER_SUBTLE);
-
-                DrawPanel(sb, pixel, slotX, slotY, slotW, slotH, slotBg, slotBorder, (isCurrent || hasChar) ? 2 : 1);
-
-                if (hasChar)
-                {
-                    string c = _roomCode[i].ToString();
-                    Vector2 charSz = MeasureText(font, c, charFont);
-                    DrawText(sb, font, c, new Vector2(slotX + (slotW - charSz.X) / 2f, slotY + (slotH - charSz.Y) / 2f), TEXT_PRIMARY * _fadeAlpha, charFont, shadow: true);
-                }
-                else if (isCurrent)
-                {
-                    // Animated cursor underline
-                    int caretW = slotW - Px(18, uiScale, 10);
-                    sb.Draw(pixel, new Rectangle(slotX + (slotW - caretW) / 2, slotY + slotH - Px(14, uiScale), caretW, 3), ACCENT_WARNING * (pulse * _fadeAlpha));
-                }
-            }
-
-            int actionY = slotY + slotH + Px(42, uiScale);
-            if (_isCheckingRoom)
-            {
-                DrawCenteredTextInPanel(sb, font, "Checking room on server...", panelX, actionY + Px(8, uiScale), panelW, ACCENT_WARNING, FontPx(16, uiScale, 13, 22));
-            }
-            else if (_roomCode.Length < 6)
-            {
-                string prompt = $"Type {6 - _roomCode.Length} more character{(6 - _roomCode.Length == 1 ? "" : "s")} (A-Z, 0-9)...";
-                DrawCenteredTextInPanel(sb, font, prompt, panelX, actionY + Px(8, uiScale), panelW, TEXT_SECONDARY, FontPx(15, uiScale, 12, 22));
-            }
-            else
-            {
-                int btnW = Px(240, uiScale, 180);
-                int btnH = Px(50, uiScale, 38);
-                int btnX = screenWidth / 2 - btnW / 2;
-                var joinRect = new Rectangle(btnX, actionY, btnW, btnH);
-                _clickableAreas.Add(joinRect);
-                bool hovered = joinRect.Contains(_lastMousePos);
-                DrawPanel(sb, pixel, btnX, actionY, btnW, btnH, hovered ? ACCENT_SUCCESS : new Color(36, 138, 78), Color.Lerp(ACCENT_SUCCESS, Color.White, hovered ? 0.7f : 0.25f), 2);
-                int btnFont = FontPx(18, uiScale, 14, 26);
-                Vector2 bSz = MeasureText(font, "JOIN ROOM", btnFont);
-                DrawText(sb, font, "JOIN ROOM", new Vector2(btnX + (btnW - bSz.X) / 2f, actionY + (btnH - bSz.Y) / 2f), Color.White * _fadeAlpha, btnFont, shadow: true);
-            }
-
-            if (!string.IsNullOrEmpty(_joinRoomError))
-            {
-                DrawCenteredTextInPanel(sb, font, _joinRoomError, panelX, actionY + Px(62, uiScale), panelW, new Color(255, 95, 95), FontPx(14, uiScale, 11, 20));
-            }
-        }
-
-        private void DrawLobbyModern(SpriteBatch sb, SpriteFont font, Texture2D pixel, int screenWidth, int screenHeight)
-        {
-            _clickableAreas.Clear();
-            float uiScale = GetUiScale(screenWidth, screenHeight);
-
-            string title = (_isPrivateRoom && !string.IsNullOrEmpty(_roomCode))
-                ? $"PRIVATE ROOM  •  {_roomCode}"
-                : "QUICK PLAY LOBBY";
-            Color headerAccent = _isPrivateRoom ? ACCENT_SUCCESS : ACCENT_PRIMARY;
-            string subtitle = _isPrivateRoom
-                ? "Pick a chart to play in your private lobby"
-                : "Choose an Official or Local chart to enter matchmaking";
-
-            int headerBottom = DrawScreenHeader(sb, font, pixel, screenWidth, uiScale, title, subtitle, headerAccent);
-            DrawGameplaySettingsButtonTopRight(sb, font, pixel, screenWidth, uiScale);
-            int footerY = DrawFooterBar(sb, font, pixel, screenWidth, screenHeight, uiScale,
-                "Q/E: Source  |  UP/DOWN: Select  |  ENTER: Play  |  R: Refresh  |  F1: Keybinds & Gameplay");
-
-            // Download progress takes center stage while downloading official chart to RAM
-            if (_isDownloading)
-            {
-                int dlW = Math.Clamp(Px(580, uiScale), 300, screenWidth - 48);
-                int dlH = Px(180, uiScale, 140);
-                int dlX = screenWidth / 2 - dlW / 2;
-                int dlY = headerBottom + Math.Max(12, (footerY - headerBottom - dlH) / 2);
-
-                DrawPanel(sb, pixel, dlX, dlY, dlW, dlH, BG_MEDIUM, ACCENT_PRIMARY, 2, ACCENT_PRIMARY);
-                DrawCenteredTextInPanel(sb, font, "DOWNLOADING OFFICIAL LEVEL", dlX, dlY + Px(26, uiScale), dlW, TEXT_PRIMARY, FontPx(20, uiScale, 14, 28), shadow: true);
-
-                int barW = dlW - Px(80, uiScale);
-                int barH = Px(24, uiScale, 16);
-                int barX = screenWidth / 2 - barW / 2;
-                int barY = dlY + Px(72, uiScale);
-
-                sb.Draw(pixel, new Rectangle(barX, barY, barW, barH), Color.Black * (0.6f * _fadeAlpha));
-                DrawBorder(sb, pixel, barX, barY, barW, barH, BORDER_SUBTLE * _fadeAlpha, 1);
-
-                int progress = _downloadProgress;
-                long recBytes = Interlocked.Read(ref _downloadBytesReceived);
-                long totBytes = Interlocked.Read(ref _downloadBytesTotal);
-                float pct = Math.Clamp(progress / 100f, 0f, 1f);
-                int progressW = (int)(barW * pct);
-                Color progressColor = Color.Lerp(ACCENT_PRIMARY, ACCENT_SUCCESS, pct);
-                if (progressW > 0)
-                    sb.Draw(pixel, new Rectangle(barX, barY, progressW, barH), progressColor * _fadeAlpha);
-
-                string progressLabel = totBytes > 0
-                    ? $"{progress}%  ({recBytes / (1024.0 * 1024.0):F1} / {totBytes / (1024.0 * 1024.0):F1} MB)"
-                    : $"{progress}%";
-                DrawCenteredTextInPanel(sb, font, progressLabel, dlX, barY + Px(2, uiScale), dlW, Color.White, FontPx(14, uiScale, 11, 20), shadow: true);
-                DrawCenteredTextInPanel(sb, font, "SHA-256 verified cache — starting matchmaking once complete...", dlX, dlY + Px(120, uiScale), dlW, TEXT_SECONDARY, FontPx(13, uiScale, 10, 18));
-                return;
-            }
-
-            int marginX = Px(28, uiScale, 14);
-            int gapX = Px(22, uiScale, 12);
-            int panelY = headerBottom + Px(10, uiScale);
-            int panelH = Math.Max(240, footerY - panelY - Px(14, uiScale));
-            int leftW = Math.Clamp(Px(290, uiScale), 200, (int)(screenWidth * 0.3f));
-            int rightX = marginX + leftW + gapX;
-            int rightW = Math.Max(280, screenWidth - rightX - marginX);
-
-            // ── Left Sidebar: Source Selector & Info ────────────────────────────
-            DrawPanel(sb, pixel, marginX, panelY, leftW, panelH, BG_MEDIUM, BORDER_SUBTLE, 1);
-
-            int sidePad = Px(16, uiScale, 10);
-            DrawText(sb, font, "LEVEL SOURCE", new Vector2(marginX + sidePad, panelY + Px(16, uiScale)), TEXT_DISABLED * _fadeAlpha, FontPx(12, uiScale, 10, 16));
-
-            int tabW = leftW - sidePad * 2;
-            int tabH = Px(78, uiScale, 58);
-            int tabStartY = panelY + Px(42, uiScale);
-            int tabGap = Px(12, uiScale, 8);
-
-            bool officialSelected = _selectedSource == LevelSource.Official;
-            bool localSelected = _selectedSource == LevelSource.Local;
-
-            // Keep exact indices: _clickableAreas[0] = Official, _clickableAreas[1] = Local
-            var officialRect = new Rectangle(marginX + sidePad, tabStartY, tabW, tabH);
-            var localRect = new Rectangle(marginX + sidePad, tabStartY + tabH + tabGap, tabW, tabH);
-            _clickableAreas.Add(officialRect);
-            _clickableAreas.Add(localRect);
-
-            DrawSourceTabCard(sb, font, pixel, uiScale, officialRect, "OFFICIAL", "Verified Server Charts",
-                _officialLevels.Count.ToString(), officialSelected, _hoveredButton == 0, ACCENT_PRIMARY);
-            DrawSourceTabCard(sb, font, pixel, uiScale, localRect, "LOCAL", "Your Mods Folder",
-                _availableLevels.Count.ToString(), localSelected, _hoveredButton == 1, ACCENT_SECONDARY);
-
-            // Security / info card anchored cleanly inside bottom of left column
-            int infoH = Px(112, uiScale, 84);
-            int infoY = panelY + panelH - infoH - sidePad;
-            if (infoY > localRect.Bottom + Px(12, uiScale))
-            {
-                Color badgeAccent = officialSelected ? ACCENT_SUCCESS : ACCENT_SECONDARY;
-                DrawPanel(sb, pixel, marginX + sidePad, infoY, tabW, infoH, BG_DARK, badgeAccent * 0.45f, 1, badgeAccent);
-
-                string badgeTitle = officialSelected ? "VERIFIED" : "CUSTOM";
-                DrawPillBadge(sb, font, pixel, marginX + sidePad + Px(12, uiScale), infoY + Px(12, uiScale), Px(22, uiScale, 18), badgeTitle, badgeAccent, FontPx(11, uiScale, 10, 16), 10, true);
-
-                string line1 = officialSelected ? "Auto-download to RAM" : "Share file with opponent";
-                string line2 = officialSelected ? "Safe multiplayer charts" : "SHARE on the selected level";
-                int infoFont = FontPx(13, uiScale, 10, 18);
-                DrawText(sb, font, line1, new Vector2(marginX + sidePad + Px(12, uiScale), infoY + Px(46, uiScale)), TEXT_PRIMARY * _fadeAlpha, infoFont);
-                DrawText(sb, font, line2, new Vector2(marginX + sidePad + Px(12, uiScale), infoY + Px(68, uiScale)), TEXT_SECONDARY * _fadeAlpha, FontPx(12, uiScale, 10, 16));
-            }
-
-            // ── Right Panel: Level Browser ──────────────────────────────────────
-            DrawPanel(sb, pixel, rightX, panelY, rightW, panelH, BG_MEDIUM, headerAccent * 0.65f, 2);
-
-            int rPad = Px(20, uiScale, 12);
-            int listHeaderY = panelY + Px(16, uiScale);
-            string listHeading = officialSelected ? "OFFICIAL SERVER CHARTS" : "LOCAL LEVELS (MODS/LEVELS)";
-            DrawText(sb, font, listHeading, new Vector2(rightX + rPad, listHeaderY), headerAccent * _fadeAlpha, FontPx(14, uiScale, 11, 20));
-
-            int levelCount = officialSelected ? _officialLevels.Count : _availableLevels.Count;
-            string countBadge = levelCount > 0 ? $"{_levelSelection + 1} / {levelCount}" : "0 LEVELS";
-            int countFont = FontPx(12, uiScale, 10, 17);
-            Vector2 countSz = MeasureText(font, countBadge, countFont);
-            int badgePadW = (int)MathF.Ceiling(countSz.X) + Px(20, uiScale);
-            int badgeX = rightX + rightW - rPad - badgePadW;
-            DrawPillBadge(sb, font, pixel, badgeX, listHeaderY - 2, Px(24, uiScale, 20), countBadge, headerAccent, countFont, Px(10, uiScale));
-
-            // Clickable Refresh pill button to rescan local levels + re-fetch official server list
-            string refLabel = "R  Refresh";
-            Vector2 refSz = MeasureText(font, refLabel, countFont);
-            int refW = (int)MathF.Ceiling(refSz.X) + Px(18, uiScale);
-            int refH = Px(24, uiScale, 20);
-            int refX = badgeX - refW - Px(10, uiScale);
-            int refY = listHeaderY - 2;
-            _refreshButtonRect = new Rectangle(refX, refY, refW, refH);
-            bool refHovered = _refreshButtonRect.Contains(_lastMousePos);
-            DrawPanel(sb, pixel, refX, refY, refW, refH, refHovered ? BG_LIGHT : BG_DARK, refHovered ? ACCENT_WARNING : BORDER_SUBTLE, 1);
-            DrawText(sb, font, refLabel, new Vector2(refX + (refW - refSz.X) / 2f, refY + (refH - refSz.Y) / 2f),
-                (refHovered ? ACCENT_WARNING : TEXT_SECONDARY) * _fadeAlpha, countFont);
-
-            int headerDivY = listHeaderY + Px(30, uiScale);
-            sb.Draw(pixel, new Rectangle(rightX + rPad, headerDivY, rightW - rPad * 2, 1), Color.White * (0.08f * _fadeAlpha));
-
-            int listAreaTop = headerDivY + Px(12, uiScale);
-            int listAreaBottom = panelY + panelH - Px(14, uiScale);
-            int availListH = Math.Max(140, listAreaBottom - listAreaTop);
-            int rowGap = Px(10, uiScale, 6);
-            int cardH = Math.Clamp((availListH - rowGap * (MAX_VISIBLE_LEVELS - 1)) / MAX_VISIBLE_LEVELS, 48, Px(84, uiScale));
-            bool hasScroll = levelCount > MAX_VISIBLE_LEVELS;
-            int cardW = rightW - rPad * 2 - (hasScroll ? Px(18, uiScale, 12) : 0);
-            int cardX = rightX + rPad;
-
-            if (officialSelected)
-            {
-                if (_officialLevels.Count == 0)
-                {
-                    DrawCenteredTextInPanel(sb, font, "Loading official levels from server...", rightX, panelY + panelH / 2 - Px(12, uiScale), rightW, TEXT_SECONDARY, FontPx(17, uiScale, 13, 24));
-                }
-                else
-                {
-                    int startIdx = _levelScrollOffset;
-                    int endIdx = Math.Min(startIdx + MAX_VISIBLE_LEVELS, _officialLevels.Count);
-
-                    for (int i = startIdx; i < endIdx; i++)
-                    {
-                        var level = _officialLevels[i];
-                        int displayIdx = i - startIdx;
-                        int cardY = listAreaTop + displayIdx * (cardH + rowGap);
-                        var cardRect = new Rectangle(cardX, cardY, cardW, cardH);
-                        _clickableAreas.Add(cardRect);
-
-                        bool selected = i == _levelSelection;
-                        bool hovered = _hoveredButton == (2 + displayIdx);
-                        bool active = selected || hovered;
-                        bool isCached = LevelCache.Instance.IsCached(level.Id);
-                        Color rowAccent = isCached ? ACCENT_SUCCESS : ACCENT_PRIMARY;
-
-                        DrawPanel(sb, pixel, cardX, cardY, cardW, cardH, active ? BG_LIGHT : BG_DARK,
-                            selected ? headerAccent : (hovered ? ACCENT_WARNING : BORDER_SUBTLE), selected ? 2 : 1,
-                            selected ? headerAccent : (hovered ? ACCENT_WARNING * 0.7f : null));
-
-                        int statusBadgeH = Px(24, uiScale, 18);
-                        int statusFont = FontPx(11, uiScale, 10, 16);
-                        string statusLabel = isCached ? "CACHED" : "DOWNLOAD";
-                        int badgeW = DrawPillBadge(sb, font, pixel, cardX + Px(14, uiScale), cardY + (cardH - statusBadgeH) / 2,
-                            statusBadgeH, statusLabel, rowAccent, statusFont, Px(10, uiScale), filledStrong: isCached);
-
-                        int infoX = cardX + Px(14, uiScale) + badgeW + Px(14, uiScale);
-                        int nameFont = FontPx(18, uiScale, 13, 26);
-                        int diffFont = FontPx(13, uiScale, 10, 18);
-                        string cta = selected ? (isCached ? "ENTER: Find Match  >" : "ENTER: Download  >") : "";
-                        float ctaReserve = selected ? (MeasureText(font, cta, diffFont).X + Px(24, uiScale)) : 0f;
-                        float maxNameW = Math.Max(80f, cardX + cardW - Px(16, uiScale) - ctaReserve - infoX);
-                        string levelName = TruncateToWidth(font, string.IsNullOrWhiteSpace(level.Name) ? "Untitled Level" : level.Name, maxNameW, nameFont);
-                        DrawText(sb, font, levelName, new Vector2(infoX, cardY + Px(10, uiScale)), (selected ? TEXT_PRIMARY : TEXT_SECONDARY) * _fadeAlpha, nameFont, shadow: selected);
-
-                        string diffText = string.IsNullOrWhiteSpace(level.Difficulty) ? "Standard" : level.Difficulty;
-                        string metaText = level.FileSize > 0
-                            ? $"Difficulty: {diffText}  |  {level.FileSize / (1024.0 * 1024.0):F1} MB"
-                            : $"Difficulty: {diffText}";
-                        DrawText(sb, font, metaText, new Vector2(infoX, cardY + cardH - Px(26, uiScale)), TEXT_DISABLED * _fadeAlpha, diffFont);
-
-                        if (selected)
-                        {
-                            Vector2 ctaSz = MeasureText(font, cta, diffFont);
-                            DrawText(sb, font, cta, new Vector2(cardX + cardW - Px(16, uiScale) - ctaSz.X, cardY + (cardH - ctaSz.Y) / 2f), headerAccent * _fadeAlpha, diffFont);
-                        }
-                    }
-                }
-            }
-            else
-            {
-                if (_availableLevels.Count == 0)
-                {
-                    int cy = panelY + panelH / 2 - Px(26, uiScale);
-                    DrawCenteredTextInPanel(sb, font, "No local levels found", rightX, cy, rightW, TEXT_SECONDARY, FontPx(18, uiScale, 14, 26));
-                    DrawCenteredTextInPanel(sb, font, "Put .fnmm / .zip / .rar levels in mods/levels/", rightX, cy + Px(30, uiScale), rightW, TEXT_DISABLED, FontPx(14, uiScale, 11, 20));
-                }
-                else
-                {
-                    int startIdx = _levelScrollOffset;
-                    int endIdx = Math.Min(startIdx + MAX_VISIBLE_LEVELS, _availableLevels.Count);
-
-                    for (int i = startIdx; i < endIdx; i++)
-                    {
-                        int displayIdx = i - startIdx;
-                        int cardY = listAreaTop + displayIdx * (cardH + rowGap);
-                        var cardRect = new Rectangle(cardX, cardY, cardW, cardH);
-                        _clickableAreas.Add(cardRect);
-
-                        bool selected = i == _levelSelection;
-                        bool hovered = _hoveredButton == (2 + displayIdx);
-                        bool active = selected || hovered;
-                        string filename = System.IO.Path.GetFileNameWithoutExtension(_availableLevels[i]);
-                        string ext = System.IO.Path.GetExtension(_availableLevels[i]).TrimStart('.').ToUpperInvariant();
-                        if (string.IsNullOrEmpty(ext)) ext = "LOCAL";
-
-                        DrawPanel(sb, pixel, cardX, cardY, cardW, cardH, active ? BG_LIGHT : BG_DARK,
-                            selected ? ACCENT_SECONDARY : (hovered ? ACCENT_WARNING : BORDER_SUBTLE), selected ? 2 : 1,
-                            selected ? ACCENT_SECONDARY : (hovered ? ACCENT_WARNING * 0.7f : null));
-
-                        int statusBadgeH = Px(24, uiScale, 18);
-                        int badgeW = DrawPillBadge(sb, font, pixel, cardX + Px(14, uiScale), cardY + (cardH - statusBadgeH) / 2,
-                            statusBadgeH, ext, ACCENT_SECONDARY, FontPx(11, uiScale, 10, 16), Px(10, uiScale), filledStrong: selected);
-
-                        int infoX = cardX + Px(14, uiScale) + badgeW + Px(14, uiScale);
-                        int nameFont = FontPx(18, uiScale, 13, 26);
-                        int ctaFont = FontPx(13, uiScale, 10, 18);
-                        // Selected card: "[SHARE (S)]   ENTER: Play >" — the SHARE pill is clickable / tappable.
-                        string cta = "ENTER: Play  >";
-#if ANDROID
-                        string shareLabel = "SHARE";
-#else
-                        string shareLabel = "SHARE (S)";
-#endif
-                        int sharePadX = Px(12, uiScale);
-                        int shareH = Math.Max(Px(26, uiScale, 20), cardH - Px(22, uiScale));
-                        int shareW = (int)MathF.Ceiling(MeasureText(font, shareLabel, ctaFont).X) + sharePadX * 2;
-                        Vector2 ctaSz = MeasureText(font, cta, ctaFont);
-                        float ctaReserve = selected ? (ctaSz.X + shareW + Px(14, uiScale) + Px(24, uiScale)) : 0f;
-                        string displayName = TruncateToWidth(font, filename, Math.Max(80f, cardX + cardW - Px(16, uiScale) - ctaReserve - infoX), nameFont);
-                        Vector2 nSz = MeasureText(font, displayName, nameFont);
-                        DrawText(sb, font, displayName, new Vector2(infoX, cardY + (cardH - nSz.Y) / 2f), (selected ? TEXT_PRIMARY : TEXT_SECONDARY) * _fadeAlpha, nameFont, shadow: selected);
-
-                        if (selected)
-                        {
-                            float ctaX = cardX + cardW - Px(16, uiScale) - ctaSz.X;
-                            DrawText(sb, font, cta, new Vector2(ctaX, cardY + (cardH - ctaSz.Y) / 2f), ACCENT_SECONDARY * _fadeAlpha, ctaFont);
-
-                            _shareButtonRect = new Rectangle((int)ctaX - Px(14, uiScale) - shareW, cardY + (cardH - shareH) / 2, shareW, shareH);
-                            bool shareHovered = _shareButtonRect.Contains(_lastMousePos);
-                            DrawPillBadge(sb, font, pixel, _shareButtonRect.X, _shareButtonRect.Y, shareH, shareLabel,
-                                shareHovered ? ACCENT_SUCCESS : ACCENT_SECONDARY, ctaFont, sharePadX, filledStrong: shareHovered);
-                        }
-                    }
-                }
-            }
-
-            if (hasScroll)
-            {
-                int trackH = MAX_VISIBLE_LEVELS * cardH + (MAX_VISIBLE_LEVELS - 1) * rowGap;
-                DrawScrollBar(sb, pixel, cardX + cardW + Px(10, uiScale), listAreaTop, trackH, levelCount, MAX_VISIBLE_LEVELS, _levelScrollOffset, headerAccent);
-            }
-        }
-
-        private void DrawSourceTabCard(SpriteBatch sb, SpriteFont font, Texture2D pixel, float uiScale, Rectangle rect,
-            string title, string subtitle, string countText, bool selected, bool hovered, Color accent)
-        {
-            Color bg = selected ? BG_LIGHT : (hovered ? new Color(28, 28, 46) : BG_DARK);
-            Color border = selected ? accent : (hovered ? ACCENT_WARNING : BORDER_SUBTLE);
-            DrawPanel(sb, pixel, rect.X, rect.Y, rect.Width, rect.Height, bg, border, selected ? 2 : 1, selected ? accent : null);
-
-            int titleFont = FontPx(18, uiScale, 13, 26);
-            int subFont = FontPx(12, uiScale, 10, 17);
-            DrawText(sb, font, title, new Vector2(rect.X + Px(16, uiScale), rect.Y + Px(14, uiScale)), (selected ? accent : TEXT_PRIMARY) * _fadeAlpha, titleFont, shadow: selected);
-            DrawText(sb, font, subtitle, new Vector2(rect.X + Px(16, uiScale), rect.Y + Px(42, uiScale)), TEXT_SECONDARY * _fadeAlpha, subFont);
-
-            int countFont = FontPx(11, uiScale, 10, 16);
-            int countPadX = Px(8, uiScale);
-            int countBadgeW = (int)MathF.Ceiling(MeasureText(font, countText, countFont).X) + countPadX * 2;
-            DrawPillBadge(sb, font, pixel, rect.Right - Px(12, uiScale) - countBadgeW, rect.Y + Px(14, uiScale), Px(22, uiScale, 18), countText, accent, countFont, countPadX, filledStrong: selected);
-        }
-
-        private void DrawSearchingModern(SpriteBatch sb, SpriteFont font, Texture2D pixel, int screenWidth, int screenHeight)
-        {
-            float uiScale = GetUiScale(screenWidth, screenHeight);
-            int headerBottom = DrawScreenHeader(sb, font, pixel, screenWidth, uiScale,
-                "MATCHMAKING", _isPrivateRoom ? $"Waiting inside Private Room • {_roomCode}" : "Searching public queue for an opponent",
-                _isPrivateRoom ? ACCENT_SUCCESS : ACCENT_PRIMARY, "ESC  Cancel");
-            int footerY = DrawFooterBar(sb, font, pixel, screenWidth, screenHeight, uiScale,
-                "ESC or CLICK Cancel: Return to lobby");
-
-            int panelW = Math.Clamp(Px(540, uiScale), 320, screenWidth - 48);
-            int panelH = Px(290, uiScale, 220);
-            int panelX = screenWidth / 2 - panelW / 2;
-            int panelY = headerBottom + Math.Max(8, (footerY - headerBottom - panelH) / 2);
-
-            Color accent = _isPrivateRoom ? ACCENT_SUCCESS : ACCENT_PRIMARY;
-            DrawPanel(sb, pixel, panelX, panelY, panelW, panelH, BG_MEDIUM, accent, 2, accent);
-
-            // Spinning circle (ChartEditor style)
-            int cx = screenWidth / 2;
-            int cy = panelY + Px(116, uiScale);
-            int spinnerSize = Px(76, uiScale, 52);
-            float spinAngleBase = _searchTimer * 3f;
-            float radius = spinnerSize / 3f;
-            int segSize = Px(10, uiScale, 6);
-            Color spinnerColor = _isPrivateRoom ? ACCENT_SUCCESS : new Color(100, 150, 255);
-
-            for (int i = 0; i < 8; i++)
-            {
-                float angle = spinAngleBase + (i * MathF.PI / 4f);
-                float alpha = (1f - (i / 8f) * 0.7f) * _fadeAlpha;
-
-                float sx = cx + MathF.Cos(angle) * radius;
-                float sy = cy + MathF.Sin(angle) * radius;
-
-                sb.Draw(pixel,
-                    new Rectangle((int)MathF.Round(sx - segSize / 2f), (int)MathF.Round(sy - segSize / 2f), segSize, segSize),
-                    spinnerColor * alpha);
-            }
-
-            string dots = new string('.', ((int)(_searchTimer * 3) % 4));
-            string searchTitle = _isPrivateRoom ? $"Waiting for player{dots}" : $"Searching for opponent{dots}";
-            DrawCenteredTextInPanel(sb, font, searchTitle, panelX, panelY + Px(28, uiScale), panelW, TEXT_PRIMARY, FontPx(22, uiScale, 15, 30), shadow: true);
-
-            // Elapsed time + selected level badge
-            string lvlName = SelectedLevelName ?? "Selected Chart";
-            string srcTag = _selectedSource == LevelSource.Official ? "OFFICIAL" : "LOCAL";
-            string levelBadge = $"{lvlName}  [{srcTag}]";
-            DrawCenteredTextInPanel(sb, font, levelBadge, panelX + Px(20, uiScale), panelY + Px(176, uiScale), panelW - Px(40, uiScale), accent, FontPx(14, uiScale, 11, 20));
-
-            string timerText = $"Elapsed: {_searchTimer:F1}s";
-            DrawCenteredTextInPanel(sb, font, timerText, panelX, panelY + Px(204, uiScale), panelW, TEXT_SECONDARY, FontPx(15, uiScale, 12, 22));
-
-            if (_isPrivateRoom && !string.IsNullOrEmpty(_roomCode))
-            {
-                DrawCenteredTextInPanel(sb, font, $"Share Room Code: {_roomCode}", panelX, panelY + Px(236, uiScale), panelW, ACCENT_WARNING, FontPx(15, uiScale, 12, 20));
-            }
-            else
-            {
-                DrawCenteredTextInPanel(sb, font, "Stay on this screen — match starts automatically", panelX, panelY + Px(236, uiScale), panelW, TEXT_DISABLED, FontPx(13, uiScale, 10, 18));
-            }
-        }
-
-        private void DrawMatchFoundModern(SpriteBatch sb, SpriteFont font, Texture2D pixel, int screenWidth, int screenHeight)
-        {
-            if (_isCountdownActive)
-            {
-                DrawCountdownScreen(sb, font, pixel, screenWidth, screenHeight);
-                return;
-            }
-
-            float uiScale = GetUiScale(screenWidth, screenHeight);
-            int headerBottom = DrawScreenHeader(sb, font, pixel, screenWidth, uiScale,
-                "MATCH FOUND!", "Toggle Ready to begin the countdown", ACCENT_SUCCESS, "ESC  Leave");
-            int footerY = DrawFooterBar(sb, font, pixel, screenWidth, screenHeight, uiScale,
-                "ENTER / SPACE or CLICK Your Card: Toggle Ready  |  ESC: Leave Match");
-
-            var settings = MultiplayerSettings.Instance;
-            Color yourColor = settings.GetPlayerColor();
-            Color oppColor = GetColorFromHue(NetworkManager.Instance.OpponentColorHue);
-            string yourName = string.IsNullOrWhiteSpace(settings.Username) ? "You" : settings.Username;
-            string oppName = string.IsNullOrWhiteSpace(_opponentName) ? "Opponent" : _opponentName;
-
-            int containerW = Math.Clamp(Px(760, uiScale), 420, screenWidth - 48);
-            int availH = Math.Max(260, footerY - headerBottom - Px(20, uiScale));
-            int containerH = Math.Clamp(Px(370, uiScale), 260, availH);
-            int containerX = screenWidth / 2 - containerW / 2;
-            int containerY = headerBottom + Math.Max(6, (availH - containerH) / 2);
-
-            DrawPanel(sb, pixel, containerX, containerY, containerW, containerH, BG_MEDIUM, ACCENT_SUCCESS * 0.7f, 2);
-
-            int vsGap = Px(84, uiScale, 52);
-            int sidePad = Px(30, uiScale, 14);
-            int cardW = (containerW - sidePad * 2 - vsGap) / 2;
-            int cardH = containerH - Px(76, uiScale);
-            int cardsY = containerY + Px(38, uiScale);
-
-            // ── Your Player Card (Clickable Ready Toggle) ───────────────────────
-            int youCardX = containerX + sidePad;
-            var readyRect = new Rectangle(youCardX, cardsY, cardW, cardH);
-            _clickableAreas.Add(readyRect);
-            bool readyHovered = readyRect.Contains(_lastMousePos);
-            Color yourBorder = _isReady ? ACCENT_SUCCESS : (readyHovered ? ACCENT_WARNING : yourColor);
-
-            DrawPanel(sb, pixel, youCardX, cardsY, cardW, cardH, readyHovered ? BG_LIGHT : BG_DARK, yourBorder, (_isReady || readyHovered) ? 2 : 1);
-            sb.Draw(pixel, new Rectangle(youCardX, cardsY, cardW, Px(5, uiScale, 4)), yourColor * _fadeAlpha);
-
-            int badgeFont = FontPx(11, uiScale, 10, 16);
-            int swatchSz = Px(20, uiScale, 14);
-            DrawPillBadge(sb, font, pixel, youCardX + Px(16, uiScale), cardsY + Px(18, uiScale), Px(22, uiScale, 18), "YOU", yourColor, badgeFont, 10, filledStrong: true);
-
-            // Color swatch + player name
-            int nameRowY = cardsY + Px(64, uiScale);
-            int nameFont = FontPx(22, uiScale, 15, 30);
-            float maxPlayerNameW = Math.Max(80f, cardW - Px(36, uiScale) - swatchSz - Px(10, uiScale));
-            string fitYourName = TruncateToWidth(font, yourName, maxPlayerNameW, nameFont);
-            sb.Draw(pixel, new Rectangle(youCardX + Px(18, uiScale), nameRowY + 4, swatchSz, swatchSz), yourColor * _fadeAlpha);
-            DrawBorder(sb, pixel, youCardX + Px(18, uiScale), nameRowY + 4, swatchSz, swatchSz, Color.White * (0.4f * _fadeAlpha), 1);
-            DrawText(sb, font, fitYourName, new Vector2(youCardX + Px(18, uiScale) + swatchSz + Px(10, uiScale), nameRowY), Color.Lerp(yourColor, Color.White, 0.35f) * _fadeAlpha, nameFont, shadow: true);
-
-            // Interactive Ready CTA pill inside bottom of Your card
-            int ctaW = cardW - Px(32, uiScale);
-            int ctaH = Px(52, uiScale, 40);
-            int ctaX = youCardX + Px(16, uiScale);
-            int ctaY = cardsY + cardH - ctaH - Px(18, uiScale);
-            Color ctaBg = _isReady ? new Color(32, 130, 74) : (readyHovered ? new Color(85, 65, 28) : BG_MEDIUM);
-            Color ctaBorder = _isReady ? ACCENT_SUCCESS : (readyHovered ? ACCENT_WARNING : ACCENT_ERROR);
-            DrawPanel(sb, pixel, ctaX, ctaY, ctaW, ctaH, ctaBg, ctaBorder, 2);
-            string ctaLabel = _isReady ? "READY!" : "CLICK TO READY";
-            DrawCenteredTextInPanel(sb, font, ctaLabel, ctaX, ctaY + Px(8, uiScale), ctaW, _isReady ? Color.White : ctaBorder, FontPx(17, uiScale, 13, 24), shadow: true);
-            DrawCenteredTextInPanel(sb, font, "Press ENTER / SPACE / CLICK", ctaX, ctaY + Px(30, uiScale), ctaW, TEXT_SECONDARY * 0.85f, FontPx(11, uiScale, 9, 15));
-
-            // ── Center VS Emblem ────────────────────────────────────────────────
-            int vsBoxSize = Px(56, uiScale, 38);
-            int vsBoxX = containerX + containerW / 2 - vsBoxSize / 2;
-            int vsBoxY = cardsY + cardH / 2 - vsBoxSize / 2;
-            DrawPanel(sb, pixel, vsBoxX, vsBoxY, vsBoxSize, vsBoxSize, BG_DARK, ACCENT_WARNING * 0.8f, 2);
-            int vsFont = FontPx(20, uiScale, 14, 28);
-            Vector2 vsSz = MeasureText(font, "VS", vsFont);
-            DrawText(sb, font, "VS", new Vector2(vsBoxX + (vsBoxSize - vsSz.X) / 2f, vsBoxY + (vsBoxSize - vsSz.Y) / 2f), ACCENT_WARNING * _fadeAlpha, vsFont, shadow: true);
-
-            // ── Opponent Player Card ────────────────────────────────────────────
-            int oppCardX = containerX + containerW - sidePad - cardW;
-            Color oppBorder = _opponentReady ? ACCENT_SUCCESS : BORDER_SUBTLE;
-            DrawPanel(sb, pixel, oppCardX, cardsY, cardW, cardH, BG_DARK, oppBorder, _opponentReady ? 2 : 1);
-            sb.Draw(pixel, new Rectangle(oppCardX, cardsY, cardW, Px(5, uiScale, 4)), oppColor * _fadeAlpha);
-
-            DrawPillBadge(sb, font, pixel, oppCardX + Px(16, uiScale), cardsY + Px(18, uiScale), Px(22, uiScale, 18), "OPPONENT", oppColor, badgeFont, 10, filledStrong: true);
-
-            string fitOppName = TruncateToWidth(font, oppName, maxPlayerNameW, nameFont);
-            sb.Draw(pixel, new Rectangle(oppCardX + Px(18, uiScale), nameRowY + 4, swatchSz, swatchSz), oppColor * _fadeAlpha);
-            DrawBorder(sb, pixel, oppCardX + Px(18, uiScale), nameRowY + 4, swatchSz, swatchSz, Color.White * (0.4f * _fadeAlpha), 1);
-            DrawText(sb, font, fitOppName, new Vector2(oppCardX + Px(18, uiScale) + swatchSz + Px(10, uiScale), nameRowY), Color.Lerp(oppColor, Color.White, 0.35f) * _fadeAlpha, nameFont, shadow: true);
-
-            Color oppStatBg = _opponentReady ? new Color(26, 95, 58) : BG_MEDIUM;
-            Color oppStatBorder = _opponentReady ? ACCENT_SUCCESS : ACCENT_WARNING * 0.7f;
-            DrawPanel(sb, pixel, oppCardX + Px(16, uiScale), ctaY, ctaW, ctaH, oppStatBg, oppStatBorder, 1);
-            string oppStatusLabel = _opponentReady ? "READY!" : "WAITING FOR READY...";
-            int oppStatusFont = FontPx(16, uiScale, 12, 22);
-            Vector2 oppStatSz = MeasureText(font, oppStatusLabel, oppStatusFont);
-            DrawText(sb, font, oppStatusLabel, new Vector2(oppCardX + Px(16, uiScale) + (ctaW - oppStatSz.X) / 2f, ctaY + (ctaH - oppStatSz.Y) / 2f),
-                (_opponentReady ? ACCENT_SUCCESS : ACCENT_WARNING) * _fadeAlpha, oppStatusFont, shadow: true);
-        }
-
-        private void DrawCountdownScreen(SpriteBatch sb, SpriteFont font, Texture2D pixel, int screenWidth, int screenHeight)
-        {
-            float uiScale = GetUiScale(screenWidth, screenHeight);
-            sb.Draw(pixel, new Rectangle(0, 0, screenWidth, screenHeight), Color.Black * (0.78f * _fadeAlpha));
-
-            string countdownText = _countdownValue > 0 ? ((int)_countdownValue).ToString() : "GO!";
-            Color accent = _countdownValue > 0 ? ACCENT_WARNING : ACCENT_SUCCESS;
-
-            // Beat pulse ring expanding cleanly behind the countdown number
-            float beatFrac = _countdownValue > 0 ? (1f - (_countdownValue % 1f)) : 0.4f;
-            int ringSize = Px(190, uiScale, 110) + (int)(Px(60, uiScale) * beatFrac);
-            DrawBorder(sb, pixel, screenWidth / 2 - ringSize / 2, screenHeight / 2 - ringSize / 2, ringSize, ringSize, accent * ((1f - beatFrac) * 0.55f * _fadeAlpha), 2);
-
-            int bigFont = FontPx(116, uiScale, 60, 128);
-            Vector2 textSz = MeasureText(font, countdownText, bigFont);
-            Vector2 textPos = new Vector2(screenWidth / 2f - textSz.X / 2f, screenHeight / 2f - textSz.Y / 2f);
-
-            // Soft layered glow around crisp TrueType text
-            for (int i = 0; i < 6; i++)
-            {
-                float angle = i * (MathF.PI / 3f);
-                Vector2 offset = new Vector2(MathF.Cos(angle), MathF.Sin(angle)) * Px(4, uiScale, 2);
-                DrawText(sb, font, countdownText, textPos + offset, accent * (0.28f * _fadeAlpha), bigFont);
-            }
-            DrawText(sb, font, countdownText, textPos, TEXT_PRIMARY * _fadeAlpha, bigFont, shadow: true, shadowOffset: 4f);
-
-            var settings = MultiplayerSettings.Instance;
-            string vsLine = $"{settings.Username}  VS  {(_opponentName ?? "Opponent")}";
-            DrawCenteredText(sb, font, _countdownValue > 0 ? "GET READY!" : "LET'S GO!", screenHeight / 2 - Px(140, uiScale, 90), accent, FontPx(26, uiScale, 16, 38), screenWidth);
-            DrawCenteredText(sb, font, vsLine, screenHeight / 2 + Px(110, uiScale, 75), TEXT_SECONDARY, FontPx(16, uiScale, 12, 24), screenWidth);
-        }
-
         /// <summary>
         /// Reset input cooldown (called when menu is opened).
         /// </summary>
         public void ResetInputCooldown()
         {
             _inputCooldown = INPUT_COOLDOWN_TIME;
-            _prevKb = Keyboard.GetState();
+            _prevKb = LayoutKeyboard.GetState();
             _prevMouse = Game1.NeutralMouseState(Mouse.GetState());
             _hoveredButton = -1;
             _mouseMovedThisFrame = false;
@@ -3811,7 +2172,7 @@ namespace FunkyMakerPlayer.Multiplayer
         public void SyncInputState()
         {
             _inputCooldown = Math.Max(_inputCooldown, INPUT_COOLDOWN_TIME);
-            _prevKb = Keyboard.GetState();
+            _prevKb = LayoutKeyboard.GetState();
             _prevMouse = Game1.NeutralMouseState(Mouse.GetState());
             _lastMousePos = _prevMouse.Position;
             _hoveredButton = -1;
@@ -3823,56 +2184,28 @@ namespace FunkyMakerPlayer.Multiplayer
         /// </summary>
         public (string Details, string? State, string? PartyId, int PartySize, int PartyMax) GetDiscordPresenceInfo()
         {
-            string? songName = SelectedLevelName;
-            if (!string.IsNullOrWhiteSpace(songName))
-                songName = System.IO.Path.GetFileNameWithoutExtension(songName);
-
+            var room = RoomClient.Instance;
             switch (_state)
             {
                 case MenuState.Connecting:
                     return ("Multiplayer", "Connecting to server", null, 0, 2);
-
-                case MenuState.Lobby:
-                    return (
-                        "Multiplayer Lobby",
-                        !string.IsNullOrWhiteSpace(songName)
-                            ? $"Song: {songName}"
-                            : (_isPrivateRoom ? "Private Room" : "Picking a song"),
-                        _isPrivateRoom && !string.IsNullOrWhiteSpace(_roomCode) ? $"room_{_roomCode}" : null,
-                        _isPrivateRoom && !string.IsNullOrWhiteSpace(_roomCode) ? 1 : 0,
-                        2);
-
-                case MenuState.CreateRoom:
-                case MenuState.JoinRoom:
-                    return ("Multiplayer Lobby", "Private Room setup", null, 0, 2);
-
-                case MenuState.Searching:
-                    return (
-                        !string.IsNullOrWhiteSpace(songName) ? $"Searching: {songName}" : "Searching for match",
-                        _isPrivateRoom ? "Waiting in Private Room" : "Matchmaking",
-                        _isPrivateRoom && !string.IsNullOrWhiteSpace(_roomCode) ? $"room_{_roomCode}" : "queue_search",
-                        1,
-                        2);
-
-                case MenuState.MatchFound:
-                    string resolvedOpp = UserDirectoryClient.Instance.ResolveUsername(
-                        NetworkManager.Instance.OpponentPlayerId,
-                        !string.IsNullOrWhiteSpace(NetworkManager.Instance.OpponentName)
-                            ? NetworkManager.Instance.OpponentName
-                            : _opponentName);
-                    return (
-                        !string.IsNullOrWhiteSpace(songName) ? $"Match Found: {songName}" : "Multiplayer Match Found",
-                        $"vs {resolvedOpp}",
-                        !string.IsNullOrWhiteSpace(_roomId) ? _roomId : "mp_match",
-                        2,
-                        2);
-
+                case MenuState.RoomBrowser:
+                    return ("Multiplayer", "Browsing rooms", null, 0, 2);
+                case MenuState.RoomSettings when !room.InRoom:
+                    return ("Multiplayer", "Creating a room", null, 0, 2);
+                case MenuState.WaitingRoom:
+                case MenuState.SongSelect:
+                case MenuState.RoomSettings:
+                    var st = room.State;
+                    if (st == null) return ("Multiplayer", "In a room", null, 0, 2);
+                    string what = st.Song != null ? $"Next: {st.Song.Name}"
+                        : _state == MenuState.SongSelect ? "Picking a song" : "Waiting room";
+                    return ($"Room: {st.Name} ({RoomClient.ModeName(st.Settings.Mode)})", what, $"room_{st.RoomId}",
+                        st.Members.Count, st.Settings.MaxPlayers);
                 case MenuState.Leaderboard:
                     return ("Multiplayer", "Viewing Leaderboard", null, 0, 2);
-
                 case MenuState.Settings:
                     return ("Multiplayer", "Multiplayer Settings", null, 0, 2);
-
                 default:
                     return ("Multiplayer", "In Multiplayer Menu", null, 0, 2);
             }
@@ -3899,63 +2232,12 @@ namespace FunkyMakerPlayer.Multiplayer
         /// </summary>
         public void ResetAfterMatch()
         {
-            NetworkManager.Instance.LeaveMatch(notifyOpponent: false);
-            TransitionToState(MenuState.Lobby);
-            _isReady = false;
-            _opponentReady = false;
-            _isCountdownActive = false;
-            _countdownValue = 0f;
-            _searchTimer = 0f;
+            RoomClient.Instance.LeftMatchScreen();
+            if (RoomClient.Instance.InRoom) TransitionToState(MenuState.WaitingRoom);
+            else if (NetworkManager.Instance.IsConnected) OpenRoomBrowser();
+            else TransitionToState(MenuState.MainMenu);
             RequestLeaderboardRefresh();
-            Console.WriteLine("[MultiplayerMenu] Reset after match, returning to lobby");
-        }
-
-        /// <summary>
-        /// Launch GameMultiplayer instance with current level and opponent info.
-        /// </summary>
-        private void LaunchGameMultiplayer()
-        {
-            string? levelPath = SelectedLevelPath;
-            if (string.IsNullOrEmpty(levelPath) || !System.IO.File.Exists(levelPath))
-            {
-                Console.WriteLine($"[MultiplayerMenu] ERROR: Level path invalid: {levelPath}");
-                ShowError("Failed to load level");
-                TransitionToState(MenuState.Lobby);
-                return;
-            }
-
-            if (_game == null)
-            {
-                Console.WriteLine($"[MultiplayerMenu] ERROR: Game instance not set!");
-                ShowError("Game instance not initialized");
-                TransitionToState(MenuState.Lobby);
-                return;
-            }
-
-            string opponentName = !string.IsNullOrWhiteSpace(NetworkManager.Instance.OpponentName)
-                ? NetworkManager.Instance.OpponentName
-                : (_opponentName ?? "Opponent");
-            int playerRole = NetworkManager.Instance.PlayerRole;
-
-            Console.WriteLine($"[MultiplayerMenu] Starting multiplayer match in existing Game1 instance");
-            Console.WriteLine($"  Level: {levelPath}");
-            Console.WriteLine($"  Opponent: {opponentName}");
-            Console.WriteLine($"  Player Role: {playerRole}");
-
-            try
-            {
-                // Start multiplayer match in existing Game1 instance (no new window)
-                _game.StartMultiplayerMatch(levelPath, opponentName, playerRole, _gameStartTimestamp, _roomId, SelectedLevelName);
-                
-                Console.WriteLine("[MultiplayerMenu] Match started successfully");
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"[MultiplayerMenu] ERROR starting match: {ex.Message}");
-                Console.WriteLine($"[MultiplayerMenu] Stack trace: {ex.StackTrace}");
-                ShowError($"Failed to start match: {ex.Message}");
-                TransitionToState(MenuState.Lobby);
-            }
+            Console.WriteLine("[MultiplayerMenu] Back from the match");
         }
 
         /// <summary>
@@ -3963,15 +2245,12 @@ namespace FunkyMakerPlayer.Multiplayer
         /// </summary>
         public void Cleanup()
         {
+            StopWatchingLevels();
+            RoomClient.Instance.LeaveRoom();
+            UnhookRoomEvents();
             NetworkManager.Instance.OnConnected -= OnConnected;
             NetworkManager.Instance.OnDisconnected -= OnDisconnected;
             NetworkManager.Instance.OnConnectionError -= OnNetworkConnectionError;
-            NetworkManager.Instance.OnMatchFound -= OnMatchFound;
-            NetworkManager.Instance.OnOpponentProfileReceived -= OnMenuOpponentProfile;
-            NetworkManager.Instance.OnOpponentDisconnected -= OnMenuOpponentDisconnected;
-            NetworkManager.Instance.OnOpponentReadyChanged -= OnOpponentReadyChanged;
-            NetworkManager.Instance.OnCountdownStart -= OnCountdownStart;
-            NetworkManager.Instance.OnGameStart -= OnGameStart;
             NetworkManager.Instance.OnLevelListReceived -= OnLevelListReceived;
             NetworkManager.Instance.OnLeaderboardReceived -= OnLeaderboardReceived;
             NetworkManager.Instance.OnMatchHistoryReceived -= OnMatchHistoryReceived;
@@ -3998,7 +2277,7 @@ namespace FunkyMakerPlayer.Multiplayer
             // Category tabs (4 active categories only)
             string[] categories = { "USER", "GAMEPLAY", "PERFORMANCE", "VISUAL" };
             int tabSpacing = Px(12, uiScale, 6);
-            int maxTabBarW = Math.Clamp(Px(860, uiScale), 340, screenWidth - Px(60, uiScale));
+            int maxTabBarW = ClampUi(Px(860, uiScale), 340, screenWidth - Px(60, uiScale));
             int tabW = Math.Min(Px(190, uiScale), (maxTabBarW - tabSpacing * (categories.Length - 1)) / categories.Length);
             int tabH = Px(40, uiScale, 30);
             int totalTabsW = categories.Length * tabW + (categories.Length - 1) * tabSpacing;
@@ -4030,7 +2309,7 @@ namespace FunkyMakerPlayer.Multiplayer
             int footerY = DrawFooterBar(sb, font, pixel, screenWidth, screenHeight, uiScale,
                 "Q/E or LEFT/RIGHT: Category  |  UP/DOWN: Navigate  |  ENTER/CLICK: Edit/Toggle/Focus  |  </> or L/R (Focused): Adjust  |  R: Reset  |  ESC: Save & Back");
 
-            int panelW = Math.Clamp(Px(920, uiScale), 360, screenWidth - Px(60, uiScale));
+            int panelW = ClampUi(Px(920, uiScale), 360, screenWidth - Px(60, uiScale));
             int panelX = screenWidth / 2 - panelW / 2;
             int panelY = tabY + tabH + Px(14, uiScale, 8);
             int descH = Px(74, uiScale, 58);
@@ -4133,15 +2412,23 @@ namespace FunkyMakerPlayer.Multiplayer
                         Value = settings.ShowOpponentNotes ? "ON" : "OFF",
                         IsToggle = true,
                         IsAdjustable = true,
-                        Description = "Show or hide the opponent's note highway on the left during PvP matches."
+                        Description = "Show or hide the opponent's notes. Same setting as Opponent Strumline in the main Settings (NOTES tab)."
                     });
                     list.Add(new SettingInfo
                     {
-                        Label = "Show Opponent Score",
+                        Label = "Show Scores List",
                         Value = settings.ShowOpponentScore ? "ON" : "OFF",
                         IsToggle = true,
                         IsAdjustable = true,
-                        Description = "Display the opponent's live score and center score differential in the gameplay HUD."
+                        Description = "During online matches, show the small list of players and their live scores."
+                    });
+                    list.Add(new SettingInfo
+                    {
+                        Label = "Scores List Side",
+                        Value = settings.ScoreListPosition == MultiplayerSettings.ScoreListSide.Right ? "Right" : "Left",
+                        IsToggle = false,
+                        IsAdjustable = true,
+                        Description = "Side of the screen where the live scores list is drawn."
                     });
                     list.Add(new SettingInfo
                     {
@@ -4153,11 +2440,19 @@ namespace FunkyMakerPlayer.Multiplayer
                     });
                     list.Add(new SettingInfo
                     {
-                        Label = "Ghost Transparency",
+                        Label = "Opponent Notes Opacity",
                         Value = $"{settings.GhostTransparency}%",
                         IsToggle = false,
                         IsAdjustable = true,
-                        Description = "Opacity percentage applied to the opponent's note highway when Show Opponent Notes is enabled."
+                        Description = "How visible the opponent's notes are during online matches (0-100%), when Show Opponent Notes is on."
+                    });
+                    list.Add(new SettingInfo
+                    {
+                        Label = "Teams: Rival Strumline",
+                        Value = settings.TeamsRivalStrumline == MultiplayerSettings.RivalStrumlineMode.Cpu ? "CPU" : "Real player",
+                        IsToggle = false,
+                        IsAdjustable = true,
+                        Description = "In Teams matches, the other side's strumline shows the presses of a player of the other team, or is played by the CPU."
                     });
                     break;
                     
@@ -4178,6 +2473,14 @@ namespace FunkyMakerPlayer.Multiplayer
                         IsToggle = true,
                         IsAdjustable = true,
                         Description = "Smoothly interpolate opponent health transitions between incoming network packets instead of snapping."
+                    });
+                    list.Add(new SettingInfo
+                    {
+                        Label = "Skip osu! Videos",
+                        Value = settings.OsuSkipVideo ? "ON" : "OFF",
+                        IsToggle = true,
+                        IsAdjustable = true,
+                        Description = "osu! songs you get from other players come without their background video: much smaller downloads. Songs you already have keep theirs."
                     });
                     break;
                     
@@ -4224,6 +2527,7 @@ namespace FunkyMakerPlayer.Multiplayer
         private void DrawSettingItem(SpriteBatch sb, SpriteFont font, Texture2D pixel, float uiScale, int x, int y, int w, int h, SettingInfo setting, bool selected, Color? swatchColor)
         {
             bool focused = selected && _isSettingFocused;
+            if (setting.Label == "Username") Hit("username", new Rectangle(x, y, w, h)); // clicks here keep editing
             Color bgColor = selected ? BG_LIGHT : BG_DARK;
             Color borderColor = focused ? ACCENT_WARNING : (selected ? ACCENT_PRIMARY : BORDER_SUBTLE);
             Color? stripe = focused ? ACCENT_WARNING : (selected ? ACCENT_PRIMARY : null);
@@ -4386,7 +2690,7 @@ namespace FunkyMakerPlayer.Multiplayer
             }
 
             // Refresh / Sync global leaderboard (SignalR when connected, HTTP fallback otherwise)
-            if (IsKeyPressed(kb, Keys.F5) || IsRectClicked(mouse, _refreshButtonRect))
+            if (IsKeyPressed(kb, HotkeyAction.Refresh) || IsRectClicked(mouse, _refreshButtonRect))
             {
                 RequestLeaderboardRefresh();
                 _inputCooldown = INPUT_COOLDOWN_TIME;
@@ -4407,7 +2711,7 @@ namespace FunkyMakerPlayer.Multiplayer
             }
 
             // Switch tabs with LEFT/RIGHT or Q/E
-            if (IsKeyPressed(kb, Keys.Left) || IsKeyPressed(kb, Keys.Q))
+            if (IsKeyPressed(kb, Keys.Left) || IsKeyPressed(kb, HotkeyAction.PrevTab))
             {
                 _leaderboardTab = (_leaderboardTab - 1 + 3) % 3;
                 _leaderboardSelection = 0;
@@ -4415,7 +2719,7 @@ namespace FunkyMakerPlayer.Multiplayer
                 _inputCooldown = INPUT_COOLDOWN_TIME;
                 return;
             }
-            if (IsKeyPressed(kb, Keys.Right) || IsKeyPressed(kb, Keys.E))
+            if (IsKeyPressed(kb, Keys.Right) || IsKeyPressed(kb, HotkeyAction.NextTab))
             {
                 _leaderboardTab = (_leaderboardTab + 1) % 3;
                 _leaderboardSelection = 0;
@@ -4520,7 +2824,7 @@ namespace FunkyMakerPlayer.Multiplayer
             // Clickable Tabs
             string[] tabs = { "TOP PLAYERS", "RECENT MATCHES", "MY STATS" };
             int tabSpacing = Px(14, uiScale, 8);
-            int maxTabBarW = Math.Clamp(Px(760, uiScale), 340, screenWidth - Px(60, uiScale));
+            int maxTabBarW = ClampUi(Px(760, uiScale), 340, screenWidth - Px(60, uiScale));
             int tabW = Math.Min(Px(230, uiScale), (maxTabBarW - tabSpacing * 2) / 3);
             int tabH = Px(42, uiScale, 32);
             int totalTabsW = tabW * 3 + tabSpacing * 2;
@@ -4552,7 +2856,7 @@ namespace FunkyMakerPlayer.Multiplayer
             int footerY = DrawFooterBar(sb, font, pixel, screenWidth, screenHeight, uiScale,
                 "Q/E or LEFT/RIGHT: Switch Tab  |  UP/DOWN or WHEEL: Scroll  |  F5: Sync Online  |  ESC: Back");
 
-            int panelW = Math.Clamp(Px(960, uiScale), 360, screenWidth - Px(60, uiScale));
+            int panelW = ClampUi(Px(960, uiScale), 360, screenWidth - Px(60, uiScale));
             int panelY = tabY + tabH + Px(14, uiScale, 8);
             int panelH = Math.Max(220, footerY - panelY - Px(12, uiScale));
             int panelX = screenWidth / 2 - panelW / 2;
@@ -4612,7 +2916,7 @@ namespace FunkyMakerPlayer.Multiplayer
             int listTop = divY + Px(10, uiScale);
             int availH = Math.Max(140, panelY + panelH - Px(14, uiScale) - listTop);
             int rowGap = Px(6, uiScale, 4);
-            int rowH = Math.Clamp((availH - rowGap * (MAX_LEADERBOARD_VISIBLE - 1)) / MAX_LEADERBOARD_VISIBLE, 36, Px(58, uiScale));
+            int rowH = ClampUi((availH - rowGap * (MAX_LEADERBOARD_VISIBLE - 1)) / MAX_LEADERBOARD_VISIBLE, 36, Px(58, uiScale));
 
             int startIdx = _leaderboardScrollOffset;
             int endIdx = Math.Min(startIdx + MAX_LEADERBOARD_VISIBLE, topPlayers.Count);
@@ -4689,7 +2993,7 @@ namespace FunkyMakerPlayer.Multiplayer
             int listTop = panelY + Px(16, uiScale);
             int availH = Math.Max(160, panelY + panelH - Px(16, uiScale) - listTop);
             int cardGap = Px(8, uiScale, 5);
-            int cardH = Math.Clamp((availH - cardGap * (MAX_LEADERBOARD_VISIBLE - 1)) / MAX_LEADERBOARD_VISIBLE, 46, Px(68, uiScale));
+            int cardH = ClampUi((availH - cardGap * (MAX_LEADERBOARD_VISIBLE - 1)) / MAX_LEADERBOARD_VISIBLE, 46, Px(68, uiScale));
 
             int startIdx = _leaderboardScrollOffset;
             int endIdx = Math.Min(startIdx + MAX_LEADERBOARD_VISIBLE, recentMatches.Count);
@@ -4811,7 +3115,7 @@ namespace FunkyMakerPlayer.Multiplayer
             int colGap = Px(16, uiScale, 10);
             int rowGap = Px(12, uiScale, 8);
             int tileW = (bannerW - colGap) / 2;
-            int tileH = Math.Clamp((gridAvailH - rowGap * 3) / 4, 46, Px(84, uiScale));
+            int tileH = ClampUi((gridAvailH - rowGap * 3) / 4, 46, Px(84, uiScale));
             int col1X = panelX + padX;
             int col2X = col1X + tileW + colGap;
 
@@ -4884,6 +3188,72 @@ namespace FunkyMakerPlayer.Multiplayer
         /// <summary>
         /// Merge touch controls into keyboard state (Android only)
         /// </summary>
+        // ── Touch as mouse (fork) ────────────────────────────────────────────
+        private Point _touchPos = new(-10000, -10000);
+        private Vector2 _touchStart, _touchLast;
+        private bool _touchDragged;
+        private int _touchWheel;
+        private float _touchWheelAccum;
+        private int _touchId = -1;
+        private int _touchScreenHeight = 720;
+
+        /// <summary>True when a button / text box of the current room screen is under the point.</summary>
+        private bool IsRoomHitAt(Point p)
+        {
+            for (int i = _roomHit.Count - 1; i >= 0; i--)
+                if (_roomHit[i].Rect.Contains(p)) return true;
+            return false;
+        }
+
+        /// <summary>
+        /// The first touch that is not on the on-screen D-pad, as a mouse: finger down = left button
+        /// held, lifting it = a click where it was. Dragging scrolls lists (as a mouse wheel) and then
+        /// does not click. A button of the room screens under the finger wins over the D-pad.
+        /// <para>A new finger is recognised by its touch id, never by <see cref="TouchLocationState.Pressed"/>:
+        /// Game1 reads <see cref="TouchPanel.GetState"/> first every frame and MonoGame turns Pressed into
+        /// Moved (and drops Released) on every read, so this method never sees those states. Waiting for
+        /// Pressed left the drag start stale, every tap counted as a drag and no button could be tapped.</para>
+        /// </summary>
+        private MouseState TouchAsMouse()
+        {
+            bool down = false;
+            // Fingers wobble a few millimetres while tapping: scale with the screen (high-DPI phones).
+            float dragThreshold = Math.Max(28f, _touchScreenHeight * 0.045f);
+            foreach (var t in TouchPanel.GetState())
+            {
+                var p = t.Position;
+                var pt = new Point((int)p.X, (int)p.Y);
+                if (_touchControls != null && _touchControls.IsPointOnMenuControl(pt) && !IsRoomHitAt(pt)) continue;
+                if (t.Id != _touchId)
+                {
+                    _touchId = t.Id;
+                    _touchStart = _touchLast = p;
+                    _touchDragged = false;
+                    _touchWheelAccum = 0f;
+                }
+                if (t.State is TouchLocationState.Pressed or TouchLocationState.Moved)
+                {
+                    down = true;
+                    if (Vector2.Distance(p, _touchStart) > dragThreshold) _touchDragged = true;
+                    if (_touchDragged)
+                    {
+                        // Finger down = content follows = like scrolling the wheel up.
+                        _touchWheelAccum += p.Y - _touchLast.Y;
+                        while (_touchWheelAccum > 40f) { _touchWheel += 120; _touchWheelAccum -= 40f; }
+                        while (_touchWheelAccum < -40f) { _touchWheel -= 120; _touchWheelAccum += 40f; }
+                    }
+                    _touchLast = p;
+                }
+                _touchPos = pt;
+                break;
+            }
+            // A drag never ends in a click.
+            Point pos = !down && _touchDragged ? new Point(-10000, -10000) : _touchPos;
+            return new MouseState(pos.X, pos.Y, _touchWheel,
+                down ? ButtonState.Pressed : ButtonState.Released, ButtonState.Released, ButtonState.Released,
+                ButtonState.Released, ButtonState.Released);
+        }
+
         private KeyboardState MergeTouchWithKeyboard(KeyboardState kb)
         {
             if (_touchControls == null) return kb;

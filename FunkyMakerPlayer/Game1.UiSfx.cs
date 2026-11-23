@@ -34,7 +34,7 @@ public partial class Game1
     {
         if (_inEditor || _inHudEditor) return 3;
         if (_inLevelSelector || _inMainSettings) return 2;
-        if (_inEditorPicker || _inMultiplayer) return 1;
+        if (_inEditorPicker || _inMultiplayer || _inReplays) return 1;
         if (_inFreeplay) return 0;
         return 1; // gameplay / loading / results
     }

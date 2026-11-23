@@ -97,6 +97,13 @@ public static class OggLoader
             channels == 2 ? AudioChannels.Stereo : AudioChannels.Mono);
     }
     
+    /// <summary>Closest sample rate MonoGame can play (fork: shared with the MP3 decoder).</summary>
+    public static int ValidSampleRate(int sampleRate) => ValidateSampleRate(sampleRate);
+
+    /// <summary>Linear resampling of 16-bit PCM (fork: shared with the MP3 decoder).</summary>
+    public static byte[] Resample(byte[] pcmData, int originalRate, int targetRate, int channels)
+        => ResamplePcm(pcmData, originalRate, targetRate, channels);
+
     private static int ValidateSampleRate(int sampleRate)
     {
         // MonoGame supports: 8000, 11025, 16000, 22050, 32000, 44100, 48000

@@ -152,7 +152,7 @@ namespace FunkyMakerPlayer.Editors.Chart
             BackPressed = false;
             PlaytestRequested = false;
             _dragMode = DragMode.None;
-            _prevKeyboard = Keyboard.GetState();
+            _prevKeyboard = LayoutKeyboard.GetState();
             _prevMouse = Mouse.GetState();
         }
 
@@ -160,7 +160,7 @@ namespace FunkyMakerPlayer.Editors.Chart
         {
             _inputCooldown = Math.Max(_inputCooldown, 0.08f);
             _dragMode = DragMode.None;
-            _prevKeyboard = Keyboard.GetState();
+            _prevKeyboard = LayoutKeyboard.GetState();
             _prevMouse = Mouse.GetState();
         }
 
@@ -274,7 +274,7 @@ namespace FunkyMakerPlayer.Editors.Chart
             _previewSpriteTextureCache = sharedSpriteTextureCache
                 ?? new Dictionary<string, Dictionary<int, SpriteTextureCacheEntry>>(StringComparer.OrdinalIgnoreCase);
             _ownsPreviewTextures = sharedSpriteTextureCache == null;
-            _prevKeyboard = Keyboard.GetState();
+            _prevKeyboard = LayoutKeyboard.GetState();
             _prevMouse = Mouse.GetState();
 
             LoadLevel();
@@ -846,14 +846,14 @@ namespace FunkyMakerPlayer.Editors.Chart
         {
             if (!_hitsoundsEnabled) return;
             EnsureAudioCuesInitialized();
-            try { _hitSoundFx?.Play(0.70f, 0f, 0f); } catch { }
+            try { _hitSoundFx?.Play(0.70f * Game1.MasterVolume, 0f, 0f); } catch { }
         }
 
         private void PlayMetronomeTick(bool downbeat)
         {
             if (!_metronomeEnabled) return;
             EnsureAudioCuesInitialized();
-            try { (downbeat ? _metroBeatFx : _metroSubFx)?.Play(downbeat ? 0.75f : 0.52f, 0f, 0f); } catch { }
+            try { (downbeat ? _metroBeatFx : _metroSubFx)?.Play((downbeat ? 0.75f : 0.52f) * Game1.MasterVolume, 0f, 0f); } catch { }
         }
 
         private void StepToggleNoteAtPlayhead(int lane)
@@ -1073,7 +1073,7 @@ namespace FunkyMakerPlayer.Editors.Chart
             bool leftJustPressed = leftDown && _prevMouse.LeftButton == ButtonState.Released;
             bool leftJustReleased = !leftDown && _prevMouse.LeftButton == ButtonState.Pressed;
             bool rightJustPressed = ms.RightButton == ButtonState.Pressed && _prevMouse.RightButton == ButtonState.Released;
-            var kbNow = Keyboard.GetState();
+            var kbNow = LayoutKeyboard.GetState();
             bool shift = kbNow.IsKeyDown(Keys.LeftShift) || kbNow.IsKeyDown(Keys.RightShift);
             bool ctrl = kbNow.IsKeyDown(Keys.LeftControl) || kbNow.IsKeyDown(Keys.RightControl);
 
@@ -1937,7 +1937,7 @@ namespace FunkyMakerPlayer.Editors.Chart
             {
                 if ((int)objs[j].StrumLine != sl) continue;
                 var anim = _previewAnimators[j];
-                if (anim == null || !anim.Visible || anim.Opacity <= 0.01f || anim.IsSetByEvent) continue;
+                if (anim == null || anim.IsSetByEvent) continue;
                 if (anim.CurrentAnimIndex == targetAnim)
                     anim.HoldUntil = Math.Max(anim.HoldUntil, holdEnd);
                 else
@@ -1956,13 +1956,7 @@ namespace FunkyMakerPlayer.Editors.Chart
                 var anim = _previewAnimators[i];
                 if (anim == null) continue;
                 anim.HoldUntil = -1f;
-                int idleIdx = 0;
-                if (anim.IsCharacter && _previewLevel.Sprites.TryGetValue(objs[i].Spr, out var sprPair))
-                {
-                    if (sprPair.Def.Data.Count > 1 && sprPair.Def.Data[0].FrameCount == 1)
-                        idleIdx = 1;
-                }
-                anim.SetAnimation(idleIdx, setByEvent: false);
+                anim.SetAnimation(SpriteAnimator.IdleAnim, setByEvent: false);
             }
         }
 

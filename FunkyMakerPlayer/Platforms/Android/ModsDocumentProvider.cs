@@ -54,25 +54,14 @@ namespace FunkyMakerPlayer.Platforms.Android
         {
             try
             {
-                // Use the PUBLIC mods directory (Documents/FunkyMakerPlayerPublicMods/mods/)
-                // This matches PlatformPaths.GetModsBasePath() for Android
-                var documentsDir = global::Android.OS.Environment.GetExternalStoragePublicDirectory(global::Android.OS.Environment.DirectoryDocuments);
-                
-                if (documentsDir == null)
-                {
-                    Console.WriteLine("[ModsDocumentProvider] WARNING: Documents directory is null, using fallback");
-                    // Fallback to app-private directory if Documents is unavailable
-                    var externalFilesDir = Context?.GetExternalFilesDir(null);
-                    if (externalFilesDir == null) return false;
-                    _modsDirectory = new Java.IO.File(externalFilesDir, "mods");
-                }
-                else
-                {
-                    // Use Documents/FunkyMakerPlayerPublicMods/mods/ (user-accessible)
-                    var funkyMakerPublicDir = new Java.IO.File(documentsDir, "FunkyMakerPlayerPublicMods");
-                    _modsDirectory = new Java.IO.File(funkyMakerPublicDir, "mods");
-                }
-                
+                // Fork: expose the folder the game actually reads (PlatformPaths.GetModsBasePath():
+                // <external app files>/mods). This used to point at Documents/FunkyMakerPlayerPublicMods/mods,
+                // a different folder, so the Files app showed mods the game never loaded and the
+                // game's own levels could not be reached from the phone.
+                var baseDir = Context?.GetExternalFilesDir(null) ?? Context?.FilesDir;
+                if (baseDir == null) return false;
+                _modsDirectory = new Java.IO.File(baseDir, "mods");
+
                 // Create mods directory if it doesn't exist
                 if (!_modsDirectory.Exists())
                 {
@@ -104,9 +93,9 @@ namespace FunkyMakerPlayer.Platforms.Android
                 row.Add(DocumentsContract.Root.ColumnTitle, "FunkyMaker Mods");
                 row.Add(DocumentsContract.Root.ColumnSummary, "Custom levels and mods");
                 
-                // Allow creating files and show recents
-                // FLAG_SUPPORTS_CREATE = 8, FLAG_SUPPORTS_RECENTS = 2
-                var flags = 8 | 2;  // SupportsCreate | SupportsRecents
+                // FLAG_SUPPORTS_CREATE = 1, FLAG_SUPPORTS_IS_CHILD = 16 (fork: the old 8 | 2 meant
+                // SUPPORTS_SEARCH | LOCAL_ONLY; recents is not implemented, so it is not offered)
+                var flags = 1 | 16;
                 row.Add(DocumentsContract.Root.ColumnFlags, flags);
                 
                 row.Add(DocumentsContract.Root.ColumnDocumentId, GetDocIdForFile(_modsDirectory));
@@ -229,15 +218,53 @@ namespace FunkyMakerPlayer.Platforms.Android
         {
             try
             {
-                if (string.IsNullOrEmpty(parentDocumentId) || string.IsNullOrEmpty(documentId))
-                    return false;
-                
-                return documentId.StartsWith(parentDocumentId);
+                var parent = GetFileForDocId(parentDocumentId);
+                var child = GetFileForDocId(documentId);
+                if (parent == null || child == null) return false;
+                string parentPath = parent.CanonicalPath.TrimEnd('/') + "/";
+                return child.CanonicalPath.StartsWith(parentPath, StringComparison.Ordinal);
             }
             catch
             {
                 return false;
             }
+        }
+
+        // Fork: documents advertised FLAG_SUPPORTS_DELETE / RENAME, but these overrides were
+        // missing, so deleting or renaming from the Files app failed.
+        public override void DeleteDocument(string? documentId)
+        {
+            var file = GetFileForDocId(documentId);
+            if (file == null || documentId == "root")
+                throw new Java.IO.FileNotFoundException($"Cannot delete {documentId}");
+            if (!DeleteRecursive(file))
+                throw new Java.IO.IOException($"Failed to delete {documentId}");
+        }
+
+        public override string? RenameDocument(string? documentId, string? displayName)
+        {
+            var file = GetFileForDocId(documentId);
+            if (file == null || documentId == "root" || string.IsNullOrWhiteSpace(displayName) ||
+                displayName.Contains('/') || displayName == "." || displayName == "..")
+                throw new Java.IO.FileNotFoundException($"Cannot rename {documentId}");
+            var parent = file.ParentFile;
+            if (parent == null) throw new Java.IO.FileNotFoundException($"Cannot rename {documentId}");
+            var target = new Java.IO.File(parent, displayName);
+            if (target.Exists() || !file.RenameTo(target))
+                throw new Java.IO.IOException($"Failed to rename {documentId}");
+            return GetDocIdForFile(target);
+        }
+
+        private static bool DeleteRecursive(Java.IO.File file)
+        {
+            if (file.IsDirectory)
+            {
+                var children = file.ListFiles();
+                if (children != null)
+                    foreach (var child in children)
+                        DeleteRecursive(child);
+            }
+            return file.Delete();
         }
         
         /// <summary>
@@ -270,8 +297,11 @@ namespace FunkyMakerPlayer.Platforms.Android
             
             if (docId == "root")
                 return _modsDirectory;
-            
-            return new Java.IO.File(_modsDirectory, docId);
+
+            // Fork: refuse ids that escape the mods folder ("../..").
+            var file = new Java.IO.File(_modsDirectory, docId);
+            string root = _modsDirectory.CanonicalPath.TrimEnd('/') + "/";
+            return file.CanonicalPath.StartsWith(root, StringComparison.Ordinal) ? file : null;
         }
         
         /// <summary>

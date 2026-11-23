@@ -1,6 +1,7 @@
 using System;
 using System.IO;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using Microsoft.Xna.Framework;
 
 namespace FunkyMakerPlayer;
@@ -29,44 +30,50 @@ public static class Settings
 
     private class Data
     {
-        public bool  Autoplay          { get; set; } = false;
+        public bool  Botplay           { get; set; } = false;
+        /// <summary>Legacy name of <see cref="Botplay"/> (read from old files only).</summary>
+        [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+        public bool? Autoplay          { get; set; }
         public bool  Downscroll        { get; set; } = false;
         public bool  VSync             { get; set; } = true;
         public float ScrollMultiplier  { get; set; } = 1.0f;
         public bool  ShowTimer         { get; set; } = true;
-        public bool  TimeskipEnabled   { get; set; } = true;
+        /// <summary>Seconds per Timeskip step; 0 = Timeskip off.</summary>
         public float TimeskipSeconds   { get; set; } = 10f;
+        /// <summary>Legacy on/off switch (read from old files only): false meant Timeskip off.</summary>
+        [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+        public bool? TimeskipEnabled   { get; set; }
         public int   TimerColorPreset  { get; set; } = 0;
         
         // ── Timer Bar Options (V-Slice style with Legacy support) ─────────────
-        public string TimerPreset      { get; set; } = "Custom HUD";  // Legacy, Custom HUD, Top, Left, Middle, Right, Strumline
+        public string TimerPreset      { get; set; } = "HUD Editor";  // Legacy, HUD Editor ("Custom HUD" in old files), Top, Left, Middle, Right, Strumline
         public string TimerTextMode    { get; set; } = "Time Left";   // Time Left, Time Elapsed, Song Name, Song Name + Difficulty, None
         public bool   TimerForceTop    { get; set; } = false;         // Ignore downscroll (only for Top/Left/Middle/Right/Strumline presets)
         public bool  ShowDebugInfo     { get; set; } = false;
         public bool  ShowFpsCounter    { get; set; } = false;
-        public bool  Midlescroll       { get; set; } = false;
-        public float MusicVolume       { get; set; } = 0.85f;
+        /// <summary>(fork) Render gameplay at the window's resolution (true) or the classic fixed 720p (false).</summary>
+        public bool  NativeRenderResolution { get; set; } = true;
+        public bool  Midlescroll      { get; set; } = false;
+        /// <summary>Master volume: scales every sound.</summary>
+        public float? MasterVolume     { get; set; }
+        /// <summary>Legacy name of <see cref="MasterVolume"/> (read from old files only).</summary>
+        [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+        public float? MusicVolume      { get; set; }
+        public float SongVolume        { get; set; } = 1.0f;   // song music, scaled by master
         public float SfxVolume         { get; set; } = 0.8f;   // UI sound effects (UiSfx)
         public float MenuMusicVolume   { get; set; } = 0.7f;   // menu background music (OnlineMenuMusic)
-        public bool  BilinearFiltering { get; set; } = true;
+        /// <summary>Fork: settings for osu! songs (Osu/OsuSettings.cs).</summary>
+        public Osu.OsuSettings.Data? Osu { get; set; }
         public string NoteStyleName    { get; set; } = DefaultMods.NoteStyleName;
         public string NoteSplashStyleName { get; set; } = DefaultMods.SplashName;
+        /// <summary>Fork: UI font file in mods/fonts chosen in Settings → Font Style (null = default).</summary>
+        [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+        public string? UiFontFile { get; set; }
         public bool  ShowStrumlines       { get; set; } = true;
         public bool  HidePlayerStrumline  { get; set; } = false;
         public bool  HideExtraStrumlines { get; set; } = false;
         public bool  HideOpponentStrumline { get; set; } = false;
         public bool  ShowCombo         { get; set; } = true;
-        
-        // ── Color Grading Shader (FNF Erect-Style - Subtle) ──────────────────
-        public bool  ColorGradeEnabled        { get; set; } = false;
-        public float ColorGradeHue            { get; set; } = -0.05f;
-        public float ColorGradeSaturation     { get; set; } = 0.80f;
-        public float ColorGradeBrightness     { get; set; } = 0.00f;
-        public float ColorGradeContrast       { get; set; } = 1.00f;
-        public float ColorGradeShadowAmount   { get; set; } = 0.35f;
-        public float ColorGradeShadowTintR    { get; set; } = 0.65f;
-        public float ColorGradeShadowTintG    { get; set; } = 0.55f;
-        public float ColorGradeShadowTintB    { get; set; } = 0.90f;
         
         // ── Gameplay Quality of Life Settings ────────────────────────────────
         /// <summary>
@@ -90,18 +97,9 @@ public static class Settings
         public float SafeFramesTime    { get; set; } = 0.083f;
         
         /// <summary>
-        /// Camera Follow Player: When enabled, camera smoothly follows the singing character.
-        /// Automatically switches between player and opponent based on who has upcoming notes.
-        /// Uses actual object positions from movement events.
-        /// Default: false (disabled)
+        /// Health icons: 0 = move with the health bar divider (FNF style), 1 = pinned to the bar ends.
         /// </summary>
-        public bool CameraFollowPlayer { get; set; } = false;
-        
-        /// <summary>
-        /// Icon positioning mode: Fixed (FNF base - icons move with health %) or Dynamic (icons stay at ends)
-        /// Default: 0 (Fixed/FNF Base style)
-        /// </summary>
-        public int IconMode { get; set; } = 0; // 0 = Fixed (FNF base), 1 = Dynamic
+        public int IconMode { get; set; } = 0;
         
         // ── Arrow Effects Settings ────────────────────────────────────────────
         /// <summary>
@@ -110,24 +108,15 @@ public static class Settings
         /// </summary>
         public bool  ArrowEffectsEnabled     { get; set; } = false;
         
-        /// <summary>
-        /// Arrow Effect Intensity: Multiplier for effect strength (0.0 to 1.0).
-        /// Default: 1.0 (full intensity)
-        /// </summary>
-        public float ArrowEffectIntensity    { get; set; } = 1.0f;
-        
-        /// <summary>
-        /// Arrow Effect Chance: Probability per beat to trigger an effect (0.0 to 1.0).
-        /// Default: 0.25 (25% chance)
-        /// </summary>
-        public float ArrowEffectChance       { get; set; } = 0.25f;
-        
         // ── Android Touch Controls Settings ───────────────────────────────────
         /// <summary>
         /// Hide Touch Hitbox Colors: When true, touch hitboxes are completely invisible (android only).
         /// Default: false (hitboxes show subtle colors when pressed)
         /// </summary>
         public bool  HideTouchHitboxColors   { get; set; } = false;
+
+        /// <summary>(fork) Opacity of a touch hitbox while it is pressed, 0-1 (android only). Default 30 %.</summary>
+        public float TouchHitboxOpacity      { get; set; } = 0.3f;
         
         /// <summary>
         /// Selected Arrow Effect: 0=Random, 1=WhiteGlow, 2=BounceVertical, 3=Spin360, 4=BounceHorizontal, 5=Dizzy
@@ -149,6 +138,12 @@ public static class Settings
         /// Default: D, F, J, K
         /// </summary>
         public string[] PlayerKeyBindings { get; set; } = { "D", "F", "J", "K" };
+
+        /// <summary>Fork: rebindable hotkeys (Settings → CONTROLS), action → [primary, alternate].</summary>
+        public System.Collections.Generic.Dictionary<string, string[]>? Hotkeys { get; set; }
+
+        /// <summary>Fork: frame rate cap in FPS (0 = unlimited).</summary>
+        public int FpsCap { get; set; } = 0;
     }
 
     public static void Load(Game1 game)
@@ -159,7 +154,7 @@ public static class Settings
             var d = JsonSerializer.Deserialize<Data>(File.ReadAllText(_path));
             if (d == null) return;
 
-            NoteRenderer.Autoplay          = d.Autoplay;
+            NoteRenderer.Botplay           = d.Autoplay ?? d.Botplay;
             NoteRenderer.Downscroll        = d.Downscroll;
             NoteRenderer.ScrollMultiplier  = d.ScrollMultiplier <= 0f ? 1.0f : Math.Clamp(d.ScrollMultiplier, 0.25f, 5.0f);
             NoteRenderer.Midlescroll       = d.Midlescroll;
@@ -168,20 +163,22 @@ public static class Settings
             NoteRenderer.LaneUnderlay      = Math.Clamp(d.LaneUnderlay, 0f, NoteRenderer.LaneUnderlayMax);
             NoteRenderer.InputBuffer       = Math.Clamp(d.InputBuffer, 0f, 0.010f);
             NoteRenderer.SafeFramesTime    = Math.Clamp(d.SafeFramesTime, 0f, 0.083f);
-            NoteRenderer.CameraFollowPlayer = d.CameraFollowPlayer;
             Game1.ShowTimer                = d.ShowTimer;
-            Game1.TimeskipEnabled          = d.TimeskipEnabled;
-            Game1.TimeskipSeconds          = Math.Clamp(d.TimeskipSeconds, 5f, 60f);
+            Game1.TimeskipSeconds          = d.TimeskipEnabled == false || d.TimeskipSeconds <= 0f
+                                                 ? 0f
+                                                 : Math.Clamp(d.TimeskipSeconds, 5f, 60f);
             Game1.TimerColorPreset         = d.TimerColorPreset;
-            Game1.TimerPreset              = d.TimerPreset;
+            Game1.TimerPreset              = d.TimerPreset == "Custom HUD" ? "HUD Editor" : d.TimerPreset;
             Game1.TimerTextMode            = d.TimerTextMode;
             Game1.TimerForceTop            = d.TimerForceTop;
             Game1.ShowDebugInfo            = d.ShowDebugInfo;
             Game1.ShowFpsCounter           = d.ShowFpsCounter;
-            Game1.MusicVolume              = Math.Clamp(d.MusicVolume, 0f, 1f);
+            Game1.NativeRenderResolution   = d.NativeRenderResolution;
+            Game1.MasterVolume             = Math.Clamp(d.MasterVolume ?? d.MusicVolume ?? 0.85f, 0f, 1f);
+            Game1.SongVolume               = Math.Clamp(d.SongVolume, 0f, 1f);
             UI.UiSfx.Volume                = Math.Clamp(d.SfxVolume, 0f, 1f);
             Managers.OnlineMenuMusic.Volume = Math.Clamp(d.MenuMusicVolume, 0f, 1f);
-            Game1.BilinearFiltering        = d.BilinearFiltering;
+            FunkyMakerPlayer.Osu.OsuSettings.Import(d.Osu);
             // Old saves say "Default"; show the current default's name instead
             Game1.NoteStyleName            = DefaultMods.IsDefaultNoteStyle(d.NoteStyleName)
                                                  ? DefaultMods.NoteStyleName
@@ -190,27 +187,18 @@ public static class Settings
             Game1.NoteSplashStyleName      = DefaultMods.IsDefaultSplash(d.NoteSplashStyleName)
                                                  ? DefaultMods.SplashName
                                                  : d.NoteSplashStyleName;
+            Game1.UiFontFile               = d.UiFontFile;
             NoteRenderer.ShowStrumlines    = d.ShowStrumlines;
             NoteRenderer.HidePlayerStrumline = d.HidePlayerStrumline;
             Game1.HideExtraStrumlines      = d.HideExtraStrumlines;
             Game1.HideOpponentStrumline    = d.HideOpponentStrumline;
             Game1.ShowCombo                = d.ShowCombo;
-            Game1.ColorGradeEnabled        = d.ColorGradeEnabled;
-            Game1.ColorGradeHue            = d.ColorGradeHue;
-            Game1.ColorGradeSaturation     = d.ColorGradeSaturation;
-            Game1.ColorGradeBrightness     = d.ColorGradeBrightness;
-            Game1.ColorGradeContrast       = d.ColorGradeContrast;
-            Game1.ColorGradeShadowAmount   = d.ColorGradeShadowAmount;
-            Game1.ColorGradeShadowTintR    = d.ColorGradeShadowTintR;
-            Game1.ColorGradeShadowTintG    = d.ColorGradeShadowTintG;
-            Game1.ColorGradeShadowTintB    = d.ColorGradeShadowTintB;
             Game1.IconMode                 = d.IconMode;
             ArrowEffectManager.Enabled         = d.ArrowEffectsEnabled;
-            ArrowEffectManager.EffectIntensity = d.ArrowEffectIntensity;
-            ArrowEffectManager.EffectChance    = d.ArrowEffectChance;
             ArrowEffectManager.SelectedEffect  = d.ArrowSelectedEffect;
             Game1.SelectedCountdown            = d.SelectedCountdown;
             Game1.HideTouchHitboxColors        = d.HideTouchHitboxColors;
+            Game1.TouchHitboxOpacity           = Math.Clamp(d.TouchHitboxOpacity, 0f, 1f);
             
             // Load key bindings
             if (d.PlayerKeyBindings != null && d.PlayerKeyBindings.Length == 4)
@@ -224,6 +212,9 @@ public static class Settings
                 }
             }
             
+            Controls.Import(d.Hotkeys);
+            Game1.FpsCap = Array.IndexOf(Game1.FpsCapOptions, d.FpsCap) >= 0 ? d.FpsCap : 0;
+
             // VSync is applied via GraphicsDeviceManager — handled in Game1.ApplySettings
             game.ApplyLoadedSettings(d.VSync);
         }
@@ -240,7 +231,7 @@ public static class Settings
             Directory.CreateDirectory(Path.GetDirectoryName(_path)!);
             var d = new Data
             {
-                Autoplay         = NoteRenderer.Autoplay,
+                Botplay          = NoteRenderer.Botplay,
                 Downscroll       = NoteRenderer.Downscroll,
                 VSync            = vsync,
                 ScrollMultiplier = NoteRenderer.ScrollMultiplier,
@@ -250,9 +241,7 @@ public static class Settings
                 LaneUnderlay     = NoteRenderer.LaneUnderlay,
                 InputBuffer      = NoteRenderer.InputBuffer,
                 SafeFramesTime   = NoteRenderer.SafeFramesTime,
-                CameraFollowPlayer = NoteRenderer.CameraFollowPlayer,
                 ShowTimer        = Game1.ShowTimer,
-                TimeskipEnabled  = Game1.TimeskipEnabled,
                 TimeskipSeconds  = Game1.TimeskipSeconds,
                 TimerColorPreset = Game1.TimerColorPreset,
                 TimerPreset      = Game1.TimerPreset,
@@ -260,40 +249,35 @@ public static class Settings
                 TimerForceTop    = Game1.TimerForceTop,
                 ShowDebugInfo    = Game1.ShowDebugInfo,
                 ShowFpsCounter   = Game1.ShowFpsCounter,
-                MusicVolume      = Game1.MusicVolume,
+                NativeRenderResolution = Game1.NativeRenderResolution,
+                MasterVolume     = Game1.MasterVolume,
+                SongVolume       = Game1.SongVolume,
                 SfxVolume        = UI.UiSfx.Volume,
                 MenuMusicVolume  = Managers.OnlineMenuMusic.Volume,
-                BilinearFiltering = Game1.BilinearFiltering,
+                Osu              = FunkyMakerPlayer.Osu.OsuSettings.Export(),
                 NoteStyleName     = Game1.NoteStyleName,
                 NoteSplashStyleName = Game1.NoteSplashStyleName,
+                UiFontFile          = Game1.UiFontFile,
                 ShowStrumlines      = NoteRenderer.ShowStrumlines,
                 HidePlayerStrumline = NoteRenderer.HidePlayerStrumline,
                 HideExtraStrumlines = Game1.HideExtraStrumlines,
                 HideOpponentStrumline = Game1.HideOpponentStrumline,
                 ShowCombo = Game1.ShowCombo,
-                ColorGradeEnabled = Game1.ColorGradeEnabled,
-                ColorGradeHue = Game1.ColorGradeHue,
-                ColorGradeSaturation = Game1.ColorGradeSaturation,
-                ColorGradeBrightness = Game1.ColorGradeBrightness,
-                ColorGradeContrast = Game1.ColorGradeContrast,
-                ColorGradeShadowAmount = Game1.ColorGradeShadowAmount,
-                ColorGradeShadowTintR = Game1.ColorGradeShadowTintR,
-                ColorGradeShadowTintG = Game1.ColorGradeShadowTintG,
-                ColorGradeShadowTintB = Game1.ColorGradeShadowTintB,
                 IconMode = Game1.IconMode,
                 ArrowEffectsEnabled = ArrowEffectManager.Enabled,
-                ArrowEffectIntensity = ArrowEffectManager.EffectIntensity,
-                ArrowEffectChance = ArrowEffectManager.EffectChance,
                 ArrowSelectedEffect = ArrowEffectManager.SelectedEffect,
                 SelectedCountdown = Game1.SelectedCountdown,
                 HideTouchHitboxColors = Game1.HideTouchHitboxColors,
+                TouchHitboxOpacity = Game1.TouchHitboxOpacity,
                 PlayerKeyBindings = new string[]
                 {
                     NoteRenderer.PlayerKeys[0].ToString(),
                     NoteRenderer.PlayerKeys[1].ToString(),
                     NoteRenderer.PlayerKeys[2].ToString(),
                     NoteRenderer.PlayerKeys[3].ToString()
-                }
+                },
+                Hotkeys = Controls.Export(),
+                FpsCap = Game1.FpsCap,
             };
             File.WriteAllText(_path, JsonSerializer.Serialize(d,
                 new JsonSerializerOptions { WriteIndented = true }));

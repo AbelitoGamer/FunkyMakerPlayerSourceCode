@@ -281,6 +281,30 @@ namespace FunkyMakerPlayer.Multiplayer
         }
 
         /// <summary>
+        /// Replays (fork): writes the cached official level with this SHA-256 (from the disk cache)
+        /// to a temp .FNMM and returns its path, or null if it isn't cached / doesn't match.
+        /// </summary>
+        public string? WriteTempFileForHash(string hash)
+        {
+            try
+            {
+                string? cachePath = GetDiskCachePath(hash);
+                if (cachePath == null || !File.Exists(cachePath)) return null;
+                byte[] data = File.ReadAllBytes(cachePath);
+                if (!string.Equals(LevelHasher.CalculateHash(data), hash, StringComparison.OrdinalIgnoreCase)) return null;
+                string tempPath = Path.Combine(Path.GetTempPath(), $"funkymaker_temp_replay{hash[..8]}_{System.Diagnostics.Process.GetCurrentProcess().Id}.FNMM");
+                if (!File.Exists(tempPath) || new FileInfo(tempPath).Length != data.Length)
+                    File.WriteAllBytes(tempPath, data);
+                return tempPath;
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[LevelCache] Replay temp file failed: {ex.Message}");
+                return null;
+            }
+        }
+
+        /// <summary>
         /// Clean up a temporary file.
         /// </summary>
         public void DeleteTempFile(string tempPath)

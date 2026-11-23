@@ -245,7 +245,7 @@ namespace FunkyMakerPlayer
             float deltaTime = (float)gameTime.ElapsedGameTime.TotalSeconds;
             
             // Handle keyboard input
-            var kb = Keyboard.GetState();
+            var kb = LayoutKeyboard.GetState();
             if (kb.IsKeyDown(Keys.Escape) || kb.IsKeyDown(Keys.Back))
             {
                 UI.UiSfx.Play(UI.UiSound.Back);

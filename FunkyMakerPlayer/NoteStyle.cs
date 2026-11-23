@@ -302,6 +302,11 @@ public class NoteStyle
     /// <summary>Images and settings of an FMM-faithful style; null for atlas styles.</summary>
     public FmmNoteAssets? Fmm { get; set; }
     
+    /// <summary>Fork: osu!mania skin folder this style was built from (null for other styles).</summary>
+    public string? OsuSkinFolder { get; set; }
+    /// <summary>Fork: osu! skins are built for one scroll direction (notes flipped for upscroll).</summary>
+    public bool OsuBuiltForDownscroll { get; set; }
+
     public float NoteScale         { get; set; } = 0.65f;
     public float ReceptorScale     { get; set; } = 0.65f;
 
@@ -774,6 +779,10 @@ public class NoteStyle
         // skin.json "noteSystem": "fmm" → plain images, rotated and tinted per lane
         if (FmmNoteSystem.IsFmmFolder(folderPath))
             return FmmNoteSystem.Load(folderPath, gd);
+
+        // osu!mania skin (imported .osk): converted into a style (fork, Osu/OsuManiaSkin.cs)
+        if (Osu.OsuManiaSkin.IsSkinFolder(folderPath))
+            return Osu.OsuManiaSkin.Load(folderPath, gd);
 
         try
         {
@@ -1368,9 +1377,9 @@ public class NoteStyle
                 if (DefaultMods.IsDefaultNoteStyle(name)) continue; // already listed first
                 // Accept any folder that has at least one PNG and one XML (atlas system),
                 // or an FMM-system folder (skin.json "noteSystem": "fmm", plain PNGs)
-                bool hasPng = Directory.GetFiles(dir, "*.png").Length > 0;
-                bool hasXml = Directory.GetFiles(dir, "*.xml").Length > 0;
-                if ((hasPng && hasXml) || FmmNoteSystem.IsFmmFolder(dir))
+                bool hasPng = CaseInsensitivePaths.HasFileWithExtension(dir, ".png");
+                bool hasXml = CaseInsensitivePaths.HasFileWithExtension(dir, ".xml");
+                if ((hasPng && hasXml) || FmmNoteSystem.IsFmmFolder(dir) || Osu.OsuManiaSkin.IsSkinFolder(dir))
                     styles.Add(name);
             }
         }

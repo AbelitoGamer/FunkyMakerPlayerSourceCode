@@ -16,12 +16,14 @@ public class TimerBar
     
     // Configuration (from Game1 static fields)
     public bool ShowTimer { get; set; } = true;
-    public string Preset { get; set; } = "Custom HUD";  // Legacy, Custom HUD, Top, Left, Middle, Right, Strumline
-    public string TextMode { get; set; } = "Time Left";  // Time Left, Time Elapsed, Song Name, None
+    public string Preset { get; set; } = "HUD Editor";  // Legacy, HUD Editor, Top, Left, Middle, Right, Strumline
+    public string TextMode { get; set; } = "Time Left";  // Time Left, Time Elapsed, Song Name, Song Name + Difficulty, None
+    /// <summary>Star rating shown by the "Song Name + Difficulty" text mode (null = unknown).</summary>
+    public double? Stars { get; set; }
     public bool ForceTop { get; set; } = false;
     public int ColorPreset { get; set; } = 0;  // 0=white, 1=cyan, 2=pink, 3=yellow, 4=green, 5=player, 6=opponent
     
-    // Custom HUD position/size (from HudSettings)
+    // HUD Editor position/size (from HudSettings)
     public Point Position { get; set; } = new Point(340, 4);
     public Point Size { get; set; } = new Point(600, 32);
     
@@ -40,9 +42,9 @@ public class TimerBar
     {
         if (!ShowTimer || !started || songEndTime <= 0f || songEndTime >= float.MaxValue) return;
         
-        if (Preset == "Legacy" || Preset == "Custom HUD")
+        if (Preset == "Legacy" || Preset == "HUD Editor")
         {
-            DrawLegacyTimer(screenWidth, screenHeight, songTime, songEndTime, playerBarColor, opponentBarColor);
+            DrawLegacyTimer(screenWidth, screenHeight, songTime, songEndTime, levelName, playerBarColor, opponentBarColor);
         }
         else
         {
@@ -50,12 +52,28 @@ public class TimerBar
         }
     }
     
-    private void DrawLegacyTimer(int sw, int sh, float songTime, float songEndTime, 
+    /// <summary>Text inside the bar for the current <see cref="TextMode"/> (every preset uses it).</summary>
+    private string GetText(float songTime, float songEndTime, string? levelName)
+    {
+        float elapsed = Math.Max(0f, songTime);
+        float left = Math.Max(0f, songEndTime - songTime);
+        return TextMode switch
+        {
+            "Time Elapsed" => $"{(int)(elapsed / 60)}:{(int)(elapsed % 60):D2}",
+            "Song Name" => levelName ?? "Unknown",
+            "Song Name + Difficulty" => Stars is double st
+                ? $"{levelName ?? "Unknown"} ({st.ToString("0.00", System.Globalization.CultureInfo.InvariantCulture)}*)"
+                : levelName ?? "Unknown",
+            "None" => "",
+            _ => $"{(int)(left / 60)}:{(int)(left % 60):D2}",   // Time Left
+        };
+    }
+
+    private void DrawLegacyTimer(int sw, int sh, float songTime, float songEndTime, string? levelName,
                                 Color? playerBarColor, Color? opponentBarColor)
     {
         float progress = Math.Clamp(songTime / songEndTime, 0f, 1f);
-        float elapsed = Math.Max(0f, songTime);
-        string timeStr = $"{(int)(elapsed / 60)}:{(int)(elapsed % 60):D2}";
+        string timeStr = GetText(songTime, songEndTime, levelName);
         float labelScale = 0.9f;
         var labelSize = _font.MeasureString(timeStr) * labelScale;
         
@@ -106,8 +124,10 @@ public class TimerBar
             }
         }
         
-        // Time text with shadow for readability
-        float textX = sw / 2f - labelSize.X / 2f;
+        if (timeStr.Length == 0) return;
+
+        // Time text with shadow for readability (centered on the bar)
+        float textX = barX + barW / 2f - labelSize.X / 2f;
         float textY = barY + (barH - labelSize.Y) / 2f;
         
         // Text shadow
@@ -126,15 +146,7 @@ public class TimerBar
     {
         float progress = Math.Clamp(songTime / songEndTime, 0f, 1f);
         
-        // Get text based on TextMode
-        string timeStr = TextMode switch
-        {
-            "Time Elapsed" => $"{(int)(songTime / 60)}:{(int)(songTime % 60):D2}",
-            "Time Left" => $"{(int)((songEndTime - songTime) / 60)}:{(int)((songEndTime - songTime) % 60):D2}",
-            "Song Name" => levelName ?? "Unknown",
-            "None" => "",
-            _ => $"{(int)((songEndTime - songTime) / 60)}:{(int)((songEndTime - songTime) % 60):D2}"
-        };
+        string timeStr = GetText(songTime, songEndTime, levelName);
         
         Color timerFill = GetTimerColor(playerBarColor, opponentBarColor);
         

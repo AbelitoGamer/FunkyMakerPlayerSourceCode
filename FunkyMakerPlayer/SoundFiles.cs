@@ -54,7 +54,7 @@ public static class SoundFiles
     public static void Play(SoundEffect? sound, float gain = 1f)
     {
         if (sound == null) return;
-        float volume = Math.Clamp(Game1.MusicVolume * UI.UiSfx.Volume * gain, 0f, 1f);
+        float volume = Math.Clamp(Game1.MasterVolume * UI.UiSfx.Volume * gain, 0f, 1f);
         if (volume <= 0f) return;
         try { sound.Play(volume, 0f, 0f); }
         catch (Exception ex) { Console.WriteLine($"[SoundFiles] Play failed: {ex.Message}"); }

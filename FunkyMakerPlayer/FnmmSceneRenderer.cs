@@ -48,6 +48,17 @@ public static class FnmmSceneRenderer
     /// <summary>
     /// Queries OpenGL max texture size clamped to MonoGame's internal 16384px ceiling.
     /// </summary>
+    /// <summary>Images of the last <see cref="LoadLevelTextures"/> that failed to load (they are skipped,
+    /// so a phone out of memory showed a black scene with no message). First error kept for the message.</summary>
+    public static int LastFailedTextures { get; private set; }
+    public static string? LastTextureError { get; private set; }
+
+    private static void NoteTextureFailure(Exception ex)
+    {
+        LastFailedTextures++;
+        LastTextureError ??= ex is OutOfMemoryException ? "out of memory" : ex.Message;
+    }
+
     public static int GetGpuMaxTextureSize()
     {
         try
@@ -102,6 +113,8 @@ public static class FnmmSceneRenderer
         Action<float, string>? onProgress = null,
         Action? onRenderTick = null)
     {
+        LastFailedTextures = 0;
+        LastTextureError = null;
         var texCache = new Dictionary<string, List<Texture2D>>(StringComparer.OrdinalIgnoreCase);
 
         var spriteUsage = new Dictionary<string, (bool usedByBg, bool usedByChar)>(StringComparer.OrdinalIgnoreCase);
@@ -249,6 +262,7 @@ public static class FnmmSceneRenderer
                     }
                     catch (Exception exProbe)
                     {
+                        NoteTextureFailure(exProbe);
                         Console.WriteLine($"[Texture] {name}[{fi}]: skipped — ImageSharp failed: {exProbe.Message}");
                         continue;
                     }
@@ -315,6 +329,7 @@ public static class FnmmSceneRenderer
                     }
                     catch (Exception ex)
                     {
+                        NoteTextureFailure(ex);
                         Console.WriteLine($"[Texture] Failed to load {name}[{fi}]: {ex.Message}");
                     }
                 }
@@ -332,6 +347,7 @@ public static class FnmmSceneRenderer
                     }
                     catch (Exception ex2)
                     {
+                        NoteTextureFailure(ex2);
                         Console.WriteLine($"[Texture] {name}[{fi}]: character atlas packing failed: {ex2.Message}");
                     }
                 }
@@ -586,9 +602,7 @@ public static class FnmmSceneRenderer
                 }
                 else if (obj.StrumLine >= 0f && obj.Visible && sprData.Def.Data.Count > 0)
                 {
-                    int idleAnim = (sprData.Def.Data.Count > 1 && sprData.Def.Data[0].FrameCount == 1) ? 1 : 0;
-                    if (idleAnim < sprData.Def.Data.Count)
-                        anim.SetAnimation(idleAnim);
+                    anim.SetAnimation(SpriteAnimator.IdleAnim);
                 }
 
                 animators[i] = anim;
@@ -617,8 +631,11 @@ public static class FnmmSceneRenderer
         int sh,
         Matrix camMatrix,
         Effect? activeEffect = null,
-        bool includeFixedOverlays = true)
+        bool includeFixedOverlays = true,
+        Matrix? outputTransform = null)
     {
+        // outputTransform (fork): logical → physical render-target scale, applied after every
+        // object matrix so callers keep working in logical (e.g. 1280×720) coordinates.
         var objs = level.Scene.Objects;
         bool isLandscape = level.Scene.Landscape;
         float camScale = events?.Camera.Scale ?? 1f;
@@ -668,6 +685,8 @@ public static class FnmmSceneRenderer
                 Matrix? matrix = matrixMode == 0 ? camMatrix
                                : matrixMode == 2 ? fixedWorldMatrix
                                : (Matrix?)null;
+                if (outputTransform.HasValue)
+                    matrix = (matrix ?? Matrix.Identity) * outputTransform.Value;
                 var sampler = wantBilinear ? SamplerState.LinearClamp : SamplerState.PointClamp;
                 sb.Begin(SpriteSortMode.Immediate, BlendState.AlphaBlend,
                     sampler, null, null, activeEffect, matrix);
@@ -1023,7 +1042,7 @@ public static class FnmmSceneRenderer
     }
 
     /// <summary>
-    /// Triggers the sing animation (1..4) and optional hold lock for all visible, non-event-locked
+    /// Triggers the sing animation (1..4) and optional hold lock for all non-event-locked (including hidden)
     /// characters assigned to <paramref name="strumlineIndex"/>.
     /// </summary>
     public static void TriggerCharacterSing(
@@ -1039,7 +1058,7 @@ public static class FnmmSceneRenderer
         {
             if ((int)objs[j].StrumLine != strumlineIndex) continue;
             var anim = animators[j];
-            if (anim == null || !anim.Visible || anim.Opacity <= 0.01f) continue;
+            if (anim == null) continue;
             if (anim.IsSetByEvent) continue;
 
             int singAnim = Math.Clamp(lane + 1, 1, Math.Max(1, anim.AnimCount - 1));
@@ -1157,6 +1176,7 @@ public static class FnmmSceneRenderer
         catch (Exception ex)
         {
             tex.Dispose();
+            NoteTextureFailure(ex);
             Console.WriteLine($"[Texture] SetData failed {texW}x{texH} (src {srcW}x{srcH}): {ex.Message}");
             return null;
         }

@@ -38,7 +38,7 @@ public class NoteGrid
     private const float BASE_SPEED = 600f; // Scroll speed
     
     // Keyboard state for arrow keys scrolling
-    private KeyboardState _prevKb = Keyboard.GetState();
+    private KeyboardState _prevKb = LayoutKeyboard.GetState();
     
     private int GetLaneCount(int strumlineIndex)
     {
@@ -298,7 +298,7 @@ public class NoteGrid
         _hoverNote = GetNoteAt(ms.Position, gridBounds);
         
         // Keyboard scrolling
-        KeyboardState kb = Keyboard.GetState();
+        KeyboardState kb = LayoutKeyboard.GetState();
         
         if (kb.IsKeyDown(Keys.Up))
             _scrollOffset += SCROLL_SPEED * dt;
