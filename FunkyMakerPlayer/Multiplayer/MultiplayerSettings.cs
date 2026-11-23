@@ -51,8 +51,18 @@ namespace FunkyMakerPlayer.Multiplayer
         /// </summary>
         private static string GetSettingsPath()
         {
+            // FUNKYMAKER_MP_PROFILE=<name> (fork, for testing two game windows on one PC): a separate
+            // settings file, so each window gets its own PlayerId / username / color.
+            string? profile = Environment.GetEnvironmentVariable(ProfileEnvironmentVariable);
+            if (!string.IsNullOrWhiteSpace(profile))
+            {
+                string safe = string.Concat(profile.Trim().Split(Path.GetInvalidFileNameChars()));
+                return Path.Combine(GetStorageDirectory(), $"multiplayer_settings.{safe}.json");
+            }
             return Path.Combine(GetStorageDirectory(), SETTINGS_FILE);
         }
+
+        public const string ProfileEnvironmentVariable = "FUNKYMAKER_MP_PROFILE";
 
         // ══════════════════════════════════════════════════════════════════════
         // Category 2: User Configuration
@@ -65,27 +75,28 @@ namespace FunkyMakerPlayer.Multiplayer
         // ══════════════════════════════════════════════════════════════════════
         // Category 3: Gameplay Configuration
         // ══════════════════════════════════════════════════════════════════════
-        public bool ShowOpponentNotes { get; set; } = true;
+        /// <summary>
+        /// Same setting as Settings → GAMEPLAY... → Opponent Strumline (fork: merged). Stored in
+        /// settings.json, not in the multiplayer file.
+        /// </summary>
+        [System.Text.Json.Serialization.JsonIgnore]
+        public bool ShowOpponentNotes
+        {
+            get => !Game1.HideOpponentStrumline;
+            set => Game1.HideOpponentStrumline = !value;
+        }
         public bool ShowOpponentScore { get; set; } = true;
         public bool ShowConnectionQuality { get; set; } = true;
-        public int GhostTransparency { get; set; } = 50; // 0-100%
+        /// <summary>Opacity (0-100%) of the opponent's notes in online matches ("Opponent Notes Opacity").</summary>
+        public int GhostTransparency { get; set; } = 50;
+        /// <summary>
+        /// Fork: osu! songs received from other players come without their background video (smaller
+        /// downloads). Told to the server in Hello (resent when changed).
+        /// </summary>
+        public bool OsuSkipVideo { get; set; } = false;
 
         // ══════════════════════════════════════════════════════════════════════
-        // Category 4: Notifications Configuration
-        // ══════════════════════════════════════════════════════════════════════
-        public bool MatchFoundSound { get; set; } = true;
-        public bool ChatNotifications { get; set; } = true;
-        public bool ReadyAlerts { get; set; } = true;
-
-        // ══════════════════════════════════════════════════════════════════════
-        // Category 5: Privacy Configuration
-        // ══════════════════════════════════════════════════════════════════════
-        public bool AllowMatchInvites { get; set; } = true;
-        public bool ShowOnlineStatus { get; set; } = true;
-        public bool AnonymousMode { get; set; } = false;
-
-        // ══════════════════════════════════════════════════════════════════════
-        // Category 6: Performance Configuration
+        // Category 4: Performance Configuration
         // ══════════════════════════════════════════════════════════════════════
         public enum NetworkUpdateRate
         {
@@ -95,10 +106,9 @@ namespace FunkyMakerPlayer.Multiplayer
         }
         public NetworkUpdateRate UpdateRate { get; set; } = NetworkUpdateRate.Medium;
         public bool EnableInterpolation { get; set; } = true;
-        public int BandwidthLimitKbps { get; set; } = 0; // 0 = unlimited
 
         // ══════════════════════════════════════════════════════════════════════
-        // Category 7: Visual Configuration
+        // Category 5: Visual Configuration
         // ══════════════════════════════════════════════════════════════════════
         public int HudOpacity { get; set; } = 100; // 0-100%
         
@@ -118,6 +128,49 @@ namespace FunkyMakerPlayer.Multiplayer
             Full
         }
         public UIMode InterfaceMode { get; set; } = UIMode.Full;
+
+        /// <summary>
+        /// Online server (rooms, matches, level transfers, leaderboard). Empty =
+        /// <see cref="DefaultServerUrl"/>. The environment variable FUNKYMAKER_SERVER_URL overrides it.
+        /// Only editable in the JSON file for now.
+        /// </summary>
+        public string ServerUrl { get; set; } = "";
+
+        /// <summary>Old name of <see cref="ServerUrl"/> (separate transfer server); used when ServerUrl is empty.</summary>
+        public string TransferServerUrl { get; set; } = "";
+
+        /// <summary>The fork's online server (room system). The old game server only speaks the 1v1 protocol.</summary>
+        public const string DefaultServerUrl = "https://funkymaker-transfer.onrender.com";
+        public const string ServerUrlEnvironmentVariable = "FUNKYMAKER_SERVER_URL";
+
+        /// <summary>Server to connect to: env var, then settings, then the default.</summary>
+        [System.Text.Json.Serialization.JsonIgnore]
+        public string EffectiveServerUrl
+        {
+            get
+            {
+                string? env = Environment.GetEnvironmentVariable(ServerUrlEnvironmentVariable);
+                string url = !string.IsNullOrWhiteSpace(env) ? env
+                    : !string.IsNullOrWhiteSpace(ServerUrl) ? ServerUrl
+                    : !string.IsNullOrWhiteSpace(TransferServerUrl) ? TransferServerUrl
+                    : DefaultServerUrl;
+                return url.Trim().TrimEnd('/');
+            }
+        }
+
+        /// <summary>What the strumline of the other side shows in Teams matches.</summary>
+        public enum RivalStrumlineMode
+        {
+            /// <summary>The first player of the other team (their real presses).</summary>
+            RealPlayer,
+            /// <summary>Played by the CPU, like the extra strumlines.</summary>
+            Cpu,
+        }
+        public RivalStrumlineMode TeamsRivalStrumline { get; set; } = RivalStrumlineMode.RealPlayer;
+
+        /// <summary>Where the in-match list of players and scores is drawn.</summary>
+        public enum ScoreListSide { Left, Right, Hidden }
+        public ScoreListSide ScoreListPosition { get; set; } = ScoreListSide.Left;
 
         // ══════════════════════════════════════════════════════════════════════
         // Save / Load Methods
@@ -284,29 +337,23 @@ namespace FunkyMakerPlayer.Multiplayer
             AvatarIndex = 0;
             PlayerColorHue = 180;
             
-            ShowOpponentNotes = true;
+            ShowOpponentNotes = true;   // also saved in settings.json (shared with Opponent Strumline)
             ShowOpponentScore = true;
             ShowConnectionQuality = true;
             GhostTransparency = 50;
             
-            MatchFoundSound = true;
-            ChatNotifications = true;
-            ReadyAlerts = true;
-            
-            AllowMatchInvites = true;
-            ShowOnlineStatus = true;
-            AnonymousMode = false;
-            
             UpdateRate = NetworkUpdateRate.Medium;
             EnableInterpolation = true;
-            BandwidthLimitKbps = 0;
             
             HudOpacity = 100;
+            TeamsRivalStrumline = RivalStrumlineMode.RealPlayer;
+            ScoreListPosition = ScoreListSide.Left;
             ConnectionIndicatorPosition = IndicatorPosition.TopLeft;
             InterfaceMode = UIMode.Full;
             SettingsSchemaVersion = 1;
             
             Save();
+            Game1.SaveSettings();
             Console.WriteLine("[Multiplayer Settings] Reset to defaults");
         }
     }
