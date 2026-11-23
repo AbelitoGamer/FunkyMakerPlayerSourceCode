@@ -448,4 +448,10 @@ public class FnmmLevel
     public Dictionary<string, byte[]> LooseImages { get; set; } = new(StringComparer.OrdinalIgnoreCase);
     public byte[]? MusicData { get; set; }
     public string  LevelName { get; set; } = "";
+    /// <summary>Fork: level converted from an osu!mania .osu (Osu/OsuLevelLoader).</summary>
+    public bool IsOsu { get; set; }
+    /// <summary>Fork (osu! levels): the beatmap background image, drawn behind the notes.</summary>
+    public byte[]? BackgroundImage { get; set; }
+    /// <summary>Fork (osu! levels): scroll speed changes, hitsounds, storyboard, video, beatmap skin.</summary>
+    public Osu.OsuLevelExtras? OsuExtras { get; set; }
 }
