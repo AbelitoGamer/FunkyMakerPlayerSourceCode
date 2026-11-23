@@ -32,6 +32,10 @@ public static class PlatformShare
     }
 
 #if !ANDROID
+    /// <summary>Shows a file or folder in the system file manager (fork: Freeplay "Show in folder").</summary>
+    public static bool Reveal(string path)
+        => (File.Exists(path) || Directory.Exists(path)) && RevealInFileManager(path);
+
     private static bool RevealInFileManager(string path)
     {
         try

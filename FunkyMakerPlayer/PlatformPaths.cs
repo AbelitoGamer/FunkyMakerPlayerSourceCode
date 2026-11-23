@@ -60,7 +60,8 @@ public static class PlatformPaths
         
         return modsPath;
 #else
-        return Path.Combine(GetAppBaseDirectory(), MODS_FOLDER);
+        // Fork: AppData (default) or next to the exe, chosen in Settings → AUDIO & VIDEO → Move Mods Folder.
+        return ModsStorage.CurrentPath;
 #endif
     }
     
@@ -148,6 +149,17 @@ public static class PlatformPaths
                 Console.WriteLine($"[PlatformPaths] --- Importing countdowns ---");
                 int count = ImportFolderContents(context, countdownsFolder, GetCountdownsPath());
                 Console.WriteLine($"[PlatformPaths] Imported {count} countdown items");
+                totalImported += count;
+            }
+
+            // Import osu! songs (fork): extracted set folders or .osz / .osk files (the Freeplay
+            // scan imports loose archives found in mods/osu).
+            var osuFolder = FindSubfolder(modsFolder, "osu");
+            if (osuFolder != null)
+            {
+                Console.WriteLine($"[PlatformPaths] --- Importing osu! songs ---");
+                int count = ImportFolderContents(context, osuFolder, FunkyMakerPlayer.Osu.OsuLibrary.RootFolder);
+                Console.WriteLine($"[PlatformPaths] Imported {count} osu! items");
                 totalImported += count;
             }
             
@@ -606,7 +618,9 @@ public static class PlatformPaths
                $"   • fonts/ - Custom fonts\n" +
                $"   • countdowns/ - Countdown assets\n\n" +
                $"3. Use 'GRANT FOLDER ACCESS' and select the folder containing 'mods'.\n" +
-               $"   Or use 'IMPORT FILE' to import a single level.";
+               $"   Or use 'IMPORT FILE' to import a single level.\n\n" +
+               $"The game's own mods folder also shows up as 'FunkyMaker Mods' in the\n" +
+               $"system Files app (side menu), where you can add, rename or delete files.";
 #else
         return $"Place custom content in the 'mods' folder next to the game executable.\n\n" +
                $"Subfolders: levels, notestyles, notesplashes, fonts, countdowns";
