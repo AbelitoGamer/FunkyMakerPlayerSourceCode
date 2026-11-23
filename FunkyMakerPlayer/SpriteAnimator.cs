@@ -47,7 +47,9 @@ public class SpriteAnimator
             if (anim.UsesPackedAtlas && anim.AtlasFrameRects != null && anim.AtlasFrameRects.Count > 0)
             {
                 var r = anim.AtlasFrameRects[0];
-                return new Vector2(r.Width * dc, r.Height * dc);
+                int fw = r.OrigWidth > 0 ? r.OrigWidth : r.Width;
+                int fh = r.OrigHeight > 0 ? r.OrigHeight : r.Height;
+                return new Vector2(fw * dc, fh * dc);
             }
             if (anim.IsSplit && anim.SplitOffset >= 0 && anim.SplitOffset < _textures.Count)
             {
@@ -570,9 +572,13 @@ public class SpriteAnimator
         frame  = Math.Clamp(frame, 0, fc - 1);
 
         var src        = new Rectangle(frame * fw, 0, fw, fh);
-        float dc       = _def.Data.Count > _currentAnim ? _def.Data[_currentAnim].DownscaleCompensation : 1.0f;
+        float dc       = _def.Data.Count > _currentAnim && _def.Data[_currentAnim].DownscaleCompensation > 0f
+            ? _def.Data[_currentAnim].DownscaleCompensation
+            : 1.0f;
         var finalScale = Scale * sprScale * dc;
         var effects    = BuildEffects(ref finalScale);
+        float scaledOX = offset.X / dc;
+        float scaledOY = offset.Y / dc;
 
         if (IsFixed)
         {
@@ -584,8 +590,8 @@ public class SpriteAnimator
             float ps = FixedPixelScale > 0f ? FixedPixelScale : 1f;
             bool useNormalScale = FixedPixelScale == 0f;
             
-            float ox = Scale.X < 0 ? (fw - offset.X) : offset.X;
-            float oy = Scale.Y < 0 ? (fh - offset.Y) : offset.Y;
+            float ox = Scale.X < 0 ? (fw - scaledOX) : scaledOX;
+            float oy = Scale.Y < 0 ? (fh - scaledOY) : scaledOY;
             var origin = new Vector2(ox, oy);
             
             Vector2 fixedScale;
@@ -613,9 +619,9 @@ public class SpriteAnimator
             
             if (applyOffset)
             {
-                float effOX = Scale.X < 0 ? (fw - offset.X) : offset.X;
-                float effOY = Scale.Y < 0 ? (fh - offset.Y) : offset.Y;
-                drawPos = Position - new Vector2(effOX, effOY) * absObjScale * sprScale;
+                float effOX = Scale.X < 0 ? (fw - scaledOX) : scaledOX;
+                float effOY = Scale.Y < 0 ? (fh - scaledOY) : scaledOY;
+                drawPos = Position - new Vector2(effOX, effOY) * absObjScale * sprScale * dc;
             }
             else
             {
@@ -645,33 +651,38 @@ public class SpriteAnimator
         if (texIndex >= _textures.Count) return;
         var tex = _textures[texIndex];
         if (tex == null || tex.IsDisposed) return;  // Skip if texture is null or disposed
-        var finalScale = Scale * sprScale;
+        float dc = animData != null && animData.DownscaleCompensation > 0f
+            ? animData.DownscaleCompensation
+            : 1.0f;
+        var finalScale = Scale * sprScale * dc;
         var effects    = BuildEffects(ref finalScale);
+        float scaledOX = offset.X / dc;
+        float scaledOY = offset.Y / dc;
 
         if (IsFixed)
         {
             float absScaleX = Math.Abs(Scale.X);
             float absScaleY = Math.Abs(Scale.Y);
             
-            // When FixedPixelScale is 0, use the same scale as non-fixed objects (Scale * sprScale)
+            // When FixedPixelScale is 0, use the same scale as non-fixed objects (Scale * sprScale * dc)
             // Otherwise use FixedPixelScale for camera-independent scaling
             float ps = FixedPixelScale > 0f ? FixedPixelScale : 1f;
             bool useNormalScale = FixedPixelScale == 0f;
             
-            float ox = Scale.X < 0 ? (tex.Width  - offset.X) : offset.X;
-            float oy = Scale.Y < 0 ? (tex.Height - offset.Y) : offset.Y;
+            float ox = Scale.X < 0 ? (tex.Width  - scaledOX) : scaledOX;
+            float oy = Scale.Y < 0 ? (tex.Height - scaledOY) : scaledOY;
             var origin = new Vector2(ox, oy);
             
             Vector2 fixedScale;
             if (useNormalScale)
             {
-                // Same as non-fixed objects: just Scale * sprScale
-                fixedScale = new Vector2(absScaleX * sprScale, absScaleY * sprScale);
+                // Same as non-fixed objects: just Scale * sprScale * dc
+                fixedScale = new Vector2(absScaleX * sprScale * dc, absScaleY * sprScale * dc);
             }
             else
             {
                 // Use FixedPixelScale for camera-independent rendering
-                fixedScale = new Vector2(absScaleX * sprScale * ps, absScaleY * sprScale * ps);
+                fixedScale = new Vector2(absScaleX * sprScale * dc * ps, absScaleY * sprScale * dc * ps);
             }
             
             sb.Draw(tex, Position, null, BlendColor, 0f, origin, fixedScale, effects, 0f);
@@ -687,9 +698,9 @@ public class SpriteAnimator
             
             if (applyOffset)
             {
-                float effOX = Scale.X < 0 ? (tex.Width - offset.X) : offset.X;
-                float effOY = Scale.Y < 0 ? (tex.Height - offset.Y) : offset.Y;
-                drawPos = Position - new Vector2(effOX, effOY) * absObjScale * sprScale;
+                float effOX = Scale.X < 0 ? (tex.Width - scaledOX) : scaledOX;
+                float effOY = Scale.Y < 0 ? (tex.Height - scaledOY) : scaledOY;
+                drawPos = Position - new Vector2(effOX, effOY) * absObjScale * sprScale * dc;
             }
             else
             {
@@ -761,13 +772,16 @@ public class SpriteAnimator
     private void DrawAtlasFrame(SpriteBatch sb, int texIndex, int frame,
                                 AtlasPacker.FrameRect frameRect, Vector2 offset, float sprScale)
     {
+        if (frameRect.IsEmpty) return; // Completely transparent trimmed frame
         if (texIndex >= _textures.Count) return;
         var tex = _textures[texIndex];
         if (tex == null || tex.IsDisposed) return;
 
         var src = AtlasPacker.GetFrameSourceRect(frameRect);
-        int fw = frameRect.Width;
-        int fh = frameRect.Height;
+        int trimX = frameRect.TrimX;
+        int trimY = frameRect.TrimY;
+        int trimW = frameRect.Width;
+        int trimH = frameRect.Height;
 
         float dc = _def.Data.Count > _currentAnim && _def.Data[_currentAnim].DownscaleCompensation > 0f
             ? _def.Data[_currentAnim].DownscaleCompensation
@@ -777,6 +791,13 @@ public class SpriteAnimator
 
         float scaledOX = offset.X / dc;
         float scaledOY = offset.Y / dc;
+
+        // Exact trimmed anchor offset for both normal and flipped draws:
+        // - Unflipped: trimmed top-left shifts right/down by +trimX/+trimY -> subtract (scaledO - trim)
+        // - Flipped:   trimmed rect [trim, trim+size] mirrors to [full-(trim+size), full-trim],
+        //              so (full - scaledO) - (full - trim - size) = trim + size - scaledO.
+        float effOX = Scale.X < 0 ? (trimX + trimW - scaledOX) : (scaledOX - trimX);
+        float effOY = Scale.Y < 0 ? (trimY + trimH - scaledOY) : (scaledOY - trimY);
 
         if (IsFixed)
         {
@@ -789,9 +810,7 @@ public class SpriteAnimator
             float ps = FixedPixelScale > 0f ? FixedPixelScale : 1f;
             bool useNormalScale = FixedPixelScale == 0f;
             
-            float ox = Scale.X < 0 ? (fw - scaledOX) : scaledOX;
-            float oy = Scale.Y < 0 ? (fh - scaledOY) : scaledOY;
-            var origin = new Vector2(ox, oy);
+            var origin = new Vector2(effOX, effOY);
             
             Vector2 fixedScale = useNormalScale
                 ? new Vector2(absScaleX * sprScale * dc, absScaleY * sprScale * dc)
@@ -803,14 +822,12 @@ public class SpriteAnimator
         {
             // Non-fixed: standard positioning with offset applied in compensated space
             var absObjScale = new Vector2(Math.Abs(Scale.X), Math.Abs(Scale.Y));
-            float effOX = Scale.X < 0 ? (fw - scaledOX) : scaledOX;
-            float effOY = Scale.Y < 0 ? (fh - scaledOY) : scaledOY;
             var drawPos = Position - new Vector2(effOX, effOY) * absObjScale * sprScale * dc;
             
             // Debug log for offset application (only log first few frames)
             if (_currentFrame < 1 && !_offsetLogged)
             {
-                Console.WriteLine($"[SpriteOffset] Atlas Draw: offset=({offset.X},{offset.Y}), effOffset=({effOX},{effOY}), dc={dc:0.###}, Position=({Position.X},{Position.Y}), drawPos=({drawPos.X},{drawPos.Y})");
+                Console.WriteLine($"[SpriteOffset] Atlas Draw: offset=({offset.X},{offset.Y}), trim=({trimX},{trimY},{trimW}x{trimH}), effOffset=({effOX},{effOY}), dc={dc:0.###}, Position=({Position.X},{Position.Y}), drawPos=({drawPos.X},{drawPos.Y})");
                 _offsetLogged = true;
             }
             

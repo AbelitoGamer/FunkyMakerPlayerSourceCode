@@ -328,6 +328,14 @@ public partial class Game1
 
         _spriteTextureCache ??= new Dictionary<string, Dictionary<int, SpriteTextureCacheEntry>>();
 
+#if ANDROID
+        // On Android (both 32-bit and 64-bit), free each raw compressed PNG byte[] immediately
+        // after GPU upload unless playtesting from Chart Editor (which shares the edited level's buffers).
+        bool releaseRawSpriteBytes = !_playtestingFromEditor;
+#else
+        bool releaseRawSpriteBytes = !Environment.Is64BitProcess && _isMultiplayerMatch;
+#endif
+
         var texCache = FnmmSceneRenderer.LoadLevelTextures(
             GraphicsDevice,
             _level,
@@ -340,7 +348,8 @@ public partial class Game1
                 _loadingScreen.CurrentStep = step;
                 RenderLoadingScreen();
             },
-            () => RenderLoadingScreen());
+            () => RenderLoadingScreen(),
+            releaseSourceBytes: releaseRawSpriteBytes);
 
         if (_loadingScreen != null)
         {
@@ -360,9 +369,8 @@ public partial class Game1
             : null;
         if (_textureLoadWarning != null) Console.WriteLine($"[Scene] {_textureLoadWarning}");
 
-        // On 32-bit processes in online matches (no editor, no restart), free raw compressed PNG byte[]
-        // arrays and compact the LOH before decoding the full song audio.
-        if (!Environment.Is64BitProcess && _isMultiplayerMatch)
+        // Free any remaining raw PNG byte[] buffers and compact before decoding the song audio.
+        if (releaseRawSpriteBytes)
         {
             foreach (var (_, (_, frames)) in _level.Sprites)
             {
@@ -872,14 +880,21 @@ public partial class Game1
                 ? (float)_music.Duration.TotalSeconds
                 : float.MaxValue;
 
-            // In online matches, compressed audio bytes are never needed again after decoding, and on
-            // 32-bit devices active players cannot timeskip/seek so _musicPcm (~32 MB LOH) can be freed too.
+            // Compressed audio bytes are never needed again after decoding (except editor playtest).
+            // In online matches, active players cannot timeskip/seek so _musicPcm can be freed on Android / 32-bit.
+#if ANDROID
+            if (!_playtestingFromEditor)
+                _level.MusicData = null;
+            if (_isMultiplayerMatch && !_onlineSpectating)
+                _musicPcm = null;
+#else
             if (_isMultiplayerMatch)
             {
                 _level.MusicData = null;
                 if (!Environment.Is64BitProcess && !_onlineSpectating)
                     _musicPcm = null;
             }
+#endif
         }
         else if (_level.MusicData != null)
         {
@@ -903,14 +918,21 @@ public partial class Game1
                 ? (float)_music.Duration.TotalSeconds
                 : float.MaxValue;
 
-            // In online matches, compressed audio bytes are never needed again after decoding, and on
-            // 32-bit devices active players cannot timeskip/seek so _musicPcm (~32 MB LOH) can be freed too.
+            // Compressed audio bytes are never needed again after decoding (except editor playtest).
+            // In online matches, active players cannot timeskip/seek so _musicPcm can be freed on Android / 32-bit.
+#if ANDROID
+            if (!_playtestingFromEditor)
+                _level.MusicData = null;
+            if (_isMultiplayerMatch && !_onlineSpectating)
+                _musicPcm = null;
+#else
             if (_isMultiplayerMatch)
             {
                 _level.MusicData = null;
                 if (!Environment.Is64BitProcess && !_onlineSpectating)
                     _musicPcm = null;
             }
+#endif
         }
         else
         {

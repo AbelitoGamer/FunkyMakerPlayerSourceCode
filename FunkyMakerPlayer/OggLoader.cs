@@ -45,21 +45,40 @@ public static class OggLoader
         byte[] data = oggData;
         try
         {
-            using var ms     = new MemoryStream(data);
-            using var reader = new VorbisReader(ms, closeOnDispose: false);
-            return DecodeVorbisWithPcm(reader, out pcmData, out sampleRate, out channels);
+            return LoadWithPcmCore(data, out pcmData, out sampleRate, out channels, forceCompact: false);
+        }
+        catch (OutOfMemoryException)
+        {
+            Console.WriteLine("[OggLoader] OutOfMemoryException during normal decode; retrying in compact 22050Hz mono mode...");
+            FnmmSceneRenderer.ForceCompactingGc();
+            return LoadWithPcmCore(data, out pcmData, out sampleRate, out channels, forceCompact: true);
         }
         catch (Exception ex) when (IsNonVorbisStreamError(ex))
         {
             byte[]? vorbisOnly = ExtractVorbisStream(oggData);
             if (vorbisOnly != null)
             {
-                using var ms2     = new MemoryStream(vorbisOnly);
-                using var reader2 = new VorbisReader(ms2, closeOnDispose: false);
-                return DecodeVorbisWithPcm(reader2, out pcmData, out sampleRate, out channels);
+                try
+                {
+                    return LoadWithPcmCore(vorbisOnly, out pcmData, out sampleRate, out channels, forceCompact: false);
+                }
+                catch (OutOfMemoryException)
+                {
+                    Console.WriteLine("[OggLoader] OutOfMemoryException on extracted Vorbis; retrying in compact 22050Hz mono mode...");
+                    FnmmSceneRenderer.ForceCompactingGc();
+                    return LoadWithPcmCore(vorbisOnly, out pcmData, out sampleRate, out channels, forceCompact: true);
+                }
             }
             throw new Exception($"Could not decode audio: {ex.Message}");
         }
+    }
+
+    private static SoundEffect LoadWithPcmCore(byte[] data,
+        out byte[] pcmData, out int sampleRate, out int channels, bool forceCompact)
+    {
+        using var ms = new MemoryStream(data, writable: false);
+        using var reader = new VorbisReader(ms, closeOnDispose: false);
+        return DecodeVorbisWithPcm(reader, out pcmData, out sampleRate, out channels, forceCompact);
     }
 
     /// <summary>
@@ -230,50 +249,234 @@ public static class OggLoader
     private static SoundEffect DecodeVorbis(VorbisReader reader)
     {
         byte[] pcm; int sr, ch;
-        return DecodeVorbisWithPcm(reader, out pcm, out sr, out ch);
+        return DecodeVorbisWithPcm(reader, out pcm, out sr, out ch, forceCompact: false);
+    }
+
+    /// <summary>
+    /// Chooses target sample rate and channel count for streaming PCM decode.
+    /// Desktop 64-bit always keeps native quality (just validated to a MonoGame-supported rate).
+    /// Android / 32-bit automatically streams marathon songs (e.g. 10-25 min OGGs) at 22050Hz
+    /// (and mono on 32-bit or huge >180MB songs) so we never allocate 150-300MB contiguous PCM arrays.
+    /// </summary>
+    internal static void ChooseTargetAudioFormat(
+        int srcRate, int srcChannels, long estFullPcmBytes, bool forceCompact,
+        out int dstRate, out int dstChannels)
+    {
+        dstRate = ValidateSampleRate(srcRate);
+        dstChannels = Math.Clamp(srcChannels, 1, 2);
+
+        if (forceCompact)
+        {
+            if (dstRate > 22050) dstRate = 22050;
+            dstChannels = 1;
+            return;
+        }
+
+#if ANDROID
+        var mem = Platforms.Android.AndroidMemoryBudget.Query();
+        if (estFullPcmBytes > mem.AudioMonoThresholdBytes)
+        {
+            if (dstRate > 22050) dstRate = 22050;
+            dstChannels = 1;
+        }
+        else if (estFullPcmBytes > mem.AudioHalfRateThresholdBytes)
+        {
+            if (dstRate > 22050) dstRate = 22050;
+        }
+#else
+        if (!Environment.Is64BitProcess)
+        {
+            if (estFullPcmBytes > 64L * 1024 * 1024)
+            {
+                if (dstRate > 22050) dstRate = 22050;
+                dstChannels = 1;
+            }
+            else if (estFullPcmBytes > 24L * 1024 * 1024)
+            {
+                if (dstRate > 22050) dstRate = 22050;
+            }
+        }
+#endif
+    }
+
+    /// <summary>
+    /// Streams float samples from <paramref name="readFloats"/> into 16-bit PCM using fixed 1 MB chunks
+    /// (eliminating MemoryStream doubling + ToArray double-copy spikes) with optional on-the-fly
+    /// linear resampling and stereo-to-mono downmix.
+    /// </summary>
+    internal static byte[] DecodeFloatStreamToPcm(
+        Func<float[], int, int, int> readFloats,
+        int srcRate,
+        int srcChannels,
+        int dstRate,
+        int dstChannels)
+    {
+        const int CHUNK_BYTES = 1024 * 1024; // 1 MB fixed chunks -> zero MemoryStream capacity doubling
+        int dstFrameBytes = 2 * dstChannels;
+        int alignedChunkBytes = (CHUNK_BYTES / dstFrameBytes) * dstFrameBytes;
+
+        var chunks = new System.Collections.Generic.List<byte[]>(16);
+        byte[] currentChunk = new byte[alignedChunkBytes];
+        int chunkPos = 0;
+        long totalBytes = 0;
+
+        void WriteSample(short s)
+        {
+            if (chunkPos + 2 > currentChunk.Length)
+            {
+                chunks.Add(currentChunk);
+                currentChunk = new byte[alignedChunkBytes];
+                chunkPos = 0;
+            }
+            currentChunk[chunkPos++] = (byte)(s & 0xFF);
+            currentChunk[chunkPos++] = (byte)((s >> 8) & 0xFF);
+            totalBytes += 2;
+        }
+
+        int readFloatsPerCall = 4096 * srcChannels;
+        float[] tmp = new float[readFloatsPerCall];
+        bool sameRate = srcRate == dstRate;
+        bool foldMono = srcChannels == 2 && dstChannels == 1;
+
+        if (sameRate && !foldMono)
+        {
+            while (true)
+            {
+                int got = readFloats(tmp, 0, readFloatsPerCall);
+                if (got <= 0) break;
+                for (int i = 0; i < got; i++)
+                {
+                    short s = (short)Math.Clamp((int)(tmp[i] * 32767f), short.MinValue, short.MaxValue);
+                    WriteSample(s);
+                }
+            }
+        }
+        else if (sameRate && foldMono)
+        {
+            while (true)
+            {
+                int got = readFloats(tmp, 0, readFloatsPerCall);
+                if (got <= 0) break;
+                int framesGot = got / 2;
+                for (int f = 0; f < framesGot; f++)
+                {
+                    float mono = (tmp[f * 2] + tmp[f * 2 + 1]) * 0.5f;
+                    short s = (short)Math.Clamp((int)(mono * 32767f), short.MinValue, short.MaxValue);
+                    WriteSample(s);
+                }
+            }
+        }
+        else
+        {
+            // Streaming linear resampler across arbitrary chunk boundaries (zero second PCM buffer!)
+            double step = (double)srcRate / dstRate;
+            double pos = 0.0;
+            bool hasPrev = false;
+            float prevL = 0f, prevR = 0f;
+
+            while (true)
+            {
+                int got = readFloats(tmp, 0, readFloatsPerCall);
+                if (got <= 0) break;
+                int framesGot = got / srcChannels;
+                if (framesGot <= 0) break;
+
+                // Indexed conceptually as: index -1 = previous chunk's last frame (when hasPrev),
+                // indices 0..framesGot-1 = current chunk frames.
+                while (pos < framesGot - 1 || (!hasPrev && pos < framesGot && framesGot == 1))
+                {
+                    int idx0 = (int)Math.Floor(pos);
+                    double frac = pos - idx0;
+                    int idx1 = Math.Min(idx0 + 1, framesGot - 1);
+
+                    float s0L, s0R, s1L, s1R;
+                    if (idx0 < 0 && hasPrev)
+                    {
+                        s0L = prevL;
+                        s0R = prevR;
+                    }
+                    else
+                    {
+                        int c0 = Math.Clamp(idx0, 0, framesGot - 1) * srcChannels;
+                        s0L = tmp[c0];
+                        s0R = srcChannels == 2 ? tmp[c0 + 1] : s0L;
+                    }
+
+                    int c1 = idx1 * srcChannels;
+                    s1L = tmp[c1];
+                    s1R = srcChannels == 2 ? tmp[c1 + 1] : s1L;
+
+                    float outL = (float)(s0L + (s1L - s0L) * frac);
+                    if (dstChannels == 1)
+                    {
+                        float outR = (float)(s0R + (s1R - s0R) * frac);
+                        float mono = foldMono ? (outL + outR) * 0.5f : outL;
+                        WriteSample((short)Math.Clamp((int)(mono * 32767f), short.MinValue, short.MaxValue));
+                    }
+                    else
+                    {
+                        float outR = (float)(s0R + (s1R - s0R) * frac);
+                        WriteSample((short)Math.Clamp((int)(outL * 32767f), short.MinValue, short.MaxValue));
+                        WriteSample((short)Math.Clamp((int)(outR * 32767f), short.MinValue, short.MaxValue));
+                    }
+
+                    pos += step;
+                }
+
+                int lastOff = (framesGot - 1) * srcChannels;
+                prevL = tmp[lastOff];
+                prevR = srcChannels == 2 ? tmp[lastOff + 1] : prevL;
+                hasPrev = true;
+                pos -= framesGot;
+            }
+        }
+
+        if (totalBytes <= 0)
+            return Array.Empty<byte>();
+
+        // Single exact-sized allocation; release chunk references as we copy so GC can reclaim them immediately.
+        byte[] result = new byte[totalBytes];
+        int writeOff = 0;
+        for (int i = 0; i < chunks.Count; i++)
+        {
+            var c = chunks[i];
+            Buffer.BlockCopy(c, 0, result, writeOff, c.Length);
+            writeOff += c.Length;
+            chunks[i] = Array.Empty<byte>();
+        }
+        if (chunkPos > 0)
+            Buffer.BlockCopy(currentChunk, 0, result, writeOff, chunkPos);
+        chunks.Clear();
+
+        return result;
     }
 
     private static SoundEffect DecodeVorbisWithPcm(VorbisReader reader,
-        out byte[] pcmData, out int sampleRate, out int channels)
+        out byte[] pcmData, out int sampleRate, out int channels, bool forceCompact = false)
     {
-        channels   = reader.Channels;
-        sampleRate = reader.SampleRate;
-        long estSamples = reader.TotalSamples > 0 ? reader.TotalSamples * channels : 4096L * channels;
-        int initialBytes = (int)Math.Clamp(estSamples * 2L, 8192L, 128L * 1024 * 1024);
+        int srcChannels = reader.Channels;
+        int srcRate = reader.SampleRate;
+        long estFullPcmBytes = reader.TotalSamples > 0 ? reader.TotalSamples * srcChannels * 2L : 0L;
 
-        // Convert 4096-sample float chunks directly into 16-bit PCM bytes so we don't allocate a
-        // full-song float[] (~64 MB LOH) alongside pcmData (~32 MB LOH), which exhausted 32-bit Android RAM.
-        using var pcmStream = new MemoryStream(initialBytes);
-        int chunk = 4096 * channels;
-        float[] tmp = new float[chunk];
-        byte[] byteChunk = new byte[chunk * 2];
+        ChooseTargetAudioFormat(srcRate, srcChannels, estFullPcmBytes, forceCompact,
+            out int dstRate, out int dstChannels);
 
-        while (true)
+        if (dstRate != srcRate || dstChannels != srcChannels)
         {
-            int got = reader.ReadSamples(tmp, 0, chunk);
-            if (got <= 0) break;
-            for (int i = 0; i < got; i++)
-            {
-                short s = (short)Math.Clamp((int)(tmp[i] * 32767f), short.MinValue, short.MaxValue);
-                byteChunk[i * 2]     = (byte)(s & 0xFF);
-                byteChunk[i * 2 + 1] = (byte)((s >> 8) & 0xFF);
-            }
-            pcmStream.Write(byteChunk, 0, got * 2);
+            Console.WriteLine(
+                $"[OggLoader] Streaming audio optimization: {srcRate}Hz {srcChannels}ch " +
+                $"(est {estFullPcmBytes / (1024f * 1024f):0.#}MB) -> {dstRate}Hz {dstChannels}ch");
         }
 
-        pcmData = pcmStream.ToArray();
+        pcmData = DecodeFloatStreamToPcm(
+            (buf, off, cnt) => reader.ReadSamples(buf, off, cnt),
+            srcRate, srcChannels, dstRate, dstChannels);
 
-        // Validate sample rate and resample if needed
-        int validatedSampleRate = ValidateSampleRate(sampleRate);
-        
-        if (validatedSampleRate != sampleRate)
-        {
-            // Need to resample
-            pcmData = ResamplePcm(pcmData, sampleRate, validatedSampleRate, channels);
-        }
+        sampleRate = dstRate;
+        channels = dstChannels;
 
-        return new SoundEffect(pcmData, validatedSampleRate,
-            channels == 2 ? AudioChannels.Stereo : AudioChannels.Mono);
+        return new SoundEffect(pcmData, dstRate,
+            dstChannels == 2 ? AudioChannels.Stereo : AudioChannels.Mono);
     }
     
     private static byte[] ResamplePcm(byte[] pcmData, int originalRate, int targetRate, int channels)

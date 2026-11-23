@@ -22,7 +22,14 @@ public static class AudioDecoder
 
         try
         {
-            pcmData = DecodeMp3(data, out sampleRate, out channels);
+            pcmData = DecodeMp3(data, out sampleRate, out channels, forceCompact: false);
+            return OggLoader.CreateFromPcm(pcmData, sampleRate, channels);
+        }
+        catch (OutOfMemoryException)
+        {
+            Console.WriteLine("[AudioDecoder] OutOfMemoryException during MP3 decode; retrying in compact 22050Hz mono mode...");
+            FnmmSceneRenderer.ForceCompactingGc();
+            pcmData = DecodeMp3(data, out sampleRate, out channels, forceCompact: true);
             return OggLoader.CreateFromPcm(pcmData, sampleRate, channels);
         }
         catch (Exception ex)
@@ -31,42 +38,36 @@ public static class AudioDecoder
         }
     }
 
-    /// <summary>Decodes a whole MP3 into 16-bit PCM (resampled when MonoGame can't play its rate).</summary>
-    public static byte[] DecodeMp3(byte[] data, out int sampleRate, out int channels)
+    /// <summary>Decodes a whole MP3 into 16-bit PCM using fixed chunks (zero MemoryStream doubling) and streaming resampling.</summary>
+    public static byte[] DecodeMp3(byte[] data, out int sampleRate, out int channels, bool forceCompact = false)
     {
-        using var mp3 = new MpegFile(new MemoryStream(data));
-        sampleRate = mp3.SampleRate;
-        channels = mp3.Channels;
-        if (channels is < 1 or > 2) throw new Exception($"{channels} channels");
+        using var mp3 = new MpegFile(new MemoryStream(data, writable: false));
+        int srcRate = mp3.SampleRate;
+        int srcChannels = mp3.Channels;
+        if (srcChannels is < 1 or > 2) throw new Exception($"{srcChannels} channels");
 
-        long estSamples = (long)(mp3.Duration.TotalSeconds * sampleRate * channels) + 4096L;
-        int initialBytes = (int)Math.Clamp(estSamples * 2L, 8192L, 128L * 1024 * 1024);
-        using var pcmStream = new MemoryStream(initialBytes);
-        var chunk = new float[4096 * channels];
-        var byteChunk = new byte[chunk.Length * 2];
-        int totalRead = 0;
-        while (true)
-        {
-            int got = mp3.ReadSamples(chunk, 0, chunk.Length);
-            if (got <= 0) break;
-            for (int i = 0; i < got; i++)
-            {
-                short v = (short)Math.Clamp((int)(chunk[i] * 32767f), short.MinValue, short.MaxValue);
-                byteChunk[i * 2] = (byte)v;
-                byteChunk[i * 2 + 1] = (byte)(v >> 8);
-            }
-            pcmStream.Write(byteChunk, 0, got * 2);
-            totalRead += got;
-        }
-        if (totalRead == 0) throw new Exception("no audio frames");
+        long estFullPcmBytes = mp3.Duration.TotalSeconds > 0
+            ? (long)(mp3.Duration.TotalSeconds * srcRate * srcChannels * 2.0)
+            : 0L;
 
-        var pcm = pcmStream.ToArray();
-        int valid = OggLoader.ValidSampleRate(sampleRate);
-        if (valid != sampleRate)
+        OggLoader.ChooseTargetAudioFormat(srcRate, srcChannels, estFullPcmBytes, forceCompact,
+            out int dstRate, out int dstChannels);
+
+        if (dstRate != srcRate || dstChannels != srcChannels)
         {
-            pcm = OggLoader.Resample(pcm, sampleRate, valid, channels);
-            sampleRate = valid;
+            Console.WriteLine(
+                $"[AudioDecoder] Streaming MP3 optimization: {srcRate}Hz {srcChannels}ch " +
+                $"(est {estFullPcmBytes / (1024f * 1024f):0.#}MB) -> {dstRate}Hz {dstChannels}ch");
         }
+
+        byte[] pcm = OggLoader.DecodeFloatStreamToPcm(
+            (buf, off, cnt) => mp3.ReadSamples(buf, off, cnt),
+            srcRate, srcChannels, dstRate, dstChannels);
+
+        if (pcm.Length == 0) throw new Exception("no audio frames");
+
+        sampleRate = dstRate;
+        channels = dstChannels;
         return pcm;
     }
 }

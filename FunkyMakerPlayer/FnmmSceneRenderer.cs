@@ -111,7 +111,8 @@ public static class FnmmSceneRenderer
         int maxTexSize,
         Dictionary<string, Dictionary<int, SpriteTextureCacheEntry>>? persistentCache = null,
         Action<float, string>? onProgress = null,
-        Action? onRenderTick = null)
+        Action? onRenderTick = null,
+        bool releaseSourceBytes = false)
     {
         LastFailedTextures = 0;
         LastTextureError = null;
@@ -143,6 +144,62 @@ public static class FnmmSceneRenderer
                 animData.UsesPackedAtlas = false;
                 animData.AtlasFrameRects = null;
             }
+        }
+
+        // 0-RAM PNG header pre-scan to compute level-wide texture footprint and adaptive VRAM budget.
+        // PC 64-bit has an unlimited budget (long.MaxValue) so desktop native visual quality is untouched.
+        const long SMALL_SPRITE_EXEMPT_BYTES = 256L * 1024;
+#if ANDROID
+        var memSnapshot = Platforms.Android.AndroidMemoryBudget.Query();
+        Platforms.Android.AndroidMemoryBudget.LogSnapshot(in memSnapshot);
+        long levelVramBudget = memSnapshot.LevelVramBudgetBytes;
+        long stripVramBudget = memSnapshot.StripVramBudgetBytes;
+        float minAdaptiveScale = memSnapshot.MinAdaptiveScale;
+        long gcCompactThreshold = memSnapshot.GcCompactThresholdBytes;
+#else
+        long levelVramBudget = AtlasPacker.GetDefaultLevelVramBudgetBytes();
+        long stripVramBudget = AtlasPacker.GetDefaultStripVramBudgetBytes();
+        float minAdaptiveScale = AtlasPacker.GetMinAdaptiveScale();
+        long gcCompactThreshold = (!Environment.Is64BitProcess ? 16L : 64L) * 1024 * 1024;
+#endif
+        bool hasLevelBudget = levelVramBudget < long.MaxValue;
+
+        long totalLevelRawBytes = 0;
+        long remainingCappedRawBytes = 0;
+        long usedVramBytes = 0;
+
+        foreach (var (preName, (_, preFrames)) in level.Sprites)
+        {
+            if (persistentCache != null &&
+                persistentCache.TryGetValue(preName, out var preCache) &&
+                preCache.Count == preFrames.Count &&
+                preCache.All(kvp => kvp.Value.Textures.Count > 0 &&
+                                    kvp.Value.Textures.All(t => t != null && !t.IsDisposed)))
+            {
+                foreach (var entry in preCache.Values)
+                    foreach (var t in entry.Textures)
+                        usedVramBytes += (long)t.Width * t.Height * 4L;
+                continue;
+            }
+
+            for (int fi = 0; fi < preFrames.Count; fi++)
+            {
+                if (TryReadPngHeaderDimensions(preFrames[fi], out int pw, out int ph))
+                {
+                    long raw = (long)pw * ph * 4L;
+                    totalLevelRawBytes += raw;
+                    if (raw > SMALL_SPRITE_EXEMPT_BYTES)
+                        remainingCappedRawBytes += Math.Min(raw, stripVramBudget);
+                }
+            }
+        }
+
+        if (hasLevelBudget && totalLevelRawBytes > 0)
+        {
+            Console.WriteLine(
+                $"[Scene] Level texture pre-scan: raw={totalLevelRawBytes / (1024f * 1024f):0.#}MB, " +
+                $"cappedEst={remainingCappedRawBytes / (1024f * 1024f):0.#}MB, " +
+                $"levelBudget={levelVramBudget / (1024f * 1024f):0.#}MB, stripBudget={stripVramBudget / (1024f * 1024f):0.#}MB");
         }
 
         int spriteIndex = 0;
@@ -242,17 +299,9 @@ public static class FnmmSceneRenderer
                     continue;
 
                 int pngW = 0, pngH = 0;
-                if (frameBytes.Length >= 24 &&
-                    frameBytes[0] == 0x89 && frameBytes[1] == 0x50 && frameBytes[2] == 0x4E && frameBytes[3] == 0x47 &&
-                    frameBytes[4] == 0x0D && frameBytes[5] == 0x0A && frameBytes[6] == 0x1A && frameBytes[7] == 0x0A)
-                {
-                    uint rawW = ((uint)frameBytes[16] << 24) | ((uint)frameBytes[17] << 16) | ((uint)frameBytes[18] << 8) | frameBytes[19];
-                    uint rawH = ((uint)frameBytes[20] << 24) | ((uint)frameBytes[21] << 16) | ((uint)frameBytes[22] << 8) | frameBytes[23];
-                    if (rawW > 0 && rawW <= 2_000_000) pngW = (int)rawW;
-                    if (rawH > 0 && rawH <= 2_000_000) pngH = (int)rawH;
-                }
+                bool hadPngHeader = TryReadPngHeaderDimensions(frameBytes, out pngW, out pngH);
 
-                if (pngW <= 0 || pngH <= 0)
+                if (!hadPngHeader)
                 {
                     onProgress?.Invoke((spriteIndex / (float)Math.Max(1, totalSprites)) * 0.8f, $"Inspecting sprite: {name}");
                     try
@@ -279,10 +328,31 @@ public static class FnmmSceneRenderer
                     fw0 = pngW;
                 }
 
+                float dynamicLevelScale = 1.0f;
+                if (hasLevelBudget && estRawBytes > SMALL_SPRITE_EXEMPT_BYTES && remainingCappedRawBytes > 0)
+                {
+                    long remainingBudget = Math.Max(2L * 1024 * 1024, levelVramBudget - usedVramBytes);
+                    if (remainingCappedRawBytes > remainingBudget)
+                    {
+                        dynamicLevelScale = Math.Clamp(
+                            MathF.Sqrt((float)remainingBudget / remainingCappedRawBytes),
+                            minAdaptiveScale,
+                            1.0f);
+                    }
+                }
+                if (hadPngHeader && estRawBytes > SMALL_SPRITE_EXEMPT_BYTES)
+                    remainingCappedRawBytes = Math.Max(0, remainingCappedRawBytes - Math.Min(estRawBytes, stripVramBudget));
+
+                var animData = fi < def.Data.Count ? def.Data[fi] : null;
+                bool canPackSingleFrame = actualFrameCount == 1 && animData != null && !(def.Type == 2.0f && def.Data.Count > 1);
+                bool levelWantsAtlas = hasLevelBudget && dynamicLevelScale < 0.99f &&
+                                       estRawBytes > SMALL_SPRITE_EXEMPT_BYTES &&
+                                       (actualFrameCount > 1 || canPackSingleFrame);
+
                 bool needsDownscale = fw0 > maxTexSize || pngH > maxTexSize ||
-                                      (!Environment.Is64BitProcess && actualFrameCount > 1 &&
-                                       estRawBytes > AtlasPacker.GetDefaultStripVramBudgetBytes());
-                bool needsBgTile = isBgSprite && actualFrameCount == 1 && pngW > maxTexSize;
+                                      (actualFrameCount > 1 && estRawBytes > stripVramBudget) ||
+                                      levelWantsAtlas;
+                bool needsBgTile = !needsDownscale && isBgSprite && actualFrameCount == 1 && pngW > maxTexSize;
                 bool needsSplit = !needsDownscale && !needsBgTile && pngW > maxTexSize && actualFrameCount > 1;
 
                 Texture2D? fullTex = null;
@@ -338,13 +408,11 @@ public static class FnmmSceneRenderer
                     }
                 }
 
-                var animData = fi < def.Data.Count ? def.Data[fi] : null;
-
                 if (fullTex == null && needsDownscale)
                 {
                     try
                     {
-                        TryPackAtlas(gd, name, frameBytes, actualFrameCount, fw0, pngH, maxTexSize, textures, animData, onProgress, spriteIndex, totalSprites);
+                        TryPackAtlas(gd, name, frameBytes, actualFrameCount, fw0, pngH, maxTexSize, textures, animData, onProgress, spriteIndex, totalSprites, stripVramBudget, dynamicLevelScale);
 #if ANDROID
                         onRenderTick?.Invoke();
 #endif
@@ -364,7 +432,7 @@ public static class FnmmSceneRenderer
 
                 if (needsSplit)
                 {
-                    if (!TryPackAtlas(gd, name, frameBytes, actualFrameCount, fw0, pngH, maxTexSize, textures, animData, onProgress, spriteIndex, totalSprites))
+                    if (!TryPackAtlas(gd, name, frameBytes, actualFrameCount, fw0, pngH, maxTexSize, textures, animData, onProgress, spriteIndex, totalSprites, stripVramBudget, dynamicLevelScale))
                     {
                         int splitStart = textures.Count;
                         if (isBgSprite)
@@ -444,8 +512,15 @@ public static class FnmmSceneRenderer
                         textures.Add(dummy);
                     }
                     frameTexRanges[fi] = (frameTexStart, Math.Max(0, textures.Count - frameTexStart));
-                    long compactThreshold = (!Environment.Is64BitProcess ? 16L : 64L) * 1024 * 1024;
-                    if (estRawBytes >= compactThreshold)
+                    for (int t = frameTexStart; t < textures.Count; t++)
+                    {
+                        var texUploaded = textures[t];
+                        if (texUploaded != null && !texUploaded.IsDisposed)
+                            usedVramBytes += (long)texUploaded.Width * texUploaded.Height * 4L;
+                    }
+                    if (releaseSourceBytes && fi < frames.Count && frames[fi].Length > 0)
+                        frames[fi] = Array.Empty<byte>();
+                    if (estRawBytes >= gcCompactThreshold)
                     {
                         ForceCompactingGc();
                     }
@@ -479,10 +554,37 @@ public static class FnmmSceneRenderer
             }
         }
 
+        if (totalLevelRawBytes > 0)
+        {
+            Console.WriteLine(
+                $"[Scene] Level GPU textures ready: raw={totalLevelRawBytes / (1024f * 1024f):0.#}MB -> " +
+                $"gpu={usedVramBytes / (1024f * 1024f):0.#}MB" +
+                (hasLevelBudget ? $" (budget={levelVramBudget / (1024f * 1024f):0.#}MB)" : " (unlimited)"));
+        }
+
         if (persistentCache != null && totalSprites > 0)
             Console.WriteLine($"[SceneCache] Textures: {cacheHits}/{totalSprites} sprite(s) reused from cache");
 
         return texCache;
+    }
+
+    private static bool TryReadPngHeaderDimensions(byte[] frameBytes, out int width, out int height)
+    {
+        width = 0;
+        height = 0;
+        if (frameBytes.Length < 24 ||
+            frameBytes[0] != 0x89 || frameBytes[1] != 0x50 || frameBytes[2] != 0x4E || frameBytes[3] != 0x47 ||
+            frameBytes[4] != 0x0D || frameBytes[5] != 0x0A || frameBytes[6] != 0x1A || frameBytes[7] != 0x0A)
+            return false;
+
+        uint rawW = ((uint)frameBytes[16] << 24) | ((uint)frameBytes[17] << 16) | ((uint)frameBytes[18] << 8) | frameBytes[19];
+        uint rawH = ((uint)frameBytes[20] << 24) | ((uint)frameBytes[21] << 16) | ((uint)frameBytes[22] << 8) | frameBytes[23];
+        if (rawW == 0 || rawW > 2_000_000 || rawH == 0 || rawH > 2_000_000)
+            return false;
+
+        width = (int)rawW;
+        height = (int)rawH;
+        return true;
     }
 
     /// <summary>
@@ -528,13 +630,17 @@ public static class FnmmSceneRenderer
         SpriteAnimData? animData,
         Action<float, string>? onProgress,
         int spriteIndex,
-        int totalSprites)
+        int totalSprites,
+        long maxStripVramBytes = 0,
+        float maxScale = 1.0f)
     {
         var packResults = AtlasPacker.PackHorizontalStrip(
             frameBytes, frameCount, frameW, frameH, maxTexSize, gd,
             onProgress != null
                 ? (curr, tot) => onProgress((spriteIndex / (float)Math.Max(1, totalSprites)) * 0.8f, $"Packing atlas: {spriteName} ({curr}/{tot} frames)")
-                : null);
+                : null,
+            maxStripVramBytes,
+            maxScale);
 
         if (packResults.Count == 0)
             return false;
@@ -558,7 +664,8 @@ public static class FnmmSceneRenderer
             for (int r = 0; r < coords.Count; r++)
             {
                 var rect = coords[r];
-                rect.AtlasIndex = i;
+                if (rect.AtlasIndex < 0 || rect.AtlasIndex >= packResults.Count)
+                    rect.AtlasIndex = i;
                 allRects.Add(rect);
             }
         }
@@ -568,7 +675,9 @@ public static class FnmmSceneRenderer
             animData.SplitOffset = splitStart;
             animData.UsesPackedAtlas = true;
             animData.AtlasFrameRects = allRects;
-            animData.FrameWidth = allRects.Count > 0 ? allRects[0].Width : origFrameW;
+            animData.FrameWidth = allRects.Count > 0
+                ? (allRects[0].OrigWidth > 0 ? allRects[0].OrigWidth : allRects[0].Width)
+                : origFrameW;
 
             float ds = packResults[0].DownscaleFactor;
             animData.DownscaleCompensation = ds > 0.001f && ds < 0.999f ? 1.0f / ds : 1.0f;

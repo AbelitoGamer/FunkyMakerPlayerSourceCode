@@ -271,7 +271,7 @@ Notes:
 │   │   │   ├── LevelSelector.cs level picker + "new chart" creator (BPM, .ogg)
 │   │   │   └── UndoManager.cs
 │   │   └── Common/              BackupManager, FileValidator
-│   ├── Platforms/Android/       MainActivity, CrashDialog, ModsDocumentProvider, LevelShareProvider
+│   ├── Platforms/Android/       MainActivity, CrashDialog, ModsDocumentProvider, LevelShareProvider, AndroidMemoryBudget
 │   ├── Content/                 DefaultFont.spritefont, MilkyNice.otf
 │   ├── Icon.ico / Icon.bmp      embedded + copied next to exe
 │   ├── app.manifest             Windows DPI/game-mode manifest
@@ -935,10 +935,43 @@ Editor stage preview); `Game1` delegates to it.
 - If the whole strip is too wide but frames fit → split per-frame (character) or
   into chunks (background). `SpriteAnimData` tracks `SplitOffset`,
   `ChunkFrames`, `FrameWidth`, `TextureIndex`, `DownscaleCompensation`.
-- `AtlasPacker.PackHorizontalStrip` packs oversized strips into GPU-safe atlases
-  (bounded atlas size, row-span packing, per-strip VRAM budget with automatic
-  downscale retry on allocation failure); `UsesPackedAtlas` + `AtlasFrameRects`
-  then drive frame lookup.
+- `AtlasPacker.PackHorizontalStrip` packs oversized strips (and large single-frame sprites when
+  a level exceeds its platform VRAM budget) into GPU-safe 2D atlases; `UsesPackedAtlas` +
+  `AtlasFrameRects` then drive frame lookup:
+  - **Level-wide `AtlasPacker` optimization & streaming PNG / PCM pipeline (2026-11-23):**
+    - **Streaming row-by-row PNG decoder (`AtlasPacker.cs`):** standard 8-bit non-interlaced PNGs
+      (Gray, RGB, Indexed+`PLTE`, GrayAlpha, RGBA + `tRNS`, covering 100% of typical FNMM strips)
+      stream straight from `IDAT` chunks via `ZLibStream` + RFC 2083 scanline unfiltering using a
+      2-row sliding window into downscaled per-frame buffers (automatically falling back to
+      ImageSharp for interlaced/exotic PNGs). Avoids allocating 200–630 MB full-resolution `Rgba32`
+      images for giant strips (e.g. `Yellow`'s 425-frame `312800×528` = 630 MB strip).
+    - **Transparent-margin trimming + exact pixel deduplication + NFDH shelf packing (`AtlasPacker.cs`,
+      `SpriteAnimator.cs`):** tracks tight non-transparent bounds per frame (`FrameRect.TrimX`,
+      `TrimY`, `OrigWidth`, `OrigHeight`, `IsEmpty`), deduplicates identical trimmed frames via
+      64-bit FNV-1a hash + pixel-exact verification (keeping each frame's own `TrimX/TrimY`), skips
+      completely transparent frames (`IsEmpty`), packs unique tiles into bounded 2D pages (`<= 4096px`)
+      with 1 px transparent anti-bleed gutters, and preserves per-frame `AtlasIndex` in
+      `ApplyPackedAtlasResults`. `SpriteAnimator.DrawAtlasFrame` compensates trimmed offsets accurately
+      for both normal and flipped (`Scale < 0`) / `IsFixed` draws, `CurrentFrameSize` uses
+      `OrigWidth/OrigHeight`, and `DrawSingle` + `DrawStrip` now apply `DownscaleCompensation` consistently.
+    - **Adaptive level-wide VRAM budget & RAM-aware Android budgets (`Platforms/Android/AndroidMemoryBudget.cs`,
+      `FnmmSceneRenderer.cs`, `AtlasPacker.cs`, `Game1.LevelLoad.cs`):**
+      `LoadLevelTextures` performs a 0-RAM 24-byte PNG header pre-scan across uncached sprites and
+      tracks actual uploaded GPU texture bytes (`usedVramBytes`) against a running platform budget.
+      On Android, `AndroidMemoryBudget.Query()` reads real device `ActivityManager.MemoryInfo`
+      (`TotalMem`, `AvailMem`, `LowMemory`, `IsLowRamDevice`) and scales budgets to each phone's RAM:
+      32-bit stays capped at **96–128 MB** level / **8–12 MB** strip (`minScale = 0.15f`) due to the
+      32-bit virtual address limit; 64-bit Android scales across tiers from **144 MB / 16 MB** (≤2 GB)
+      → **192 MB / 20 MB** (3 GB) → **256 MB / 24 MB** (4 GB) → **384 MB / 36 MB** (6 GB) →
+      **512 MB / 48 MB** (8 GB) → **768 MB / 64 MB** (12+ GB flagship), dynamically clamped against
+      live `AvailMem` (`AvailMem / 3`, or `AvailMem / 4` on 32-bit, and `× 0.75` if `LowMemory`) and
+      also driving `OggLoader`'s audio half-rate / mono thresholds (up to 256 MB / 512 MB PCM on 12+ GB
+      phones). Desktop 64-bit PC stays **unlimited** so PC visual and audio quality remain 100% native.
+      Small sprites (`<= 256 KB`, e.g., health icons) are exempt from global downscaling; as
+      trimming/dedup saves VRAM on early sprites, the remaining budget automatically raises scale for
+      later sprites. On Android (`!_playtestingFromEditor`), `releaseSourceBytes: true` frees each
+      `frames[fi]` PNG `byte[]` immediately after GPU upload instead of holding ~180 MB of raw PNG bytes
+      across all sprites.
 - `Game1._spriteTextureCache` (`name → index → SpriteTextureCacheEntry`) avoids
   recreating textures on song restart/playtest; it is cleared when loading a
   different level.
@@ -1871,12 +1904,18 @@ start, relay, results, history, turn).
     `Texture2D` guarded by `try/catch`, and `StartLoadingLevel` wraps its synchronous setup in `try/catch` routed
     to `HandleSetupLevelFailure`.
   - **Peak LOH audio & match memory reduction (`OggLoader.cs`, `AudioDecoder.cs`, `Game1.LevelLoad.cs`):**
-    `OggLoader.DecodeVorbisWithPcm` and `AudioDecoder.DecodeMp3` now convert 4096-sample float chunks directly
-    into 16-bit PCM bytes (`MemoryStream`) instead of allocating an intermediate full-song `float[]` (~64 MB LOH)
-    alongside `pcmData` (~32 MB LOH). In online matches on 32-bit processes (`!Environment.Is64BitProcess`),
-    `SetupLevel` also releases raw sprite PNG `byte[]` buffers and compacts the LOH before decoding song audio,
-    and clears `_level.MusicData` and `_musicPcm` (for active non-spectator players, since timeskip is disabled
-    online) once `_music` is created.
+    `OggLoader.DecodeVorbisWithPcm` and `AudioDecoder.DecodeMp3` (updated 2026-11-23) now stream
+    4096-sample float chunks via `OggLoader.DecodeFloatStreamToPcm` into fixed **1 MB** `byte[]`
+    chunks assembled once into an exact-sized final PCM array (eliminating both the full-song `float[]`
+    LOH buffer and `MemoryStream.EnsureCapacity` 2× capacity doubling + `ToArray()` double-copy that
+    caused OOM on 10–25 min marathon songs such as `Yellow` and `Trinity Encore`), with on-the-fly
+    linear resampling and stereo-to-mono downmix across chunk boundaries (PC 64-bit stays native;
+    32-bit streams >24 MB PCM at 22050 Hz and >64 MB PCM at 22050 Hz mono; 64-bit Android streams
+    >80 MB PCM at 22050 Hz and >180 MB PCM at 22050 Hz mono; plus automatic compact 22050 Hz mono
+    retry on `OutOfMemoryException`). On Android (`!_playtestingFromEditor`), `SetupLevel` frees
+    raw sprite PNG `byte[]` buffers per frame during `LoadLevelTextures` and clears `_level.MusicData`
+    immediately after decoding (plus `_musicPcm = null` in non-spectator online matches on both
+    32-bit and 64-bit Android).
 
 ### 12.0 Server URL, testing two windows
 
