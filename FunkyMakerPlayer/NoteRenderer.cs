@@ -20,15 +20,24 @@ public class NoteRenderer
     public const float LANE_WIDTH  = 110f;  // Balanced spacing - not too close, not too far
 
     // ── Hit windows (seconds) — matching FNF base game ───────────────────────
-    // Sick:  ±45ms   → 350 pts
-    // Good:  ±90ms   → 200 pts
-    // Bad:   ±135ms  → 100 pts
-    // Shit:  ±166ms  →  50 pts  (also the miss threshold)
+    // Points follow FunkyMaker Mobile (fork): a Sick is worth 120 and a miss costs 20.
+    // The other ratings keep FNF's proportions (350/200/100/50 scaled by 120/350).
+    // Sick:  ±45ms   → 120 pts
+    // Good:  ±90ms   →  69 pts
+    // Bad:   ±135ms  →  34 pts
+    // Shit:  ±166ms  →  17 pts  (also the miss threshold)
+    // Miss:          → -20 pts
     public const float HIT_WINDOW  = 0.166f;   // outermost window — beyond this = miss
     private const float W_SICK  = 0.045f;
     private const float W_GOOD  = 0.090f;
     private const float W_BAD   = 0.135f;
     // W_SHIT = HIT_WINDOW (0.166f)
+
+    public const int SCORE_SICK = 120;
+    public const int SCORE_GOOD = 69;
+    public const int SCORE_BAD  = 34;
+    public const int SCORE_SHIT = 17;
+    public const int MISS_PENALTY = 20;
 
     private const float BASE_SPEED = 450f;  // Standard FNF scroll speed (1.0x)
 
@@ -44,7 +53,7 @@ public class NoteRenderer
     };
 
     // ── Global options ───────────────────────────────────────────────────────
-    public static bool  Autoplay         = false;  // Changed to false - players must press notes manually
+    public static bool  Botplay         = false;  // Changed to false - players must press notes manually
     public static bool  Downscroll       = false;
     /// <summary>
     /// Centers the player strumline in the middle of the screen (hides opponent strumline).
@@ -90,14 +99,6 @@ public class NoteRenderer
     /// Default: 5 frames (~0.083s at 60fps) - prevents accidental early misses.
     /// </summary>
     public static float SafeFramesTime = 0.083f;
-    
-    /// <summary>
-    /// Camera Follow Player: When enabled, camera follows the singing character.
-    /// Switches between player/opponent based on upcoming notes (FNF-style).
-    /// Uses actual object positions from ObjectPositionSet/ObjectTransformSet events.
-    /// Does NOT interfere with CameraSet events.
-    /// </summary>
-    public static bool CameraFollowPlayer = false;
 
     // ── Per-instance state ───────────────────────────────────────────────────
     private readonly int              _strumlineIndex;
@@ -218,10 +219,11 @@ public class NoteRenderer
     private readonly float[] _holdDuration = new float[LANE_COUNT];  // total hold duration
 
     // Bonus score for completing a hold (awarded on release at the end)
-    private const int HOLD_BONUS_SICK  = 250;
-    private const int HOLD_BONUS_GOOD  = 150;
-    private const int HOLD_BONUS_BAD   =  75;
-    private const int HOLD_BONUS_SHIT  =  25;
+    // (fork) FNF's 250/150/75/25 scaled like the hit points (×120/350).
+    public const int HOLD_BONUS_SICK  = 86;
+    private const int HOLD_BONUS_GOOD  = 51;
+    private const int HOLD_BONUS_BAD   = 26;
+    private const int HOLD_BONUS_SHIT  =  9;
     // Fraction of hold that must be completed to not count as a miss (0.25 = 25%)
     private const float HOLD_MIN_COMPLETION = 0.25f;
     // Within this many seconds of the end, releasing counts as "completed"
@@ -240,10 +242,10 @@ public class NoteRenderer
     public float NoteScale = 1.0f;
     
     /// <summary>
-    /// When true, this strumline will NOT auto-hit notes even if Autoplay is enabled.
+    /// When true, this strumline will NOT auto-hit notes even if Botplay is enabled.
     /// Used for multiplayer opponent strumline — hits are triggered manually via network packets.
     /// </summary>
-    public bool DisableAutoplay = false;
+    public bool DisableBotplay = false;
 
     /// <summary>Override the X position of this strumline (screen pixels, unscaled).</summary>
     public void SetXOffset(float x) { _xOffset = x; _xOffsetSplit = -1f; }
@@ -308,6 +310,16 @@ public class NoteRenderer
     // Effective scroll speed including visual multiplier and screen scale
     private float EffSpeed => _scrollSpeed * ScrollMultiplier * ScaleY;
 
+    /// <summary>
+    /// Fork (osu! songs): variable scroll speed (SV). Null = constant speed. Notes are drawn by
+    /// scroll distance (<see cref="ScrollDistance"/>) instead of time difference.
+    /// </summary>
+    public ScrollTimeline? Scroll { get; set; }
+
+    /// <summary>Scroll distance (in "seconds at 1x") between two song times.</summary>
+    private float ScrollDistance(float from, float to)
+        => Scroll == null ? to - from : (float)(Scroll.Position(to) - Scroll.Position(from));
+
     private float _customStrumY = -1f;  // -1 = use default
 
     /// <summary>Override the Y position of the receptor (screen pixels).</summary>
@@ -327,7 +339,97 @@ public class NoteRenderer
         }
     }
 
-    public int Score  { get; private set; }
+    /// <summary>HUD editor size multiplier for this strumline (fork; 1 = default).</summary>
+    private float HudStrumScale
+    {
+        get
+        {
+            var hud = HudSettings.Instance;
+            float s = HudRole == 0 ? hud.PlayerStrumlineScale : HudRole == 1 ? hud.OpponentStrumlineScale : 1f;
+            return s > 0f ? s : 1f;
+        }
+    }
+
+    /// <summary>
+    /// Left edge of <paramref name="lane"/> in screen pixels. <paramref name="sx0"/> is the scale
+    /// without the HUD strumline scale and <paramref name="laneW"/> the final lane width; the lane
+    /// group (4 lanes, or each half in middlescroll split) is resized around its own centre.
+    /// </summary>
+    private float LaneLeftX(int lane, float sx0, float laneW, float hudOffsetX)
+    {
+        bool second = _xOffsetSplit >= 0f && lane >= 2;
+        int groupLanes = _xOffsetSplit >= 0f ? 2 : LANE_COUNT;
+        float groupStart = (second ? _xOffsetSplit : _xOffset) * sx0;
+        float shift = groupLanes * (LANE_WIDTH * sx0 - laneW) / 2f;
+        return groupStart + shift + (second ? lane - 2 : lane) * laneW + hudOffsetX;
+    }
+
+    /// <summary>Score rounded from the exact (multiplied) total.</summary>
+    public int Score => (int)Math.Round(_scoreExact);
+    private double _scoreExact;
+
+    /// <summary>
+    /// (fork) Online side balancing: every point gained or lost on this strumline is multiplied by
+    /// this, so a perfect run on the side with fewer notes is worth as much as on the other side
+    /// (see <see cref="MaxScoreForChart"/>). 1 everywhere else.
+    /// </summary>
+    public double ScoreMultiplier { get; set; } = 1.0;
+
+    private void AddScore(int basePoints) => _scoreExact += basePoints * ScoreMultiplier;
+
+    /// <summary>
+    /// Every kind of miss goes through here (fork): a note that passed, a ghost tap with Ghost
+    /// Tapping off, a hold released before 25 %. Counts the miss, breaks the combo, costs
+    /// <see cref="MISS_PENALTY"/> (× multiplier), plays the miss sound, animates and shows the popup.
+    /// </summary>
+    private void RegisterMiss(int lane, string judgement = "Miss")
+    {
+        Misses++;
+        Combo = 0;
+        AddScore(-MISS_PENALTY);
+        _comboBreakTimer[lane] = 0.5f;
+        if (!MuteMissSound) _style?.PlayMissSound();
+        LastMissLane = lane;
+        OnNoteMiss?.Invoke();
+        OnJudgement?.Invoke(judgement);
+    }
+
+    /// <summary>
+    /// Points for a perfect run of chart <paramref name="chartIndex"/> in an online match: every note a
+    /// Sick, every hold completed. Used only online (side balancing, score bar scale).
+    /// <para>Every note counts, "avoid" notes (<see cref="NoteSkins.ShouldAvoid"/>) included: online
+    /// nobody loses health, so pressing them is free points. They used to be left out, and opponent
+    /// charts often have notes that drain health on press: the enemy side's maximum came out too low,
+    /// its multiplier too high, and in Teams the Enemy team outscored a more accurate Player team.</para>
+    /// </summary>
+    public static long MaxScoreForChart(FnmmLevel level, int chartIndex)
+    {
+        var sl = level.Data.Strumlines;
+        if (chartIndex < 0 || chartIndex >= sl.Count) return 0;
+        long total = 0;
+        foreach (var lane in sl[chartIndex])
+        {
+            foreach (var note in lane)
+            {
+                total += SCORE_SICK;
+                if (level.Data.ToSeconds(note.Duration) > 0f) total += HOLD_BONUS_SICK;
+            }
+        }
+        return total;
+    }
+
+    /// <summary>
+    /// Multiplier for chart <paramref name="chartIndex"/> so its perfect score equals the larger of the
+    /// player (0) and enemy (1) charts' perfect scores. 1 for the bigger side or when a side is empty.
+    /// </summary>
+    public static double SideScoreMultiplier(FnmmLevel level, int chartIndex)
+    {
+        long mine = MaxScoreForChart(level, chartIndex);
+        long best = Math.Max(MaxScoreForChart(level, 0), MaxScoreForChart(level, 1));
+        if (mine <= 0 || best <= mine) return 1.0;
+        return (double)best / mine;
+    }
+
     public int Misses { get; private set; }
     public int Combo  { get; private set; }
     
@@ -368,8 +470,9 @@ public class NoteRenderer
         _level          = level;
 
         float bpm   = level.Data.EffectiveBpm;
-        float speed = level.Data.Speed > 0 ? level.Data.Speed : 1f;
-        _scrollSpeed = BASE_SPEED * (bpm / 120f) * speed;
+        // Fork: constant scroll speed (px/s) so the same Scroll Speed setting looks the same in
+        // every chart. It used to scale with the chart's BPM (/120) and its "speed" field.
+        _scrollSpeed = BASE_SPEED;
 
         // Initialize arrow effects manager with BPM
         _arrowEffects = new ArrowEffectManager(bpm);
@@ -555,10 +658,11 @@ public class NoteRenderer
             }
         }
 
-        if (Autoplay && !DisableAutoplay)  UpdateAutoplay(songTime);
+        if (ReplayInput != null)            UpdateReplay(songTime);
+        else if (Botplay && !DisableBotplay)  UpdateBotplay(songTime);
         else if (_isPlayer)                 UpdatePlayer(songTime, kb, prevKb);
-        else if (!DisableAutoplay)          UpdateAutoplay(songTime);
-        // If DisableAutoplay is true for opponent, clean up old notes that weren't hit
+        else if (!DisableBotplay)          UpdateBotplay(songTime);
+        // If DisableBotplay is true for opponent, clean up old notes that weren't hit
         else                                UpdateOpponentMultiplayer(songTime);
 
         if (_fmm != null)
@@ -570,9 +674,93 @@ public class NoteRenderer
                     _fmm.HoldTick(lane, songTime, stepSeconds);
             _fmm.Update(dt);
         }
+
+        _lastUpdateSongTime = songTime;
     }
 
-    private void UpdateAutoplay(float songTime)
+    // ── Replays (fork) ───────────────────────────────────────────────────────
+
+    /// <summary>Receives this strumline's input frames while it is played from the keyboard.</summary>
+    public Action<Replay.ReplayFrame>? InputRecorder;
+
+    /// <summary>
+    /// When set, this strumline is played from a recording instead of the keyboard / botplay.
+    /// Frames are judged at their recorded song time (see <see cref="UpdateReplay"/>).
+    /// </summary>
+    public IReadOnlyList<Replay.ReplayFrame>? ReplayInput { get; private set; }
+
+    /// <summary>Replays: the opponent's replayed misses don't play the miss sound.</summary>
+    public bool MuteMissSound;
+
+    /// <summary>Judging settings of the recorded player (null = this machine's settings).</summary>
+    public float? InputBufferOverride;
+    public bool?  GhostTappingOverride;
+    public float? SafeFramesOverride;
+
+    private float EffInputBuffer  => InputBufferOverride  ?? InputBuffer;
+    private bool  EffGhostTapping => GhostTappingOverride ?? GhostTapping;
+    private float EffSafeFrames   => SafeFramesOverride   ?? SafeFramesTime;
+
+    /// <summary>"No previous frame" marker in <see cref="Replay.ReplayFrame.P"/> (JSON can't hold -Infinity).</summary>
+    public const float NoPreviousFrame = -100000f;
+
+    private float _lastUpdateSongTime = NoPreviousFrame;
+    private int   _lastRecordedHeld;
+    private int   _replayCursor;
+    private int   _replayHeld;
+    private float _replayTickTime = NoPreviousFrame;
+
+    /// <summary>First positive song time seen by this strumline (safe frames are counted from it).</summary>
+    public float SongStartTime => _songStartTime;
+
+    /// <summary>Plays this strumline from recorded frames with the recorded player's settings.</summary>
+    public void StartReplay(IReadOnlyList<Replay.ReplayFrame> frames, float inputBuffer, bool ghostTapping, float safeFrames, float songStartTime)
+    {
+        ReplayInput = frames;
+        InputBufferOverride = inputBuffer;
+        GhostTappingOverride = ghostTapping;
+        SafeFramesOverride = safeFrames;
+        _songStartTime = songStartTime;
+        _replayCursor = 0;
+        _replayHeld = 0;
+        _replayTickTime = NoPreviousFrame;
+    }
+
+    /// <summary>
+    /// Replay input. Recorded frames up to <paramref name="songTime"/> are judged at their own
+    /// recorded time. Before each one, the recorded previous frame is re-run (no input change), so
+    /// held notes complete at exactly the same point relative to the next press as in the real
+    /// run. The per-frame update in between is never run past the next frame's previous-frame
+    /// time for the same reason. Misses don't depend on frame timing (a note leaves the hit window
+    /// before it can be removed), so they come out the same too.
+    /// </summary>
+    private void UpdateReplay(float songTime)
+    {
+        var frames = ReplayInput!;
+        while (_replayCursor < frames.Count && frames[_replayCursor].T <= songTime)
+        {
+            var f = frames[_replayCursor++];
+            if (f.P > _replayTickTime && f.P < f.T)
+                ReplayTick(f.P);
+            ProcessInput(f.T, f.H, f.R, f.J);
+            _replayHeld = f.H;
+            _replayTickTime = Math.Max(_replayTickTime, f.T);
+        }
+
+        float tick = songTime;
+        if (_replayCursor < frames.Count)
+            tick = Math.Min(tick, frames[_replayCursor].P);
+        if (tick > _replayTickTime)
+            ReplayTick(tick);
+    }
+
+    private void ReplayTick(float t)
+    {
+        ProcessInput(t, _replayHeld, _replayHeld, 0);
+        _replayTickTime = t;
+    }
+
+    private void UpdateBotplay(float songTime)
     {
         _anyLaneActive = false;
         for (int lane = 0; lane < LANE_COUNT; lane++)
@@ -582,7 +770,7 @@ public class NoteRenderer
                 var note = _notes[lane][i];
                 if (songTime < note.Start) continue;
 
-                // Autoplay: skins are visual only. Dodge a note only when its action packs
+                // Botplay: skins are visual only. Dodge a note only when its action packs
                 // make letting it pass better than pressing it (NoteSkins.ShouldAvoid);
                 // notes without events are always pressed.
                 bool isDodge = _isPlayer && NoteSkins.ShouldAvoid(_level.Events, note.Props);
@@ -595,7 +783,7 @@ public class NoteRenderer
 
                 // Normal/heal: press it
                 _notes[lane].RemoveAt(i);
-                Score += 350; 
+                AddScore(SCORE_SICK);
                 Combo++;
                 ComboScale = COMBO_BOUNCE_SCALE;  // Trigger bounce animation
                 OnComboChanged?.Invoke(Combo);  // Fire combo changed event
@@ -631,12 +819,37 @@ public class NoteRenderer
 
     private void UpdatePlayer(float songTime, KeyboardState kb, KeyboardState prevKb)
     {
+        // Check both keyboard and touch controls (Android)
+        int heldMask = 0, prevMask = 0, pressedMask = 0;
         for (int lane = 0; lane < LANE_COUNT; lane++)
         {
-            // Check both keyboard and touch controls (Android)
-            bool held = IsKeyDown(kb, PlayerKeys[lane]);
-            bool heldPrev = IsKeyDown(prevKb, PlayerKeys[lane]);
-            bool justPressed = IsKeyJustPressed(kb, prevKb, PlayerKeys[lane]);  // Use new tap detection
+            if (IsKeyDown(kb, PlayerKeys[lane])) heldMask |= 1 << lane;
+            if (IsKeyDown(prevKb, PlayerKeys[lane])) prevMask |= 1 << lane;
+            if (IsKeyJustPressed(kb, prevKb, PlayerKeys[lane])) pressedMask |= 1 << lane;  // Use new tap detection
+        }
+
+        // Replays (fork): record every frame whose input differs from "nothing changed".
+        if (InputRecorder != null && (pressedMask != 0 || heldMask != prevMask || heldMask != _lastRecordedHeld))
+        {
+            InputRecorder(new Replay.ReplayFrame(songTime, _lastUpdateSongTime, heldMask, prevMask, pressedMask));
+            _lastRecordedHeld = heldMask;
+        }
+
+        ProcessInput(songTime, heldMask, prevMask, pressedMask);
+    }
+
+    /// <summary>
+    /// Judges one frame of input at <paramref name="songTime"/>: holds, presses, ghost taps and
+    /// misses. Used for live keyboard input and for replay frames at their recorded time, so a
+    /// replay gives exactly the same hits, ratings and misses as the run that was recorded.
+    /// </summary>
+    private void ProcessInput(float songTime, int heldMask, int prevMask, int pressedMask)
+    {
+        for (int lane = 0; lane < LANE_COUNT; lane++)
+        {
+            bool held = (heldMask & (1 << lane)) != 0;
+            bool heldPrev = (prevMask & (1 << lane)) != 0;
+            bool justPressed = (pressedMask & (1 << lane)) != 0;
             bool justReleased = !held && heldPrev;
             
             _keyHeld[lane] = held;  // Track key state for receptor rendering
@@ -662,7 +875,7 @@ public class NoteRenderer
                     {
                         // Completed! Award bonus based on initial hit quality
                         int bonus = HoldBonus(_holdHitDist[lane]);
-                        Score += bonus;
+                        AddScore(bonus);
                         // Fire Sick judgement for completing the hold
                         Sicks++;  // Count completed hold as Sick!
                         OnJudgement?.Invoke("Sick!");
@@ -680,12 +893,8 @@ public class NoteRenderer
                     if (progress < HOLD_MIN_COMPLETION)
                     {
                         // Barely held — counts as a miss
-                        Misses++; Combo = 0;
                         Shits++;  // Count failed hold as Shit
-                        _comboBreakTimer[lane] = 0.5f;  // Combo break effect
-                        _style?.PlayMissSound();
-                        LastMissLane = lane; OnNoteMiss?.Invoke();
-                        OnJudgement?.Invoke("Shit");
+                        RegisterMiss(lane, "Shit");
                     }
                     else
                     {
@@ -739,7 +948,7 @@ public class NoteRenderer
                 float timeDiff = note.Start - songTime;
                 
                 // Check if note is within hit window OR within input buffer (early hit)
-                bool inWindow = dist <= HIT_WINDOW || (timeDiff > 0 && timeDiff <= InputBuffer);
+                bool inWindow = dist <= HIT_WINDOW || (timeDiff > 0 && timeDiff <= EffInputBuffer);
                 
                 if (inWindow && dist < bestDist)
                 { best = note; bestDist = dist; }
@@ -752,7 +961,7 @@ public class NoteRenderer
                 // Press the note and fire onPressEvent — level handles effects via action_packs.
                 // Fallback: if no onPressEvent, apply default mechanic based on skin type.
                 int scoreGain = RateScore(bestDist);
-                Score += scoreGain;
+                AddScore(scoreGain);
                 Combo++;
                 ComboScale = COMBO_BOUNCE_SCALE;  // Trigger bounce animation
                 OnComboChanged?.Invoke(Combo);  // Fire combo changed event
@@ -767,8 +976,8 @@ public class NoteRenderer
                     case "Shit":  Shits++; break;
                 }
                 
-                // Splash only on a Sick! (350 points)
-                if (scoreGain >= 350)
+                // Splash only on a Sick!
+                if (scoreGain >= SCORE_SICK)
                     TriggerSplash(lane);
                 
                 float holdEnd = best.Duration > 0 ? best.Start + best.Duration : -1f;
@@ -797,15 +1006,8 @@ public class NoteRenderer
             {
                 // Ghost tap — no note nearby
                 // If GhostTapping is disabled, this breaks combo and counts as miss
-                if (!GhostTapping)
-                {
-                    Misses++;
-                    Combo = 0;
-                    _comboBreakTimer[lane] = 0.5f;  // Combo break effect lasts 500ms
-                    _style?.PlayMissSound();
-                    LastMissLane = lane; OnNoteMiss?.Invoke();
-                    OnJudgement?.Invoke("Miss");
-                }
+                if (!EffGhostTapping)
+                    RegisterMiss(lane);
                 
                 // Visual flash only (brief press animation)
                 // Duration matches the press animation length from the style XML
@@ -816,7 +1018,7 @@ public class NoteRenderer
 
         // ── Miss detection — notes that passed the hit window ─────────────────
         // Safe frames: don't count misses during the first few frames of the song
-        bool inSafeFrames = _songStartTime >= 0f && (songTime - _songStartTime) < SafeFramesTime;
+        bool inSafeFrames = _songStartTime >= 0f && (songTime - _songStartTime) < EffSafeFrames;
         
         for (int lane = 0; lane < LANE_COUNT; lane++)
         {
@@ -830,16 +1032,11 @@ public class NoteRenderer
                 // Safe frames: skip miss penalty during song start
                 if (inSafeFrames) continue;
                 
-                // Avoid-notes (pressing hurts or missing heals) and notes that heal when
-                // pressed are NOT misses: no combo break, no miss penalty.
+                // Avoid-notes (pressing hurts or missing heals) are NOT misses: no combo break,
+                // no miss penalty.
                 // Their onMissEvent still fires.
                 if (!NoteSkins.IsMissFree(_level.Events, note.Props))
-                {
-                    Misses++; Combo = 0;
-                    _comboBreakTimer[lane] = 0.5f;  // Combo break effect
-                    _style?.PlayMissSound();
-                    LastMissLane = lane; OnNoteMiss?.Invoke();
-                }
+                    RegisterMiss(lane);
                 if (note.Props.OnMissEvent >= 0)
                     OnNoteMissEvent?.Invoke((int)note.Props.OnMissEvent);
             }
@@ -848,7 +1045,7 @@ public class NoteRenderer
 
     /// <summary>
     /// Update logic for opponent strumline in multiplayer mode.
-    /// Cleans up notes that have passed without being hit (no autoplay, hits come from network).
+    /// Cleans up notes that have passed without being hit (no botplay, hits come from network).
     /// </summary>
     private void UpdateOpponentMultiplayer(float songTime)
     {
@@ -932,7 +1129,8 @@ public class NoteRenderer
         }
 
         float sh     = ScreenH;
-        float sx     = ScaleX * NoteScale;
+        float sx0    = ScaleX * NoteScale;
+        float sx     = sx0 * HudStrumScale;
         Vector2 hudOffset = HudOffsetPx;
         float strumY = StrumY + hudOffset.Y;
         float spd    = EffSpeed;
@@ -943,30 +1141,16 @@ public class NoteRenderer
 
         for (int lane = 0; lane < LANE_COUNT; lane++)
         {
-            // Calculate lane position
-            // _xOffset is in unscaled pixels, so we need to scale it
-            // Then add lane spacing (which is already scaled via laneW)
-            float baseX = _xOffset * sx;
+            // Lane position (middlescroll split: lanes 0-1 use _xOffset, lanes 2-3 _xOffsetSplit)
+            float baseX = LaneLeftX(lane, sx0, laneW, hudOffset.X);
 
-            // Midlescroll split: lanes 0-1 use _xOffset, lanes 2-3 use _xOffsetSplit
-            if (_xOffsetSplit >= 0f && lane >= 2)
-            {
-                baseX = _xOffsetSplit * sx;
-                baseX += (lane - 2) * laneW;  // Lanes 2-3 count from 0
-            }
-            else
-            {
-                baseX += lane * laneW;  // Normal spacing
-            }
-            baseX += hudOffset.X;
-            
             float cx = baseX + laneW / 2f;  // Center X of the lane
 
             // Active hold tail (while pressing hold note)
             // Consumed at exact 1:1 chart scroll speed (spd) from the receptor (strumY)
             if (_holdEndTime[lane] > 0f && songTime < _holdEndTime[lane])
             {
-                float remainingTime = _holdEndTime[lane] - songTime;
+                float remainingTime = ScrollDistance(songTime, _holdEndTime[lane]);
                 float holdPx = remainingTime * spd;
                 DrawActiveHold(sb, lane, baseX, cx, strumY, holdPx, laneW);
             }
@@ -975,7 +1159,7 @@ public class NoteRenderer
 
             foreach (var note in _notes[lane])
             {
-                float timeDiff = note.Start - songTime;
+                float timeDiff = ScrollDistance(songTime, note.Start);
 
                 float noteY = !Downscroll
                     ? strumY + timeDiff * spd
@@ -1003,7 +1187,7 @@ public class NoteRenderer
 
                 if (note.Duration > 0)
                 {
-                    DrawHold(sb, lane, baseX, cx, noteY, note.Duration * spd, strumY, laneW, alpha, sx);
+                    DrawHold(sb, lane, baseX, cx, noteY, ScrollDistance(note.Start, note.Start + note.Duration) * spd, strumY, laneW, alpha, sx);
                 }
 
                 DrawNoteHead(sb, lane, cx, noteY, note, sx, alpha, strumY);
@@ -1016,31 +1200,21 @@ public class NoteRenderer
             int lane = _pendingSplashLane;
             
             // Calculate splash position (center of receptor) - same logic as main loop
-            float baseX = _xOffset * sx;
-            if (_xOffsetSplit >= 0f && lane >= 2)
-            {
-                baseX = _xOffsetSplit * sx;
-                baseX += (lane - 2) * laneW;
-            }
-            else
-            {
-                baseX += lane * laneW;
-            }
-            baseX += hudOffset.X;
+            float baseX = LaneLeftX(lane, sx0, laneW, hudOffset.X);
             float cx = baseX + laneW / 2f;
-            
+
             _particleSplash.Trigger(lane, new Vector2(cx, strumY));
             _pendingSplashLane = -1;  // Reset
         }
 
-        if (ShowKeyLabels && !Autoplay && _isPlayer && font != null && Alpha > 0.01f)
+        if (ShowKeyLabels && !Botplay && _isPlayer && font != null && Alpha > 0.01f)
         {
             for (int lane = 0; lane < LANE_COUNT; lane++)
             {
                 // Calculate position - same logic as main loop
-                float baseX = _xOffset * sx + lane * laneW + hudOffset.X;
+                float baseX = LaneLeftX(lane, sx0, laneW, hudOffset.X);
                 float lx = baseX + laneW / 2f;
-                string label = PlayerKeys[lane].ToString();
+                string label = Controls.AsciiKeyName(PlayerKeys[lane]);
                 var sz = font.MeasureString(label);
                 sb.DrawString(font, label,
                     new Vector2(lx - sz.X / 2f, strumY - sz.Y / 2f),
@@ -1658,10 +1832,10 @@ public class NoteRenderer
     // ── Helpers ──────────────────────────────────────────────────────────────
     private static int RateScore(float dist)
     {
-        if (dist < W_SICK) return 350;
-        if (dist < W_GOOD) return 200;
-        if (dist < W_BAD)  return 100;
-        return 50;
+        if (dist < W_SICK) return SCORE_SICK;
+        if (dist < W_GOOD) return SCORE_GOOD;
+        if (dist < W_BAD)  return SCORE_BAD;
+        return SCORE_SHIT;
     }
 
     private static string GetJudgement(float dist)
@@ -1755,17 +1929,14 @@ public class NoteRenderer
             (_isPlayer && HidePlayerStrumline) || alpha <= 0.01f)
             return;
 
-        float sx = ScaleX * NoteScale;
-        float laneW = LANE_WIDTH * sx;
+        float sx0 = ScaleX * NoteScale;
+        float laneW = LANE_WIDTH * sx0 * HudStrumScale;
         float hudOffsetX = HudOffsetPx.X;
 
         float left = float.MaxValue, right = float.MinValue;
         for (int lane = 0; lane < LANE_COUNT; lane++)
         {
-            float baseX = _xOffsetSplit >= 0f && lane >= 2
-                ? _xOffsetSplit * sx + (lane - 2) * laneW
-                : _xOffset * sx + lane * laneW;
-            baseX += hudOffsetX;
+            float baseX = LaneLeftX(lane, sx0, laneW, hudOffsetX);
             left = Math.Min(left, baseX);
             right = Math.Max(right, baseX + laneW);
         }

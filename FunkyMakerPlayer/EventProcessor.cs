@@ -572,7 +572,10 @@ public class EventProcessor
             // StrumLine 0 (player) → Camera 1
             // StrumLine 1 (opponent) → Camera 0
             camIdx = strumlineIndex == 0 ? 1 : 0;
-            
+            // If the convention camera doesn't exist (e.g. single-camera levels), use the
+            // first real camera instead of inventing one at the character's position.
+            if (camIdx >= cams.Count) camIdx = 0;
+
             if (camIdx >= 0 && camIdx < cams.Count)
             {
                 _autoCamTargetX = (float)cams[camIdx].X;
@@ -749,69 +752,6 @@ public class EventProcessor
         {
             FireEvent(events[_nextEventIndex]);
             _nextEventIndex++;
-        }
-
-        // Camera Follow Player: Smooth follow singing character when enabled
-        // This mode follows whichever character is currently singing (has active notes)
-        // Similar to auto-camera but uses actual object positions instead of fixed camera positions
-        if (NoteRenderer.CameraFollowPlayer && !_hasCameraEvents)
-        {
-            // Apply cooldown to prevent rapid camera switching (causes visual stutter)
-            float timeSinceLastSwitch = songTime - _autoCamLastSwitchTime;
-            int activeStrumline = _autoCamLastStrumline >= 0 ? _autoCamLastStrumline : 1;
-            
-            if (timeSinceLastSwitch >= AUTO_CAM_SWITCH_COOLDOWN)
-            {
-                // Only check for strumline changes if cooldown has passed
-                // This reduces CPU load and prevents visual stutter
-                
-                // Determine which strumline is currently singing (simplified check)
-                // Use NoteRenderer state instead of scanning all notes
-                if (_level.Data?.Strumlines != null && _level.Data.Strumlines.Count >= 2)
-                {
-                    // Simple heuristic: check if opponent (strumline 1) has more recent activity
-                    // Otherwise default to player (strumline 0)
-                    // This avoids the expensive nested loops that were causing lag
-                    
-                    // Default to opponent
-                    int newActiveStrumline = 1;
-                    
-                    // Only switch if necessary
-                    if (newActiveStrumline != activeStrumline)
-                    {
-                        activeStrumline = newActiveStrumline;
-                        _autoCamLastStrumline = activeStrumline;
-                        _autoCamLastSwitchTime = songTime;
-                    }
-                }
-            }
-            
-            // Find the character for the active strumline
-            var objs = _level.Scene.Objects;
-            Vector2? targetPos = null;
-            
-            for (int i = 0; i < objs.Count; i++)
-            {
-                if ((int)objs[i].StrumLine == activeStrumline && objs[i].Visible && _objAnimators[i] != null)
-                {
-                    var anim = _objAnimators[i]!;
-                    if (anim.Visible && anim.Opacity > 0.01f && anim.IsCharacter)
-                    {
-                        targetPos = anim.Position;
-                        break;  // Use first visible character on this strumline
-                    }
-                }
-            }
-            
-            // If character found, smoothly follow their position
-            if (targetPos.HasValue)
-            {
-                const float followSpeed = 8.0f;  // Smooth but responsive following
-                float speed = 1f - MathF.Exp(-followSpeed * dt);
-                Camera.X = MathHelper.Lerp(Camera.X, targetPos.Value.X, speed);
-                Camera.Y = MathHelper.Lerp(Camera.Y, targetPos.Value.Y, speed);
-                // Don't adjust scale when following - keep current zoom
-            }
         }
 
         if (_hasCameraEvents)
@@ -1097,8 +1037,7 @@ public class EventProcessor
                                             anim.HoldUntil = -1f;
                                             anim.SetSingTimer(0f);
                                             // Force idle immediately - they lost their strumLine
-                                            int idleAnim = (anim.AnimCount > 1 && anim.CurrentAnimData.FrameCount == 1) ? 1 : 0;
-                                            anim.SetAnimation(idleAnim);
+                                            anim.SetAnimation(SpriteAnimator.IdleAnim);
                                         }
                                     }
                                 }
@@ -1109,15 +1048,14 @@ public class EventProcessor
                             {
                                 var anim = _objAnimators[objIdx]!;
                                 
-                                // ONLY reset to idle if NOT set by an event
-                                // Event-driven animations should persist through strumLine changes
-                                if (!anim.IsSetByEvent)
-                                {
-                                    anim.HoldUntil = -1f;
-                                    anim.SetSingTimer(0f);
-                                    int idleAnim = (anim.AnimCount > 1 && anim.CurrentAnimData.FrameCount == 1) ? 1 : 0;
-                                    anim.SetAnimation(idleAnim);
-                                }
+                                // Like FMM, the object whose type changes always restarts on idle,
+                                // even over an event animation (which is released). Legacy levels
+                                // put changetype BEFORE changeanim in the same event for this reason
+                                // (e.g. PARADIGM 83.744s: changesprite wormalt keeps anim 6, then
+                                // changetype back to player must drop it to idle).
+                                anim.HoldUntil = -1f;
+                                anim.SetSingTimer(0f);
+                                anim.SetAnimation(SpriteAnimator.IdleAnim, setByEvent: false);
                             }
                             
                             // Reset all objects on the NEW strumLine (they're getting replaced)
@@ -1135,8 +1073,7 @@ public class EventProcessor
                                         {
                                             anim.HoldUntil = -1f;
                                             anim.SetSingTimer(0f);
-                                            int idleAnim = (anim.AnimCount > 1 && anim.CurrentAnimData.FrameCount == 1) ? 1 : 0;
-                                            anim.SetAnimation(idleAnim);
+                                            anim.SetAnimation(SpriteAnimator.IdleAnim);
                                         }
                                     }
                                 }
@@ -1267,7 +1204,9 @@ public class EventProcessor
 
                             var scale = oldAnim?.Scale ?? new Vector2(objScale.X, objScale.Y);
 
-                            // Preserve event control state and animation info
+                            // Preserve event control state and animation info: levels do "alts" by
+                            // swapping sprites mid-song (e.g. HEART mark ↔ markalt), so the current
+                            // pose/hold must carry over to the new sprite.
                             bool wasSetByEvent = oldAnim?.IsSetByEvent ?? false;
                             int currentAnim = oldAnim?.CurrentAnimIndex ?? 0;
                             float holdUntil = oldAnim?.HoldUntil ?? -1f;

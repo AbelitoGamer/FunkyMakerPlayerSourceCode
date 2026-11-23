@@ -102,7 +102,7 @@ public class GameOverOverlay
         if (confirmPressed)
             return _selection == 0;
 
-        if (currentKb.IsKeyDown(Keys.R) && !prevKb.IsKeyDown(Keys.R))
+        if (Controls.Pressed(HotkeyAction.Retry, currentKb, prevKb))
             return true;
 
         return null;  // Still waiting

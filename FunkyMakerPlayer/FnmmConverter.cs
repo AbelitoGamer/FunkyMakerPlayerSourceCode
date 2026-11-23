@@ -292,8 +292,20 @@ public static class FnmmConverter
 
     private static JsonObject? ConvertOldEvent(string type, JsonArray args)
     {
-        string Arg(int i) => i < args.Count ? (args[i]?.GetValue<string>() ?? "") : "";
-        float  ArgF(int i) => i < args.Count ? (float.TryParse(Arg(i), out float v) ? v : 0f) : 0f;
+        // Args should always be JSON strings, but accept bare numbers/bools too (ToString of a
+        // non-string JsonValue gives its raw JSON text). Numbers are parsed culture-invariant so
+        // "0.5" never becomes 5 / 0 on systems that use ',' as the decimal separator.
+        string Arg(int i)
+        {
+            if (i >= args.Count || args[i] is not JsonValue v) return "";
+            return v.TryGetValue<string>(out var str) ? str : v.ToJsonString();
+        }
+        float ArgF(int i) =>
+            float.TryParse(Arg(i), System.Globalization.NumberStyles.Float,
+                           System.Globalization.CultureInfo.InvariantCulture, out float f) ? f : 0f;
+
+        // Old-format camera cuts always take 0.83 s.
+        const double OldCameraTransition = 0.83;
 
         switch (type.ToLower())
         {
@@ -309,14 +321,15 @@ public static class FnmmConverter
                         {
                             ["mode"]               = "auto",
                             ["target"]             = 0.0,
-                            ["transitionTime"]     = 0.0,
+                            ["transitionTime"]     = OldCameraTransition,
                             ["transitionTimeUnit"] = "seconds",
                             ["easingType"]         = "default",
                         }
                     };
                 }
-                // Numeric camera index (0-based in old format → 1-based in new)
-                if (float.TryParse(target, out float camIdx))
+                // Numeric camera index: 0-based in both formats, copied as-is
+                if (float.TryParse(target, System.Globalization.NumberStyles.Float,
+                                   System.Globalization.CultureInfo.InvariantCulture, out float camIdx))
                 {
                     return new JsonObject
                     {
@@ -325,7 +338,7 @@ public static class FnmmConverter
                         {
                             ["mode"]               = "focus",
                             ["target"]             = (double)camIdx,  // already 0-based
-                            ["transitionTime"]     = 0.0,
+                            ["transitionTime"]     = OldCameraTransition,
                             ["transitionTimeUnit"] = "seconds",
                             ["easingType"]         = "default",
                         }
@@ -384,7 +397,7 @@ public static class FnmmConverter
                     ["props"] = new JsonObject
                     {
                         ["object"] = (double)ArgF(0),
-                        ["value"]  = Arg(1).ToLower() == "yes",
+                        ["value"]  = Arg(1).ToLower() is "yes" or "true",
                     }
                 };
 
@@ -399,6 +412,20 @@ public static class FnmmConverter
                         ["color_b"] = 255.0,
                         ["alpha"]   = 0.5,
                         ["duration"] = 0.3,
+                        ["timeUnit"] = "seconds",
+                    }
+                };
+
+            case "shake":
+                // Old shake has no args; fixed equivalent in the current format.
+                return new JsonObject
+                {
+                    ["type"] = "CameraShake",
+                    ["props"] = new JsonObject
+                    {
+                        ["delay"]    = 0.10,
+                        ["shakes"]   = 2.0,
+                        ["strength"] = 12.0,
                         ["timeUnit"] = "seconds",
                     }
                 };

@@ -24,7 +24,8 @@ public class JudgementOverlay
         public float Scale;
         public float Alpha;
         public float Timer;
-        
+        public float SizeMul = 1f;  // HUD editor scale (fork)
+
         public const float LIFETIME = 0.8f;  // Popups live for 0.8 seconds
     }
     private readonly List<JudgementPopup> _judgementPopups = new List<JudgementPopup>();
@@ -39,7 +40,8 @@ public class JudgementOverlay
         public float Scale;
         public float Alpha;
         public float Timer;
-        
+        public float SizeMul = 1f;  // HUD editor scale (fork)
+
         public const float LIFETIME = 1.0f;  // Digits live for 1 second
     }
     private readonly List<ComboDigit> _comboDigits = new List<ComboDigit>();
@@ -53,7 +55,7 @@ public class JudgementOverlay
     /// <summary>
     /// Adds a judgement popup (Sick!, Good, Bad, Shit).
     /// </summary>
-    public void AddJudgement(string judgement, Point position)
+    public void AddJudgement(string judgement, Point position, float sizeMul = 1f)
     {
         Color color = judgement switch
         {
@@ -68,8 +70,8 @@ public class JudgementOverlay
             _judgementPopups.RemoveAt(0);
         
         // Stack vertically based on current count
-        float offsetY = _judgementPopups.Count * 60f;
-        
+        float offsetY = _judgementPopups.Count * 60f * sizeMul;
+
         _judgementPopups.Add(new JudgementPopup
         {
             Text = judgement,
@@ -78,25 +80,26 @@ public class JudgementOverlay
             Velocity = Vector2.Zero,  // No movement, just fade
             Timer = 0f,
             Alpha = 1f,
-            Scale = 1.2f
+            Scale = 1.2f * sizeMul,
+            SizeMul = sizeMul
         });
     }
     
     /// <summary>
     /// Spawns falling combo digits (FNF style).
     /// </summary>
-    public void ShowCombo(int combo, Point position)
+    public void ShowCombo(int combo, Point position, float sizeMul = 1f)
     {
         if (combo <= 0) return;  // Don't show combo = 0
-        
+
         string comboStr = combo.ToString();
-        
+
         // Calculate total width for horizontal spacing
         float totalWidth = 0f;
         foreach (char c in comboStr)
         {
             Vector2 size = _font.MeasureString(c.ToString());
-            totalWidth += size.X * 0.9f;  // 90% spacing (tighter)
+            totalWidth += size.X * 0.9f * sizeMul;  // 90% spacing (tighter)
         }
         
         // Center the combo by offsetting startX
@@ -113,13 +116,14 @@ public class JudgementOverlay
             {
                 Digit = digit,
                 Position = new Vector2(startX + xOffset, startY),
-                Velocity = new Vector2(0f, 120f),  // Fall downward
+                Velocity = new Vector2(0f, 120f * sizeMul),  // Fall downward
                 Timer = 0f,
                 Alpha = 1f,
-                Scale = 1.3f
+                Scale = 1.3f * sizeMul,
+                SizeMul = sizeMul
             });
-            
-            xOffset += digitSize.X * 0.9f;  // Tight spacing
+
+            xOffset += digitSize.X * 0.9f * sizeMul;  // Tight spacing
         }
     }
     
@@ -146,7 +150,7 @@ public class JudgementOverlay
             // Fade out and scale down
             float t = digit.Timer / ComboDigit.LIFETIME;
             digit.Alpha = 1f - t;  // Fade out linearly
-            digit.Scale = MathHelper.Lerp(1.3f, 0.8f, t);  // Shrink a bit
+            digit.Scale = MathHelper.Lerp(1.3f, 0.8f, t) * digit.SizeMul;  // Shrink a bit
         }
         
         // Update falling judgement popups
@@ -167,7 +171,7 @@ public class JudgementOverlay
             // Fade out and scale down
             float t = popup.Timer / JudgementPopup.LIFETIME;
             popup.Alpha = 1f - t;  // Fade out linearly
-            popup.Scale = MathHelper.Lerp(1.2f, 0.9f, t);  // Shrink slightly
+            popup.Scale = MathHelper.Lerp(1.2f, 0.9f, t) * popup.SizeMul;  // Shrink slightly
         }
     }
     

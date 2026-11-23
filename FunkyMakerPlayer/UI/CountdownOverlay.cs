@@ -131,7 +131,7 @@ namespace FunkyMakerPlayer.UI
         public static System.Collections.Generic.IEnumerable<string> CandidatePaths(string selectedCountdown, string fileName)
         {
             if (!DefaultMods.IsDefaultCountdown(selectedCountdown))
-                yield return Path.Combine(PlatformPaths.GetCountdownsPath(), selectedCountdown, fileName);
+                yield return CaseInsensitivePaths.Find(Path.Combine(PlatformPaths.GetCountdownsPath(), selectedCountdown), fileName);
 
             yield return Path.Combine(DefaultMods.CountdownDir, fileName);
 
@@ -178,6 +178,31 @@ namespace FunkyMakerPlayer.UI
             }
 
             return false;
+        }
+
+        /// <summary>
+        /// Online (fork): shows the countdown so that "go" lands on the synced start time.
+        /// <paramref name="secondsUntilStart"/> comes from the server clock; before the last 4 beats
+        /// nothing is shown. Plays each step's sound once, like <see cref="Update"/>.
+        /// </summary>
+        public void SyncTo(float secondsUntilStart, float bpm)
+        {
+            if (_done) return;
+            float beatDur = 60f / bpm;
+            float t = beatDur * 4f - secondsUntilStart;
+            if (t < 0f)
+            {
+                _timer = 0f;
+                _step = 4; // nothing to draw yet
+                return;
+            }
+            _timer = t;
+            _step = 3 - (int)(_timer / beatDur);
+            if (_step != _lastSoundStep && _step >= 0 && _step <= 3)
+            {
+                _lastSoundStep = _step;
+                SoundFiles.Play(_sounds[_step]);
+            }
         }
 
         /// <summary>

@@ -151,47 +151,48 @@ public class HealthBar
         
         // ── Draw icons ────────────────────────────────────────────────────────
         
-        int iconSize = 100;
-        int iconOffsetY = -40;
-        
+        // Fork: per-icon size from the HUD editor (base 100 px, centred 10 px below the bar top as before)
+        int oppIconSize = Math.Max(8, (int)(100 * hudSettings.OpponentIconScale));
+        int plrIconSize = Math.Max(8, (int)(100 * hudSettings.PlayerIconScale));
+
         int opponentIconX, opponentIconY, playerIconX, playerIconY;
-        
+
         if (IconMode == 0) // FNF Base mode
         {
             // Icons move with the health percentage
             int dividerX = innerBarX + enemyW;
-            
+
             // Get actual scaled icon widths
-            int opponentActualWidth = iconSize;
-            int playerActualWidth = iconSize;
-            
+            int opponentActualWidth = oppIconSize;
+            int playerActualWidth = plrIconSize;
+
             if (OpponentIcon != null)
             {
                 var (tex, src) = OpponentIcon.GetCurrentFrameTexture();
                 if (tex != null && src.Width > 0 && src.Height > 0)
                 {
-                    float scale = (float)iconSize / Math.Max(src.Width, src.Height);
+                    float scale = (float)oppIconSize / Math.Max(src.Width, src.Height);
                     opponentActualWidth = (int)(src.Width * scale);
                 }
             }
-            
+
             if (PlayerIcon != null)
             {
                 var (tex, src) = PlayerIcon.GetCurrentFrameTexture();
                 if (tex != null && src.Width > 0 && src.Height > 0)
                 {
-                    float scale = (float)iconSize / Math.Max(src.Width, src.Height);
+                    float scale = (float)plrIconSize / Math.Max(src.Width, src.Height);
                     playerActualWidth = (int)(src.Width * scale);
                 }
             }
-            
+
             // Position opponent icon (right edge at divider)
-            opponentIconX = dividerX - (iconSize + opponentActualWidth) / 2;
-            opponentIconY = barY + iconOffsetY;
-            
+            opponentIconX = dividerX - (oppIconSize + opponentActualWidth) / 2;
+            opponentIconY = barY + 10 - oppIconSize / 2;
+
             // Position player icon (left edge at divider)
-            playerIconX = dividerX - (iconSize - playerActualWidth) / 2;
-            playerIconY = barY + iconOffsetY;
+            playerIconX = dividerX - (plrIconSize - playerActualWidth) / 2;
+            playerIconY = barY + 10 - plrIconSize / 2;
         }
         else // IconMode == 1: Fixed at Ends
         {
@@ -204,9 +205,9 @@ public class HealthBar
         }
         
         if (hudSettings.OpponentIconVisible)
-            DrawIcon(OpponentIcon, opponentIconX, opponentIconY, iconSize, flipX: FlipOpponentIcon, _iconBounceScale);
+            DrawIcon(OpponentIcon, opponentIconX, opponentIconY, oppIconSize, flipX: FlipOpponentIcon, _iconBounceScale);
         if (hudSettings.PlayerIconVisible)
-            DrawIcon(PlayerIcon, playerIconX, playerIconY, iconSize, flipX: FlipPlayerIcon, _iconBounceScale);
+            DrawIcon(PlayerIcon, playerIconX, playerIconY, plrIconSize, flipX: FlipPlayerIcon, _iconBounceScale);
     }
     
     /// <summary>

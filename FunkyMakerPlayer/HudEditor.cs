@@ -27,6 +27,14 @@ public class HudEditor
     private int _selectedElement = -1;
     private bool _isDragging = false;
     private Point _dragOffset;
+
+    // Fork: resizing (bottom-right handle, [ / ], mouse wheel)
+    private bool _isResizing = false;
+    private const int HANDLE_SIZE = 14;
+    private const float MIN_SCALE = 0.25f, MAX_SCALE = 4f, SCALE_STEP = 0.05f;
+
+    private static Rectangle HandleRect(HudElement e)
+        => new Rectangle(e.Position.X + e.Size.X - HANDLE_SIZE + 4, e.Position.Y + e.Size.Y - HANDLE_SIZE + 4, HANDLE_SIZE, HANDLE_SIZE);
     
     private bool _showGrid = true;
     private const int GRID_SIZE = 20;
@@ -47,7 +55,7 @@ public class HudEditor
         _pixel = pixel;
         _font = font;
         _graphicsDevice = graphicsDevice;
-        _prevKb = Keyboard.GetState();
+        _prevKb = LayoutKeyboard.GetState();
         _prevMouse = Mouse.GetState();
         
         // Load actual positions from HudSettings
@@ -57,156 +65,67 @@ public class HudEditor
     private void LoadFromHudSettings(int screenWidth, int screenHeight)
     {
         _elements.Clear();
-        
+
         // Get current HUD settings (don't adjust for downscroll here - we edit the base values)
-        var hudSettings = HudSettings.Instance;
-        
-        // Health Bar
-        _elements.Add(new HudElement
-        {
-            Name = "Health Bar",
-            Position = hudSettings.HealthBarPosition.ToPoint(),
-            Size = hudSettings.HealthBarSize.ToPoint(),
-            Color = Color.Red,
-            Type = HudElementType.HealthBar,
-            Visible = hudSettings.HealthBarVisible
-        });
-        
-        // Score
-        _elements.Add(new HudElement
-        {
-            Name = "Score",
-            Position = hudSettings.ScorePosition.ToPoint(),
-            Size = new Point(140, 30),
-            Color = Color.White,
-            Type = HudElementType.Text,
-            Visible = hudSettings.ScoreVisible
-        });
-        
-        // Misses
-        _elements.Add(new HudElement
-        {
-            Name = "Misses",
-            Position = hudSettings.MissesPosition.ToPoint(),
-            Size = new Point(100, 30),
-            Color = Color.OrangeRed,
-            Type = HudElementType.Text,
-            Visible = hudSettings.MissesVisible
-        });
-        
-        // Accuracy
-        _elements.Add(new HudElement
-        {
-            Name = "Accuracy",
-            Position = hudSettings.AccuracyPosition.ToPoint(),
-            Size = new Point(120, 30),
-            Color = Color.LightBlue,
-            Type = HudElementType.Text,
-            Visible = hudSettings.AccuracyVisible
-        });
-        
-        // Timer Bar
-        _elements.Add(new HudElement
-        {
-            Name = "Timer Bar",
-            Position = hudSettings.TimerBarPosition.ToPoint(),
-            Size = hudSettings.TimerBarSize.ToPoint(),
-            Color = Color.Cyan,
-            Type = HudElementType.HealthBar,
-            Visible = hudSettings.TimerBarVisible
-        });
-        
-        // Song Info
-        _elements.Add(new HudElement
-        {
-            Name = "Song Info",
-            Position = hudSettings.SongInfoPosition.ToPoint(),
-            Size = new Point(200, 30),
-            Color = Color.White,
-            Type = HudElementType.Text,
-            Visible = hudSettings.SongInfoVisible
-        });
+        var hud = HudSettings.Instance;
 
-        // Status Info (bottom-left: Autoplay / Scroll / Speed)
+        // Bars: resized freely through their Size
         _elements.Add(new HudElement
         {
-            Name = "Status Info",
-            Position = hudSettings.StatusInfoPosition.ToPoint(),
-            Size = new Point(260, 28),
-            Color = Color.LightGreen,
-            Type = HudElementType.Text,
-            Visible = hudSettings.StatusInfoVisible
+            Name = "Health Bar", Position = hud.HealthBarPosition.ToPoint(), Size = hud.HealthBarSize.ToPoint(),
+            Color = Color.Red, Type = HudElementType.HealthBar, Visible = hud.HealthBarVisible, FreeResize = true
         });
-        
-        // Combo Counter
+        AddScaled("Score",    hud.ScorePosition.ToPoint(),    new Point(140, 30), hud.ScoreScale,    Color.White,     HudElementType.Text, hud.ScoreVisible);
+        AddScaled("Misses",   hud.MissesPosition.ToPoint(),   new Point(100, 30), hud.MissesScale,   Color.OrangeRed, HudElementType.Text, hud.MissesVisible);
+        AddScaled("Accuracy", hud.AccuracyPosition.ToPoint(), new Point(120, 30), hud.AccuracyScale, Color.LightBlue, HudElementType.Text, hud.AccuracyVisible);
         _elements.Add(new HudElement
         {
-            Name = "Combo",
-            Position = hudSettings.ComboPosition.ToPoint(),
-            Size = new Point(100, 40),
-            Color = Color.Yellow,
-            Type = HudElementType.Text,
-            Visible = hudSettings.ComboVisible
+            Name = "Timer Bar", Position = hud.TimerBarPosition.ToPoint(), Size = hud.TimerBarSize.ToPoint(),
+            Color = Color.Cyan, Type = HudElementType.HealthBar, Visible = hud.TimerBarVisible, FreeResize = true
         });
-        
-        // Judgement Text
-        _elements.Add(new HudElement
-        {
-            Name = "Judgement",
-            Position = hudSettings.JudgementPosition.ToPoint(),
-            Size = new Point(200, 50),
-            Color = Color.Cyan,
-            Type = HudElementType.Text,
-            Visible = hudSettings.JudgementVisible
-        });
-        
-        // Opponent Icon (for Fixed at Ends mode)
-        _elements.Add(new HudElement
-        {
-            Name = "Opponent Icon",
-            Position = hudSettings.OpponentIconPosition.ToPoint(),
-            Size = new Point(100, 100),
-            Color = Color.Red,
-            Type = HudElementType.Icon,
-            Visible = hudSettings.OpponentIconVisible
-        });
-        
-        // Player Icon (for Fixed at Ends mode)
-        _elements.Add(new HudElement
-        {
-            Name = "Player Icon",
-            Position = hudSettings.PlayerIconPosition.ToPoint(),
-            Size = new Point(100, 100),
-            Color = Color.Cyan,
-            Type = HudElementType.Icon,
-            Visible = hudSettings.PlayerIconVisible
-        });
+        AddScaled("Song Info",   hud.SongInfoPosition.ToPoint(),   new Point(200, 30), hud.SongInfoScale,   Color.White,      HudElementType.Text, hud.SongInfoVisible);
+        // Status Info (bottom-left: Botplay / Scroll / Speed)
+        AddScaled("Botplay/Speed Indicator", hud.StatusInfoPosition.ToPoint(), new Point(260, 28), hud.StatusInfoScale, Color.LightGreen, HudElementType.Text, hud.StatusInfoVisible);
+        AddScaled("Combo",       hud.ComboPosition.ToPoint(),      new Point(100, 40), hud.ComboScale,      Color.Yellow,     HudElementType.Text, hud.ComboVisible);
+        AddScaled("Judgement",   hud.JudgementPosition.ToPoint(),  new Point(200, 50), hud.JudgementScale,  Color.Cyan,       HudElementType.Text, hud.JudgementVisible);
+        // Icons (position used in "Fixed at Ends" mode; size used in both modes)
+        AddScaled("Opponent Icon", hud.OpponentIconPosition.ToPoint(), new Point(100, 100), hud.OpponentIconScale, Color.Red,  HudElementType.Icon, hud.OpponentIconVisible);
+        AddScaled("Player Icon",   hud.PlayerIconPosition.ToPoint(),   new Point(100, 100), hud.PlayerIconScale,   Color.Cyan, HudElementType.Icon, hud.PlayerIconVisible);
 
-        // Opponent Strumline (left side)
-        _elements.Add(new HudElement
-        {
-            Name = "Opponent Strumline",
-            Position = new Point(OpponentStrumlineBase.X + hudSettings.OpponentStrumlineOffset.X,
-                                 OpponentStrumlineBase.Y + hudSettings.OpponentStrumlineOffset.Y),
-            Size = new Point(440, 90),
-            Color = new Color(194, 75, 153),
-            Type = HudElementType.Strumline,
-            Visible = hudSettings.StrumlinesVisible && hudSettings.OpponentStrumlineVisible
-        });
-
-        // Player Strumline (right side)
-        _elements.Add(new HudElement
-        {
-            Name = "Player Strumline",
-            Position = new Point(PlayerStrumlineBase.X + hudSettings.PlayerStrumlineOffset.X,
-                                 PlayerStrumlineBase.Y + hudSettings.PlayerStrumlineOffset.Y),
-            Size = new Point(440, 90),
-            Color = new Color(0, 255, 255),
-            Type = HudElementType.Strumline,
-            Visible = hudSettings.StrumlinesVisible && hudSettings.PlayerStrumlineVisible
-        });
+        // Strumlines: the box at scale 1 sits at the base; the saved offset moves its centre
+        AddStrumline("Opponent Strumline", OpponentStrumlineBase, hud.OpponentStrumlineOffset, hud.OpponentStrumlineScale,
+            new Color(194, 75, 153), hud.StrumlinesVisible && hud.OpponentStrumlineVisible);
+        AddStrumline("Player Strumline", PlayerStrumlineBase, hud.PlayerStrumlineOffset, hud.PlayerStrumlineScale,
+            new Color(0, 255, 255), hud.StrumlinesVisible && hud.PlayerStrumlineVisible);
     }
-    
+
+    private static readonly Point StrumlineBoxSize = new Point(440, 90);
+
+    private void AddScaled(string name, Point pos, Point baseSize, float scale, Color color, HudElementType type, bool visible)
+    {
+        var e = new HudElement { Name = name, Position = pos, BaseSize = baseSize, Color = color, Type = type, Visible = visible };
+        e.ApplyScale(scale > 0f ? scale : 1f);
+        _elements.Add(e);
+    }
+
+    private void AddStrumline(string name, Point basePos, HudPosition offset, float scale, Color color, bool visible)
+    {
+        var e = new HudElement
+        {
+            Name = name, BaseSize = StrumlineBoxSize, Color = color, Type = HudElementType.Strumline,
+            Visible = visible, CenterAnchored = true,
+            Position = new Point(basePos.X + offset.X, basePos.Y + offset.Y),
+        };
+        e.Size = StrumlineBoxSize;
+        e.ApplyScale(scale > 0f ? scale : 1f);  // centre-anchored: grows around the offset centre
+        _elements.Add(e);
+    }
+
+    /// <summary>Strumline offset = movement of the box centre from its default centre.</summary>
+    private static HudPosition StrumlineOffsetOf(HudElement e, Point basePos)
+        => new HudPosition(e.Position.X + e.Size.X / 2 - (basePos.X + StrumlineBoxSize.X / 2),
+                           e.Position.Y + e.Size.Y / 2 - (basePos.Y + StrumlineBoxSize.Y / 2));
+
     /// <summary>
     /// Converts mouse position from window coordinates to render target coordinates,
     /// accounting for letterboxing/scaling.
@@ -244,7 +163,8 @@ public class HudEditor
     public void SyncInputState()
     {
         _isDragging = false;
-        _prevKb = Keyboard.GetState();
+        _isResizing = false;
+        _prevKb = LayoutKeyboard.GetState();
         _prevMouse = Mouse.GetState();
     }
 
@@ -267,12 +187,13 @@ public class HudEditor
         if (!Game1.CanAcceptInput)
         {
             _isDragging = false;
+            _isResizing = false;
             _prevKb = default;
             _prevMouse = Game1.NeutralMouseState(mouse);
             return;
         }
 
-        var kb = Keyboard.GetState();
+        var kb = LayoutKeyboard.GetState();
         
         // Convert mouse position from window coordinates to render target coordinates
         Point mousePos = ConvertMousePosition(mouse.X, mouse.Y, screenWidth, screenHeight);
@@ -300,7 +221,7 @@ public class HudEditor
             HudSettings.Instance.ResetToDefaults();
             HudSettings.Instance.Save();
             LoadFromHudSettings(screenWidth, screenHeight);
-            _feedbackMessage = "Reset to default positions & visibility!";
+            _feedbackMessage = "Reset to default positions, sizes & visibility!";
             _feedbackTimer = FEEDBACK_DURATION;
             UI.UiSfx.Play(UI.UiSound.Undo);
         }
@@ -367,8 +288,16 @@ public class HudEditor
             }
         }
         
-        // Mouse interaction (left-click drag)
-        if (mouse.LeftButton == ButtonState.Pressed && _prevMouse.LeftButton == ButtonState.Released)
+        // Mouse interaction (left-click drag; the selected element's corner handle resizes)
+        bool leftPressed = mouse.LeftButton == ButtonState.Pressed && _prevMouse.LeftButton == ButtonState.Released;
+        if (leftPressed && _selectedElement >= 0 && _selectedElement < _elements.Count &&
+            HandleRect(_elements[_selectedElement]).Contains(mousePos))
+        {
+            _isResizing = true;
+            leftPressed = false;
+            UI.UiSfx.Play(UI.UiSound.Grab);
+        }
+        if (leftPressed)
         {
             // Start dragging
             for (int i = _elements.Count - 1; i >= 0; i--)
@@ -389,10 +318,68 @@ public class HudEditor
         
         if (mouse.LeftButton == ButtonState.Released && _prevMouse.LeftButton == ButtonState.Pressed)
         {
-            // Stop dragging
-            if (_isDragging) UI.UiSfx.Play(UI.UiSound.Release);
+            // Stop dragging / resizing
+            if (_isDragging || _isResizing) UI.UiSfx.Play(UI.UiSound.Release);
             _isDragging = false;
+            _isResizing = false;
             SyncToHudSettings();
+        }
+
+        // Resize selected element by dragging its corner handle
+        if (_isResizing && _selectedElement >= 0 && _selectedElement < _elements.Count)
+        {
+            var elem = _elements[_selectedElement];
+            if (elem.FreeResize)
+            {
+                int w = mousePos.X - elem.Position.X, h = mousePos.Y - elem.Position.Y;
+                if (_showGrid) { w = (w + GRID_SIZE / 2) / GRID_SIZE * GRID_SIZE; h = Math.Max(8, h); }
+                elem.Size = new Point(Math.Clamp(w, 40, screenWidth - elem.Position.X),
+                                      Math.Clamp(h, 8, screenHeight - elem.Position.Y));
+            }
+            else
+            {
+                // Centre-anchored boxes grow both ways, so measure from the centre
+                float sx, sy;
+                if (elem.CenterAnchored)
+                {
+                    float cx = elem.Position.X + elem.Size.X / 2f, cy = elem.Position.Y + elem.Size.Y / 2f;
+                    sx = (mousePos.X - cx) * 2f / elem.BaseSize.X;
+                    sy = (mousePos.Y - cy) * 2f / elem.BaseSize.Y;
+                }
+                else
+                {
+                    sx = (mousePos.X - elem.Position.X) / (float)elem.BaseSize.X;
+                    sy = (mousePos.Y - elem.Position.Y) / (float)elem.BaseSize.Y;
+                }
+                SetElementScale(elem, Math.Max(sx, sy));
+            }
+        }
+
+        // [ / ] or mouse wheel over the selected element: shrink / grow
+        if (_selectedElement >= 0 && _selectedElement < _elements.Count && !_isDragging && !_isResizing)
+        {
+            var elem = _elements[_selectedElement];
+            int steps = 0;
+            if (kb.IsKeyDown(Keys.OemCloseBrackets) && !_prevKb.IsKeyDown(Keys.OemCloseBrackets)) steps++;
+            if (kb.IsKeyDown(Keys.OemOpenBrackets)  && !_prevKb.IsKeyDown(Keys.OemOpenBrackets))  steps--;
+            int wheel = mouse.ScrollWheelValue - _prevMouse.ScrollWheelValue;
+            if (wheel != 0 && new Rectangle(elem.Position, elem.Size).Contains(mousePos)) steps += Math.Sign(wheel);
+
+            if (steps != 0)
+            {
+                if (elem.FreeResize)
+                {
+                    float f = 1f + 0.05f * steps;
+                    elem.Size = new Point(Math.Clamp((int)(elem.Size.X * f), 40, screenWidth),
+                                          Math.Clamp((int)MathF.Round(elem.Size.Y * f), 8, screenHeight));
+                }
+                else
+                {
+                    SetElementScale(elem, elem.Scale + steps * SCALE_STEP);
+                }
+                SyncToHudSettings();
+                UI.UiSfx.Play(steps > 0 ? UI.UiSound.SliderUp : UI.UiSound.SliderDown);
+            }
         }
         
         // Drag selected element
@@ -607,14 +594,21 @@ public class HudEditor
         // Position & visibility indicator when selected
         if (isSelected)
         {
+            // Resize handle (bottom-right corner)
+            var handle = HandleRect(elem);
+            sb.Draw(_pixel, handle, Color.Black * 0.8f);
+            sb.Draw(_pixel, new Rectangle(handle.X + 2, handle.Y + 2, handle.Width - 4, handle.Height - 4),
+                _isResizing ? Color.White : Color.Yellow);
+
             string visTag = elem.Visible ? "VISIBLE" : "HIDDEN";
-            string posText = $"({elem.Position.X}, {elem.Position.Y}) [{visTag}]";
+            string sizeTag = elem.FreeResize ? $"{elem.Size.X}x{elem.Size.Y}" : $"x{elem.Scale:0.00}";
+            string posText = $"({elem.Position.X}, {elem.Position.Y}) {sizeTag} [{visTag}]";
             var posSize = _font.MeasureString(posText);
             Vector2 posTextPos = new Vector2(rect.X, Math.Max(4, rect.Y - posSize.Y - 5));
             sb.DrawString(_font, posText, posTextPos + new Vector2(1, 1), Color.Black);
             sb.DrawString(_font, posText, posTextPos, elem.Visible ? Color.Yellow : new Color(255, 120, 100));
             
-            string sizeNote = "V / Right-Click: Hide/Show";
+            string sizeNote = "Corner / [ ] / Wheel: Resize   V / Right-Click: Hide/Show";
             Vector2 sizeTextPos = new Vector2(rect.X, Math.Min(700, rect.Y + rect.Height + 5));
             sb.DrawString(_font, sizeNote, sizeTextPos + new Vector2(1, 1), Color.Black, 0f, Vector2.Zero, 0.7f, Microsoft.Xna.Framework.Graphics.SpriteEffects.None, 0f);
             sb.DrawString(_font, sizeNote, sizeTextPos, Color.Cyan, 0f, Vector2.Zero, 0.7f, Microsoft.Xna.Framework.Graphics.SpriteEffects.None, 0f);
@@ -627,12 +621,13 @@ public class HudEditor
         string[] instructions = new[]
         {
             "Left-Click & Drag: Move elements",
+            "Drag corner handle / [ ] / Wheel: Resize selected",
             "Right-Click / V / Space: Hide or Show element",
             "A: Hide or Show ALL elements at once",
             "Arrow Keys (+Shift): Fine-tune position",
             "Tab: Cycle through elements",
             "G: Toggle grid   |   H: Toggle instructions",
-            "R: Reset positions & visibility",
+            "R: Reset positions, sizes & visibility",
             "S: Save layout",
             "ESC: Save & Exit editor"
         };
@@ -702,6 +697,12 @@ public class HudEditor
         sb.Draw(_pixel, new Rectangle(x + width - thickness, y, thickness, height), color);
     }
 
+    private static void SetElementScale(HudElement elem, float scale)
+    {
+        scale = MathF.Round(Math.Clamp(scale, MIN_SCALE, MAX_SCALE) / SCALE_STEP) * SCALE_STEP;
+        elem.ApplyScale(scale);
+    }
+
     private void SyncToHudSettings()
     {
         var hudSettings = HudSettings.Instance;
@@ -718,17 +719,17 @@ public class HudEditor
                     break;
                     
                 case "Score":
-                    hudSettings.ScorePosition = HudPosition.FromPoint(elem.Position);
+                    hudSettings.ScorePosition = HudPosition.FromPoint(elem.Position); hudSettings.ScoreScale = elem.Scale;
                     hudSettings.ScoreVisible = elem.Visible;
                     break;
                     
                 case "Misses":
-                    hudSettings.MissesPosition = HudPosition.FromPoint(elem.Position);
+                    hudSettings.MissesPosition = HudPosition.FromPoint(elem.Position); hudSettings.MissesScale = elem.Scale;
                     hudSettings.MissesVisible = elem.Visible;
                     break;
                     
                 case "Accuracy":
-                    hudSettings.AccuracyPosition = HudPosition.FromPoint(elem.Position);
+                    hudSettings.AccuracyPosition = HudPosition.FromPoint(elem.Position); hudSettings.AccuracyScale = elem.Scale;
                     hudSettings.AccuracyVisible = elem.Visible;
                     break;
                     
@@ -739,45 +740,45 @@ public class HudEditor
                     break;
                     
                 case "Song Info":
-                    hudSettings.SongInfoPosition = HudPosition.FromPoint(elem.Position);
+                    hudSettings.SongInfoPosition = HudPosition.FromPoint(elem.Position); hudSettings.SongInfoScale = elem.Scale;
                     hudSettings.SongInfoVisible = elem.Visible;
                     break;
 
-                case "Status Info":
-                    hudSettings.StatusInfoPosition = HudPosition.FromPoint(elem.Position);
+                case "Botplay/Speed Indicator":
+                    hudSettings.StatusInfoPosition = HudPosition.FromPoint(elem.Position); hudSettings.StatusInfoScale = elem.Scale;
                     hudSettings.StatusInfoVisible = elem.Visible;
                     break;
                     
                 case "Combo":
-                    hudSettings.ComboPosition = HudPosition.FromPoint(elem.Position);
+                    hudSettings.ComboPosition = HudPosition.FromPoint(elem.Position); hudSettings.ComboScale = elem.Scale;
                     hudSettings.ComboVisible = elem.Visible;
                     break;
                     
                 case "Judgement":
-                    hudSettings.JudgementPosition = HudPosition.FromPoint(elem.Position);
+                    hudSettings.JudgementPosition = HudPosition.FromPoint(elem.Position); hudSettings.JudgementScale = elem.Scale;
                     hudSettings.JudgementVisible = elem.Visible;
                     break;
                     
                 case "Opponent Icon":
-                    hudSettings.OpponentIconPosition = HudPosition.FromPoint(elem.Position);
+                    hudSettings.OpponentIconPosition = HudPosition.FromPoint(elem.Position); hudSettings.OpponentIconScale = elem.Scale;
                     hudSettings.OpponentIconVisible = elem.Visible;
                     break;
                     
                 case "Player Icon":
-                    hudSettings.PlayerIconPosition = HudPosition.FromPoint(elem.Position);
+                    hudSettings.PlayerIconPosition = HudPosition.FromPoint(elem.Position); hudSettings.PlayerIconScale = elem.Scale;
                     hudSettings.PlayerIconVisible = elem.Visible;
                     break;
 
                 case "Opponent Strumline":
                     hudSettings.OpponentStrumlineVisible = elem.Visible;
-                    hudSettings.OpponentStrumlineOffset = new HudPosition(
-                        elem.Position.X - OpponentStrumlineBase.X, elem.Position.Y - OpponentStrumlineBase.Y);
+                    hudSettings.OpponentStrumlineOffset = StrumlineOffsetOf(elem, OpponentStrumlineBase);
+                    hudSettings.OpponentStrumlineScale = elem.Scale;
                     break;
 
                 case "Player Strumline":
                     hudSettings.PlayerStrumlineVisible = elem.Visible;
-                    hudSettings.PlayerStrumlineOffset = new HudPosition(
-                        elem.Position.X - PlayerStrumlineBase.X, elem.Position.Y - PlayerStrumlineBase.Y);
+                    hudSettings.PlayerStrumlineOffset = StrumlineOffsetOf(elem, PlayerStrumlineBase);
+                    hudSettings.PlayerStrumlineScale = elem.Scale;
                     break;
             }
         }
@@ -812,4 +813,20 @@ public class HudElement
     public Color Color { get; set; }
     public HudElementType Type { get; set; }
     public bool Visible { get; set; } = true;
+
+    // Fork: resizing. Bars (FreeResize) change Size directly; the rest scale BaseSize uniformly.
+    public bool FreeResize { get; set; }
+    public Point BaseSize { get; set; }
+    public float Scale { get; set; } = 1f;
+    /// <summary>Strumlines are resized around their centre (matches NoteRenderer).</summary>
+    public bool CenterAnchored { get; set; }
+
+    public void ApplyScale(float scale)
+    {
+        Point center = new Point(Position.X + Size.X / 2, Position.Y + Size.Y / 2);
+        Scale = scale;
+        Size = new Point(Math.Max(4, (int)MathF.Round(BaseSize.X * scale)), Math.Max(4, (int)MathF.Round(BaseSize.Y * scale)));
+        if (CenterAnchored)
+            Position = new Point(center.X - Size.X / 2, center.Y - Size.Y / 2);
+    }
 }
