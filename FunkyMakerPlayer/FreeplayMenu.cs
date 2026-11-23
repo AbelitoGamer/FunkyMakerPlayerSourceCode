@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using FunkyMakerPlayer.UI;
 using Microsoft.Xna.Framework;
 using Microsoft.Xna.Framework.Graphics;
@@ -62,7 +63,11 @@ public partial class FreeplayMenu
         : null;
     
     /// <summary>Updates the TrueType font renderer when font is changed in Settings</summary>
-    public void SetFontRenderer(FontRenderer? fontRenderer) => _fontRenderer = fontRenderer;
+    public void SetFontRenderer(FontRenderer? fontRenderer)
+    {
+        _fontRenderer = fontRenderer;
+        _ui.FontRenderer = fontRenderer;
+    }
     
     /// <summary>Action to call when file picker should be opened (Blazor only)</summary>
     public Action? OnFilePickerRequested { get; set; }
@@ -80,7 +85,8 @@ public partial class FreeplayMenu
     private readonly Texture2D   _pixel;
     private readonly SpriteFont? _font;
     private FontRenderer? _fontRenderer;  // Nueva fuente TrueType
-    private readonly string      _levelsFolder;
+    // Fork: looked up each time, so moving the mods folder (Settings → Move Mods Folder) takes effect at once.
+    private string               _levelsFolder => GetDefaultLevelsFolder();
     private readonly Texture2D?  _folderIcon;  // Folder icon texture
     private GraphicsDevice? _graphicsDevice;  // For scissor rectangle clipping
 
@@ -145,6 +151,8 @@ public partial class FreeplayMenu
     private bool      _updateBadgeHover     = false;
     #if ANDROID
     private bool      _prevTouchDown        = false;
+    private Point     _touchStart, _touchLast;
+    private bool      _touchDragging;
     #endif
     
     // Screen dimensions for mouse coordinate transformation
@@ -158,11 +166,12 @@ public partial class FreeplayMenu
     private bool _inPanel     = false;  // true when navigating the level list
     private readonly List<Rectangle> _mainMenuCardBounds = new();
     private readonly List<(int Index, Rectangle Bounds)> _levelItemBounds = new();
-    private readonly List<(int Index, Rectangle Bounds)> _levelEditBounds = new();
+    // Fork: delete confirmation (reuses the import modal with _modalIsDelete).
+    private bool   _modalIsDelete;
+    private string _deleteModalPath = "";
     private Rectangle _panelBounds     = Rectangle.Empty;
     private Rectangle _levelListBounds = Rectangle.Empty;
     private int   _hoveredLevelIndex   = -1;
-    private int   _hoveredEditIndex    = -1;
     private int   _hoveredMainCard     = -1;
     private int   _lastListHeight      = 580;
     private bool  _manualScroll        = false;
@@ -207,13 +216,24 @@ public partial class FreeplayMenu
     private float _inputCooldown = 0f;
     private const float INPUT_COOLDOWN_DURATION = 0.25f;
 
-    public FreeplayMenu(Texture2D pixel, SpriteFont? font, string levelsFolder, Texture2D? folderIcon = null, FontRenderer? fontRenderer = null)
+    /// <param name="online">Fork: makes this instance the online song select (FreeplayMenu.Online.cs).</param>
+    public FreeplayMenu(Texture2D pixel, SpriteFont? font, string levelsFolder, Texture2D? folderIcon = null, FontRenderer? fontRenderer = null,
+        IOnlineSongSource? online = null)
     {
         _pixel        = pixel;
         _font         = font;
         _fontRenderer = fontRenderer;
-        _levelsFolder = levelsFolder;
         _folderIcon   = folderIcon;
+        _online       = online;
+        InitBrowseUi(pixel, font, fontRenderer);
+        LoadBrowseState();
+        if (_online != null)
+        {
+            // Always the level panel (no main menu); the tab follows the room's song types.
+            _panelOpen = _inPanel = true;
+            _panelX = 0f;
+            EnsureOnlineTab();
+        }
         Refresh();
     }
 
@@ -223,7 +243,7 @@ public partial class FreeplayMenu
         _inputCooldown = INPUT_COOLDOWN_DURATION;
         _syncPointerNextUpdate = true;
         _hoveredLevelIndex = -1;
-        _hoveredEditIndex = -1;
+        _hoveredMoreIndex = -1;
         _hoveredMainCard = -1;
     }
 
@@ -232,10 +252,9 @@ public partial class FreeplayMenu
     {
         _inputCooldown = Math.Max(_inputCooldown, 0.08f);
         _syncPointerNextUpdate = true;
-        _prevKb = Keyboard.GetState();
+        _prevKb = LayoutKeyboard.GetState();
         _prevMs = Mouse.GetState();
         _hoveredLevelIndex = -1;
-        _hoveredEditIndex = -1;
         _hoveredMainCard = -1;
         _folderIconHover = false;
         _importBtnHover = false;
@@ -309,6 +328,31 @@ public partial class FreeplayMenu
         if (importedPaths == null || importedPaths.Count == 0)
             return;
 
+        // osu! files (fork): the Android picker / stream import copy every file into the levels
+        // folder; .osz / .osk go to the osu! importer instead (and the copy is removed).
+        var osuFiles = importedPaths.Where(p => Osu.OsuLibrary.IsBeatmapArchive(p) || Osu.OsuLibrary.IsSkinArchive(p)).ToList();
+        if (osuFiles.Count > 0)
+        {
+            foreach (var file in osuFiles)
+            {
+                var r = Osu.OsuLibrary.Import(file);
+                if (LevelFiles.IsInLevelsFolder(file) && !file.StartsWith(Osu.OsuLibrary.RootFolder, StringComparison.OrdinalIgnoreCase))
+                {
+                    try { File.Delete(file); } catch { }
+                }
+                if (r.Ok && !r.IsSkin && r.Path != null) OnOsuSetImported(r.Path, r.Message);
+                else ShowToast(r.Message);
+            }
+            importedPaths = importedPaths.Except(osuFiles).ToList();
+            if (importedPaths.Count == 0) return;
+        }
+
+        // Fork: clear the search / favourites filter so the new level is listed.
+        _search = "";
+        _favoritesOnly = false;
+        StopSearchTyping();
+        _tab = FreeplayTab.Fnf; // FNF levels live in the FNF tab (fork)
+        FreeplayData.Instance.Tab = "fnf";
         Refresh();
 
         // Ensure the Freeplay sidebar panel is open and focused so the user sees the imported song
@@ -342,6 +386,7 @@ public partial class FreeplayMenu
 
         // Open confirmation modal asking whether to play the imported level immediately
         _importModalOpen      = true;
+        _modalIsDelete        = false;
         _importModalLevelPath = targetPath;
         _importModalLevelName = targetName;
         _importModalCount     = importedPaths.Count;
@@ -361,10 +406,45 @@ public partial class FreeplayMenu
 
     public void Refresh()
     {
-        _paths.Clear();
-        _names.Clear();
+        // Fork: keep the selected level selected (by path); the first scan restores the last one played.
+        string? keepPath = SelectedPath;
+        if (!_restoredLastSelection)
+        {
+            _restoredLastSelection = true;
+            keepPath = FreeplayData.Instance.LastSelected;
+        }
+        _allPaths.Clear();
+        _allNames.Clear();
+        _addedUtc.Clear();
 
-        Console.WriteLine($"[FreeplayMenu] === REFRESH START ===");
+        if (_online == null) Console.WriteLine($"[FreeplayMenu] === REFRESH START ({_tab}) ===");
+        // Fork: the online song select lists the room's songs (FreeplayMenu.Online.cs); the
+        // OSU!MANIA tab lists osu! beatmap sets (FreeplayMenu.Osu.cs).
+        if (_online != null) ScanOnline();
+        else if (_tab == FreeplayTab.Osu) ScanOsuSets();
+        else if (!ScanFnfLevels())
+        {
+            RebuildView(null);
+            return;
+        }
+
+        // A key from freeplay_data.json (relative, lower-case) → the listed path.
+        if (keepPath != null && !_allPaths.Contains(keepPath))
+        {
+            string key = keepPath.ToLowerInvariant();
+            keepPath = _allPaths.Find(p => FreeplayData.KeyFor(p) == key) ?? SameOsuSet(keepPath);
+        }
+
+        RebuildView(keepPath);
+        _selVisual = _selected;
+        QueueStarRatings();
+        PruneIconCache();
+        if (_online == null) Console.WriteLine($"[FreeplayMenu] === REFRESH COMPLETE: {_allPaths.Count} levels ===");
+    }
+
+    /// <summary>Scans the levels folder into the full list (FNF tab). False if the folder can't be created.</summary>
+    private bool ScanFnfLevels()
+    {
         Console.WriteLine($"[FreeplayMenu] Levels folder: {_levelsFolder}");
 
         // Ensure folder exists before scanning
@@ -380,7 +460,7 @@ public partial class FreeplayMenu
             catch (Exception ex)
             {
                 Console.WriteLine($"[FreeplayMenu] ❌ Failed to create folder: {ex.Message}");
-                return;
+                return false;
             }
         }
 
@@ -415,16 +495,23 @@ public partial class FreeplayMenu
 
         foreach (var f in files)
         {
-            _paths.Add(f);
+            bool isDir = Directory.Exists(f);
+            _allPaths.Add(f);
             // Directories are unpacked levels: show the folder name as-is
             // (Path.GetFileNameWithoutExtension would strip a dot in the name).
-            _names.Add(Directory.Exists(f) ? Path.GetFileName(f) : Path.GetFileNameWithoutExtension(f));
+            _allNames.Add(isDir ? Path.GetFileName(f) : Path.GetFileNameWithoutExtension(f));
+            // "Newest" order: when the file arrived (a copy gets a new creation time) or was last changed.
+            try
+            {
+                var created = isDir ? Directory.GetCreationTimeUtc(f) : File.GetCreationTimeUtc(f);
+                var written = isDir ? Directory.GetLastWriteTimeUtc(f) : File.GetLastWriteTimeUtc(f);
+                _addedUtc[f] = created > written ? created : written;
+            }
+            catch { }
             Console.WriteLine($"[FreeplayMenu]   - {Path.GetFileName(f)}");
         }
 
-        _selected = Math.Clamp(_selected, 0, Math.Max(0, _paths.Count - 1));
-        _manualScroll = false;
-        Console.WriteLine($"[FreeplayMenu] === REFRESH COMPLETE: {_paths.Count} levels ===");
+        return true;
     }
 
     public void Update(float dt, KeyboardState kb)
@@ -446,7 +533,7 @@ public partial class FreeplayMenu
     }
 
     private readonly record struct SfxState(
-        int _menuSel, int _selected, bool _panelOpen, bool _creditsOpen, TransitionState _transition,
+        int _menuSel, string? _selected, bool _panelOpen, bool _creditsOpen, TransitionState _transition,
         bool _importModalOpen, int _importModalSelection, bool _updateModalOpen, int _updateModalSel,
         bool _updateDownloading, bool HasUpdateError);
 
@@ -454,18 +541,20 @@ public partial class FreeplayMenu
     private long _sfxPrevFrame = -10;
 
     private SfxState CaptureSfxState() => new(
-        _menuSel, _selected, _panelOpen, _creditsOpen, _transition, _importModalOpen, _importModalSelection,
+        _menuSel, SelectedPath, _panelOpen, _creditsOpen, _transition, _importModalOpen, _importModalSelection,
         _updateModalOpen, _updateModalSel, _updateDownloading, _updateError != null);
 
     /// <summary>Queues UI sounds for what changed since <paramref name="b"/>.</summary>
     private void QueueSfx(SfxState b)
     {
-        if (LevelChosen) UI.UiSfx.Play(UI.UiSound.StartSong);
+        // A level played from the list already sounded when its confirm animation started (fork).
+        if (LevelChosen && !_levelChosenByConfirm) UI.UiSfx.Play(UI.UiSound.StartSong);
+        _levelChosenByConfirm = false;
         if (EditorPickerRequested || ChartEditorRequested || NewChartRequested || SettingsRequested || MenuAction >= 0)
             UI.UiSfx.Play(UI.UiSound.Confirm);
 
         if (_menuSel != b._menuSel) UI.UiSfx.Play(UI.UiSound.Move);
-        if (_selected != b._selected && _panelOpen) UI.UiSfx.Play(UI.UiSound.MoveList);
+        if (SelectedPath != b._selected && b._selected != null && _panelOpen && b._panelOpen) UI.UiSfx.Play(UI.UiSound.MoveList);
         if (_panelOpen != b._panelOpen) UI.UiSfx.Play(_panelOpen ? UI.UiSound.Confirm : UI.UiSound.Back);
         if (_transition == TransitionState.CreditsIn && b._transition != TransitionState.CreditsIn) UI.UiSfx.Play(UI.UiSound.Confirm);
         if (b._creditsOpen && !_creditsOpen && !LevelChosen) UI.UiSfx.Play(UI.UiSound.Back);
@@ -528,6 +617,10 @@ public partial class FreeplayMenu
             }
         }
 
+        // Fork: browse timers (selection smoothing, background tint, deferred toasts, confirm animation)
+        UpdateBrowseTimers(dt);
+        UpdateOnlineSource(); // online song select: follow the room's lists (FreeplayMenu.Online.cs)
+
         // Store screen dimensions for mouse coordinate transformation
         _lastScreenWidth = screenWidth;
         _lastScreenHeight = screenHeight;
@@ -557,20 +650,44 @@ public partial class FreeplayMenu
                 break;
             }
         }
-        if (hasAnyTouch && !touchDown)
-            mouseClicked = false;
+        // Fork: a touch is a tap only when released without dragging; dragging scrolls the list
+        // (it used to select rows as the finger moved).
+        mouseClicked = false;
         if (touchDown && !_prevTouchDown)
-            mouseClicked = true;
+        {
+            _touchStart = rtMouse;
+            _touchLast = rtMouse;
+            _touchDragging = false;
+        }
+        else if (touchDown)
+        {
+            if (!_touchDragging && Math.Abs(rtMouse.Y - _touchStart.Y) > UiScale.Px(14, UiScale.FromScreen(screenWidth, screenHeight)))
+                _touchDragging = true;
+            if (_touchDragging && _panelOpen)
+            {
+                _manualScroll = true;
+                _targetScrollY += _touchLast.Y - rtMouse.Y;
+                _scrollY = _targetScrollY; // follow the finger
+            }
+            _touchLast = rtMouse;
+        }
+        else if (_prevTouchDown)
+        {
+            rtMouse = _touchLast;
+            mouseClicked = !_touchDragging;
+        }
         _prevTouchDown = touchDown;
         #endif
 
         if (!Game1.CanAcceptInput)
         {
             _hoveredLevelIndex = -1;
-            _hoveredEditIndex = -1;
+            _hoveredMoreIndex = -1;
             _hoveredMainCard = -1;
             _newBtnHover = false;
             _closePanelBtnHover = false;
+            _searchBoxHover = _sortChipHover = _favChipHover = _randomBtnHover = false;
+            _modBarHover = _bestCardHover = false;
             _folderIconHover = false;
             _importBtnHover  = false;
             _refreshBtnHover = false;
@@ -595,10 +712,18 @@ public partial class FreeplayMenu
         }
         _lastPointerPos = rtMouse;
         _hoveredLevelIndex = -1;
-        _hoveredEditIndex = -1;
+        _hoveredMoreIndex = -1;
         _hoveredMainCard = -1;
         _newBtnHover = false;
         _closePanelBtnHover = false;
+
+        // Fork: while the chosen level flashes (or an online pick is being sent), ignore input.
+        if (_confirming || _online?.Busy == true)
+        {
+            _prevKb = kb;
+            _prevMs = mouse;
+            return;
+        }
 
         // ── Import Confirmation Modal ("¿Quieres jugarlo ahora? [SÍ] / [NO]") ──
         if (_importModalOpen)
@@ -627,8 +752,13 @@ public partial class FreeplayMenu
                 if (_modalYesHover)
                 {
                     _importModalOpen = false;
-                    LevelPath        = _importModalLevelPath;
-                    LevelChosen      = true;
+                    if (_modalIsDelete)
+                        PerformDelete();
+                    else
+                    {
+                        LevelPath   = _importModalLevelPath;
+                        LevelChosen = true;
+                    }
                     _prevKb = kb;
                     _prevMs = mouse;
                     return;
@@ -646,7 +776,7 @@ public partial class FreeplayMenu
             bool mRight = (kb.IsKeyDown(Keys.Right) && !_prevKb.IsKeyDown(Keys.Right)) || (kb.IsKeyDown(Keys.Down) && !_prevKb.IsKeyDown(Keys.Down));
             bool mEnter = (kb.IsKeyDown(Keys.Enter) && !_prevKb.IsKeyDown(Keys.Enter)) || (kb.IsKeyDown(Keys.Space) && !_prevKb.IsKeyDown(Keys.Space));
             bool mEsc   = kb.IsKeyDown(Keys.Escape) && !_prevKb.IsKeyDown(Keys.Escape);
-            bool mYes   = (kb.IsKeyDown(Keys.Y) && !_prevKb.IsKeyDown(Keys.Y)) || (kb.IsKeyDown(Keys.S) && !_prevKb.IsKeyDown(Keys.S));
+            bool mYes   = (kb.IsKeyDown(Keys.Y) && !_prevKb.IsKeyDown(Keys.Y)) || (!_modalIsDelete && kb.IsKeyDown(Keys.S) && !_prevKb.IsKeyDown(Keys.S));
             bool mNo    = kb.IsKeyDown(Keys.N) && !_prevKb.IsKeyDown(Keys.N);
 
             if (mLeft || mRight)
@@ -656,8 +786,13 @@ public partial class FreeplayMenu
             else if (mYes || (mEnter && _importModalSelection == 0))
             {
                 _importModalOpen = false;
-                LevelPath        = _importModalLevelPath;
-                LevelChosen      = true;
+                if (_modalIsDelete)
+                    PerformDelete();
+                else
+                {
+                    LevelPath   = _importModalLevelPath;
+                    LevelChosen = true;
+                }
             }
             else if (mNo || mEsc || (mEnter && _importModalSelection == 1))
             {
@@ -676,62 +811,15 @@ public partial class FreeplayMenu
         
         bool mouseMoved = Math.Abs(rtMouse.X - _lastMenuMousePos.X) > 2 || Math.Abs(rtMouse.Y - _lastMenuMousePos.Y) > 2;
         if (mouseMoved) _lastMenuMousePos = rtMouse;
+        #if ANDROID
+        if (_touchDragging) mouseMoved = false; // a drag scrolls, it doesn't pick rows
+        #endif
         int wheelDelta = mouse.ScrollWheelValue - _prevMs.ScrollWheelValue;
 
-        // Check hover states on panel controls, level list items, and left-side menu cards
+        // Hover states of the panel's controls, rows and the details panel (fork: FreeplayMenu.Browse.cs)
         if (_panelOpen && !_creditsOpen)
         {
-            _importBtnHover     = _importBtnBounds != Rectangle.Empty && _importBtnBounds.Contains(rtMouse);
-            _newBtnHover        = _newBtnBounds != Rectangle.Empty && _newBtnBounds.Contains(rtMouse);
-            _refreshBtnHover    = _refreshBtnBounds != Rectangle.Empty && _refreshBtnBounds.Contains(rtMouse);
-            _closePanelBtnHover = _closePanelBtnBounds != Rectangle.Empty && _closePanelBtnBounds.Contains(rtMouse);
-            _footerBarHover     = _footerBarBounds != Rectangle.Empty && _footerBarBounds.Contains(rtMouse);
-
-            if (_paths.Count == 0)
-            {
-                var dropBounds = GetDropBoxBounds(screenWidth, screenHeight);
-                _folderIconHover = !_importBtnHover && !_newBtnHover && !_refreshBtnHover && !_closePanelBtnHover && dropBounds.Contains(rtMouse);
-            }
-            else
-            {
-                _folderIconHover = false;
-                if (!_importBtnHover && !_newBtnHover && !_refreshBtnHover && !_closePanelBtnHover && !_footerBarHover && _levelListBounds.Contains(rtMouse))
-                {
-                    foreach (var editBtn in _levelEditBounds)
-                    {
-                        if (editBtn.Bounds.Contains(rtMouse))
-                        {
-                            _hoveredEditIndex = editBtn.Index;
-                            _hoveredLevelIndex = editBtn.Index;
-                            break;
-                        }
-                    }
-
-                    if (_hoveredEditIndex < 0)
-                    {
-                        foreach (var item in _levelItemBounds)
-                        {
-                            if (item.Bounds.Contains(rtMouse))
-                            {
-                                _hoveredLevelIndex = item.Index;
-                                break;
-                            }
-                        }
-                    }
-                }
-            }
-
-            if (!_panelBounds.Contains(rtMouse))
-            {
-                for (int i = 0; i < _mainMenuCardBounds.Count; i++)
-                {
-                    if (IsMenuItemEnabledInternal(i) && _mainMenuCardBounds[i].Contains(rtMouse))
-                    {
-                        _hoveredMainCard = i;
-                        break;
-                    }
-                }
-            }
+            UpdatePanelHover(rtMouse);
         }
         else
         {
@@ -741,6 +829,8 @@ public partial class FreeplayMenu
             _refreshBtnHover    = false;
             _closePanelBtnHover = false;
             _footerBarHover     = false;
+            _searchBoxHover = _sortChipHover = _favChipHover = _randomBtnHover = false;
+            _modBarHover = _bestCardHover = false;
         }
 
         // Input cooldown — ignore all inputs briefly after opening
@@ -789,11 +879,7 @@ public partial class FreeplayMenu
         bool down   = kb.IsKeyDown(Keys.Down)  && !_prevKb.IsKeyDown(Keys.Down);
         bool enter  = kb.IsKeyDown(Keys.Enter) && !_prevKb.IsKeyDown(Keys.Enter);
         bool esc    = kb.IsKeyDown(Keys.Escape) && !_prevKb.IsKeyDown(Keys.Escape);
-        bool r      = kb.IsKeyDown(Keys.R)     && !_prevKb.IsKeyDown(Keys.R);
-        bool nKey   = kb.IsKeyDown(Keys.N)     && !_prevKb.IsKeyDown(Keys.N);
-        bool import = (kb.IsKeyDown(Keys.I) && !_prevKb.IsKeyDown(Keys.I)) ||
-                      (kb.IsKeyDown(Keys.O) && !_prevKb.IsKeyDown(Keys.O));
-        bool seven  = kb.IsKeyDown(Keys.D7)    && !_prevKb.IsKeyDown(Keys.D7);
+        bool seven  = Controls.Pressed(HotkeyAction.OpenChartEditor, kb, _prevKb);
 
         // Check for "7" key press to open Editor Picker (ONLY in main menu, NOT in panel)
         if (!_inPanel && seven)
@@ -886,7 +972,7 @@ public partial class FreeplayMenu
         if (_updateAvailable && !_panelOpen)
         {
             _updateBadgeHover = _updateBadgeBounds != Rectangle.Empty && _updateBadgeBounds.Contains(rtMouse);
-            bool uPressed = kb.IsKeyDown(Keys.U) && !_prevKb.IsKeyDown(Keys.U);
+            bool uPressed = Controls.Pressed(HotkeyAction.ShowUpdatePrompt, kb, _prevKb);
             if ((_updateBadgeHover && mouseClicked) || uPressed)
             {
                 _updateModalOpen = true;
@@ -904,158 +990,15 @@ public partial class FreeplayMenu
 
         if (_panelOpen)
         {
-            int itemH = GetItemHeight(screenWidth, screenHeight);
-            if (wheelDelta != 0 && _paths.Count > 0 && _panelBounds.Contains(rtMouse))
-            {
-                float maxScroll = Math.Max(0f, _paths.Count * itemH - _lastListHeight);
-                _manualScroll = true;
-                _targetScrollY = Math.Clamp(_targetScrollY - (wheelDelta / 120f) * itemH * 1.5f, 0f, maxScroll);
-            }
-
-            if (mouseClicked)
-            {
-                if (_closePanelBtnHover)
-                {
-                    _inPanel = false;
-                    _panelOpen = false;
-                    _prevKb = kb;
-                    _prevMs = mouse;
-                    return;
-                }
-                if (_importBtnHover || _footerBarHover || _folderIconHover)
-                {
-                    TriggerFileImport();
-                    _prevKb = kb;
-                    _prevMs = Mouse.GetState();
-                    return;
-                }
-                if (_newBtnHover)
-                {
-                    NewChartRequested = true;
-                    _prevKb = kb;
-                    _prevMs = mouse;
-                    return;
-                }
-                if (_refreshBtnHover)
-                {
-                    Refresh();
-                    ShowToast("Lista de niveles actualizada");
-                    _prevKb = kb;
-                    _prevMs = mouse;
-                    return;
-                }
-                if (_hoveredEditIndex >= 0 && _hoveredEditIndex < _paths.Count)
-                {
-                    _selected = _hoveredEditIndex;
-                    LevelPath = _paths[_selected];
-                    ChartEditorRequested = true;
-                    _prevKb = kb;
-                    _prevMs = mouse;
-                    return;
-                }
-                if (_hoveredLevelIndex >= 0 && _hoveredLevelIndex < _paths.Count)
-                {
-                    _selected   = _hoveredLevelIndex;
-                    LevelPath   = _paths[_selected];
-                    LevelChosen = true;
-                    _prevKb = kb;
-                    _prevMs = mouse;
-                    return;
-                }
-                if (_hoveredMainCard >= 0)
-                {
-                    if (_hoveredMainCard == 0)
-                    {
-                        _inPanel   = false;
-                        _panelOpen = false;
-                    }
-                    else
-                    {
-                        _inPanel   = false;
-                        _panelOpen = false;
-                        _menuSel   = _hoveredMainCard;
-                        ExecuteMainMenuSelection(_hoveredMainCard);
-                    }
-                    _prevKb = kb;
-                    _prevMs = mouse;
-                    return;
-                }
-            }
-        }
-
-        if (_inPanel)
-        {
-            // Check for "7" key press to open Chart Editor directly with selected level
-            if (seven && _paths.Count > 0 && _selected >= 0 && _selected < _paths.Count)
-            {
-                LevelPath = _paths[_selected];
-                ChartEditorRequested = true;
-                Console.WriteLine($"[FreeplayMenu] Chart Editor requested for level: {_names[_selected]}");
-            }
-
-            if (nKey)
-            {
-                NewChartRequested = true;
-            }
-
-            if (mouseMoved && _hoveredLevelIndex >= 0 && _hoveredLevelIndex < _paths.Count)
-                _selected = _hoveredLevelIndex;
-
-            if (up && _paths.Count > 0)
-            {
-                _selected = (_selected - 1 + _paths.Count) % _paths.Count;
-                _manualScroll = false;
-            }
-            if (down && _paths.Count > 0)
-            {
-                _selected = (_selected + 1) % _paths.Count;
-                _manualScroll = false;
-            }
-            if (r)
-            {
-                Refresh();
-                ShowToast("Lista de niveles actualizada");
-            }
-            if (import)
-            {
-                TriggerFileImport();
-                _prevKb = kb;
-                _prevMs = Mouse.GetState();
-                return;
-            }
-
-            if (enter && _paths.Count > 0 && _selected >= 0 && _selected < _paths.Count)
-            {
-                LevelPath   = _paths[_selected];
-                LevelChosen = true;
-            }
-
-            if (esc)
-            {
-                _inPanel    = false;
-                _panelOpen  = false;
-            }
-
-            int itemH = GetItemHeight(screenWidth, screenHeight);
-            float maxScroll = Math.Max(0f, _paths.Count * itemH - _lastListHeight);
-            if (!_manualScroll)
-            {
-                float selTop = _selected * itemH;
-                float selBottom = selTop + itemH;
-                if (selTop < _targetScrollY)
-                    _targetScrollY = selTop;
-                else if (selBottom > _targetScrollY + _lastListHeight)
-                    _targetScrollY = selBottom - _lastListHeight;
-            }
-            _targetScrollY = Math.Clamp(_targetScrollY, 0f, maxScroll);
-            _scrollY = MathHelper.Lerp(_scrollY, _targetScrollY, Math.Min(1f, dt * 12f));
+            // Fork: all level panel input lives in FreeplayMenu.Browse.cs
+            UpdatePanelInput(dt, kb, mouse, rtMouse, mouseClicked, mouseMoved, wheelDelta, screenWidth, screenHeight);
         }
         else
         {
             #if ANDROID
-            const int menuCount = 8;
+            const int menuCount = 9;
             #else
-            const int menuCount = 5;
+            const int menuCount = 6;
             #endif
 
             if (up)
@@ -1117,35 +1060,39 @@ public partial class FreeplayMenu
         {
             MenuAction = 3;  // Signal to open multiplayer menu
         }
-        else if (sel == 2)  // Editors Hub (visible on main menu!)
+        else if (sel == 2)  // Replays (fork)
+        {
+            MenuAction = 7;  // Signal to open the replay browser
+        }
+        else if (sel == 3)  // Editors Hub (visible on main menu!)
         {
             EditorPickerRequested = true;
         }
-        else if (sel == 3)  // Settings
+        else if (sel == 4)  // Settings
         {
             SettingsRequested = true;
         }
         #if ANDROID
-        else if (sel == 4)  // OPEN MODS (Android only)
+        else if (sel == 5)  // OPEN MODS (Android only)
         {
             MenuAction = 5;  // Signal to open mods folder
         }
-        else if (sel == 5)  // IMPORT FILE (Android only)
+        else if (sel == 6)  // IMPORT FILE (Android only)
         {
             MenuAction = 4;  // Signal to open file picker for mods
         }
-        else if (sel == 6)  // GRANT FOLDER ACCESS (Android only)
+        else if (sel == 7)  // GRANT FOLDER ACCESS (Android only)
         {
             MenuAction = 6;  // Signal to open SAF folder picker
         }
-        else if (sel == 7)  // Credits — fade in
+        else if (sel == 8)  // Credits — fade in
         {
             _transition   = TransitionState.CreditsIn;
             _transTimer   = 0f;
             _creditsAlpha = 0f;
         }
         #else
-        else if (sel == 4)  // Credits — fade in
+        else if (sel == 5)  // Credits — fade in
         {
             _transition   = TransitionState.CreditsIn;
             _transTimer   = 0f;
@@ -1182,31 +1129,47 @@ public partial class FreeplayMenu
         float s = UiScale.FromScreen(sw, sh);
         int itemH = GetItemHeight(sw, sh);
 
-        // ── Modern solid background ──────────────────────────────────────────
-        DrawRect(sb, 0, 0, sw, sh, new Color(20, 18, 28));
+        TrimIconTextures();
+        float beat = _panelOpen ? BeatBump() : 0f;
+
+        // ── Background: tinted by the selected level's difficulty (fork) ─────
+        DrawRect(sb, 0, 0, sw, sh, _bgTint);
+        // Soft glow rising from the bottom, brighter on the preview's beat
+        int glowBands = 12;
+        int glowH = (int)(sh * 0.45f);
+        for (int g = 0; g < glowBands; g++)
+        {
+            float k = (g + 1) / (float)glowBands;
+            int bandY = sh - (int)(glowH * k);
+            DrawRect(sb, 0, bandY, sw, glowH / glowBands + 1, Color.Lerp(_bgTint, Color.White, 0.05f) * ((1f - k) * (0.35f + beat * 0.25f)));
+        }
 
         // Subtle pattern overlay
         int bgGridStep = UiScale.Px(120, s, 64);
+        float gridAlpha = 0.02f + beat * 0.03f;
         for (int y = 0; y < sh; y += bgGridStep)
         {
-            DrawRect(sb, 0, y, sw, 1, Color.White * 0.02f);
+            DrawRect(sb, 0, y, sw, 1, Color.White * gridAlpha);
         }
         for (int x = 0; x < sw; x += bgGridStep)
         {
-            DrawRect(sb, x, 0, 1, sh, Color.White * 0.02f);
+            DrawRect(sb, x, 0, 1, sh, Color.White * gridAlpha);
         }
 
         // ── Left area — title + menu ──────────────────────────────────────────
         int panelW = GetPanelWidth(sw, sh);
         int leftW = sw - (int)((1f - _panelX) * panelW);
+        // Fork: while the level panel is open, the left side shows the selected level's details.
+        bool showDetails = _panelX < 0.5f;
+        if (showDetails) _mainMenuCardBounds.Clear();
 
-        if (_font != null || _fontRenderer != null)
+        if ((_font != null || _fontRenderer != null) && !showDetails)
         {
             // Menu items — play modes & Editors clearly accessible on main menu
             #if ANDROID
-            string[] items = { "FREEPLAY", "MULTIPLAYER", "EDITORS", "SETTINGS", "OPEN MODS", "IMPORT FILE", "GRANT FOLDER ACCESS", "CREDITS" };
+            string[] items = { "FREEPLAY", "MULTIPLAYER", "REPLAYS", "EDITORS", "SETTINGS", "OPEN MODS", "IMPORT FILE", "GRANT FOLDER ACCESS", "CREDITS" };
             #else
-            string[] items = { "FREEPLAY", "MULTIPLAYER", "EDITORS", "SETTINGS", "CREDITS" };
+            string[] items = { "FREEPLAY", "MULTIPLAYER", "REPLAYS", "EDITORS", "SETTINGS", "CREDITS" };
             #endif
 
             // Title with glow effect - scaled cleanly across 720p .. 4K
@@ -1256,7 +1219,7 @@ public partial class FreeplayMenu
             #if ANDROID
             string mainMenuHint = "UP/DOWN Navigate  |  ENTER / Tap Select  |  ESC Settings";
             #else
-            string mainMenuHint = "UP/DOWN Navigate  |  ENTER / Click Select  |  [7] Editors  |  ESC Settings";
+            string mainMenuHint = $"UP/DOWN Navigate  |  ENTER / Click Select  |  [{Controls.Hint(HotkeyAction.OpenChartEditor)}] Editors  |  ESC Settings";
             #endif
             string hint = _inPanel 
                 ? "< ESC Back  |  7 Edit  |  N New Chart  |  I Import  |  R Refresh" 
@@ -1365,396 +1328,35 @@ public partial class FreeplayMenu
                 Color.White * 0.35f, hintSize);
         }
 
-        // ── Right panel — level list ──────────────────────────────────────────
-        if (_panelX < 0.99f)
+        if (!showDetails && _panelX < 1f)
         {
-            int panelMaxWidth = GetPanelWidth(sw, sh);
-            int panelLeft = (int)(sw - panelMaxWidth * (1f - _panelX));
-            int panelVisibleWidth = sw - panelLeft;
-            _panelBounds = new Rectangle(panelLeft, 0, Math.Max(0, panelVisibleWidth), sh);
-
-            DrawRect(sb, panelLeft, 0, panelVisibleWidth, sh, new Color(22, 22, 38));
-            DrawRect(sb, panelLeft, 0, UiScale.Px(3, s, 2), sh, new Color(255, 68, 136) * 0.8f);
-            DrawRect(sb, panelLeft + UiScale.Px(3, s, 2), 0, 1, sh, new Color(255, 215, 0) * 0.4f);
-
-            if (_font != null || _fontRenderer != null)
-            {
-                int panelHeaderH = UiScale.Px(98, s, 78);
-                int footerH = UiScale.Px(50, s, 38);
-                DrawRect(sb, panelLeft, 0, panelVisibleWidth, panelHeaderH, new Color(30, 22, 42));
-                DrawRect(sb, panelLeft, panelHeaderH - 2, panelVisibleWidth, 2, new Color(255, 68, 136) * 0.55f);
-
-                int headerPadding = Math.Clamp((int)(panelVisibleWidth * 0.032f), UiScale.Px(12, s), UiScale.Px(24, s));
-                int closeBtnSize = UiScale.Px(26, s, 22);
-                int closeBtnX = panelLeft + panelVisibleWidth - headerPadding - closeBtnSize;
-                int closeBtnY = UiScale.Px(12, s);
-                _closePanelBtnBounds = new Rectangle(closeBtnX, closeBtnY, closeBtnSize, closeBtnSize);
-                DrawRect(sb, closeBtnX, closeBtnY, closeBtnSize, closeBtnSize,
-                    _closePanelBtnHover ? new Color(255, 68, 136) * 0.45f : new Color(45, 34, 58));
-                DrawRect(sb, closeBtnX, closeBtnY, closeBtnSize, 1, Color.White * (_closePanelBtnHover ? 0.6f : 0.16f));
-                int closeFont = UiScale.FontPx(14, s);
-                var closeSz = MeasureText("X", closeFont);
-                DrawText(sb, "X", new Vector2(closeBtnX + (closeBtnSize - closeSz.X) / 2f, closeBtnY + (closeBtnSize - closeSz.Y) / 2f),
-                    Color.White * (_closePanelBtnHover ? 1f : 0.75f), closeFont);
-
-                string countStr = $"{_paths.Count} {(_paths.Count == 1 ? "SONG" : "SONGS")}";
-                int countSize = UiScale.FontPx(13, s);
-                var countSz = MeasureText(countStr, countSize);
-                int countPillW = (int)countSz.X + UiScale.Px(16, s);
-                int countPillH = closeBtnSize;
-                int countPillX = closeBtnX - countPillW - UiScale.Px(8, s);
-                DrawRect(sb, countPillX, closeBtnY, countPillW, countPillH, new Color(255, 68, 136) * 0.28f);
-                DrawRect(sb, countPillX, closeBtnY, UiScale.Px(2, s, 2), countPillH, new Color(255, 68, 136));
-                DrawText(sb, countStr, new Vector2(countPillX + UiScale.Px(8, s), closeBtnY + (countPillH - countSz.Y) / 2f),
-                    Color.White * 0.9f, countSize);
-
-                string levelsTitle = "LEVELS";
-                int maxTitleW = Math.Max(80, countPillX - (panelLeft + headerPadding) - UiScale.Px(10, s));
-                int levelsTitleSize = FitFontSize(levelsTitle, UiScale.FontPx(28, s), 18, maxTitleW);
-                DrawText(sb, levelsTitle, new Vector2(panelLeft + headerPadding, UiScale.Px(10, s)),
-                    new Color(255, 215, 0), levelsTitleSize);
-
-                // Header Row 2: Action Toolbar
-                int row2Y = UiScale.Px(54, s);
-                int row2H = UiScale.Px(30, s, 24);
-                int gap = UiScale.Px(8, s, 5);
-                int availBarW = Math.Max(180, panelVisibleWidth - headerPadding * 2);
-                int btnW = (availBarW - gap * 2) / 3;
-                int actionFont = FitFontSize("[R] REFRESH", UiScale.FontPx(13, s), 10, btnW - UiScale.Px(10, s));
-
-                _importBtnBounds  = new Rectangle(panelLeft + headerPadding, row2Y, btnW, row2H);
-                _newBtnBounds     = new Rectangle(_importBtnBounds.Right + gap, row2Y, btnW, row2H);
-                _refreshBtnBounds = new Rectangle(_newBtnBounds.Right + gap, row2Y, btnW, row2H);
-
-                DrawPanelHeaderButton(sb, _importBtnBounds, "[I] IMPORT", _importBtnHover, new Color(0, 200, 255), actionFont);
-                DrawPanelHeaderButton(sb, _newBtnBounds, "[N] + NEW", _newBtnHover, new Color(46, 224, 150), actionFont);
-                DrawPanelHeaderButton(sb, _refreshBtnBounds, "[R] REFRESH", _refreshBtnHover, new Color(255, 215, 0), actionFont);
-
-                int listTop = panelHeaderH + UiScale.Px(6, s);
-                int listH   = Math.Max(0, sh - listTop - footerH - UiScale.Px(5, s));
-                if (listH > 0)
-                    _lastListHeight = Math.Max(UiScale.Px(120, s), listH);
-
-                if (_paths.Count == 0)
-                {
-                    _levelItemBounds.Clear();
-                    _levelEditBounds.Clear();
-                    _levelListBounds = Rectangle.Empty;
-
-                    // ── EMPTY STATE: Drop Zone Visual ─────────────────────────────
-                    float pulseAlpha = 0.72f + (_dropZonePulse * 0.28f);
-                    var dropBox = GetDropBoxBounds(sw, sh);
-                    int dropBoxW = dropBox.Width;
-                    int dropBoxH = dropBox.Height;
-                    int dropBoxX = dropBox.X;
-                    int dropBoxY = dropBox.Y;
-
-                    if (dropBoxW >= 140 && dropBoxH >= 160)
-                    {
-                        Color boxBg = _folderIconHover
-                            ? new Color(28, 36, 62) * 0.90f
-                            : new Color(26, 28, 48) * 0.72f;
-                        DrawRect(sb, dropBoxX, dropBoxY, dropBoxW, dropBoxH, boxBg);
-                        DrawRect(sb, dropBoxX, dropBoxY, dropBoxW, dropBoxH,
-                            new Color(0, 180, 255) * (_folderIconHover ? 0.10f : 0.04f));
-
-                        Color borderColor = (_folderIconHover ? new Color(80, 230, 255) : new Color(0, 180, 255)) * pulseAlpha;
-                        int borderThickness = UiScale.Px(2, s, 2);
-                        int dashStep = UiScale.Px(22, s, 14);
-                        int dashSize = UiScale.Px(12, s, 8);
-
-                        for (int i = 0; i < dropBoxW; i += dashStep)
-                        {
-                            int dashLen = Math.Min(dashSize, dropBoxW - i);
-                            DrawRect(sb, dropBoxX + i, dropBoxY, dashLen, borderThickness, borderColor);
-                            DrawRect(sb, dropBoxX + i, dropBoxY + dropBoxH - borderThickness, dashLen, borderThickness, borderColor);
-                        }
-                        for (int i = 0; i < dropBoxH; i += dashStep)
-                        {
-                            int dashLen = Math.Min(dashSize, dropBoxH - i);
-                            DrawRect(sb, dropBoxX, dropBoxY + i, borderThickness, dashLen, borderColor);
-                            DrawRect(sb, dropBoxX + dropBoxW - borderThickness, dropBoxY + i, borderThickness, dashLen, borderColor);
-                        }
-
-                        int innerW = Math.Max(100, dropBoxW - UiScale.Px(40, s));
-                        int badgeSize = Math.Clamp((int)(dropBoxH * 0.25f), UiScale.Px(64, s), UiScale.Px(140, s));
-                        int iconSize = Math.Clamp((int)(badgeSize * 0.58f), UiScale.Px(40, s), UiScale.Px(84, s));
-
-                        string mainText = GetEmptyStateMainTextInternal();
-                        int mainSize = FitFontSize(mainText, Math.Clamp((int)(dropBoxH * 0.088f), UiScale.FontPx(22, s), UiScale.FontPx(38, s)), 16, innerW);
-                        var mainMeasure = MeasureText(mainText, mainSize);
-
-                        string secondaryText = GetEmptyStateSecondaryTextInternal();
-                        int secondSize = FitFontSize(secondaryText, Math.Clamp((int)(dropBoxH * 0.054f), UiScale.FontPx(14, s), UiScale.FontPx(22, s)), 12, innerW - UiScale.Px(24, s));
-                        var secondMeasure = MeasureText(secondaryText, secondSize);
-
-                        string helpText = GetEmptyStateHelpTextInternal();
-                        int helpSize = FitFontSize(helpText, Math.Clamp((int)(dropBoxH * 0.044f), UiScale.FontPx(12, s), UiScale.FontPx(18, s)), 10, innerW);
-                        var helpMeasure = MeasureText(helpText, helpSize);
-
-                        int pillPadX = UiScale.Px(16, s);
-                        int pillPadY = UiScale.Px(7, s);
-                        int pillW = (int)Math.Min(innerW, secondMeasure.X + pillPadX * 2);
-                        int pillH = (int)MathF.Ceiling(secondMeasure.Y) + pillPadY * 2;
-
-                        int gap1 = UiScale.Px(20, s);
-                        int gap2 = UiScale.Px(12, s);
-                        int gap3 = UiScale.Px(20, s);
-
-                        float totalContentH = badgeSize + gap1 + mainMeasure.Y + gap2 + pillH + gap3 + helpMeasure.Y;
-                        float curY = dropBoxY + Math.Max(UiScale.Px(14, s), (dropBoxH - totalContentH) / 2f);
-
-                        int badgeX = dropBoxX + (dropBoxW - badgeSize) / 2;
-                        int badgeY = (int)curY;
-                        DrawRect(sb, badgeX, badgeY, badgeSize, badgeSize,
-                            new Color(0, 180, 255) * (_folderIconHover ? 0.22f : 0.11f));
-                        Color badgeBorder = new Color(0, 200, 255) * (_folderIconHover ? 0.85f : 0.42f);
-                        DrawRect(sb, badgeX, badgeY, badgeSize, 1, badgeBorder);
-                        DrawRect(sb, badgeX, badgeY + badgeSize - 1, badgeSize, 1, badgeBorder);
-                        DrawRect(sb, badgeX, badgeY, 1, badgeSize, badgeBorder);
-                        DrawRect(sb, badgeX + badgeSize - 1, badgeY, 1, badgeSize, badgeBorder);
-
-                        if (_folderIcon != null)
-                        {
-                            float hoverScale = _folderIconHover ? 1.08f : 1.0f;
-                            int scaledSize = (int)(iconSize * hoverScale);
-                            int iconX = badgeX + (badgeSize - scaledSize) / 2;
-                            int iconY = badgeY + (badgeSize - scaledSize) / 2;
-                            Color iconColor = (_folderIconHover ? new Color(110, 240, 255) : new Color(210, 235, 255)) * pulseAlpha;
-                            sb.Draw(_folderIcon, new Rectangle(iconX, iconY, scaledSize, scaledSize), iconColor);
-                        }
-                        else
-                        {
-                            string fallbackIcon = "[+]";
-                            int fSize = Math.Clamp(iconSize / 2, UiScale.FontPx(22, s), UiScale.FontPx(40, s));
-                            var fMeasure = MeasureText(fallbackIcon, fSize);
-                            DrawText(sb, fallbackIcon,
-                                new Vector2(badgeX + (badgeSize - fMeasure.X) / 2f, badgeY + (badgeSize - fMeasure.Y) / 2f),
-                                new Color(160, 230, 255) * pulseAlpha, fSize);
-                        }
-
-                        curY += badgeSize + gap1;
-
-                        float mainX = dropBoxX + (dropBoxW - mainMeasure.X) / 2f;
-                        DrawText(sb, mainText, new Vector2(mainX + 1, curY + 1), Color.Black * 0.45f, mainSize);
-                        DrawText(sb, mainText, new Vector2(mainX, curY),
-                            (_folderIconHover ? new Color(110, 235, 255) : new Color(0, 195, 255)) * pulseAlpha, mainSize);
-
-                        curY += mainMeasure.Y + gap2;
-
-                        int pillX = dropBoxX + (dropBoxW - pillW) / 2;
-                        int pillY = (int)curY;
-                        DrawRect(sb, pillX, pillY, pillW, pillH, new Color(14, 16, 30) * 0.85f);
-                        Color pillBorder = new Color(0, 180, 255) * 0.35f;
-                        DrawRect(sb, pillX, pillY, pillW, 1, pillBorder);
-                        DrawRect(sb, pillX, pillY + pillH - 1, pillW, 1, pillBorder);
-                        DrawRect(sb, pillX, pillY, 1, pillH, pillBorder);
-                        DrawRect(sb, pillX + pillW - 1, pillY, 1, pillH, pillBorder);
-                        DrawText(sb, secondaryText,
-                            new Vector2(pillX + (pillW - secondMeasure.X) / 2f, pillY + (pillH - secondMeasure.Y) / 2f),
-                            Color.White * 0.90f, secondSize);
-
-                        curY += pillH + gap3;
-
-                        float helpX = dropBoxX + (dropBoxW - helpMeasure.X) / 2f;
-                        DrawText(sb, helpText, new Vector2(helpX, curY),
-                            new Color(195, 205, 225) * (_folderIconHover ? 1.0f : 0.72f), helpSize);
-                    }
-                }
-                else
-                {
-                    _levelItemBounds.Clear();
-                    _levelEditBounds.Clear();
-                    _levelListBounds = new Rectangle(panelLeft, listTop, Math.Max(0, panelVisibleWidth), listH);
-
-                    Rectangle scissorRect = Rectangle.Intersect(_levelListBounds, new Rectangle(0, 0, sw, sh));
-                    if (_graphicsDevice != null)
-                        scissorRect = Rectangle.Intersect(scissorRect, _graphicsDevice.Viewport.Bounds);
-
-                    if (scissorRect.Width > 0 && scissorRect.Height > 0)
-                    {
-                        Rectangle oldScissor = _graphicsDevice?.ScissorRectangle ?? default;
-                        RasterizerState? oldRasterizer = _graphicsDevice?.RasterizerState;
-
-                        if (_graphicsDevice != null)
-                        {
-                            sb.End();
-                            _graphicsDevice.ScissorRectangle = scissorRect;
-                            _scissorRasterizer ??= new RasterizerState
-                            {
-                                CullMode = CullMode.None,
-                                ScissorTestEnable = true
-                            };
-                            sb.Begin(
-                                SpriteSortMode.Deferred,
-                                BlendState.AlphaBlend,
-                                SamplerState.LinearClamp,
-                                DepthStencilState.None,
-                                _scissorRasterizer
-                            );
-                        }
-
-                        int pad2 = UiScale.Px(2, s);
-                        int pad5 = UiScale.Px(5, s);
-                        int pad6 = UiScale.Px(6, s);
-                        int pad7 = UiScale.Px(7, s);
-                        int itemPadding = Math.Clamp((int)(panelVisibleWidth * 0.015f), UiScale.Px(8, s), UiScale.Px(18, s));
-                        int badgeMargin = Math.Clamp((int)(panelVisibleWidth * 0.02f), UiScale.Px(10, s), UiScale.Px(22, s));
-                        int badgeSize = UiScale.Px(24, s, 18);
-                        int badgeNumSize = UiScale.FontPx(13, s);
-                        int nameBaseSize = UiScale.FontPx(19, s);
-                        int editW = Math.Clamp((int)(panelVisibleWidth * 0.13f), UiScale.Px(50, s), UiScale.Px(84, s));
-                        int editH = UiScale.Px(26, s, 20);
-                        int editFont = FitFontSize("EDIT", UiScale.FontPx(12, s), 10, editW - UiScale.Px(8, s));
-                        int playIconSize = UiScale.FontPx(18, s);
-                        int selBarW = UiScale.Px(4, s, 3);
-                        int hovBarW = UiScale.Px(3, s, 2);
-
-                        for (int i = 0; i < _paths.Count; i++)
-                        {
-                            float itemY = listTop + i * itemH - _scrollY;
-                            if (itemY + itemH < listTop || itemY > listTop + listH) continue;
-
-                            bool sel = _inPanel && i == _selected;
-                            bool hovered = _inPanel && i == _hoveredLevelIndex;
-
-                            int cardWidth = Math.Max(1, panelVisibleWidth - (itemPadding * 2));
-                            Rectangle itemRect = new Rectangle(panelLeft + itemPadding, (int)itemY + pad2, cardWidth, itemH - pad5);
-                            Rectangle hitRect = Rectangle.Intersect(itemRect, _levelListBounds);
-                            if (hitRect.Width > 0 && hitRect.Height > 0)
-                                _levelItemBounds.Add((i, hitRect));
-
-                            if (sel)
-                            {
-                                Color cardTop = new Color(255, 68, 136) * 0.35f;
-                                DrawRect(sb, panelLeft + itemPadding, (int)itemY + pad2, cardWidth, itemH - pad5, cardTop);
-
-                                int glowMargin = Math.Max(2, itemPadding - 2);
-                                DrawRect(sb, panelLeft + glowMargin, (int)itemY, cardWidth + (itemPadding - glowMargin) * 2, 1, new Color(255, 215, 0) * 0.7f);
-                                DrawRect(sb, panelLeft + glowMargin, (int)itemY + itemH - selBarW, cardWidth + (itemPadding - glowMargin) * 2, 1, new Color(255, 68, 136) * 0.5f);
-                                DrawRect(sb, panelLeft + itemPadding, (int)itemY + pad2, selBarW, itemH - pad5, new Color(255, 215, 0));
-                            }
-                            else if (hovered)
-                            {
-                                DrawRect(sb, panelLeft + itemPadding + 1, (int)itemY + pad2, Math.Max(1, cardWidth - 2), itemH - pad6, new Color(55, 40, 72) * 0.72f);
-                                DrawRect(sb, panelLeft + itemPadding + 1, (int)itemY + pad2, cardWidth - 2, 1, new Color(255, 68, 136) * 0.45f);
-                                DrawRect(sb, panelLeft + itemPadding + 1, (int)itemY + pad2, hovBarW, itemH - pad6, new Color(255, 68, 136) * 0.8f);
-                            }
-                            else
-                            {
-                                Color cardBg = (i % 2 == 0) ? new Color(28, 28, 45) * 0.5f : new Color(22, 22, 38) * 0.5f;
-                                int unselPad = itemPadding + 2;
-                                DrawRect(sb, panelLeft + unselPad, (int)itemY + 3, cardWidth - 4, itemH - pad7, cardBg);
-                                DrawRect(sb, panelLeft + unselPad, (int)itemY + 3, cardWidth - 4, 1, Color.White * 0.05f);
-                            }
-
-                            string idx = $"{i + 1:D2}";
-                            int badgeX = panelLeft + (sel ? badgeMargin + UiScale.Px(8, s) : badgeMargin + UiScale.Px(6, s));
-                            int badgeY = (int)(itemY + (itemH - badgeSize) / 2f);
-
-                            DrawRect(sb, badgeX, badgeY, badgeSize, badgeSize, new Color(255, 68, 136) * (sel ? 0.4f : 0.2f));
-                            DrawRect(sb, badgeX, badgeY, 2, badgeSize, new Color(255, 215, 0) * (sel ? 0.8f : 0.3f));
-
-                            var idxSz = MeasureText(idx, badgeNumSize);
-                            DrawText(sb, idx, new Vector2(badgeX + (badgeSize - idxSz.X) / 2f, badgeY + (badgeSize - idxSz.Y) / 2f),
-                                sel ? new Color(255, 215, 0) : Color.White * 0.5f, badgeNumSize);
-
-                            float nameX = badgeX + badgeSize + UiScale.Px(10, s);
-                            Color nameColor = sel ? Color.White : new Color(200, 200, 220) * 0.8f;
-                            int nameSize = sel ? nameBaseSize + UiScale.Px(2, s, 1) : nameBaseSize;
-
-                            int playIconReserve = sel ? UiScale.Px(34, s) : UiScale.Px(20, s);
-                            int editX = panelLeft + panelVisibleWidth - playIconReserve - editW - UiScale.Px(14, s);
-                            int editY = (int)(itemY + (itemH - editH) / 2f);
-                            Rectangle editRect = new Rectangle(editX, editY, editW, editH);
-                            Rectangle editHit = Rectangle.Intersect(editRect, _levelListBounds);
-                            if (editHit.Width > 0 && editHit.Height > 0)
-                                _levelEditBounds.Add((i, editHit));
-
-                            float availableWidth = Math.Max(40f, editX - UiScale.Px(10, s) - nameX);
-                            string displayName = TruncateText(Safe(_names[i]), nameSize, availableWidth);
-                            var nameSz = MeasureText(displayName, nameSize);
-                            float nameY = itemY + (itemH - nameSz.Y) / 2f;
-
-                            DrawText(sb, displayName, new Vector2(nameX, nameY), nameColor, nameSize);
-
-                            bool editHover = _inPanel && _hoveredEditIndex == i;
-                            Color editAccent = new Color(0, 215, 255);
-                            DrawRect(sb, editX, editY, editW, editH, editHover ? editAccent * 0.30f : new Color(36, 36, 58) * 0.9f);
-                            DrawRect(sb, editX, editY, editW, 1, editAccent * (editHover ? 0.95f : 0.45f));
-                            DrawRect(sb, editX, editY + editH - 1, editW, 1, editAccent * (editHover ? 0.7f : 0.25f));
-                            var editSz = MeasureText("EDIT", editFont);
-                            DrawText(sb, "EDIT", new Vector2(editX + (editW - editSz.X) / 2f, editY + (editH - editSz.Y) / 2f),
-                                editHover ? Color.White : editAccent * 0.92f, editFont);
-
-                            if (sel)
-                            {
-                                string playIcon = ">";
-                                int playIconMargin = UiScale.Px(22, s);
-                                var playSz = MeasureText(playIcon, playIconSize);
-                                float playY = itemY + (itemH - playSz.Y) / 2f;
-                                DrawText(sb, playIcon, new Vector2(panelLeft + panelVisibleWidth - playIconMargin, playY),
-                                    new Color(255, 215, 0) * 0.9f, playIconSize);
-                            }
-                        }
-
-                        if (_graphicsDevice != null)
-                        {
-                            sb.End();
-                            _graphicsDevice.RasterizerState = oldRasterizer;
-                            _graphicsDevice.ScissorRectangle = oldScissor;
-                            sb.Begin(
-                                SpriteSortMode.Deferred,
-                                BlendState.AlphaBlend,
-                                SamplerState.LinearClamp,
-                                DepthStencilState.None,
-                                RasterizerState.CullNone
-                            );
-                        }
-
-                        float totalH = _paths.Count * itemH;
-                        if (totalH > listH)
-                        {
-                            float barH = Math.Max(UiScale.Px(32, s), listH * listH / totalH);
-                            float clampedScroll = Math.Clamp(_scrollY, 0f, totalH - listH);
-                            float barY = listTop + (clampedScroll / (totalH - listH)) * (listH - barH);
-
-                            int scrollbarWidth = UiScale.Px(8, s, 6);
-                            int scrollbarMargin = UiScale.Px(4, s, 2);
-
-                            DrawRect(sb, panelLeft + panelVisibleWidth - scrollbarWidth - scrollbarMargin, listTop, scrollbarWidth, listH, new Color(20, 20, 30) * 0.5f);
-                            DrawRect(sb, panelLeft + panelVisibleWidth - scrollbarWidth - scrollbarMargin + 1, (int)barY, Math.Max(2, scrollbarWidth - 2), (int)barH, new Color(255, 68, 136) * 0.6f);
-                            DrawRect(sb, panelLeft + panelVisibleWidth - scrollbarWidth - scrollbarMargin + 1, (int)barY, UiScale.Px(2, s, 1), (int)barH, new Color(255, 215, 0) * 0.4f);
-                        }
-                    }
-                }
-
-                // Modern footer at bottom of panel (clickable to import files)
-                _footerBarBounds = new Rectangle(panelLeft, sh - footerH, panelVisibleWidth, footerH);
-                DrawRect(sb, panelLeft, sh - footerH, panelVisibleWidth, footerH,
-                    _footerBarHover ? new Color(35, 30, 50) * 0.95f : new Color(20, 15, 25) * 0.9f);
-                DrawRect(sb, panelLeft, sh - footerH, panelVisibleWidth, 2,
-                    _footerBarHover ? new Color(0, 200, 255) * 0.8f : new Color(255, 68, 136) * 0.4f);
-                string drop = GetPanelBottomHintTextInternal();
-                int dropSize = FitFontSize(drop, UiScale.FontPx(14, s), 10, panelVisibleWidth - UiScale.Px(16, s));
-                var dsz = MeasureText(drop, dropSize);
-                DrawText(sb, drop,
-                    new Vector2(panelLeft + panelVisibleWidth / 2f - dsz.X / 2f, sh - footerH / 2f - dsz.Y / 2f),
-                    _footerBarHover ? new Color(100, 220, 255) : new Color(255, 215, 0) * 0.65f, dropSize);
-            }
+            // Main menu fading out as the panel slides in
+            DrawRect(sb, 0, 0, leftW, sh, _bgTint * Math.Clamp((1f - _panelX) * 2f, 0f, 1f));
         }
-        else
+        else if (showDetails && (_font != null || _fontRenderer != null))
         {
-            _panelBounds         = Rectangle.Empty;
-            _levelListBounds     = Rectangle.Empty;
-            _levelItemBounds.Clear();
-            _levelEditBounds.Clear();
-            _importBtnBounds     = Rectangle.Empty;
-            _newBtnBounds        = Rectangle.Empty;
-            _refreshBtnBounds    = Rectangle.Empty;
-            _closePanelBtnBounds = Rectangle.Empty;
-            _footerBarBounds     = Rectangle.Empty;
+            float detailsAlpha = Math.Clamp((0.5f - _panelX) * 2f, 0f, 1f);
+            DrawLevelDetails(sb, leftW, sh, s, detailsAlpha);
+
+            string panelHint = _searchTyping
+                ? "Type to search  |  UP/DOWN Results  |  ENTER / ESC Done  |  Ctrl+Backspace Clear"
+                : _online != null
+                    ? $"ENTER Pick  |  [{Controls.Hint(HotkeyAction.PrevTab)}]/[{Controls.Hint(HotkeyAction.NextTab)}] Tabs  |  " +
+                      (OsuTab ? "LEFT/RIGHT Difficulty  |  " : "") +
+                      $"[{Controls.Hint(HotkeyAction.FreeplayOptions)}] Options  |  [{Controls.Hint(HotkeyAction.FreeplayFavorite)}] Favorite  |  " +
+                      $"[{Controls.Hint(HotkeyAction.FreeplaySort)}] Sort  |  ESC Back"
+                : $"ENTER Play  |  [{Controls.Hint(HotkeyAction.FreeplayOptions)}] Options  |  [{Controls.Hint(HotkeyAction.FreeplayModifiers)}] Modifiers  |  " +
+                  $"[{Controls.Hint(HotkeyAction.FreeplayAttempts)}] Attempts  |  [{Controls.Hint(HotkeyAction.FreeplayFavorite)}] Favorite  |  " +
+                  $"[{Controls.Hint(HotkeyAction.FreeplaySort)}] Sort  |  ESC Back";
+            int phSize = FitFontSize(panelHint, UiScale.FontPx(14, s), 9, leftW - UiScale.Px(24, s));
+            var phSz = MeasureText(panelHint, phSize);
+            DrawText(sb, panelHint, new Vector2(leftW / 2f - phSz.X / 2f, sh - UiScale.Px(30, s)),
+                Color.White * (0.38f * detailsAlpha), phSize);
         }
+
+        // ── Right panel — level list (FreeplayMenu.LevelPanel.cs) ────────────
+        DrawLevelPanel(sb, sw, sh, s, itemH);
+        DrawContextMenu(sb, sw, sh, s);
 
         // ── Toast Notification Banner (e.g. "[Nombre del nivel] importado") ──
         if (_toastTimer > 0f && !string.IsNullOrEmpty(_toastMessage) && (_font != null || _fontRenderer != null))
@@ -1810,7 +1412,8 @@ public partial class FreeplayMenu
             DrawRect(sb, modalX, modalY, 1, modalH, Color.White * (0.12f * mAlpha));
             DrawRect(sb, modalX + modalW - 1, modalY, 1, modalH, Color.White * (0.12f * mAlpha));
 
-            string headerText = _importModalCount > 1
+            string headerText = _modalIsDelete ? "BORRAR NIVEL"
+                : _importModalCount > 1
                 ? $"{_importModalCount} NIVELES IMPORTADOS"
                 : "NIVEL IMPORTADO";
             int headerSize = UiScale.FontPx(18, s);
@@ -1821,13 +1424,15 @@ public partial class FreeplayMenu
                 new Color(255, 215, 0) * mAlpha, headerSize);
 
             int nameSize = UiScale.FontPx(26, s);
-            string displayLevel = TruncateText(Safe($"{_importModalLevelName} importado"), nameSize, modalW - UiScale.Px(48, s));
+            string displayLevel = TruncateText(Safe(_modalIsDelete ? _importModalLevelName : $"{_importModalLevelName} importado"), nameSize, modalW - UiScale.Px(48, s));
             var nameSz = MeasureText(displayLevel, nameSize);
             DrawText(sb, displayLevel,
                 new Vector2(modalX + (modalW - nameSz.X) / 2f, modalY + topOff + headerSz.Y + UiScale.Px(10, s)),
-                new Color(80, 240, 160) * mAlpha, nameSize);
+                (_modalIsDelete ? new Color(255, 120, 135) : new Color(80, 240, 160)) * mAlpha, nameSize);
 
-            string questionText = "Quieres jugarlo ahora?";
+            string questionText = !_modalIsDelete ? "Quieres jugarlo ahora?"
+                : OperatingSystem.IsWindows() ? "Seguro? Ira a la Papelera de reciclaje."
+                : "Seguro? No se puede deshacer.";
             int questionSize = UiScale.FontPx(20, s);
             var questionSz = MeasureText(questionText, questionSize);
             float questionY = modalY + topOff + headerSz.Y + UiScale.Px(10, s) + nameSz.Y + UiScale.Px(12, s);
@@ -1871,7 +1476,7 @@ public partial class FreeplayMenu
                 DrawRect(sb, yesX, btnY, btnW, btnH, new Color(35, 35, 55) * (0.65f * mAlpha));
                 DrawRect(sb, yesX, btnY, btnW, 1, Color.White * (0.15f * mAlpha));
             }
-            string yesLabel = "SI, JUGAR";
+            string yesLabel = _modalIsDelete ? "SI, BORRAR" : "SI, JUGAR";
             var yesSz = MeasureText(yesLabel, btnTextSize);
             DrawText(sb, yesLabel,
                 new Vector2(yesX + (btnW - yesSz.X) / 2f, btnY + (btnH - yesSz.Y) / 2f),
@@ -1900,7 +1505,7 @@ public partial class FreeplayMenu
                 DrawRect(sb, noX, btnY, btnW, btnH, new Color(35, 35, 55) * (0.65f * mAlpha));
                 DrawRect(sb, noX, btnY, btnW, 1, Color.White * (0.15f * mAlpha));
             }
-            string noLabel = "NO, SOLO ANADIR";
+            string noLabel = _modalIsDelete ? "NO, CANCELAR" : "NO, SOLO ANADIR";
             var noSz = MeasureText(noLabel, btnTextSize);
             DrawText(sb, noLabel,
                 new Vector2(noX + (btnW - noSz.X) / 2f, btnY + (btnH - noSz.Y) / 2f),
@@ -1940,20 +1545,42 @@ public partial class FreeplayMenu
             var creditData = new (string text, string? url)[] {
                 ("Funky Maker Player", null),
                 ("", null),
-                ("Developed by  @thisisankush", null),
+                ("Main Developer", null),
+                ("Just Fenix (@thisisankush)", "https://github.com/Thisisfenix"),
                 ("", null),
-                ("Funky Maker is a game by  KingamesCreator", null),
-                ("  Android - Google Play", "https://play.google.com/store/apps/details?id=com.kingamescreator.fnmm"),
-                ("  iOS - App Store", "https://apps.apple.com/app/funky-maker-mobile/id6761866418"),
+                ("Contributor", null),
+                ("AbelitoGamer (@abelitogamer)", "https://github.com/AbelitoGamer"),
                 ("", null),
-                ("Built with MonoGame  NVorbis  ImageSharp  SharpCompress", null),
+                ("Based on Funky Maker, by KinGamesCreator", null),
+                ("Android - Google Play", "https://play.google.com/store/apps/details?id=com.kingamescreator.fnmm"),
+                ("iOS - App Store", "https://apps.apple.com/app/funky-maker-mobile/id6761866418"),
                 ("", null),
+                ("Online menu music: Portraits of Kings & Jazzroom (Duck Game OST) - superjoebob", null),
+                ("UI sounds: Mii Maker / Tomodachi Life (Nintendo)", null),
                 ("UI Icons by Icons8 - icons8.com", "https://icons8.com"),
+                ("Star rating based on osu!mania's difficulty calculator (ppy/osu, MIT)", "https://github.com/ppy/osu"),
+                ("", null),
+                ("Built with", null),
+                ("  MonoGame  MonoGame.Extended  FontStashSharp  NVorbis  NLayer", null),
+                ("  ImageSharp  SharpCompress  SignalR  DiscordRichPresence", null),
+                ("", null),
+                ("Special Thanks", null),
+                ("  AnnaHolOl (Ideas & Testing)", null),
                 ("", null),
                 ("[Enter] or [ESC] to close", null),
             };
             
             int creditSize = UiScale.FontPx(23, s);
+            // Shrink to fit short / narrow windows (the list is long).
+            float widest = 0f;
+            foreach (var (t, _) in creditData) widest = Math.Max(widest, MeasureText(t, creditSize).X);
+            while (creditSize > 10 &&
+                   ((MeasureText("A", creditSize).Y + UiScale.Px(6, s)) * creditData.Length > sh * 0.92f || widest > sw * 0.94f))
+            {
+                creditSize--;
+                widest = 0f;
+                foreach (var (t, _) in creditData) widest = Math.Max(widest, MeasureText(t, creditSize).X);
+            }
             int ch = (int)(MeasureText("A", creditSize).Y) + UiScale.Px(6, s);
             int totalCH = creditData.Length * ch;
             int cy = sh / 2 - totalCH / 2;
@@ -2040,7 +1667,7 @@ public partial class FreeplayMenu
     private void DrawUpdateCornerBadge(SpriteBatch sb, int sw, int sh)
     {
         float s = UiScale.FromScreen(sw, sh);
-        string text = $"UPDATE {_updateTag} AVAILABLE  [U]";
+        string text = $"UPDATE {_updateTag} AVAILABLE  [{Controls.Hint(HotkeyAction.ShowUpdatePrompt)}]";
         int fontSize = UiScale.FontPx(15, s);
         var sz = MeasureText(text, fontSize);
         int padX = UiScale.Px(14, s);
@@ -2272,7 +1899,11 @@ public partial class FreeplayMenu
         #if BLAZORGL
         return GetEmptyStateMainText();
         #else
-        return "DRAG & DROP";
+        #if ANDROID
+        return "TAP TO IMPORT"; // nothing can be dragged onto the app on Android
+        #else
+        return OsuTab ? "DROP .OSZ" : "DRAG & DROP";
+        #endif
         #endif
     }
     
@@ -2284,7 +1915,7 @@ public partial class FreeplayMenu
         #if BLAZORGL
         return GetEmptyStateSecondaryText();
         #else
-        return ".FNMM / .ZIP / .RAR";
+        return OsuTab ? "osu!mania 4K beatmap sets" : ".FNMM / .ZIP / .RAR";
         #endif
     }
     
@@ -2296,7 +1927,11 @@ public partial class FreeplayMenu
         #if BLAZORGL
         return GetEmptyStateHelpText();
         #else
-        return "Click here or press [I] to browse files";
+        #if ANDROID
+        return "Tap here to pick a file";
+        #else
+        return $"Click here or press [{Controls.Hint(HotkeyAction.ImportLevel)}] to browse files";
+        #endif
         #endif
     }
     
@@ -2308,7 +1943,17 @@ public partial class FreeplayMenu
         #if BLAZORGL
         return GetPanelBottomHintText();
         #else
-        return "Drop .FNMM / .ZIP / .RAR  |  [I] Import File";
+        if (_online != null)
+            return _tab == FreeplayTab.Official
+                ? "Official levels are downloaded from the server by everybody"
+                : "Songs somebody lacks are sent to them when picked";
+        #if ANDROID
+        return OsuTab ? "Use IMPORT to add .OSZ songs / .OSK skins" : "Use IMPORT to add .FNMM / .ZIP / .RAR levels";
+        #else
+        return OsuTab
+            ? $"Drop .OSZ (songs) / .OSK (skins)  |  [{Controls.Hint(HotkeyAction.ImportLevel)}] Import"
+            : $"Drop .FNMM / .ZIP / .RAR  |  [{Controls.Hint(HotkeyAction.ImportLevel)}] Import File";
+        #endif
         #endif
     }
     
@@ -2347,7 +1992,7 @@ public partial class FreeplayMenu
         int targetW = Math.Clamp(panelW - padX * 2, UiScale.Px(220, s), UiScale.Px(620, s));
         int dropBoxW = Math.Min(targetW, Math.Max(0, visibleW - UiScale.Px(24, s)));
 
-        int areaTop = UiScale.Px(104, s);
+        int areaTop = PanelHeaderHeight(s) + UiScale.Px(6, s);
         int footerReserve = UiScale.Px(55, s);
         int areaBottom = Math.Max(areaTop + 120, screenHeight - footerReserve);
         int availH = areaBottom - areaTop;
@@ -2404,6 +2049,52 @@ public partial class FreeplayMenu
         return new Point(rtX, rtY);
     }
 
+    /// <summary>Asks to delete the level at <paramref name="index"/> (fork).</summary>
+    private void OpenDeleteModal(int index)
+    {
+        if (index < 0 || index >= _paths.Count) return;
+        // osu! songs: the whole set folder (every difficulty) goes (fork)
+        _deleteModalPath      = OsuSetOf(_paths[index])?.Folder ?? _paths[index];
+        _importModalLevelName = _names[index];
+        _importModalCount     = 1;
+        _modalIsDelete        = true;
+        _importModalSelection = 1; // default to "NO"
+        _importModalAnim      = 0f;
+        _importModalOpen      = true;
+        ResetInputCooldown();
+    }
+
+    private void PerformDelete()
+    {
+        string path = _deleteModalPath;
+        string name = _importModalLevelName;
+        _modalIsDelete = false;
+        _deleteModalPath = "";
+        if (string.IsNullOrEmpty(path)) return;
+
+        var outcome = LevelFiles.Delete(path, out string error);
+        if (outcome == LevelFiles.DeleteOutcome.Failed)
+        {
+            ShowToast($"No se pudo borrar {name}: {error}");
+            return;
+        }
+        FreeplayData.Instance.Forget(path);
+        string where = outcome switch
+        {
+            LevelFiles.DeleteOutcome.RecycleBin => "enviado a la Papelera",
+            LevelFiles.DeleteOutcome.Trash => "enviado a la Papelera",
+            _ => "borrado",
+        };
+        int keep = _selected;
+        Refresh();
+        _selected = Math.Clamp(keep, 0, Math.Max(0, _paths.Count - 1));
+        LevelsDeleted = true;
+        ShowToast($"{name} {where}");
+    }
+
+    /// <summary>Set after a level was deleted here; Game1 refreshes the other level lists and clears it.</summary>
+    public bool LevelsDeleted { get; set; }
+
     /// <summary>
     /// Opens the platform-appropriate file picker to import level archives (.fnmm, .zip, .rar).
     /// </summary>
@@ -2430,8 +2121,10 @@ public partial class FreeplayMenu
         try
         {
             var selectedFiles = PlatformPaths.PickDesktopFiles(
-                "Funky Maker Levels (*.fnmm;*.zip;*.rar)\0*.FNMM;*.fnmm;*.ZIP;*.zip;*.RAR;*.rar\0All Files (*.*)\0*.*\0\0",
-                "Select Funky Maker Level (.FNMM, .ZIP, .RAR)",
+                OsuTab
+                    ? "osu! files (*.osz;*.osk)\0*.osz;*.OSZ;*.osk;*.OSK\0All Files (*.*)\0*.*\0\0"
+                    : "Funky Maker Levels (*.fnmm;*.zip;*.rar)\0*.FNMM;*.fnmm;*.ZIP;*.zip;*.RAR;*.rar\0osu! files (*.osz;*.osk)\0*.osz;*.osk\0All Files (*.*)\0*.*\0\0",
+                OsuTab ? "Select osu!mania beatmap sets (.OSZ) or skins (.OSK)" : "Select Funky Maker Level (.FNMM, .ZIP, .RAR)",
                 allowMultiSelect: true);
 
             var imported = new List<string>();
@@ -2439,6 +2132,14 @@ public partial class FreeplayMenu
             foreach (var file in selectedFiles)
             {
                 if (!File.Exists(file)) continue;
+                // osu! beatmap sets / skins (fork)
+                if (Osu.OsuLibrary.IsBeatmapArchive(file) || Osu.OsuLibrary.IsSkinArchive(file))
+                {
+                    var r = Osu.OsuLibrary.Import(file);
+                    if (r.Ok && !r.IsSkin && r.Path != null) OnOsuSetImported(r.Path, r.Message);
+                    else ShowToast(r.Message);
+                    continue;
+                }
                 string destPath = Path.Combine(_levelsFolder, Path.GetFileName(file));
                 if (!string.Equals(Path.GetFullPath(file), Path.GetFullPath(destPath), StringComparison.OrdinalIgnoreCase))
                 {
