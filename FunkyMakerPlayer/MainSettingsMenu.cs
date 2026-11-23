@@ -32,7 +32,7 @@ public class MainSettingsMenu : UI.IDirectScreen
         _pixel = pixel;
         _font = font;
         _fontRenderer = fontRenderer;
-        _prevKb = Keyboard.GetState();
+        _prevKb = LayoutKeyboard.GetState();
         _prevMs = Mouse.GetState();
     }
 
@@ -43,13 +43,13 @@ public class MainSettingsMenu : UI.IDirectScreen
         _syncPointerOnEnter = true;
         _enterHovered = false;
         _backHovered = false;
-        _prevKb = Keyboard.GetState();
+        _prevKb = LayoutKeyboard.GetState();
         _prevMs = Mouse.GetState();
     }
 
     public void Update(float dt, int screenWidth, int screenHeight)
     {
-        Update(dt, Game1.CanAcceptInput ? Keyboard.GetState() : default, screenWidth, screenHeight);
+        Update(dt, Game1.CanAcceptInput ? LayoutKeyboard.GetState() : default, screenWidth, screenHeight);
     }
 
     public void Update(float dt, KeyboardState kb, int screenWidth, int screenHeight)
@@ -171,7 +171,7 @@ public class MainSettingsMenu : UI.IDirectScreen
             "  - ESC: Save & Exit editor",
             "",
             "Changes are saved to: Assets/data/hud_settings.json",
-            "NOTE: Icons follow the health bar in FNF Base mode."
+            "NOTE: Health Icons set to \"Move with bar\" follow the health bar."
         };
 
         // Measure instruction typography and fit cleanly between title and action buttons

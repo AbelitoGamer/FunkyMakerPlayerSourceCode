@@ -8,7 +8,8 @@ namespace FunkyMakerPlayer.Managers;
 
 /// <summary>
 /// Settings Manager with tabbed interface (Codename Engine style).
-/// Unified tabs across platforms: GAMEPLAY, GRAPHICS, GENERAL, EXPERIMENTAL.
+/// Unified tabs across platforms: GAMEPLAY, NOTES, HUD, AUDIO & VIDEO, CONTROLS.
+/// Rows can be grouped under non-selectable section headers.
 /// Supports focus-based keyboard adjustment and full mouse interaction.
 /// </summary>
 public class SettingsManager
@@ -18,6 +19,8 @@ public class SettingsManager
         Toggle,
         Action,
         Adjustable,
+        /// <summary>Section title: drawn differently and skipped by navigation.</summary>
+        Header,
     }
 
     private sealed class SettingItem
@@ -41,11 +44,16 @@ public class SettingsManager
     // ── State ────────────────────────────────────────────────────────────────
     public bool IsActive { get; set; } = false;
     public int Selection { get; set; } = 0;
-    public int CurrentTab { get; set; } = 0;  // 0=Gameplay, 1=Graphics, 2=General, 3=Experimental
+    public int CurrentTab { get; set; } = 0;  // see the *Tab constants below
     public bool IsFocused { get; set; } = false;
     public float ScrollOffset { get; set; } = 0f;
 
-    private static readonly string[] TabNames = { "GAMEPLAY", "GRAPHICS", "GENERAL", "EXPERIMENTAL" };
+    private static readonly string[] TabNames = { "GAMEPLAY", "NOTES", "HUD", "AUDIO & VIDEO", "CONTROLS" };
+    private const int GameplayTab = 0;
+    private const int NotesTab = 1;
+    private const int HudTab = 2;
+    private const int AudioVideoTab = 3;
+    private const int ControlsTab = 4;
 
     // Available countdown packs (cached)
     private List<string> _availableCountdowns = new() { "default" };
@@ -97,6 +105,9 @@ public class SettingsManager
     /// <summary>
     /// Scans mods/countdowns/ folder for available countdown packs.
     /// </summary>
+    private DateTime _lastCountdownScan = DateTime.UtcNow;
+    private string? _lastCountdownSummary;
+
     private void ScanAvailableCountdowns()
     {
         _availableCountdowns.Clear();
@@ -112,9 +123,9 @@ public class SettingsManager
                     string name = System.IO.Path.GetFileName(dir);
                     if (!string.IsNullOrEmpty(name) && !DefaultMods.IsDefaultCountdown(name))
                     {
-                        string readyPath = System.IO.Path.Combine(dir, "ready.png");
-                        string setPath = System.IO.Path.Combine(dir, "set.png");
-                        string goPath = System.IO.Path.Combine(dir, "go.png");
+                        string readyPath = CaseInsensitivePaths.Find(dir, "ready.png");
+                        string setPath = CaseInsensitivePaths.Find(dir, "set.png");
+                        string goPath = CaseInsensitivePaths.Find(dir, "go.png");
 
                         if (System.IO.File.Exists(readyPath) &&
                             System.IO.File.Exists(setPath) &&
@@ -126,7 +137,13 @@ public class SettingsManager
                 }
             }
 
-            Console.WriteLine($"[SettingsManager] Found {_availableCountdowns.Count} countdown packs: {string.Join(", ", _availableCountdowns)}");
+            // Rescanned every 2 s while the Notes tab is open: log only when the list changed.
+            string summary = string.Join(", ", _availableCountdowns);
+            if (summary != _lastCountdownSummary)
+            {
+                _lastCountdownSummary = summary;
+                Console.WriteLine($"[SettingsManager] Found {_availableCountdowns.Count} countdown packs: {summary}");
+            }
         }
         catch (Exception ex)
         {
@@ -172,17 +189,20 @@ public class SettingsManager
 
         switch (CurrentTab)
         {
-            case 0:
-                BuildGameplayEntries(entries);
+            case GameplayTab:
+                BuildGameplayEntries(game, entries);
                 break;
-            case 1:
-                BuildGraphicsEntries(game, entries);
+            case NotesTab:
+                BuildNotesEntries(entries);
                 break;
-            case 2:
-                BuildGeneralEntries(game, entries);
+            case HudTab:
+                BuildHudEntries(entries);
                 break;
-            case 3:
-                BuildExperimentalEntries(game, entries);
+            case AudioVideoTab:
+                BuildAudioVideoEntries(game, entries);
+                break;
+            case ControlsTab:
+                BuildControlsEntries(entries);
                 break;
         }
 
@@ -192,7 +212,40 @@ public class SettingsManager
         else if (Selection < 0)
             Selection = 0;
 
+        // Section headers can't be selected: land on the nearest real row
+        if (entries.Count > 0 && !IsSelectable(entries[Selection]))
+        {
+            int down = Selection;
+            while (down < entries.Count && !IsSelectable(entries[down])) down++;
+            if (down < entries.Count) Selection = down;
+            else
+            {
+                int up = Selection;
+                while (up >= 0 && !IsSelectable(entries[up])) up--;
+                Selection = Math.Max(0, up);
+            }
+        }
+
         return entries;
+    }
+
+    private static bool IsSelectable(SettingItem item) => item.Kind != SettingKind.Header;
+
+    /// <summary>Moves the selection up (-1) or down (+1), skipping section headers and wrapping around.</summary>
+    public void MoveSelection(Game1 game, int direction)
+    {
+        var entries = BuildTabEntries(game);
+        if (entries.Count == 0) return;
+        int idx = Selection;
+        for (int n = 0; n < entries.Count; n++)
+        {
+            idx = (idx + direction + entries.Count) % entries.Count;
+            if (IsSelectable(entries[idx]))
+            {
+                Selection = idx;
+                return;
+            }
+        }
     }
 
     public int GetItemCount() => _lastItemCount;
@@ -212,28 +265,26 @@ public class SettingsManager
         OnSelect = () => new SettingsActionResult { NeedsSave = false },
     };
 
-    private void BuildGameplayEntries(List<SettingItem> entries)
+    /// <summary>A non-selectable section title inside a tab.</summary>
+    private static SettingItem Header(string title) => new SettingItem
     {
-        if (InMultiplayerMatch)
-            entries.Add(LockedInMatch("Botplay", "OFF"));
-        else
-        entries.Add(new SettingItem
-        {
-            Label = "Botplay",
-            Value = NoteRenderer.Autoplay ? "ON" : "OFF",
-            Kind = SettingKind.Toggle,
-            Description = "CPU plays all player notes automatically. Great for watching charts or testing levels.",
-            OnSelect = () =>
-            {
-                NoteRenderer.Autoplay = !NoteRenderer.Autoplay;
-                return new SettingsActionResult { NeedsSave = true };
-            }
-        });
+        Label = title.ToUpperInvariant(),
+        Kind = SettingKind.Header,
+    };
 
+    private static string OnOff(bool on) => on ? "ON" : "OFF";
+
+    // ── GAMEPLAY ─────────────────────────────────────────────────────────────
+
+    // "Advanced Timing" rows are collapsed until the player opens them (not saved).
+    private bool _showAdvancedTiming;
+
+    private void BuildGameplayEntries(Game1? game, List<SettingItem> entries)
+    {
         entries.Add(new SettingItem
         {
             Label = "Downscroll",
-            Value = NoteRenderer.Downscroll ? "ON" : "OFF",
+            Value = OnOff(NoteRenderer.Downscroll),
             Kind = SettingKind.Toggle,
             Description = "Notes scroll from top to bottom instead of bottom to top.",
             OnSelect = () =>
@@ -246,7 +297,7 @@ public class SettingsManager
         entries.Add(new SettingItem
         {
             Label = "Middlescroll",
-            Value = NoteRenderer.Midlescroll ? "ON" : "OFF",
+            Value = OnOff(NoteRenderer.Midlescroll),
             Kind = SettingKind.Toggle,
             Description = "Centers your strumline horizontally and splits/dims opponent arrows.",
             OnSelect = () =>
@@ -261,7 +312,7 @@ public class SettingsManager
             Label = "Scroll Speed",
             Value = $"{NoteRenderer.ScrollMultiplier:F2}x",
             Kind = SettingKind.Adjustable,
-            Description = "Visual note speed multiplier (default: 1.00x, range: 0.25x - 5.00x). Press ENTER to focus, LEFT/RIGHT to change. In a song: F3 slower, F4 faster.",
+            Description = $"Visual note speed multiplier (default: 1.00x, range: 0.25x - 5.00x). Press ENTER to focus, LEFT/RIGHT to change. In a song: {Controls.Describe(HotkeyAction.ScrollSpeedDown)} slower, {Controls.Describe(HotkeyAction.ScrollSpeedUp)} faster (CONTROLS tab).",
             OnAdjust = (_, delta) =>
             {
                 NoteRenderer.ScrollMultiplier = MathF.Round(
@@ -273,7 +324,7 @@ public class SettingsManager
         entries.Add(new SettingItem
         {
             Label = "Ghost Tapping",
-            Value = NoteRenderer.GhostTapping ? "ON" : "OFF",
+            Value = OnOff(NoteRenderer.GhostTapping),
             Kind = SettingKind.Toggle,
             Description = "Prevents misses when tapping keys with no notes nearby (OFF = strict timing).",
             OnSelect = () =>
@@ -283,69 +334,184 @@ public class SettingsManager
             }
         });
 
-        entries.Add(new SettingItem
-        {
-            Label = "Show Key Labels",
-            Value = NoteRenderer.ShowKeyLabels ? "ON" : "OFF",
-            Kind = SettingKind.Toggle,
-            Description = "Shows the key for each lane on top of your strums.",
-            OnSelect = () =>
-            {
-                NoteRenderer.ShowKeyLabels = !NoteRenderer.ShowKeyLabels;
-                return new SettingsActionResult { NeedsSave = true };
-            }
-        });
+        // ── Practice ──
+        entries.Add(Header("Practice"));
 
-        entries.Add(new SettingItem
-        {
-            Label = "Input Buffer",
-            Value = $"{(int)Math.Round(NoteRenderer.InputBuffer * 1000)}ms",
-            Kind = SettingKind.Adjustable,
-            Description = "Early hit buffer capped at 10ms default. You can lower it (0ms - 10ms) for stricter timing.",
-            OnAdjust = (_, delta) =>
+        if (InMultiplayerMatch)
+            entries.Add(LockedInMatch("Botplay", "OFF"));
+        else
+            entries.Add(new SettingItem
             {
-                NoteRenderer.InputBuffer = MathF.Round(
-                    Math.Clamp(NoteRenderer.InputBuffer + delta * 0.002f, 0f, 0.010f), 3);
-                return new SettingsActionResult { NeedsSave = true };
-            }
-        });
+                Label = "Botplay",
+                Value = OnOff(NoteRenderer.Botplay),
+                Kind = SettingKind.Toggle,
+                Description = "The CPU plays all your notes. Great for watching charts or testing levels.",
+                OnSelect = () =>
+                {
+                    NoteRenderer.Botplay = !NoteRenderer.Botplay;
+                    return new SettingsActionResult { NeedsSave = true };
+                }
+            });
 
-        entries.Add(new SettingItem
+        if (InMultiplayerMatch)
+            entries.Add(LockedInMatch("Timeskip", "OFF"));
+        else
         {
-            Label = "Safe Frames",
-            Value = $"{(int)Math.Round(NoteRenderer.SafeFramesTime * 1000)}ms",
-            Kind = SettingKind.Adjustable,
-            Description = "Start-of-song miss protection capped at 83ms (~5 frames) default. Can only be lowered (0ms - 83ms).",
-            OnAdjust = (isLeft, _) =>
+            entries.Add(new SettingItem
             {
-                float next = NoteRenderer.SafeFramesTime + (isLeft ? -0.017f : 0.017f);
-                if (!isLeft && next > 0.080f) next = 0.083f;
-                NoteRenderer.SafeFramesTime = MathF.Round(Math.Clamp(next, 0f, 0.083f), 3);
-                return new SettingsActionResult { NeedsSave = true };
-            }
-        });
+                Label = "Timeskip",
+                Value = Game1.TimeskipSeconds <= 0f ? "OFF" : $"{Game1.TimeskipSeconds:F0}s",
+                Kind = SettingKind.Adjustable,
+                Description = $"Seconds skipped per press of the Timeskip keys ({Controls.Describe(HotkeyAction.TimeskipForward)} forward, {Controls.Describe(HotkeyAction.TimeskipBackward)} back). Set it to OFF to disable Timeskip. Not available in multiplayer.",
+                OnAdjust = (_, delta) =>
+                {
+                    Game1.TimeskipSeconds = MathF.Round(Math.Clamp(Game1.TimeskipSeconds + delta * 5f, 0f, 60f), 0);
+                    return new SettingsActionResult { NeedsSave = true };
+                }
+            });
 
-        #if !ANDROID
+            if (Game1.TimeskipEnabled && game?._level != null)
+            {
+                entries.Add(new SettingItem
+                {
+                    Label = "  Seek Current Song",
+                    Value = "Scrub",
+                    Kind = SettingKind.Adjustable,
+                    Description = "Scrub backward/forward through the current song by the Timeskip amount (the song stays paused).",
+                    OnAdjust = (_, delta) => new SettingsActionResult
+                    {
+                        SeekSong = delta * Game1.TimeskipSeconds,
+                        NeedsSave = false
+                    }
+                });
+            }
+        }
+
+        // ── Advanced timing (collapsed) ──
         entries.Add(new SettingItem
         {
-            Label = "Rebind Keys",
-            Value = $"{NoteRenderer.PlayerKeys[0]}/{NoteRenderer.PlayerKeys[1]}/{NoteRenderer.PlayerKeys[2]}/{NoteRenderer.PlayerKeys[3]}",
+            Label = "Advanced Timing",
+            Value = _showAdvancedTiming ? "[Hide]" : "[Show]",
             Kind = SettingKind.Action,
-            Description = "Customize keyboard controls for Left, Down, Up, and Right note lanes.",
+            Description = "Fine-tuning for very strict timing: Input Buffer and Safe Frames. The defaults suit almost everyone.",
             OnSelect = () =>
             {
-                IsActive = false;
-                return new SettingsActionResult { OpenKeyBind = true, NeedsSave = false };
+                _showAdvancedTiming = !_showAdvancedTiming;
+                return new SettingsActionResult();
             }
         });
-        #endif
+
+        if (_showAdvancedTiming)
+        {
+            entries.Add(new SettingItem
+            {
+                Label = "  Input Buffer",
+                Value = $"{(int)Math.Round(NoteRenderer.InputBuffer * 1000)}ms",
+                Kind = SettingKind.Adjustable,
+                Description = "How early a key press may still hit an upcoming note (default and maximum: 10ms). Lower it for stricter timing.",
+                OnAdjust = (_, delta) =>
+                {
+                    NoteRenderer.InputBuffer = MathF.Round(
+                        Math.Clamp(NoteRenderer.InputBuffer + delta * 0.002f, 0f, 0.010f), 3);
+                    return new SettingsActionResult { NeedsSave = true };
+                }
+            });
+
+            entries.Add(new SettingItem
+            {
+                Label = "  Safe Frames",
+                Value = $"{(int)Math.Round(NoteRenderer.SafeFramesTime * 1000)}ms",
+                Kind = SettingKind.Adjustable,
+                Description = "Time at the very start of a song where misses don't count (default and maximum: 83ms, ~5 frames). Lower it for stricter play.",
+                OnAdjust = (isLeft, _) =>
+                {
+                    float next = NoteRenderer.SafeFramesTime + (isLeft ? -0.017f : 0.017f);
+                    if (!isLeft && next > 0.080f) next = 0.083f;
+                    NoteRenderer.SafeFramesTime = MathF.Round(Math.Clamp(next, 0f, 0.083f), 3);
+                    return new SettingsActionResult { NeedsSave = true };
+                }
+            });
+        }
+
+        BuildOsuEntries(entries);
     }
 
-    private void BuildGraphicsEntries(Game1? game, List<SettingItem> entries)
-    {
-        bool canOverrideZoom = game?._events == null || !game._events.HasCameraEvents;
-        float currentZoom = game?._cameraManager?.GetEffectiveScale(game._events?.Camera) ?? 1f;
+    // ── osu! songs (fork, Osu/OsuSettings.cs) ────────────────────────────────
 
+    private static SettingItem OsuToggle(string label, bool value, string description, Action toggle) => new()
+    {
+        Label = label,
+        Value = OnOff(value),
+        Kind = SettingKind.Toggle,
+        Description = description,
+        OnSelect = () => { toggle(); return new SettingsActionResult { NeedsSave = true }; }
+    };
+
+    private void BuildOsuEntries(List<SettingItem> entries)
+    {
+        entries.Add(Header("osu! songs"));
+        entries.Add(new SettingItem
+        {
+            Label = "Note Skin",
+            Value = Osu.OsuSettings.PreferBeatmapSkins ? "Beatmap's" : "Mine",
+            Kind = SettingKind.Adjustable,
+            Description = "Beatmap's: a song that brings its own mania note images uses them (only the images, like osu!: never its skin.ini). Mine: always your Note Style.",
+            OnSelect = () => { Osu.OsuSettings.PreferBeatmapSkins = !Osu.OsuSettings.PreferBeatmapSkins; return new SettingsActionResult { NeedsSave = true }; },
+            OnAdjust = (_, _) => { Osu.OsuSettings.PreferBeatmapSkins = !Osu.OsuSettings.PreferBeatmapSkins; return new SettingsActionResult { NeedsSave = true }; }
+        });
+        entries.Add(OsuToggle("Scroll Speed Changes", Osu.OsuSettings.ScrollSpeedChanges,
+            "The map's scroll speed changes (SV) and BPM changes move the notes faster or slower, like osu!mania. OFF: notes always scroll at your Scroll Speed.",
+            () => Osu.OsuSettings.ScrollSpeedChanges = !Osu.OsuSettings.ScrollSpeedChanges));
+        entries.Add(OsuToggle("Hitsounds", Osu.OsuSettings.Hitsounds,
+            "Notes play the map's hitsounds / keysounds when you press (and your osu! note skin's sounds, if it has them).",
+            () => Osu.OsuSettings.Hitsounds = !Osu.OsuSettings.Hitsounds));
+        entries.Add(new SettingItem
+        {
+            Label = "  Hitsound Volume",
+            Value = $"{(int)Math.Round(Osu.OsuSettings.HitsoundVolume * 100)}%",
+            Kind = SettingKind.Adjustable,
+            Description = "Volume of osu! hitsounds (scaled by Master Volume).",
+            OnAdjust = (_, delta) =>
+            {
+                Osu.OsuSettings.HitsoundVolume = MathF.Round(Math.Clamp(Osu.OsuSettings.HitsoundVolume + delta * 0.05f, 0f, 1f), 2);
+                return new SettingsActionResult { NeedsSave = true };
+            }
+        });
+        entries.Add(OsuToggle("Video", Osu.OsuSettings.Video,
+#if ANDROID
+            "Plays the map's background video with the device's decoders (mp4 / mkv / webm; not avi, flv or wmv).",
+#else
+            "Plays the map's background video (bundled ffmpeg; or one on PATH / in mods/tools).",
+#endif
+            () => Osu.OsuSettings.Video = !Osu.OsuSettings.Video));
+        entries.Add(OsuToggle("Storyboard", Osu.OsuSettings.Storyboard,
+            "Plays the map's storyboard (.osb / [Events]) behind and over the notes.",
+            () => Osu.OsuSettings.Storyboard = !Osu.OsuSettings.Storyboard));
+        entries.Add(new SettingItem
+        {
+            Label = "Background Dim",
+            Value = $"{(int)Math.Round(Osu.OsuSettings.BackgroundDim * 100)}%",
+            Kind = SettingKind.Adjustable,
+            Description = "How much the background, video and storyboard are darkened (the storyboard's Overlay layer too).",
+            OnAdjust = (_, delta) =>
+            {
+                Osu.OsuSettings.BackgroundDim = MathF.Round(Math.Clamp(Osu.OsuSettings.BackgroundDim + delta * 0.05f, 0f, 1f), 2);
+                return new SettingsActionResult { NeedsSave = true };
+            }
+        });
+    }
+
+    // ── NOTES ────────────────────────────────────────────────────────────────
+
+    private void BuildNotesEntries(List<SettingItem> entries)
+    {
+        // Countdown packs added since the game started show up too (fork: scanned once before).
+        // The entries are rebuilt every frame, so the folder is rescanned at most every 2 s.
+        if ((DateTime.UtcNow - _lastCountdownScan).TotalSeconds > 2)
+        {
+            _lastCountdownScan = DateTime.UtcNow;
+            ScanAvailableCountdowns();
+        }
         entries.Add(new SettingItem
         {
             Label = "Note Style",
@@ -393,18 +559,7 @@ public class SettingsManager
             }
         });
 
-        entries.Add(new SettingItem
-        {
-            Label = "Font Style",
-            Value = "[Select]",
-            Kind = SettingKind.Action,
-            Description = "Choose the UI font used throughout menus. Add custom .ttf/.otf fonts to mods/fonts/.",
-            OnSelect = () =>
-            {
-                IsActive = false;
-                return new SettingsActionResult { OpenFontMenu = true, NeedsSave = false };
-            }
-        });
+        entries.Add(Header("Readability"));
 
         entries.Add(new SettingItem
         {
@@ -422,19 +577,115 @@ public class SettingsManager
 
         entries.Add(new SettingItem
         {
-            Label = "Show Combo",
-            Value = Game1.ShowCombo ? "ON" : "OFF",
+            Label = "Show Key Labels",
+            Value = OnOff(NoteRenderer.ShowKeyLabels),
             Kind = SettingKind.Toggle,
-            Description = "Display combo numbers and judgement popups (Sick!/Good/Bad/Shit) on hits.",
+            Description = "Shows the key for each lane on top of your strums.",
             OnSelect = () =>
             {
-                Game1.ShowCombo = !Game1.ShowCombo;
-                HudSettings.Instance.ComboVisible = Game1.ShowCombo;
-                HudSettings.Instance.JudgementVisible = Game1.ShowCombo;
-                HudSettings.Instance.Save();
+                NoteRenderer.ShowKeyLabels = !NoteRenderer.ShowKeyLabels;
                 return new SettingsActionResult { NeedsSave = true };
             }
         });
+
+        entries.Add(Header("Strumlines"));
+
+        entries.Add(new SettingItem
+        {
+            Label = "Strumlines",
+            Value = OnOff(NoteRenderer.ShowStrumlines),
+            Kind = SettingKind.Toggle,
+            Description = "Master toggle to show or hide all note strumlines at once.",
+            OnSelect = () =>
+            {
+                NoteRenderer.ShowStrumlines = !NoteRenderer.ShowStrumlines;
+                return new SettingsActionResult { NeedsStrumlineAlphaUpdate = true, NeedsSave = true };
+            }
+        });
+
+        if (NoteRenderer.ShowStrumlines)
+        {
+            entries.Add(new SettingItem
+            {
+                Label = "  Player Strumline",
+                Value = OnOff(!NoteRenderer.HidePlayerStrumline),
+                Kind = SettingKind.Toggle,
+                Description = "Show or hide your own strumline (receptors, notes, and splashes).",
+                OnSelect = () =>
+                {
+                    NoteRenderer.HidePlayerStrumline = !NoteRenderer.HidePlayerStrumline;
+                    return new SettingsActionResult { NeedsStrumlineAlphaUpdate = true, NeedsSave = true };
+                }
+            });
+
+            entries.Add(new SettingItem
+            {
+                Label = "  Opponent Strumline",
+                Value = OnOff(!Game1.HideOpponentStrumline),
+                Kind = SettingKind.Toggle,
+                Description = "Show or hide the opponent's notes. Same setting as Show Opponent Notes in the online settings, where you can also set their opacity.",
+                OnSelect = () =>
+                {
+                    Game1.HideOpponentStrumline = !Game1.HideOpponentStrumline;
+                    return new SettingsActionResult { NeedsOpponentAlphaUpdate = true, NeedsSave = true };
+                }
+            });
+
+            entries.Add(new SettingItem
+            {
+                Label = "  Extra Strumlines",
+                Value = OnOff(!Game1.HideExtraStrumlines),
+                Kind = SettingKind.Toggle,
+                Description = "Show or hide extra strumlines beyond player and opponent.",
+                OnSelect = () =>
+                {
+                    Game1.HideExtraStrumlines = !Game1.HideExtraStrumlines;
+                    return new SettingsActionResult { NeedsStrumlineAlphaUpdate = true, NeedsSave = true };
+                }
+            });
+        }
+
+        entries.Add(Header("Effects"));
+
+        entries.Add(new SettingItem
+        {
+            Label = "Arrow Effects",
+            Value = OnOff(ArrowEffectManager.Enabled),
+            Kind = SettingKind.Toggle,
+            Description = "Cosmetic beat-synced animations on your receptor arrows (off by default).",
+            OnSelect = () =>
+            {
+                ArrowEffectManager.Enabled = !ArrowEffectManager.Enabled;
+                return new SettingsActionResult { NeedsSave = true };
+            }
+        });
+
+        if (ArrowEffectManager.Enabled)
+        {
+            entries.Add(new SettingItem
+            {
+                Label = "  Effect Type",
+                Value = ArrowEffectManager.GetSelectedEffectName(),
+                Kind = SettingKind.Adjustable,
+                Description = "Which animation plays: Random, Glow, Vertical Bounce, Spin 360, Horizontal Bounce, or Dizzy.",
+                OnAdjust = (isLeft, _) =>
+                {
+                    int newEffect = ArrowEffectManager.SelectedEffect + (isLeft ? -1 : 1);
+                    ArrowEffectManager.SelectedEffect = (newEffect + 6) % 6;
+                    return new SettingsActionResult { NeedsSave = true };
+                }
+            });
+        }
+    }
+
+    // ── HUD ──────────────────────────────────────────────────────────────────
+
+    private static readonly string[] TimerPresets = { "Legacy", "HUD Editor", "Top", "Left", "Middle", "Right", "Strumline" };
+    private static readonly string[] TimerTextModes = { "Time Left", "Time Elapsed", "Song Name", "Song Name + Difficulty", "None" };
+
+    private void BuildHudEntries(List<SettingItem> entries)
+    {
+        var hud = HudSettings.Instance;
 
         #if !ANDROID
         entries.Add(new SettingItem
@@ -442,7 +693,7 @@ public class SettingsManager
             Label = "HUD Editor",
             Value = "[Open]",
             Kind = SettingKind.Action,
-            Description = "Open interactive HUD Editor to move, resize, and toggle individual HUD elements.",
+            Description = "Open the interactive HUD Editor to move, resize, and toggle individual HUD elements.",
             OnSelect = () =>
             {
                 IsActive = false;
@@ -454,336 +705,233 @@ public class SettingsManager
         entries.Add(new SettingItem
         {
             Label = "Show HUD",
-            Value = HudSettings.Instance.MasterHudVisible ? "ON" : "OFF",
+            Value = OnOff(hud.MasterHudVisible),
             Kind = SettingKind.Toggle,
-            Description = "Master toggle to show or hide the entire gameplay HUD at once.",
+            Description = "Master toggle: shows or hides the entire gameplay HUD at once, strumlines included.",
             OnSelect = () =>
             {
-                HudSettings.Instance.MasterHudVisible = !HudSettings.Instance.MasterHudVisible;
-                HudSettings.Instance.Save();
+                hud.MasterHudVisible = !hud.MasterHudVisible;
+                hud.Save();
                 return new SettingsActionResult { NeedsSave = true };
             }
         });
 
-        if (HudSettings.Instance.MasterHudVisible)
+        if (!hud.MasterHudVisible) return;
+
+        entries.Add(new SettingItem
+        {
+            Label = "  Combo & Judgements",
+            Value = OnOff(Game1.ShowCombo),
+            Kind = SettingKind.Toggle,
+            Description = "Show the combo counter and the judgement popups (Sick!/Good/Bad/Shit) on hits.",
+            OnSelect = () =>
+            {
+                Game1.ShowCombo = !Game1.ShowCombo;
+                hud.ComboVisible = Game1.ShowCombo;
+                hud.JudgementVisible = Game1.ShowCombo;
+                hud.Save();
+                return new SettingsActionResult { NeedsSave = true };
+            }
+        });
+
+        entries.Add(new SettingItem
+        {
+            Label = "  Score & Stats",
+            Value = OnOff(hud.ScoreVisible || hud.MissesVisible || hud.AccuracyVisible),
+            Kind = SettingKind.Toggle,
+            Description = "Show or hide the Score, Misses, and Accuracy counters during gameplay.",
+            OnSelect = () =>
+            {
+                bool next = !(hud.ScoreVisible || hud.MissesVisible || hud.AccuracyVisible);
+                hud.ScoreVisible = next;
+                hud.MissesVisible = next;
+                hud.AccuracyVisible = next;
+                hud.Save();
+                return new SettingsActionResult { NeedsSave = true };
+            }
+        });
+
+        entries.Add(new SettingItem
+        {
+            Label = "  Health Bar",
+            Value = OnOff(hud.HealthBarVisible),
+            Kind = SettingKind.Toggle,
+            Description = "Show or hide the health bar and the character icons during gameplay.",
+            OnSelect = () =>
+            {
+                bool next = !hud.HealthBarVisible;
+                hud.HealthBarVisible = next;
+                hud.OpponentIconVisible = next;
+                hud.PlayerIconVisible = next;
+                hud.Save();
+                return new SettingsActionResult { NeedsSave = true };
+            }
+        });
+
+        if (hud.HealthBarVisible)
         {
             entries.Add(new SettingItem
             {
-                Label = "  Song Timer",
-                Value = Game1.ShowTimer ? "ON" : "OFF",
+                Label = "    Health Icons",
+                Value = Game1.IconMode == 0 ? "Move with bar" : "Pinned to ends",
                 Kind = SettingKind.Toggle,
-                Description = "Show or hide the song progress timer bar.",
+                Description = "Move with bar: the character icons slide along the health bar as health changes (FNF style). Pinned to ends: the icons stay at the two ends of the bar.",
                 OnSelect = () =>
                 {
-                    Game1.ShowTimer = !Game1.ShowTimer;
-                    HudSettings.Instance.Save();
+                    Game1.IconMode = (Game1.IconMode + 1) % 2;
                     return new SettingsActionResult { NeedsSave = true };
                 }
             });
-
-            entries.Add(new SettingItem
-            {
-                Label = "  Timer Color",
-                Value = Game1.TimerColorPreset switch
-                {
-                    1 => "Cyan",
-                    2 => "Pink",
-                    3 => "Yellow",
-                    4 => "Green",
-                    5 => "Player",
-                    6 => "Opponent",
-                    _ => "White"
-                },
-                Kind = SettingKind.Adjustable,
-                Description = "Color scheme used for the song progress timer bar.",
-                OnAdjust = (isLeft, _) =>
-                {
-                    const int count = 7;
-                    Game1.TimerColorPreset = (Game1.TimerColorPreset + (isLeft ? -1 : 1) + count) % count;
-                    return new SettingsActionResult { NeedsSave = true };
-                }
-            });
-
-            if (Game1.ShowTimer)
-            {
-                entries.Add(new SettingItem
-                {
-                    Label = "    Preset",
-                    Value = Game1.TimerPreset,
-                    Kind = SettingKind.Adjustable,
-                    Description = "Timer position preset: Custom HUD (editor), Legacy, Top, Left, Middle, Right, or Strumline.",
-                    OnAdjust = (isLeft, _) =>
-                    {
-                        string[] presets = { "Legacy", "Custom HUD", "Top", "Left", "Middle", "Right", "Strumline" };
-                        int idx = Array.IndexOf(presets, Game1.TimerPreset);
-                        if (idx < 0) idx = 1;
-                        idx = (idx + (isLeft ? -1 : 1) + presets.Length) % presets.Length;
-                        Game1.TimerPreset = presets[idx];
-                        return new SettingsActionResult { NeedsSave = true };
-                    }
-                });
-
-                if (Game1.TimerPreset != "Legacy" && Game1.TimerPreset != "Custom HUD")
-                {
-                    entries.Add(new SettingItem
-                    {
-                        Label = "      Text Mode",
-                        Value = Game1.TimerTextMode,
-                        Kind = SettingKind.Adjustable,
-                        Description = "Text displayed inside the timer bar (Time Left, Time Elapsed, Song Name, None).",
-                        OnAdjust = (isLeft, _) =>
-                        {
-                            string[] modes = { "Time Left", "Time Elapsed", "Song Name", "None" };
-                            int idx = Array.IndexOf(modes, Game1.TimerTextMode);
-                            if (idx < 0) idx = 0;
-                            idx = (idx + (isLeft ? -1 : 1) + modes.Length) % modes.Length;
-                            Game1.TimerTextMode = modes[idx];
-                            return new SettingsActionResult { NeedsSave = true };
-                        }
-                    });
-
-                    entries.Add(new SettingItem
-                    {
-                        Label = "      Force Top",
-                        Value = Game1.TimerForceTop ? "ON" : "OFF",
-                        Kind = SettingKind.Toggle,
-                        Description = "Always place timer bar at the top, ignoring Downscroll.",
-                        OnSelect = () =>
-                        {
-                            Game1.TimerForceTop = !Game1.TimerForceTop;
-                            return new SettingsActionResult { NeedsSave = true };
-                        }
-                    });
-                }
-            }
-
-            entries.Add(new SettingItem
-            {
-                Label = "  Song Title",
-                Value = HudSettings.Instance.SongInfoVisible ? "ON" : "OFF",
-                Kind = SettingKind.Toggle,
-                Description = "Show or hide the level/song title in the top-left corner.",
-                OnSelect = () =>
-                {
-                    HudSettings.Instance.SongInfoVisible = !HudSettings.Instance.SongInfoVisible;
-                    HudSettings.Instance.Save();
-                    return new SettingsActionResult { NeedsSave = true };
-                }
-            });
-
-            entries.Add(new SettingItem
-            {
-                Label = "  Status Info",
-                Value = HudSettings.Instance.StatusInfoVisible ? "ON" : "OFF",
-                Kind = SettingKind.Toggle,
-                Description = "Show or hide the status bar ([BOTPLAY]/[MANUAL], scroll direction, speed).",
-                OnSelect = () =>
-                {
-                    HudSettings.Instance.StatusInfoVisible = !HudSettings.Instance.StatusInfoVisible;
-                    HudSettings.Instance.Save();
-                    return new SettingsActionResult { NeedsSave = true };
-                }
-            });
-
-            entries.Add(new SettingItem
-            {
-                Label = "  Health Bar",
-                Value = HudSettings.Instance.HealthBarVisible ? "ON" : "OFF",
-                Kind = SettingKind.Toggle,
-                Description = "Show or hide the health bar and character icons during gameplay.",
-                OnSelect = () =>
-                {
-                    bool next = !HudSettings.Instance.HealthBarVisible;
-                    HudSettings.Instance.HealthBarVisible = next;
-                    HudSettings.Instance.OpponentIconVisible = next;
-                    HudSettings.Instance.PlayerIconVisible = next;
-                    HudSettings.Instance.Save();
-                    return new SettingsActionResult { NeedsSave = true };
-                }
-            });
-
-            entries.Add(new SettingItem
-            {
-                Label = "  Score & Stats",
-                Value = (HudSettings.Instance.ScoreVisible || HudSettings.Instance.MissesVisible || HudSettings.Instance.AccuracyVisible) ? "ON" : "OFF",
-                Kind = SettingKind.Toggle,
-                Description = "Show or hide Score, Misses, and Accuracy counters during gameplay.",
-                OnSelect = () =>
-                {
-                    bool next = !(HudSettings.Instance.ScoreVisible || HudSettings.Instance.MissesVisible || HudSettings.Instance.AccuracyVisible);
-                    HudSettings.Instance.ScoreVisible = next;
-                    HudSettings.Instance.MissesVisible = next;
-                    HudSettings.Instance.AccuracyVisible = next;
-                    HudSettings.Instance.Save();
-                    return new SettingsActionResult { NeedsSave = true };
-                }
-            });
-
-            entries.Add(new SettingItem
-            {
-                Label = "  Strumlines",
-                Value = NoteRenderer.ShowStrumlines ? "ON" : "OFF",
-                Kind = SettingKind.Toggle,
-                Description = "Master toggle to show or hide all note strumlines at once.",
-                OnSelect = () =>
-                {
-                    NoteRenderer.ShowStrumlines = !NoteRenderer.ShowStrumlines;
-                    return new SettingsActionResult { NeedsStrumlineAlphaUpdate = true, NeedsSave = true };
-                }
-            });
-
-            if (NoteRenderer.ShowStrumlines)
-            {
-                entries.Add(new SettingItem
-                {
-                    Label = "    Player Strumline",
-                    Value = !NoteRenderer.HidePlayerStrumline ? "ON" : "OFF",
-                    Kind = SettingKind.Toggle,
-                    Description = "Show or hide your own strumline (receptors, notes, and splashes).",
-                    OnSelect = () =>
-                    {
-                        NoteRenderer.HidePlayerStrumline = !NoteRenderer.HidePlayerStrumline;
-                        return new SettingsActionResult { NeedsStrumlineAlphaUpdate = true, NeedsSave = true };
-                    }
-                });
-
-                entries.Add(new SettingItem
-                {
-                    Label = "    Opponent Strumline",
-                    Value = !Game1.HideOpponentStrumline ? "ON" : "OFF",
-                    Kind = SettingKind.Toggle,
-                    Description = "Show or hide the opponent's strumline (ignored in Multiplayer).",
-                    OnSelect = () =>
-                    {
-                        Game1.HideOpponentStrumline = !Game1.HideOpponentStrumline;
-                        return new SettingsActionResult { NeedsOpponentAlphaUpdate = true, NeedsSave = true };
-                    }
-                });
-
-                entries.Add(new SettingItem
-                {
-                    Label = "    Extra Strumlines",
-                    Value = !Game1.HideExtraStrumlines ? "ON" : "OFF",
-                    Kind = SettingKind.Toggle,
-                    Description = "Show or hide extra strumlines beyond player and opponent.",
-                    OnSelect = () =>
-                    {
-                        Game1.HideExtraStrumlines = !Game1.HideExtraStrumlines;
-                        return new SettingsActionResult { NeedsStrumlineAlphaUpdate = true, NeedsSave = true };
-                    }
-                });
-            }
         }
 
         entries.Add(new SettingItem
         {
-            Label = "Camera Zoom",
-            Value = canOverrideZoom ? $"{currentZoom:F2}" : $"{currentZoom:F2} (locked)",
+            Label = "  Song Title",
+            Value = OnOff(hud.SongInfoVisible),
+            Kind = SettingKind.Toggle,
+            Description = "Show or hide the level/song title in the top-left corner.",
+            OnSelect = () =>
+            {
+                hud.SongInfoVisible = !hud.SongInfoVisible;
+                hud.Save();
+                return new SettingsActionResult { NeedsSave = true };
+            }
+        });
+
+        entries.Add(new SettingItem
+        {
+            Label = "  Botplay/Speed Indicator",
+            Value = OnOff(hud.StatusInfoVisible),
+            Kind = SettingKind.Toggle,
+            Description = "Show or hide the bottom-left status line: [BOTPLAY]/[MANUAL], scroll direction and scroll speed.",
+            OnSelect = () =>
+            {
+                hud.StatusInfoVisible = !hud.StatusInfoVisible;
+                hud.Save();
+                return new SettingsActionResult { NeedsSave = true };
+            }
+        });
+
+        entries.Add(new SettingItem
+        {
+            Label = "  Song Timer",
+            Value = OnOff(Game1.ShowTimer),
+            Kind = SettingKind.Toggle,
+            Description = "Show or hide the song progress timer bar.",
+            OnSelect = () =>
+            {
+                Game1.ShowTimer = !Game1.ShowTimer;
+                hud.Save();
+                return new SettingsActionResult { NeedsSave = true };
+            }
+        });
+
+        if (!Game1.ShowTimer) return;
+
+        entries.Add(new SettingItem
+        {
+            Label = "    Position",
+            Value = Game1.TimerPreset,
             Kind = SettingKind.Adjustable,
-            Description = "Manual stage camera zoom when the chart has no camera zoom events (locked if events override zoom).",
-            OnAdjust = (isLeft, _) => new SettingsActionResult
+            Description = "Where the timer bar sits: HUD Editor (wherever you placed it in the HUD Editor), Legacy, Top, Left, Middle, Right, or Strumline. Force Top appears for the automatic positions (Top to Strumline).",
+            OnAdjust = (isLeft, _) =>
             {
-                AdjustCameraZoom = canOverrideZoom ? (isLeft ? -1 : 1) : 0,
-                NeedsSave = false
-            }
-        });
-
-        entries.Add(new SettingItem
-        {
-            Label = "Icon Mode",
-            Value = Game1.IconMode == 0 ? "FNF Base" : "Fixed",
-            Kind = SettingKind.Toggle,
-            Description = "FNF Base moves icons along the health bar divider; Fixed anchors icons at the bar ends.",
-            OnSelect = () =>
-            {
-                Game1.IconMode = (Game1.IconMode + 1) % 2;
+                int idx = Array.IndexOf(TimerPresets, Game1.TimerPreset);
+                if (idx < 0) idx = 1;
+                idx = (idx + (isLeft ? -1 : 1) + TimerPresets.Length) % TimerPresets.Length;
+                Game1.TimerPreset = TimerPresets[idx];
                 return new SettingsActionResult { NeedsSave = true };
             }
         });
 
         entries.Add(new SettingItem
         {
-            Label = "Color Grading",
-            Value = Game1.ColorGradeEnabled ? "ON" : "OFF",
-            Kind = SettingKind.Toggle,
-            Description = "Optional HSB stage color shader (off by default, leaves HUD untouched).",
-            OnSelect = () =>
+            Label = "    Color",
+            Value = Game1.TimerColorPreset switch
             {
-                Game1.ColorGradeEnabled = !Game1.ColorGradeEnabled;
+                1 => "Cyan",
+                2 => "Pink",
+                3 => "Yellow",
+                4 => "Green",
+                5 => "Player",
+                6 => "Opponent",
+                _ => "White"
+            },
+            Kind = SettingKind.Adjustable,
+            Description = "Fill color of the timer bar (Player / Opponent use that character's health bar color).",
+            OnAdjust = (isLeft, _) =>
+            {
+                const int count = 7;
+                Game1.TimerColorPreset = (Game1.TimerColorPreset + (isLeft ? -1 : 1) + count) % count;
                 return new SettingsActionResult { NeedsSave = true };
             }
         });
 
-        if (Game1.ColorGradeEnabled)
+        entries.Add(new SettingItem
+        {
+            Label = "    Text",
+            Value = Game1.TimerTextMode,
+            Kind = SettingKind.Adjustable,
+            Description = "Text shown inside the timer bar: Time Left, Time Elapsed, Song Name, Song Name + Difficulty (star rating), or None.",
+            OnAdjust = (isLeft, _) =>
+            {
+                int idx = Array.IndexOf(TimerTextModes, Game1.TimerTextMode);
+                if (idx < 0) idx = 0;
+                idx = (idx + (isLeft ? -1 : 1) + TimerTextModes.Length) % TimerTextModes.Length;
+                Game1.TimerTextMode = TimerTextModes[idx];
+                return new SettingsActionResult { NeedsSave = true };
+            }
+        });
+
+        // Force Top only matters for the automatic positions (you place the other two yourself)
+        if (Game1.TimerPreset != "Legacy" && Game1.TimerPreset != "HUD Editor")
         {
             entries.Add(new SettingItem
             {
-                Label = "  Hue",
-                Value = $"{Game1.ColorGradeHue:F2}",
-                Kind = SettingKind.Adjustable,
-                Description = "Shift stage colors along the color wheel (-0.50 to +0.50, 0.00 = original).",
-                OnAdjust = (_, delta) =>
+                Label = "    Force Top",
+                Value = OnOff(Game1.TimerForceTop),
+                Kind = SettingKind.Toggle,
+                Description = "Always place the timer bar at the top, even with Downscroll on.",
+                OnSelect = () =>
                 {
-                    Game1.ColorGradeHue = MathF.Round(Math.Clamp(Game1.ColorGradeHue + delta * 0.02f, -0.50f, 0.50f), 2);
-                    return new SettingsActionResult { NeedsSave = true };
-                }
-            });
-
-            entries.Add(new SettingItem
-            {
-                Label = "  Saturation",
-                Value = $"{Game1.ColorGradeSaturation:F2}",
-                Kind = SettingKind.Adjustable,
-                Description = "Stage color intensity (-1.00 = grayscale, 0.00 = normal, +1.00 = vivid).",
-                OnAdjust = (_, delta) =>
-                {
-                    Game1.ColorGradeSaturation = MathF.Round(Math.Clamp(Game1.ColorGradeSaturation + delta * 0.05f, -1.0f, 1.0f), 2);
-                    return new SettingsActionResult { NeedsSave = true };
-                }
-            });
-
-            entries.Add(new SettingItem
-            {
-                Label = "  Brightness",
-                Value = $"{Game1.ColorGradeBrightness:F2}",
-                Kind = SettingKind.Adjustable,
-                Description = "Stage shader brightness offset (-0.50 to +0.50, 0.00 = neutral).",
-                OnAdjust = (_, delta) =>
-                {
-                    Game1.ColorGradeBrightness = MathF.Round(Math.Clamp(Game1.ColorGradeBrightness + delta * 0.05f, -0.50f, 0.50f), 2);
+                    Game1.TimerForceTop = !Game1.TimerForceTop;
                     return new SettingsActionResult { NeedsSave = true };
                 }
             });
         }
     }
 
-    private void BuildGeneralEntries(Game1? game, List<SettingItem> entries)
+    // ── AUDIO & VIDEO ────────────────────────────────────────────────────────
+
+    private void BuildAudioVideoEntries(Game1? game, List<SettingItem> entries)
     {
+        entries.Add(Header("Audio"));
+
         entries.Add(new SettingItem
         {
             Label = "Master Volume",
-            Value = $"{(int)Math.Round(Game1.MusicVolume * 100)}%",
+            Value = $"{(int)Math.Round(Game1.MasterVolume * 100)}%",
             Kind = SettingKind.Adjustable,
-            Description = "Master audio volume (you can also press - and + keys anytime to lower or raise volume).",
+            Description = $"Overall volume of every sound in the game: songs, menu music and sound effects. {Controls.Describe(HotkeyAction.VolumeDown)} / {Controls.Describe(HotkeyAction.VolumeUp)} change it anytime.",
             OnAdjust = (_, delta) => new SettingsActionResult { AdjustVolume = delta, NeedsSave = true }
         });
 
         entries.Add(new SettingItem
         {
-            Label = "SFX Volume",
-            Value = $"{(int)Math.Round(UI.UiSfx.Volume * 100)}%",
+            Label = "  Music Volume",
+            Value = $"{(int)Math.Round(Game1.SongVolume * 100)}%",
             Kind = SettingKind.Adjustable,
-            Description = "Volume of menu and editor sound effects (scaled by Master Volume).",
+            Description = "Volume of the song while you play (scaled by Master Volume).",
             OnAdjust = (_, delta) =>
             {
-                UI.UiSfx.Volume = MathF.Round(Math.Clamp(UI.UiSfx.Volume + delta * 0.05f, 0f, 1f), 2);
-                return new SettingsActionResult { NeedsSave = true };
+                Game1.SongVolume = MathF.Round(Math.Clamp(Game1.SongVolume + delta * 0.05f, 0f, 1f), 2);
+                return new SettingsActionResult { SongVolumeChanged = true, NeedsSave = true };
             }
         });
 
         entries.Add(new SettingItem
         {
-            Label = "Menu Music Volume",
+            Label = "  Menu Music Volume",
             Value = $"{(int)Math.Round(OnlineMenuMusic.Volume * 100)}%",
             Kind = SettingKind.Adjustable,
             Description = "Volume of the menu background music (scaled by Master Volume).",
@@ -796,28 +944,73 @@ public class SettingsManager
 
         entries.Add(new SettingItem
         {
-            Label = "VSync",
-            Value = game != null && game._graphics.SynchronizeWithVerticalRetrace ? "ON" : "OFF",
-            Kind = SettingKind.Toggle,
-            Description = "Synchronizes frame rate with monitor refresh rate to prevent screen tearing.",
-            OnSelect = () => new SettingsActionResult { ToggleVSync = true, NeedsSave = true }
+            Label = "  SFX Volume",
+            Value = $"{(int)Math.Round(UI.UiSfx.Volume * 100)}%",
+            Kind = SettingKind.Adjustable,
+            Description = "Volume of menu, countdown and miss sound effects (scaled by Master Volume).",
+            OnAdjust = (_, delta) =>
+            {
+                UI.UiSfx.Volume = MathF.Round(Math.Clamp(UI.UiSfx.Volume + delta * 0.05f, 0f, 1f), 2);
+                return new SettingsActionResult { NeedsSave = true };
+            }
         });
+
+        entries.Add(Header("Display"));
 
         #if !ANDROID
         entries.Add(new SettingItem
         {
             Label = "Fullscreen",
-            Value = game != null && game._isFullscreen ? "ON" : "OFF",
+            Value = OnOff(game != null && game._isFullscreen),
             Kind = SettingKind.Toggle,
-            Description = "Toggle borderless fullscreen mode. Press Alt+Enter anytime to toggle quickly.",
+            Description = $"Toggle borderless fullscreen mode. Press {Controls.Describe(HotkeyAction.ToggleFullscreen)} anytime to toggle quickly.",
             OnSelect = () => new SettingsActionResult { ToggleFullscreen = true, NeedsSave = false }
         });
         #endif
 
         entries.Add(new SettingItem
         {
+            Label = "VSync",
+            Value = OnOff(game != null && game._graphics.SynchronizeWithVerticalRetrace),
+            Kind = SettingKind.Toggle,
+            Description = "Synchronizes frame rate with monitor refresh rate to prevent screen tearing.",
+            OnSelect = () => new SettingsActionResult { ToggleVSync = true, NeedsSave = true }
+        });
+
+        entries.Add(new SettingItem
+        {
+            Label = "Render Resolution",
+            Value = Game1.NativeRenderResolution ? "Native" : "720p",
+            Kind = SettingKind.Toggle,
+            Description = "Native renders gameplay at your window/screen resolution (sharpest). 720p is the classic fixed resolution, upscaled (faster on weak GPUs).",
+            OnSelect = () =>
+            {
+                Game1.NativeRenderResolution = !Game1.NativeRenderResolution;
+                return new SettingsActionResult { NeedsSave = true };
+            }
+        });
+
+        entries.Add(new SettingItem
+        {
+            Label = "FPS Cap",
+            Value = Game1.FpsCap > 0 ? $"{Game1.FpsCap} FPS" : "Unlimited",
+            Kind = SettingKind.Adjustable,
+            Description = "Maximum frame rate (Unlimited = as fast as possible). With VSync ON the monitor refresh rate also limits it. Press ENTER to focus, LEFT/RIGHT to change.",
+            OnAdjust = (isLeft, _) =>
+            {
+                var opts = Game1.FpsCapOptions;
+                int idx = Array.IndexOf(opts, Game1.FpsCap);
+                if (idx < 0) idx = 0;
+                idx = Math.Clamp(idx + (isLeft ? -1 : 1), 0, opts.Length - 1);
+                Game1.FpsCap = opts[idx];
+                return new SettingsActionResult { FpsCapChanged = true, NeedsSave = true };
+            }
+        });
+
+        entries.Add(new SettingItem
+        {
             Label = "FPS Counter",
-            Value = Game1.ShowFpsCounter ? "ON" : "OFF",
+            Value = OnOff(Game1.ShowFpsCounter),
             Kind = SettingKind.Toggle,
             Description = "Display frames per second (FPS) and VSync status in the top-right corner.",
             OnSelect = () =>
@@ -829,8 +1022,23 @@ public class SettingsManager
 
         entries.Add(new SettingItem
         {
+            Label = "Font Style",
+            Value = Game1.CurrentFontPath is { } fontPath ? System.IO.Path.GetFileNameWithoutExtension(fontPath) : "Default",
+            Kind = SettingKind.Action,
+            Description = "Choose the UI font used throughout menus. Add custom .ttf/.otf fonts to mods/fonts/.",
+            OnSelect = () =>
+            {
+                IsActive = false;
+                return new SettingsActionResult { OpenFontMenu = true, NeedsSave = false };
+            }
+        });
+
+        entries.Add(Header("Other"));
+
+        entries.Add(new SettingItem
+        {
             Label = "Debug Info",
-            Value = Game1.ShowDebugInfo ? "ON" : "OFF",
+            Value = OnOff(Game1.ShowDebugInfo),
             Kind = SettingKind.Toggle,
             Description = "Show technical song debug info (BPM, beat count, camera position, and events).",
             OnSelect = () =>
@@ -839,160 +1047,336 @@ public class SettingsManager
                 return new SettingsActionResult { NeedsSave = true };
             }
         });
+
+        #if !ANDROID
+        entries.Add(Header("Storage"));
+        AddModsFolderEntry(game, entries);
+        #endif
     }
 
-    private void BuildExperimentalEntries(Game1? game, List<SettingItem> entries)
+    // ── CONTROLS tab (fork): note keys + every rebindable hotkey ─────────────
+
+    // Key capture: Enter on a hotkey row waits for one key (with optional Ctrl/Shift/Alt).
+    private HotkeyAction? _captureAction;
+
+    /// <summary>True while a CONTROLS row is waiting for a key (Game1 then withholds keys from the rest of the game).</summary>
+    public bool IsCapturingKey => _captureAction != null || _modsMoveTarget != null;
+
+    private void BuildControlsEntries(List<SettingItem> entries)
     {
+        #if !ANDROID
         entries.Add(new SettingItem
         {
-            Label = "Camera Follow Player",
-            Value = NoteRenderer.CameraFollowPlayer ? "ON" : "OFF",
-            Kind = SettingKind.Toggle,
-            Description = "[EXPERIMENTAL / DEPRECATED] Automatically pans camera toward singing notes. Disable for stage camera.",
+            Label = "Note Keys",
+            Value = $"{Controls.KeyName(NoteRenderer.PlayerKeys[0])} / {Controls.KeyName(NoteRenderer.PlayerKeys[1])} / {Controls.KeyName(NoteRenderer.PlayerKeys[2])} / {Controls.KeyName(NoteRenderer.PlayerKeys[3])}",
+            Kind = SettingKind.Action,
+            Description = "Customize keyboard controls for Left, Down, Up, and Right note lanes.",
             OnSelect = () =>
             {
-                NoteRenderer.CameraFollowPlayer = !NoteRenderer.CameraFollowPlayer;
+                IsActive = false;
+                return new SettingsActionResult { OpenKeyBind = true, NeedsSave = false };
+            }
+        });
+        #else
+        entries.Add(new SettingItem
+        {
+            Label = "Touch Hitbox Colors",
+            Value = OnOff(!Game1.HideTouchHitboxColors),
+            Kind = SettingKind.Toggle,
+            Description = "Tint the touch lanes while you press them. OFF makes the touch hitboxes completely invisible.",
+            OnSelect = () =>
+            {
+                Game1.HideTouchHitboxColors = !Game1.HideTouchHitboxColors;
                 return new SettingsActionResult { NeedsSave = true };
             }
         });
-
         entries.Add(new SettingItem
         {
-            Label = "Extended Camera (Beta)",
-            Value = Game1.UseExtendedCamera ? "ON" : "OFF",
-            Kind = SettingKind.Toggle,
-            Description = "[DEPRECATED / EXPERIMENTAL] Warning: may break custom stage camera positions! Disabling it restores normal cameras.",
-            OnSelect = () =>
+            Label = "  Touch Hitbox Opacity",
+            Value = $"{(int)Math.Round(Game1.TouchHitboxOpacity * 100)}%",
+            Kind = SettingKind.Adjustable,
+            Description = "How visible a touch lane is while you press it (0-100%). Default 30%.",
+            OnAdjust = (_, delta) =>
             {
-                Game1.UseExtendedCamera = !Game1.UseExtendedCamera;
-                if (game?._cameraManager != null)
-                    game._cameraManager.UseExtendedCamera = Game1.UseExtendedCamera;
-                Console.WriteLine($"[Settings] Extended Camera (Beta): {(Game1.UseExtendedCamera ? "ON" : "OFF")}");
+                Game1.TouchHitboxOpacity = MathF.Round(Math.Clamp(Game1.TouchHitboxOpacity + delta * 0.05f, 0f, 1f), 2);
                 return new SettingsActionResult { NeedsSave = true };
             }
         });
+        #endif
 
-        if (InMultiplayerMatch)
+        string? group = null;
+        foreach (var info in Controls.All)
         {
-            entries.Add(LockedInMatch("Timeskip", "OFF"));
+            if (info.Group != group)
+            {
+                group = info.Group;
+                entries.Add(Header(group));
+            }
+
+            var action = info.Action;
+            bool capturing = _captureAction == action;
+            entries.Add(new SettingItem
+            {
+                Label = info.Label,
+                Value = capturing
+                    ? "Press key... (Esc cancel, Backspace none)"
+                    : Controls.Describe(action),
+                Kind = SettingKind.Action,
+                Description = capturing
+                    ? "Hold Ctrl / Shift / Alt with the key for a combination. Esc and the arrow / Enter keys used to navigate menus can't be bound alone."
+                    : info.Description + "  ENTER: rebind.",
+                OnSelect = () =>
+                {
+                    _captureAction = action;
+                    return new SettingsActionResult { NeedsSave = false };
+                }
+            });
+        }
+
+        entries.Add(Header("Reset"));
+
+        entries.Add(new SettingItem
+        {
+            Label = "Reset Controls",
+            Value = "",
+            Kind = SettingKind.Action,
+            Description = "Restores every hotkey above to its default (note keys are not changed).",
+            OnSelect = () =>
+            {
+                Controls.ResetToDefaults();
+                _captureAction = null;
+                return new SettingsActionResult { NeedsSave = true };
+            }
+        });
+    }
+
+    /// <summary>
+    /// Feeds raw keyboard input to an active key capture. Returns true when a binding changed
+    /// (caller saves settings).
+    /// </summary>
+    public bool UpdateKeyCapture(KeyboardState kb, KeyboardState prev)
+    {
+        if (_modsMoveTarget != null)
+        {
+            UpdateModsMovePrompt(kb, prev);
+            return false;
+        }
+
+        if (_captureAction is not HotkeyAction action) return false;
+
+        foreach (var key in kb.GetPressedKeys())
+        {
+            if (prev.IsKeyDown(key) || Controls.IsModifier(key)) continue;
+
+            if (key == Keys.Escape)
+            {
+                _captureAction = null;  // cancel, keep the current binding
+                UI.UiSfx.Play(UI.UiSound.Back);
+                return false;
+            }
+
+            bool ctrl = kb.IsKeyDown(Keys.LeftControl) || kb.IsKeyDown(Keys.RightControl);
+            bool shift = kb.IsKeyDown(Keys.LeftShift) || kb.IsKeyDown(Keys.RightShift);
+            bool alt = kb.IsKeyDown(Keys.LeftAlt) || kb.IsKeyDown(Keys.RightAlt);
+            var binding = key == Keys.Back ? KeyBinding.None : new KeyBinding(key, ctrl, shift, alt);
+
+            // Bare menu-navigation keys would make menus unusable
+            if (binding.ModifierCount == 0 && key is Keys.Up or Keys.Down or Keys.Left or Keys.Right or Keys.Enter)
+            {
+                UI.UiSfx.Play(UI.UiSound.SliderEnd);
+                return false;
+            }
+
+            // One key per rebind: it replaces both slots (defaults may still carry an alternate)
+            Controls.Set(action, 0, binding);
+            Controls.Set(action, 1, KeyBinding.None);
+            UI.UiSfx.Play(UI.UiSound.Confirm);
+            _captureAction = null;
+            return true;
+        }
+        return false;
+    }
+
+    /// <summary>Stops any key capture (e.g. when the settings menu closes).</summary>
+    public void CancelKeyCapture()
+    {
+        _captureAction = null;
+        _modsMoveTarget = null;
+    }
+
+    // ── Mods folder (desktop, fork) ──────────────────────────────────────────
+
+    // Explanations shown in the row description and in the confirmation window.
+    private const string ModsAppDataInfo =
+        "AppData (recommended): one mods folder shared by every copy of the game on this computer, " +
+        "kept safe when you update or reinstall.";
+    private const string ModsNextToGameInfo =
+        "Next to the game: the mods folder sits beside the game's .exe, so levels and mods are easier to find, " +
+        "edit and manage by hand. Downside: each copy of the game has its own separate levels, which are no " +
+        "longer shared like in AppData. If you don't manage level files often, move it back to AppData.";
+
+    // Confirmation window for moving the mods folder (null = closed).
+    private ModsStorage.Location? _modsMoveTarget;
+    private Rectangle _modsMoveYesRect = Rectangle.Empty;
+    private Rectangle _modsMoveNoRect = Rectangle.Empty;
+
+    /// <summary>True while the "Move mods folder?" window is open (it takes all input).</summary>
+    public bool IsModsMovePromptOpen => _modsMoveTarget != null;
+
+    private static string ModsLocationName(ModsStorage.Location l) =>
+        l == ModsStorage.Location.AppData ? "AppData" : "Next to game";
+
+    /// <summary>Settings → AUDIO &amp; VIDEO → Storage → Move Mods Folder.</summary>
+    private void AddModsFolderEntry(Game1? game, List<SettingItem> entries)
+    {
+        var current = ModsStorage.Current;
+        var other = current == ModsStorage.Location.AppData ? ModsStorage.Location.NextToGame : ModsStorage.Location.AppData;
+        bool busy = game?.HasActiveLevel == true;
+
+        string value = ModsStorage.IsMoving ? (ModsStorage.Status ?? "Moving...") : ModsLocationName(current);
+        string description = ModsStorage.IsMoving
+            ? "Moving your levels and mods. Please wait..."
+            : busy
+                ? "Close the current level first (go back to the menus) to move the mods folder."
+                : $"Your levels, note styles, splashes, countdowns and fonts are in: {ModsStorage.CurrentPath}. " +
+                  (current == ModsStorage.Location.AppData ? ModsAppDataInfo : ModsNextToGameInfo) +
+                  $" ENTER: move it to {ModsLocationName(other)}." +
+                  (ModsStorage.Status is { } st ? $" Last move: {st}." : "");
+
+        entries.Add(new SettingItem
+        {
+            Label = "Move Mods Folder",
+            Value = value,
+            Kind = SettingKind.Action,
+            Description = description,
+            OnSelect = () =>
+            {
+                if (ModsStorage.IsMoving || busy) return new SettingsActionResult();
+                _modsMoveTarget = other;   // opens the confirmation window
+                return new SettingsActionResult();
+            }
+        });
+    }
+
+    /// <summary>Keyboard for the confirmation window: Y / Enter moves, N / Esc cancels.</summary>
+    private void UpdateModsMovePrompt(KeyboardState kb, KeyboardState prev)
+    {
+        bool Pressed(Keys k) => kb.IsKeyDown(k) && !prev.IsKeyDown(k);
+        if (Pressed(Keys.Y) || Pressed(Keys.Enter))
+            ConfirmModsMove(true);
+        else if (Pressed(Keys.N) || Pressed(Keys.Escape))
+            ConfirmModsMove(false);
+    }
+
+    private void ConfirmModsMove(bool move)
+    {
+        if (_modsMoveTarget is not { } target) return;
+        _modsMoveTarget = null;
+        if (move && !ModsStorage.IsMoving)
+        {
+            _ = ModsStorage.MoveToAsync(target);
+            UI.UiSfx.Play(UI.UiSound.Confirm);
         }
         else
         {
-        entries.Add(new SettingItem
-        {
-            Label = "Timeskip",
-            Value = Game1.TimeskipEnabled ? "ON" : "OFF",
-            Kind = SettingKind.Toggle,
-            Description = "[EXPERIMENTAL / DEPRECATED] Hold T (if unbound) or Ctrl+Right/Left in OGG songs to skip.",
-            OnSelect = () =>
-            {
-                Game1.TimeskipEnabled = !Game1.TimeskipEnabled;
-                return new SettingsActionResult { NeedsSave = true };
-            }
-        });
-
-        if (Game1.TimeskipEnabled)
-        {
-            entries.Add(new SettingItem
-            {
-                Label = "  Timeskip Seconds",
-                Value = $"{Game1.TimeskipSeconds:F0}s",
-                Kind = SettingKind.Adjustable,
-                Description = "[EXPERIMENTAL] Seconds skipped per Timeskip step (5s - 60s).",
-                OnAdjust = (_, delta) =>
-                {
-                    Game1.TimeskipSeconds = MathF.Round(Math.Clamp(Game1.TimeskipSeconds + delta * 5f, 5f, 60f), 0);
-                    return new SettingsActionResult { NeedsSave = true };
-                }
-            });
-
-            if (game?._level != null)
-            {
-                entries.Add(new SettingItem
-                {
-                    Label = "  Seek Current Song",
-                    Value = "Scrub",
-                    Kind = SettingKind.Adjustable,
-                    Description = "[EXPERIMENTAL] Scrub backward/forward in the currently paused OGG song.",
-                    OnAdjust = (_, delta) => new SettingsActionResult
-                    {
-                        SeekSong = delta * Game1.TimeskipSeconds,
-                        NeedsSave = false
-                    }
-                });
-            }
+            UI.UiSfx.Play(UI.UiSound.Back);
         }
+    }
+
+    private void DrawModsMovePrompt(SpriteBatch sb, SpriteFont font, Texture2D pixel, FontRenderer? fr,
+                                    int sw, int sh, float scaleFactor)
+    {
+        if (_modsMoveTarget is not { } target) return;
+        var from = ModsStorage.Current;
+        Color accent = new Color(0xFF, 0x44, 0x88);
+
+        DrawRect(sb, pixel, 0, 0, sw, sh, Color.Black * 0.7f);
+
+        int boxW = Math.Min((int)(820 * scaleFactor), sw - 40);
+        int pad = Math.Max(14, (int)(22 * scaleFactor));
+        int titleSize = Math.Max(18, (int)(32 * scaleFactor));
+        int bodySize = Math.Max(12, (int)(19 * scaleFactor));
+        float maxW = boxW - pad * 2;
+
+        Vector2 Measure(string t, int size) => fr != null ? fr.MeasureString(t, size) : font.MeasureString(t) * (size / 36f);
+        void Text(string t, float x, float y, Color c, int size)
+        {
+            if (fr != null) fr.DrawString(sb, t, new Vector2(x, y), c, size);
+            else sb.DrawString(font, t, new Vector2(x, y), c, 0f, Vector2.Zero, size / 36f, SpriteEffects.None, 0f);
         }
 
-        entries.Add(new SettingItem
+        // (text, color) lines wrapped to the box width; null text = small gap
+        var lines = new List<(string? Text, Color Color)>();
+        void Para(string text, Color c)
         {
-            Label = "Bilinear Filter",
-            Value = Game1.BilinearFiltering ? "ON" : "OFF",
-            Kind = SettingKind.Toggle,
-            Description = "[DEPRECATED] Loading screen filter only. Scene/FMM sprites auto-detect bilinear smoothing from their JSON.",
-            OnSelect = () =>
+            string line = "";
+            foreach (var word in text.Split(' '))
             {
-                Game1.BilinearFiltering = !Game1.BilinearFiltering;
-                return new SettingsActionResult { NeedsSave = true };
+                string test = line.Length == 0 ? word : line + " " + word;
+                if (Measure(test, bodySize).X > maxW && line.Length > 0)
+                {
+                    lines.Add((line, c));
+                    line = word;
+                }
+                else line = test;
             }
-        });
+            if (line.Length > 0) lines.Add((line, c));
+        }
 
-        entries.Add(new SettingItem
+        Para($"From ({ModsLocationName(from)}): {ModsStorage.PathFor(from)}", Color.White * 0.7f);
+        Para($"To ({ModsLocationName(target)}): {ModsStorage.PathFor(target)}", Color.White * 0.95f);
+        lines.Add((null, Color.White));
+        Para(target == ModsStorage.Location.AppData ? ModsAppDataInfo : ModsNextToGameInfo, new Color(255, 225, 150));
+        lines.Add((null, Color.White));
+        Para("Everything is moved: levels, note styles, splashes, countdowns and fonts. Identical files are merged; " +
+             "different files with the same name are kept as \"name (2)\".", Color.White * 0.75f);
+
+        float lineH = Measure("Ag", bodySize).Y + 4;
+        float titleH = Measure("Ag", titleSize).Y;
+        int btnH = Math.Max(30, (int)(40 * scaleFactor));
+        float bodyH = 0;
+        foreach (var l in lines) bodyH += l.Text == null ? lineH * 0.5f : lineH;
+        int boxH = (int)(pad + titleH + pad * 0.6f + bodyH + pad + btnH + pad);
+        int boxX = (sw - boxW) / 2;
+        int boxY = Math.Max(10, (sh - boxH) / 2);
+
+        DrawRect(sb, pixel, boxX, boxY, boxW, boxH, new Color(22, 18, 32));
+        DrawRect(sb, pixel, boxX, boxY, boxW, 3, accent);
+        DrawRect(sb, pixel, boxX, boxY + boxH - 2, boxW, 2, accent * 0.5f);
+
+        float y = boxY + pad;
+        Text("Move mods folder?", boxX + pad, y, accent, titleSize);
+        y += titleH + pad * 0.6f;
+        foreach (var l in lines)
         {
-            Label = "Arrow Effects",
-            Value = ArrowEffectManager.Enabled ? "ON" : "OFF",
-            Kind = SettingKind.Toggle,
-            Description = "[EXPERIMENTAL] Optional cosmetic BPM-synced animations on receptor arrows (off by default).",
-            OnSelect = () =>
-            {
-                ArrowEffectManager.Enabled = !ArrowEffectManager.Enabled;
-                return new SettingsActionResult { NeedsSave = true };
-            }
-        });
+            if (l.Text == null) { y += lineH * 0.5f; continue; }
+            Text(l.Text, boxX + pad, y, l.Color, bodySize);
+            y += lineH;
+        }
 
-        if (ArrowEffectManager.Enabled)
+        // Buttons
+        const string yes = "Y / ENTER: Move";
+        const string no = "N / ESC: Cancel";
+        int btnW = Math.Max((int)Measure(yes, bodySize).X, (int)Measure(no, bodySize).X) + pad * 2;
+        int btnY = boxY + boxH - pad - btnH;
+        int yesX = boxX + boxW / 2 - pad / 2 - btnW;
+        int noX = boxX + boxW / 2 + pad / 2;
+        _modsMoveYesRect = new Rectangle(yesX, btnY, btnW, btnH);
+        _modsMoveNoRect = new Rectangle(noX, btnY, btnW, btnH);
+
+        var buttons = new[]
         {
-            entries.Add(new SettingItem
-            {
-                Label = "  Effect Intensity",
-                Value = $"{(int)Math.Round(ArrowEffectManager.EffectIntensity * 100)}%",
-                Kind = SettingKind.Adjustable,
-                Description = "Strength multiplier for experimental arrow effects (0% - 100%).",
-                OnAdjust = (_, delta) =>
-                {
-                    ArrowEffectManager.EffectIntensity = MathF.Round(
-                        Math.Clamp(ArrowEffectManager.EffectIntensity + delta * 0.1f, 0f, 1f), 2);
-                    return new SettingsActionResult { NeedsSave = true };
-                }
-            });
-
-            entries.Add(new SettingItem
-            {
-                Label = "  Effect Type",
-                Value = ArrowEffectManager.GetSelectedEffectName(),
-                Kind = SettingKind.Adjustable,
-                Description = "Select effect type: Random, Glow, Vertical Bounce, Spin 360, Horizontal Bounce, or Dizzy.",
-                OnAdjust = (isLeft, _) =>
-                {
-                    int newEffect = ArrowEffectManager.SelectedEffect + (isLeft ? -1 : 1);
-                    ArrowEffectManager.SelectedEffect = (newEffect + 6) % 6;
-                    return new SettingsActionResult { NeedsSave = true };
-                }
-            });
-
-            entries.Add(new SettingItem
-            {
-                Label = "  Effect Chance",
-                Value = $"{(int)Math.Round(ArrowEffectManager.EffectChance * 100)}%",
-                Kind = SettingKind.Adjustable,
-                Description = "Probability per beat that an arrow effect triggers (0% - 100%).",
-                OnAdjust = (_, delta) =>
-                {
-                    ArrowEffectManager.EffectChance = MathF.Round(
-                        Math.Clamp(ArrowEffectManager.EffectChance + delta * 0.05f, 0f, 1f), 2);
-                    return new SettingsActionResult { NeedsSave = true };
-                }
-            });
+            (Rect: _modsMoveYesRect, Label: yes, Color: new Color(0, 220, 140)),
+            (Rect: _modsMoveNoRect, Label: no, Color: Color.White * 0.8f),
+        };
+        foreach (var b in buttons)
+        {
+            bool hover = b.Rect.Contains(_lastMousePos);
+            DrawRect(sb, pixel, b.Rect.X, b.Rect.Y, b.Rect.Width, b.Rect.Height, b.Color * (hover ? 0.30f : 0.14f));
+            DrawRect(sb, pixel, b.Rect.X, b.Rect.Y + b.Rect.Height - 2, b.Rect.Width, 2, b.Color);
+            var sz = Measure(b.Label, bodySize);
+            Text(b.Label, b.Rect.X + (b.Rect.Width - sz.X) / 2f, b.Rect.Y + (b.Rect.Height - sz.Y) / 2f,
+                hover ? Color.White : b.Color, bodySize);
         }
     }
 
@@ -1053,10 +1437,10 @@ public class SettingsManager
         string before = item.Value;
         var result = item.OnAdjust(isLeft, isLeft ? -1f : 1f);
 
-        // Some rows apply their change through the result (volume, camera zoom, seek)
-        bool viaResult = (result.AdjustVolume > 0f && Game1.MusicVolume < 1f) ||
-                         (result.AdjustVolume < 0f && Game1.MusicVolume > 0f) ||
-                         result.AdjustCameraZoom != 0 || result.SeekSong != 0f;
+        // Some rows apply their change through the result (master volume, seek)
+        bool viaResult = (result.AdjustVolume > 0f && Game1.MasterVolume < 1f) ||
+                         (result.AdjustVolume < 0f && Game1.MasterVolume > 0f) ||
+                         result.SeekSong != 0f;
         var after = BuildTabEntries(game);
         bool changed = viaResult || (Selection < after.Count && after[Selection].Value != before);
         UI.UiSfx.Play(!changed ? UI.UiSound.SliderEnd : isLeft ? UI.UiSound.SliderDown : UI.UiSound.SliderUp);
@@ -1115,6 +1499,17 @@ public class SettingsManager
         }
 
         bool clicked = mouse.LeftButton == ButtonState.Pressed && prevMouse.LeftButton == ButtonState.Released;
+
+        // The confirmation window swallows every click (outside its buttons does nothing)
+        if (_modsMoveTarget != null)
+        {
+            _hoveredRow = -1;
+            _hoveredTab = -1;
+            _backBtnHovered = false;
+            if (clicked && _modsMoveYesRect.Contains(pos)) ConfirmModsMove(true);
+            else if (clicked && _modsMoveNoRect.Contains(pos)) ConfirmModsMove(false);
+            return null;
+        }
         if (!clicked) return null;
 
         if (_backBtnHovered)
@@ -1245,11 +1640,10 @@ public class SettingsManager
         {
             bool isSelected = i == CurrentTab;
             bool isHovered = i == _hoveredTab;
-            bool isExp = i == 3;
             float tx = i * tabW;
             _tabRects[i] = new Rectangle((int)tx, tabY, (int)tabW, tabH);
 
-            Color tabAccent = isExp ? new Color(255, 180, 50) : new Color(0xFF, 0x44, 0x88);
+            Color tabAccent = new Color(0xFF, 0x44, 0x88);
             Color tabBg = isSelected
                 ? tabAccent * 0.35f
                 : (isHovered ? tabAccent * 0.16f : new Color(15, 15, 25) * 0.7f);
@@ -1307,41 +1701,13 @@ public class SettingsManager
         }
 
         // Accent line below tabs
-        Color headerAccent = CurrentTab == 3 ? new Color(255, 180, 50) * 0.75f : new Color(0xFF, 0x44, 0x88) * 0.7f;
+        Color headerAccent = new Color(0xFF, 0x44, 0x88) * 0.7f;
         DrawRect(spriteBatch, pixel, 0, headerH - 3, screenWidth, 3, headerAccent);
 
         // ── Content area ──────────────────────────────────────────────────────
         var entries = BuildTabEntries(game);
         float panelY = headerH + 10;
         float panelH = screenHeight - panelY - 20;
-
-        if (CurrentTab == 3)
-        {
-            float warnW = Math.Min(900f * scaleFactor, screenWidth * 0.7f);
-            float warnX = (screenWidth - warnW) / 2f;
-            int warnH = (int)(28 * scaleFactor);
-            DrawRect(spriteBatch, pixel, (int)warnX, (int)panelY, (int)warnW, warnH, new Color(55, 35, 10) * 0.85f);
-            DrawRect(spriteBatch, pixel, (int)warnX, (int)panelY, (int)warnW, 2, new Color(255, 180, 50) * 0.7f);
-            string warnMsg = "EXPERIMENTAL / DEPRECATED OPTIONS: Off by default or handled automatically.";
-            if (fontRenderer != null)
-            {
-                int wszPx = Math.Max(13, (int)(16 * scaleFactor));
-                var wsz = fontRenderer.MeasureString(warnMsg, wszPx);
-                fontRenderer.DrawString(spriteBatch, warnMsg,
-                    new Vector2(warnX + (warnW - wsz.X) / 2f, panelY + (warnH - wsz.Y) / 2f),
-                    new Color(255, 210, 120), wszPx);
-            }
-            else
-            {
-                float ws = 0.48f * scaleFactor;
-                var wsz = font.MeasureString(warnMsg) * ws;
-                spriteBatch.DrawString(font, warnMsg,
-                    new Vector2(warnX + (warnW - wsz.X) / 2f, panelY + (warnH - wsz.Y) / 2f),
-                    new Color(255, 210, 120), 0f, Vector2.Zero, ws, SpriteEffects.None, 0f);
-            }
-            panelY += warnH + 6;
-            panelH -= warnH + 6;
-        }
 
         DrawList(spriteBatch, font, pixel, screenWidth, panelY, panelH, entries, fontRenderer, scaleFactor);
 
@@ -1450,6 +1816,8 @@ public class SettingsManager
                 new Vector2(screenWidth / 2f - hintMeasure.X / 2f, screenHeight - hintBarH + (hintBarH - hintMeasure.Y) / 2f),
                 hintColor, 0f, Vector2.Zero, hintScale, SpriteEffects.None, 0f);
         }
+
+        DrawModsMovePrompt(spriteBatch, font, pixel, fontRenderer, screenWidth, screenHeight, scaleFactor);
     }
 
     private void DrawList(SpriteBatch sb, SpriteFont font, Texture2D pixel, int sw, float panelY, float panelH,
@@ -1532,6 +1900,12 @@ public class SettingsManager
             var item = entries[i];
             int textSize = (int)(28 * scaleFactor);
             float scale = 0.8f;
+
+            if (item.Kind == SettingKind.Header)
+            {
+                DrawSectionHeader(sb, font, pixel, fr, item.Label, panelX, panelW, y, itemH, scaleFactor);
+                continue;
+            }
 
             // Label
             if (fr != null)
@@ -1619,6 +1993,24 @@ public class SettingsManager
         }
     }
 
+    /// <summary>Section title row: small pink caps with a divider line.</summary>
+    private void DrawSectionHeader(SpriteBatch sb, SpriteFont font, Texture2D pixel, FontRenderer? fr,
+                                   string title, float panelX, float panelW, float y, float itemH, float scaleFactor)
+    {
+        Color accent = new Color(0xFF, 0x44, 0x88);
+        int size = Math.Max(12, (int)(19 * scaleFactor));
+        Vector2 sz = fr != null ? fr.MeasureString(title, size) : font.MeasureString(title) * 0.55f;
+        float textY = y + itemH - 8 - sz.Y - 10 * scaleFactor;
+        if (fr != null)
+            fr.DrawString(sb, title, new Vector2(panelX + 10, textY), accent * 0.9f, size);
+        else
+            sb.DrawString(font, title, new Vector2(panelX + 10, textY), accent * 0.9f, 0f, Vector2.Zero, 0.55f, SpriteEffects.None, 0f);
+
+        int lineX = (int)(panelX + 10 + sz.X + 12);
+        int lineY = (int)(textY + sz.Y / 2f);
+        DrawRect(sb, pixel, lineX, lineY, (int)(panelX + panelW - 10) - lineX, 1, accent * 0.35f);
+    }
+
     private void DrawRect(SpriteBatch sb, Texture2D pixel, int x, int y, int w, int h, Color color)
     {
         if (w <= 0 || h <= 0) return;
@@ -1636,6 +2028,7 @@ public class SettingsActionResult
     public bool NeedsStrumlineAlphaUpdate = false;
     public bool NeedsOpponentAlphaUpdate = false;
     public bool OpenKeyBind = false;
+    public bool FpsCapChanged = false;
     public bool OpenArrowsMenu = false;
     public bool OpenSplashMenu = false;
     public bool OpenCountdownMenu = false;
@@ -1644,7 +2037,7 @@ public class SettingsActionResult
     public bool ExitMenu = false;
     public bool ToggleVSync = false;
     public bool ToggleFullscreen = false;
-    public int AdjustCameraZoom = 0;
+    public bool SongVolumeChanged = false;
     public float AdjustVolume = 0f;
     public float SeekSong = 0f;
 }

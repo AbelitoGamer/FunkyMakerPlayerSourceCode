@@ -80,7 +80,7 @@ public class EditorPicker : FunkyMakerPlayer.UI.IDirectScreen
         _font = font;
         _fontRenderer = fontRenderer;
         _cardBounds = new Rectangle[_cards.Length];
-        _prevKb = Keyboard.GetState();
+        _prevKb = LayoutKeyboard.GetState();
         _prevMouse = Mouse.GetState();
     }
 
@@ -90,7 +90,7 @@ public class EditorPicker : FunkyMakerPlayer.UI.IDirectScreen
         BackPressed = false;
         EditorChosen = false;
         _hoveredCard = -1;
-        _prevKb = Keyboard.GetState();
+        _prevKb = LayoutKeyboard.GetState();
         _prevMouse = Mouse.GetState();
         _lastMousePos = _prevMouse.Position;
     }
@@ -100,7 +100,7 @@ public class EditorPicker : FunkyMakerPlayer.UI.IDirectScreen
         _inputCooldown = Math.Max(_inputCooldown, 0.08f);
         _hoveredCard = -1;
         _backHovered = false;
-        _prevKb = Keyboard.GetState();
+        _prevKb = LayoutKeyboard.GetState();
         _prevMouse = Mouse.GetState();
         _lastMousePos = _prevMouse.Position;
     }
@@ -149,7 +149,7 @@ public class EditorPicker : FunkyMakerPlayer.UI.IDirectScreen
         bool enter = (kb.IsKeyDown(Keys.Enter) && !_prevKb.IsKeyDown(Keys.Enter)) ||
                      (kb.IsKeyDown(Keys.Space) && !_prevKb.IsKeyDown(Keys.Space));
         bool esc = kb.IsKeyDown(Keys.Escape) && !_prevKb.IsKeyDown(Keys.Escape);
-        bool seven = kb.IsKeyDown(Keys.D7) && !_prevKb.IsKeyDown(Keys.D7);
+        bool seven = Controls.Pressed(HotkeyAction.OpenChartEditor, kb, _prevKb);
 
         if (up) _selected = (_selected - 1 + _cards.Length) % _cards.Length;
         else if (down) _selected = (_selected + 1) % _cards.Length;
@@ -320,7 +320,7 @@ public class EditorPicker : FunkyMakerPlayer.UI.IDirectScreen
             rx += pw + pillGap;
         }
 
-        string hint = "UP/DOWN or MOUSE: Navigate  |  ENTER or CLICK: Open  |  ESC / 7: Back";
+        string hint = $"UP/DOWN or MOUSE: Navigate  |  ENTER or CLICK: Open  |  ESC / {Controls.Hint(HotkeyAction.OpenChartEditor)}: Back";
         int hintSize = UiScale.FontPx(15, s);
         var hintSz = MeasureText(hint, hintSize);
         DrawText(sb, hint, new Vector2(sw / 2f - hintSz.X / 2f, sh - UiScale.Px(34, s)), Color.White * 0.42f, hintSize);

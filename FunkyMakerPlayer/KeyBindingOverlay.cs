@@ -190,8 +190,8 @@ public class KeyBindingOverlay
 
             // Current key binding
             string keyStr = done || lane < _currentLane
-                ? NoteRenderer.PlayerKeys[lane].ToString()
-                : (sel ? "..." : NoteRenderer.PlayerKeys[lane].ToString());
+                ? Controls.AsciiKeyName(NoteRenderer.PlayerKeys[lane])
+                : (sel ? "..." : Controls.AsciiKeyName(NoteRenderer.PlayerKeys[lane]));
             Color keyCol = done ? new Color(0x44, 0xFF, 0x44) : (sel ? Color.White : Color.White * 0.4f);
             var ksz = font.MeasureString(keyStr) * 0.75f;
             spriteBatch.DrawString(font, keyStr,
