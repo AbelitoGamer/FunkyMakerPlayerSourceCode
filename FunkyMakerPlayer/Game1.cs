@@ -1247,6 +1247,10 @@ public partial class Game1 : Game
             bool confirmPressed = (kb.IsKeyDown(Keys.Enter) && !_prevKb.IsKeyDown(Keys.Enter)) ||
                                   (kb.IsKeyDown(Keys.Space) && !_prevKb.IsKeyDown(Keys.Space));
             bool clicked        = !suppressUserInput && ms.LeftButton == ButtonState.Pressed && prevMs.LeftButton == ButtonState.Released;
+#if ANDROID
+            if (!suppressUserInput && _touchControls?.TapReleased == true)
+                clicked = true;
+#endif
 
             if (escPressed || pErrPressed || (_errorDismissGrace <= 0f && (confirmPressed || clicked)))
                 DismissErrorToMenu();
@@ -2139,7 +2143,15 @@ public partial class Game1 : Game
             // Finalize on main thread when background load is done
             if (_loadState == LoadState.Finalizing)
             {
-                if (_pendingLevel != null && AndroidTouchGuardReady())
+                if (_pendingLoadException != null)
+                {
+                    var loadEx = _pendingLoadException;
+                    _pendingLoadException = null;
+                    _loadState = LoadState.Done;
+                    HandleSetupLevelFailure(loadEx);
+                    ReleaseAndroidTouchGuard();
+                }
+                else if (_pendingLevel != null && AndroidTouchGuardReady())
                 {
                     // Regular FNMM level
                     _level        = _pendingLevel;
@@ -3039,7 +3051,7 @@ public partial class Game1 : Game
         }
 
         // ── Loading screen (shown while loading or waiting for Enter) ─────────
-        if (_loadingScreen != null)
+        if (_loadingScreen != null && _errorMsg == null)
         {
             if (_level != null)
             {

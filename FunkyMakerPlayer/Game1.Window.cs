@@ -137,7 +137,9 @@ public partial class Game1
     private void EnsureRenderTarget()
     {
         float scale = 1f;
-        if (NativeRenderResolution)
+        // 32-bit Android (Mono armeabi-v7a) has a tight 32-bit virtual address space; keep the gameplay
+        // render target at logical 720p (scale = 1) so full-HD+ screens don't exhaust VRAM / heap.
+        if (NativeRenderResolution && !(OperatingSystem.IsAndroid() && !Environment.Is64BitProcess))
         {
             var (dst, s) = ComputeLetterbox(
                 GraphicsDevice.PresentationParameters.BackBufferWidth,
@@ -174,7 +176,9 @@ public partial class Game1
         // Physical size: at native resolution this is ~1:1 with dst, so k = 1 and no upscale pass runs
         int rtPw = _renderTarget.Width, rtPh = _renderTarget.Height;
         float scale = Math.Max(dst.Width / (float)rtPw, dst.Height / (float)rtPh);
-        int k = (int)MathF.Ceiling(scale - 0.001f);
+        int k = (OperatingSystem.IsAndroid() && !Environment.Is64BitProcess)
+            ? 1
+            : (int)MathF.Ceiling(scale - 0.001f);
         if (_maxTexForUpscale <= 0) _maxTexForUpscale = GetGpuMaxTextureSize();
         int maxTex = _maxTexForUpscale;
         while (k > 1 && Math.Max(rtPw, rtPh) * k > maxTex) k--;

@@ -51,8 +51,10 @@ public static class AtlasPacker
         public float DownscaleFactor { get; set; } = 1.0f;
     }
 
-    private static long GetDefaultStripVramBudgetBytes()
+    internal static long GetDefaultStripVramBudgetBytes()
     {
+        if (!Environment.Is64BitProcess)
+            return 20L * 1024 * 1024;
 #if ANDROID
         return 48L * 1024 * 1024;
 #else

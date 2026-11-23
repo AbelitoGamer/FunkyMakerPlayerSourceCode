@@ -44,55 +44,61 @@ namespace FunkyMakerPlayer.Multiplayer
         }
 
         /// <summary>
-        /// Store a downloaded level in memory and persist a hash-verified local cache copy.
+        /// Store a downloaded level and persist a hash-verified local cache copy.
+        /// Once persisted to disk (`official_cache/*.fmc`), the raw byte[] is not kept in RAM so
+        /// 32-bit Android devices do not waste hundreds of MB of virtual address space.
         /// </summary>
         public void CacheLevel(string levelId, byte[] levelData, OfficialLevelInfo info)
         {
             string actualHash = LevelHasher.CalculateHash(levelData);
 
+            bool hashValid = !string.IsNullOrEmpty(actualHash) &&
+                             (string.IsNullOrWhiteSpace(info.Hash) ||
+                              actualHash.Equals(info.Hash, StringComparison.OrdinalIgnoreCase));
+
+            bool savedToDisk = hashValid && SaveToDiskCache(actualHash, levelData);
+
             lock (_sync)
             {
-                _cachedLevels[levelId] = levelData;
+                if (savedToDisk)
+                    _cachedLevels.Remove(levelId);
+                else
+                    _cachedLevels[levelId] = levelData;
+
                 _levelInfo[levelId] = info;
                 if (!string.IsNullOrEmpty(actualHash))
                     _computedHashes[levelId] = actualHash;
             }
 
-            bool hashValid = !string.IsNullOrEmpty(actualHash) &&
-                             (string.IsNullOrWhiteSpace(info.Hash) ||
-                              actualHash.Equals(info.Hash, StringComparison.OrdinalIgnoreCase));
-
-            if (hashValid)
-            {
-                SaveToDiskCache(actualHash, levelData);
-            }
-
-            Console.WriteLine($"[LevelCache] Cached level: {info.Name} ({levelData.Length} bytes)");
+            Console.WriteLine($"[LevelCache] Cached level: {info.Name} ({levelData.Length} bytes, disk={savedToDisk})");
         }
 
-        private static void SaveToDiskCache(string hash, byte[] levelData)
+        private static bool SaveToDiskCache(string hash, byte[] levelData)
         {
             try
             {
                 string? cachePath = GetDiskCachePath(hash);
                 if (cachePath == null)
-                    return;
+                    return false;
 
                 if (File.Exists(cachePath) && new FileInfo(cachePath).Length == levelData.Length)
-                    return;
+                    return true;
 
                 string tempPath = cachePath + ".tmp";
                 File.WriteAllBytes(tempPath, levelData);
                 File.Move(tempPath, cachePath, overwrite: true);
+                return true;
             }
             catch (Exception ex)
             {
                 Console.WriteLine($"[LevelCache] Warning saving disk cache: {ex.Message}");
+                return false;
             }
         }
 
         /// <summary>
-        /// Restore a level into RAM from the verified disk cache if its SHA-256 matches the server metadata.
+        /// Verify a level exists in the disk cache with matching SHA-256 metadata.
+        /// Uses streaming SHA-256 verification and keeps only metadata/hashes in RAM.
         /// </summary>
         public bool TryRestoreFromDisk(OfficialLevelInfo info)
         {
@@ -101,16 +107,18 @@ namespace FunkyMakerPlayer.Multiplayer
 
             lock (_sync)
             {
-                if (_cachedLevels.ContainsKey(info.Id))
+                if (_computedHashes.TryGetValue(info.Id, out string? existingHash))
                 {
-                    if (string.IsNullOrWhiteSpace(info.Hash) ||
-                        (_computedHashes.TryGetValue(info.Id, out string? existingHash) &&
-                         existingHash.Equals(info.Hash, StringComparison.OrdinalIgnoreCase)))
+                    bool hashMatches = string.IsNullOrWhiteSpace(info.Hash) ||
+                                       existingHash.Equals(info.Hash, StringComparison.OrdinalIgnoreCase);
+                    string? existingDisk = GetDiskCachePath(existingHash);
+                    if (hashMatches && (_cachedLevels.ContainsKey(info.Id) || (existingDisk != null && File.Exists(existingDisk))))
                     {
+                        _levelInfo[info.Id] = info;
                         return true;
                     }
 
-                    // Server version changed; evict stale RAM copy
+                    // Server version changed or disk file missing; evict stale metadata
                     _cachedLevels.Remove(info.Id);
                     _levelInfo.Remove(info.Id);
                     _computedHashes.Remove(info.Id);
@@ -127,9 +135,8 @@ namespace FunkyMakerPlayer.Multiplayer
                 if (info.FileSize > 0 && fi.Length != info.FileSize)
                     return false;
 
-                byte[] data = File.ReadAllBytes(cachePath);
-                string actualHash = LevelHasher.CalculateHash(data);
-                if (!actualHash.Equals(info.Hash, StringComparison.OrdinalIgnoreCase))
+                string actualHash = LevelHasher.CalculateHash(cachePath);
+                if (string.IsNullOrEmpty(actualHash) || !actualHash.Equals(info.Hash, StringComparison.OrdinalIgnoreCase))
                 {
                     File.Delete(cachePath);
                     return false;
@@ -137,12 +144,12 @@ namespace FunkyMakerPlayer.Multiplayer
 
                 lock (_sync)
                 {
-                    _cachedLevels[info.Id] = data;
+                    _cachedLevels.Remove(info.Id);
                     _levelInfo[info.Id] = info;
                     _computedHashes[info.Id] = actualHash;
                 }
 
-                Console.WriteLine($"[LevelCache] Restored from disk cache: {info.Name} ({data.Length} bytes)");
+                Console.WriteLine($"[LevelCache] Verified disk cache: {info.Name} ({fi.Length} bytes)");
                 return true;
             }
             catch (Exception ex)
@@ -153,7 +160,7 @@ namespace FunkyMakerPlayer.Multiplayer
         }
 
         /// <summary>
-        /// Hydrate RAM cache from disk for any matching server-listed official levels.
+        /// Hydrate cache metadata from disk for any matching server-listed official levels.
         /// </summary>
         public void WarmFromDisk(IEnumerable<OfficialLevelInfo>? levels)
         {
@@ -167,13 +174,20 @@ namespace FunkyMakerPlayer.Multiplayer
         }
 
         /// <summary>
-        /// Check if a level is cached in memory.
+        /// Check if a level is cached (in verified disk cache or RAM fallback).
         /// </summary>
         public bool IsCached(string levelId)
         {
             lock (_sync)
             {
-                return _cachedLevels.ContainsKey(levelId);
+                if (_cachedLevels.ContainsKey(levelId))
+                    return true;
+                if (_computedHashes.TryGetValue(levelId, out string? hash))
+                {
+                    string? path = GetDiskCachePath(hash);
+                    return path != null && File.Exists(path);
+                }
+                return false;
             }
         }
 
@@ -206,14 +220,25 @@ namespace FunkyMakerPlayer.Multiplayer
         }
 
         /// <summary>
-        /// Get cached level data.
+        /// Get cached level data (reads from disk cache on demand if not in RAM).
         /// </summary>
         public byte[]? GetLevelData(string levelId)
         {
+            string? diskPath = null;
             lock (_sync)
             {
-                return _cachedLevels.TryGetValue(levelId, out var data) ? data : null;
+                if (_cachedLevels.TryGetValue(levelId, out var data))
+                    return data;
+                if (_computedHashes.TryGetValue(levelId, out string? hash))
+                    diskPath = GetDiskCachePath(hash);
             }
+
+            if (diskPath != null && File.Exists(diskPath))
+            {
+                try { return File.ReadAllBytes(diskPath); }
+                catch { return null; }
+            }
+            return null;
         }
 
         /// <summary>
@@ -229,7 +254,8 @@ namespace FunkyMakerPlayer.Multiplayer
 
         /// <summary>
         /// Write cached level to a temporary file for gameplay.
-        /// Reuses existing temp file if its verified hash already matches.
+        /// Reuses existing temp file if its verified hash already matches, and copies directly
+        /// from disk cache without allocating a full-file byte[] in RAM.
         /// </summary>
         public string? WriteTempFile(string levelId)
         {
@@ -237,19 +263,23 @@ namespace FunkyMakerPlayer.Multiplayer
             string expectedHash;
             lock (_sync)
             {
-                if (!_cachedLevels.TryGetValue(levelId, out data))
-                    return null;
-
+                _cachedLevels.TryGetValue(levelId, out data);
                 expectedHash = _computedHashes.TryGetValue(levelId, out string? h) ? h : "";
             }
 
             if (string.IsNullOrEmpty(expectedHash))
                 expectedHash = GetCachedHash(levelId);
 
+            string? diskPath = GetDiskCachePath(expectedHash);
+            bool hasDiskFile = diskPath != null && File.Exists(diskPath);
+            if (data == null && !hasDiskFile)
+                return null;
+
             try
             {
                 int processId = System.Diagnostics.Process.GetCurrentProcess().Id;
                 string tempPath = Path.Combine(Path.GetTempPath(), $"funkymaker_temp_{levelId}_{processId}.FNMM");
+                long expectedLen = data != null ? data.Length : (hasDiskFile ? new FileInfo(diskPath!).Length : -1);
 
                 lock (_sync)
                 {
@@ -257,13 +287,16 @@ namespace FunkyMakerPlayer.Multiplayer
                         _tempFileHashes.TryGetValue(tempPath, out string? writtenHash) &&
                         writtenHash == expectedHash &&
                         File.Exists(tempPath) &&
-                        new FileInfo(tempPath).Length == data.Length)
+                        (expectedLen < 0 || new FileInfo(tempPath).Length == expectedLen))
                     {
                         return tempPath;
                     }
                 }
 
-                File.WriteAllBytes(tempPath, data);
+                if (data != null)
+                    File.WriteAllBytes(tempPath, data);
+                else
+                    File.Copy(diskPath!, tempPath, overwrite: true);
 
                 lock (_sync)
                 {
@@ -290,11 +323,12 @@ namespace FunkyMakerPlayer.Multiplayer
             {
                 string? cachePath = GetDiskCachePath(hash);
                 if (cachePath == null || !File.Exists(cachePath)) return null;
-                byte[] data = File.ReadAllBytes(cachePath);
-                if (!string.Equals(LevelHasher.CalculateHash(data), hash, StringComparison.OrdinalIgnoreCase)) return null;
+                string actualHash = LevelHasher.CalculateHash(cachePath);
+                if (!string.Equals(actualHash, hash, StringComparison.OrdinalIgnoreCase)) return null;
+                long expectedLen = new FileInfo(cachePath).Length;
                 string tempPath = Path.Combine(Path.GetTempPath(), $"funkymaker_temp_replay{hash[..8]}_{System.Diagnostics.Process.GetCurrentProcess().Id}.FNMM");
-                if (!File.Exists(tempPath) || new FileInfo(tempPath).Length != data.Length)
-                    File.WriteAllBytes(tempPath, data);
+                if (!File.Exists(tempPath) || new FileInfo(tempPath).Length != expectedLen)
+                    File.Copy(cachePath, tempPath, overwrite: true);
                 return tempPath;
             }
             catch (Exception ex)
@@ -346,13 +380,40 @@ namespace FunkyMakerPlayer.Multiplayer
         }
 
         /// <summary>
+        /// Get cached level size in bytes without reading disk into RAM.
+        /// </summary>
+        public long GetCachedFileSize(string levelId)
+        {
+            string? diskPath = null;
+            long fallbackSize = 0;
+            lock (_sync)
+            {
+                if (_cachedLevels.TryGetValue(levelId, out var data))
+                    return data.Length;
+                if (_levelInfo.TryGetValue(levelId, out var info) && info.FileSize > 0)
+                    fallbackSize = info.FileSize;
+                if (_computedHashes.TryGetValue(levelId, out string? hash))
+                    diskPath = GetDiskCachePath(hash);
+            }
+            if (diskPath != null && File.Exists(diskPath))
+            {
+                try { return new FileInfo(diskPath).Length; }
+                catch { }
+            }
+            return fallbackSize;
+        }
+
+        /// <summary>
         /// Get list of all cached level IDs.
         /// </summary>
         public List<string> GetCachedLevelIds()
         {
             lock (_sync)
             {
-                return new List<string>(_cachedLevels.Keys);
+                var ids = new HashSet<string>(_cachedLevels.Keys, StringComparer.OrdinalIgnoreCase);
+                foreach (var id in _computedHashes.Keys)
+                    ids.Add(id);
+                return new List<string>(ids);
             }
         }
 

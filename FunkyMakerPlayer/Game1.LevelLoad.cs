@@ -21,6 +21,8 @@ namespace FunkyMakerPlayer;
 /// <summary>Level loading: reset, background load, finalize, SetupLevel and its helpers (moved out of Game1.cs).</summary>
 public partial class Game1
 {
+    private Exception? _pendingLoadException;
+
     /// <summary>
     /// Begins async loading of a .FNMM file.
     /// Phase 1 (background thread): parse file, decompress, read JSONs/audio bytes.
@@ -37,6 +39,7 @@ public partial class Game1
         _paused       = false;
         _gameplayPresenceStartUtc = null;
         _errorMsg     = null;
+        _pendingLoadException = null;
         _songTransition = null;
         _songEndDelay = 0f;
         _gameOverOverlay?.Hide();
@@ -124,11 +127,12 @@ public partial class Game1
             }
             catch (Exception ex)
             {
-                _errorMsg        = ex.Message == "PSYCH_ENGINE_MOD"
+                string msg = ex.Message == "PSYCH_ENGINE_MOD"
                     ? "Psych Engine mods are not supported. Export the level as a .FNMM (ZIP) and try again."
                     : ex.Message;
+                _pendingLoadException = new Exception(msg, ex);
                 _loadingComplete = true;
-                _loadState       = LoadState.Done;
+                _loadState       = LoadState.Finalizing;
                 Console.Error.WriteLine($"[FunkyMakerPlayer] {ex}");
             }
         });
@@ -158,6 +162,9 @@ public partial class Game1
         }
 
         SetupLevel();
+        if (_errorMsg != null || _level == null)
+            return;
+
         _songTime        = 0f;
         _songBeats       = 0f;
         _started         = false;
@@ -226,7 +233,7 @@ public partial class Game1
             QuitRoomMatch();
 
         _errorReturnToMultiplayer = wasMp;
-        _errorDismissGrace = 0.25f;
+        _errorDismissGrace = 0.5f;
         _errorMsg        = ex.Message;
         _loadingComplete = true;
         _loadState       = LoadState.Done;
@@ -344,6 +351,21 @@ public partial class Game1
               "The device may be out of memory; parts of the scene will be missing."
             : null;
         if (_textureLoadWarning != null) Console.WriteLine($"[Scene] {_textureLoadWarning}");
+
+        // On 32-bit processes in online matches (no editor, no restart), free raw compressed PNG byte[]
+        // arrays and compact the LOH before decoding the full song audio.
+        if (!Environment.Is64BitProcess && _isMultiplayerMatch)
+        {
+            foreach (var (_, (_, frames)) in _level.Sprites)
+            {
+                for (int fi = 0; fi < frames.Count; fi++)
+                    frames[fi] = Array.Empty<byte>();
+            }
+            _level.LooseImages.Clear();
+            System.Runtime.GCSettings.LargeObjectHeapCompactionMode =
+                System.Runtime.GCLargeObjectHeapCompactionMode.CompactOnce;
+            GC.Collect(GC.MaxGeneration, GCCollectionMode.Forced, blocking: true, compacting: true);
+        }
 
         // ── Build one animator per scene object ──────────────────────────────
         if (_loadingScreen != null)
@@ -843,6 +865,15 @@ public partial class Game1
             _musicDurationSeconds = _music.Duration.TotalSeconds > 0.1
                 ? (float)_music.Duration.TotalSeconds
                 : float.MaxValue;
+
+            // In online matches, compressed audio bytes are never needed again after decoding, and on
+            // 32-bit devices active players cannot timeskip/seek so _musicPcm (~32 MB LOH) can be freed too.
+            if (_isMultiplayerMatch)
+            {
+                _level.MusicData = null;
+                if (!Environment.Is64BitProcess && !_onlineSpectating)
+                    _musicPcm = null;
+            }
         }
         else if (_level.MusicData != null)
         {
@@ -865,6 +896,15 @@ public partial class Game1
             _musicDurationSeconds = _music.Duration.TotalSeconds > 0.1
                 ? (float)_music.Duration.TotalSeconds
                 : float.MaxValue;
+
+            // In online matches, compressed audio bytes are never needed again after decoding, and on
+            // 32-bit devices active players cannot timeskip/seek so _musicPcm (~32 MB LOH) can be freed too.
+            if (_isMultiplayerMatch)
+            {
+                _level.MusicData = null;
+                if (!Environment.Is64BitProcess && !_onlineSpectating)
+                    _musicPcm = null;
+            }
         }
         else
         {
@@ -901,8 +941,7 @@ public partial class Game1
         {
             Console.WriteLine($"[SetupLevel] FATAL ERROR: {exSetup.Message}");
             Console.WriteLine($"[SetupLevel] Stack: {exSetup.StackTrace}");
-            _errorMsg = $"Failed to setup level: {exSetup.Message}";
-            _loadingComplete = true;
+            HandleSetupLevelFailure(new Exception($"Failed to setup level: {exSetup.Message}", exSetup));
         }
     }
 

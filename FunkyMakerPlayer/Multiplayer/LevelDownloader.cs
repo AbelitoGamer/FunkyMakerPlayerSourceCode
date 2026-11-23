@@ -39,7 +39,8 @@ namespace FunkyMakerPlayer.Multiplayer
             {
                 if (LevelCache.Instance.TryRestoreFromDisk(levelInfo))
                 {
-                    long cachedBytes = LevelCache.Instance.GetLevelData(levelInfo.Id)?.Length ?? levelInfo.FileSize;
+                    long cachedBytes = LevelCache.Instance.GetCachedFileSize(levelInfo.Id);
+                    if (cachedBytes <= 0) cachedBytes = levelInfo.FileSize;
                     OnDownloadBytesProgress?.Invoke(100, cachedBytes, cachedBytes);
                     OnDownloadProgress?.Invoke(100);
                     OnDownloadComplete?.Invoke(levelInfo.Id, levelInfo);

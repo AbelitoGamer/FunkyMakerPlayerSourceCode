@@ -115,6 +115,8 @@ public static class FnmmSceneRenderer
     {
         LastFailedTextures = 0;
         LastTextureError = null;
+        if (!Environment.Is64BitProcess)
+            maxTexSize = Math.Min(maxTexSize, 4096);
         var texCache = new Dictionary<string, List<Texture2D>>(StringComparer.OrdinalIgnoreCase);
 
         var spriteUsage = new Dictionary<string, (bool usedByBg, bool usedByChar)>(StringComparer.OrdinalIgnoreCase);
@@ -277,7 +279,9 @@ public static class FnmmSceneRenderer
                     fw0 = pngW;
                 }
 
-                bool needsDownscale = fw0 > maxTexSize || pngH > maxTexSize;
+                bool needsDownscale = fw0 > maxTexSize || pngH > maxTexSize ||
+                                      (!Environment.Is64BitProcess && actualFrameCount > 1 &&
+                                       estRawBytes > AtlasPacker.GetDefaultStripVramBudgetBytes());
                 bool needsBgTile = isBgSprite && actualFrameCount == 1 && pngW > maxTexSize;
                 bool needsSplit = !needsDownscale && !needsBgTile && pngW > maxTexSize && actualFrameCount > 1;
 
@@ -439,7 +443,8 @@ public static class FnmmSceneRenderer
                         textures.Add(dummy);
                     }
                     frameTexRanges[fi] = (frameTexStart, Math.Max(0, textures.Count - frameTexStart));
-                    if (estRawBytes >= 64L * 1024 * 1024)
+                    long compactThreshold = (!Environment.Is64BitProcess ? 16L : 64L) * 1024 * 1024;
+                    if (estRawBytes >= compactThreshold)
                     {
                         System.Runtime.GCSettings.LargeObjectHeapCompactionMode =
                             System.Runtime.GCLargeObjectHeapCompactionMode.CompactOnce;

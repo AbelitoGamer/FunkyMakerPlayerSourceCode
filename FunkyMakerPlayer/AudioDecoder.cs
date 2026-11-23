@@ -39,26 +39,28 @@ public static class AudioDecoder
         channels = mp3.Channels;
         if (channels is < 1 or > 2) throw new Exception($"{channels} channels");
 
-        var floats = new float[Math.Max(4096, (int)Math.Min(int.MaxValue / 4, (long)(mp3.Duration.TotalSeconds * sampleRate * channels) + 4096))];
-        int read = 0;
+        long estSamples = (long)(mp3.Duration.TotalSeconds * sampleRate * channels) + 4096L;
+        int initialBytes = (int)Math.Clamp(estSamples * 2L, 8192L, 128L * 1024 * 1024);
+        using var pcmStream = new MemoryStream(initialBytes);
         var chunk = new float[4096 * channels];
+        var byteChunk = new byte[chunk.Length * 2];
+        int totalRead = 0;
         while (true)
         {
             int got = mp3.ReadSamples(chunk, 0, chunk.Length);
             if (got <= 0) break;
-            if (read + got > floats.Length) Array.Resize(ref floats, read + got + chunk.Length * 16);
-            Array.Copy(chunk, 0, floats, read, got);
-            read += got;
+            for (int i = 0; i < got; i++)
+            {
+                short v = (short)Math.Clamp((int)(chunk[i] * 32767f), short.MinValue, short.MaxValue);
+                byteChunk[i * 2] = (byte)v;
+                byteChunk[i * 2 + 1] = (byte)(v >> 8);
+            }
+            pcmStream.Write(byteChunk, 0, got * 2);
+            totalRead += got;
         }
-        if (read == 0) throw new Exception("no audio frames");
+        if (totalRead == 0) throw new Exception("no audio frames");
 
-        var pcm = new byte[read * 2];
-        for (int i = 0; i < read; i++)
-        {
-            short v = (short)Math.Clamp((int)(floats[i] * 32767f), short.MinValue, short.MaxValue);
-            pcm[i * 2] = (byte)v;
-            pcm[i * 2 + 1] = (byte)(v >> 8);
-        }
+        var pcm = pcmStream.ToArray();
         int valid = OggLoader.ValidSampleRate(sampleRate);
         if (valid != sampleRate)
         {

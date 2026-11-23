@@ -38,8 +38,7 @@ Docs/
 docs/
 *.md
 !README.md
-# Local-only project context doc (kept out of the repo on purpose)
-Context.md
+!Context.md
 *.txt
 !version.txt
 !**/notestyles/README.txt

@@ -238,30 +238,30 @@ public static class OggLoader
     {
         channels   = reader.Channels;
         sampleRate = reader.SampleRate;
-        int totalSamples = (int)reader.TotalSamples * channels;
+        long estSamples = reader.TotalSamples > 0 ? reader.TotalSamples * channels : 4096L * channels;
+        int initialBytes = (int)Math.Clamp(estSamples * 2L, 8192L, 128L * 1024 * 1024);
 
-        float[] floatBuf = new float[Math.Max(totalSamples, 4096 * channels)];
-        int   read  = 0;
-        int   chunk = 4096 * channels;
+        // Convert 4096-sample float chunks directly into 16-bit PCM bytes so we don't allocate a
+        // full-song float[] (~64 MB LOH) alongside pcmData (~32 MB LOH), which exhausted 32-bit Android RAM.
+        using var pcmStream = new MemoryStream(initialBytes);
+        int chunk = 4096 * channels;
         float[] tmp = new float[chunk];
+        byte[] byteChunk = new byte[chunk * 2];
 
         while (true)
         {
             int got = reader.ReadSamples(tmp, 0, chunk);
             if (got <= 0) break;
-            if (read + got > floatBuf.Length)
-                Array.Resize(ref floatBuf, read + got + chunk);
-            Array.Copy(tmp, 0, floatBuf, read, got);
-            read += got;
+            for (int i = 0; i < got; i++)
+            {
+                short s = (short)Math.Clamp((int)(tmp[i] * 32767f), short.MinValue, short.MaxValue);
+                byteChunk[i * 2]     = (byte)(s & 0xFF);
+                byteChunk[i * 2 + 1] = (byte)((s >> 8) & 0xFF);
+            }
+            pcmStream.Write(byteChunk, 0, got * 2);
         }
 
-        pcmData = new byte[read * 2];
-        for (int i = 0; i < read; i++)
-        {
-            short s = (short)Math.Clamp((int)(floatBuf[i] * 32767f), short.MinValue, short.MaxValue);
-            pcmData[i * 2]     = (byte)(s & 0xFF);
-            pcmData[i * 2 + 1] = (byte)((s >> 8) & 0xFF);
-        }
+        pcmData = pcmStream.ToArray();
 
         // Validate sample rate and resample if needed
         int validatedSampleRate = ValidateSampleRate(sampleRate);
