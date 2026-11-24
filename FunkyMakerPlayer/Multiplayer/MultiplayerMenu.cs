@@ -1221,7 +1221,7 @@ namespace FunkyMakerPlayer.Multiplayer
         /// <summary>
         /// Show a non-error notice (green toast) to the user.
         /// </summary>
-        private void ShowInfo(string message, float seconds = 6f)
+        internal void ShowInfo(string message, float seconds = 6f)
         {
             _infoMessage = message;
             _infoMessageTimer = seconds;

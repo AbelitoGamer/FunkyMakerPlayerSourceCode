@@ -1059,6 +1059,8 @@ public partial class Game1
     /// </summary>
     private void RenderLoadingScreen()
     {
+        if (_isMultiplayerMatch)
+            NetworkManager.Instance.PumpKeepAliveDuringLoad();
         if (_loadingScreen == null) return;
         
         try

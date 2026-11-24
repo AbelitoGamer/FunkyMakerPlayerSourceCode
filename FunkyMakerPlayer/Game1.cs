@@ -2174,6 +2174,23 @@ public partial class Game1 : Game
             }
 
             bool enterPressed = kb.IsKeyDown(Keys.Enter) && !_prevKb.IsKeyDown(Keys.Enter);
+            bool cancelLoadingPressed = _isMultiplayerMatch && _loadState == LoadState.Done &&
+                (kb.IsKeyDown(Keys.Escape) && !_prevKb.IsKeyDown(Keys.Escape));
+#if ANDROID
+            if (_isMultiplayerMatch && _loadState == LoadState.Done &&
+                ((kb.IsKeyDown(Keys.Back) && !_prevKb.IsKeyDown(Keys.Back)) ||
+                 _touchControls?.IsKeyJustPressed(Keys.Escape) == true))
+            {
+                cancelLoadingPressed = true;
+            }
+#endif
+
+            if (CheckMultiplayerLoadingScreenStatus(cancelLoadingPressed))
+            {
+                _prevKb = kb;
+                base.Update(gameTime);
+                return;
+            }
             
             // (The per-frame "LoadingScreen Phase=Ready" log that was here wrote a line every frame while
             // waiting for the online countdown; on Android that's the UI thread.)

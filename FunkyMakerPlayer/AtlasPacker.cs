@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.IO.Compression;
+using System.Runtime.InteropServices;
 using Microsoft.Xna.Framework;
 using Microsoft.Xna.Framework.Graphics;
 using SixLabors.ImageSharp;
@@ -113,23 +114,37 @@ public static class AtlasPacker
 #endif
     }
 
+    internal sealed class PreparedAtlasPage
+    {
+        public int Width;
+        public int Height;
+        public Color[]? Pixels; // Exact Width * Height premultiplied pixels; nulled right after GL upload
+    }
+
+    internal sealed class PreparedAtlas
+    {
+        public List<PreparedAtlasPage> Pages { get; } = new();
+        public List<FrameRect> FrameCoordinates { get; set; } = new();
+        public float DownscaleFactor { get; set; } = 1.0f;
+        public long TotalPackedBytes { get; set; }
+    }
+
     /// <summary>
-    /// Packs a horizontal spritesheet (or single-frame sprite) into one or more 2D texture atlases.
-    /// Streams row-by-row from PNG without allocating a full-resolution RGBA image for standard PNGs,
-    /// trims transparent margins, deduplicates identical frames, and enforces strip + level VRAM budgets.
+    /// Thread-safe CPU-only half of atlas packing: streams PNG rows, downscales, trims transparent
+    /// margins, deduplicates frames, shelf-packs pages, and prepares page pixel buffers without
+    /// touching MonoGame's <see cref="GraphicsDevice"/>. Call <see cref="UploadPreparedAtlas"/> on
+    /// the main/GL thread to upload the pages to GPU.
     /// </summary>
-    public static List<PackResult> PackHorizontalStrip(
+    internal static PreparedAtlas? PrepareHorizontalStripCpu(
         byte[] pngBytes,
         int frameCount,
         int frameWidth,
         int frameHeight,
         int maxAtlasSize,
-        GraphicsDevice graphicsDevice,
         Action<int, int>? onProgress = null,
         long maxStripVramBytes = 0,
         float maxScale = 1.0f)
     {
-        var results = new List<PackResult>();
         if (frameCount <= 0) frameCount = 1;
         if (maxAtlasSize <= 0) maxAtlasSize = 4096;
 
@@ -179,10 +194,8 @@ public static class AtlasPacker
                 if (effectiveFrameWidth > maxAtlasSize || effectiveFrameHeight > maxAtlasSize)
                     fitScale = Math.Min((float)maxAtlasSize / effectiveFrameWidth, (float)maxAtlasSize / effectiveFrameHeight);
 
-                // Allow a gentle 1.25x headroom before trimming/dedup so strips with generous transparent
-                // borders don't get over-shrunk before we see their true trimmed size; if the actual packed
-                // atlas still exceeds vramBudget, the retry loop below scales down to fit.
-                long preTrimBudget = vramBudget < long.MaxValue / 2 ? (long)(vramBudget * 1.35) : vramBudget;
+                double headroom = rawStripBytes > 64L * 1024 * 1024 ? 1.10 : 1.30;
+                long preTrimBudget = vramBudget < long.MaxValue / 2 ? (long)(vramBudget * headroom) : vramBudget;
                 float budgetScale = rawStripBytes > preTrimBudget
                     ? MathF.Sqrt((float)preTrimBudget / rawStripBytes)
                     : 1.0f;
@@ -193,7 +206,7 @@ public static class AtlasPacker
                 {
                     try
                     {
-                        var candidate = PackWithScale(
+                        var prepared = PrepareWithScaleCpu(
                             pngBytes,
                             canStreamPng ? pngHeader : null,
                             fallbackImage,
@@ -206,7 +219,6 @@ public static class AtlasPacker
                             attemptScale,
                             vramBudget,
                             minScale,
-                            graphicsDevice,
                             onProgress,
                             out long packedBytes,
                             out bool overBudgetNeedsRetry);
@@ -222,18 +234,12 @@ public static class AtlasPacker
                             continue;
                         }
 
-                        results = candidate;
-                        Console.WriteLine($"[AtlasPacker] Successfully packed {frameCount} frame(s) into {results.Count} atlas(es) (scale={results[0].DownscaleFactor:0.###}, vram={packedBytes / (1024f * 1024f):0.##}MB)");
-                        return results;
+                        return prepared;
                     }
                     catch (Exception attemptEx) when (attemptScale > minScale + 0.01f)
                     {
-                        foreach (var partial in results)
-                            partial.AtlasTexture?.Dispose();
-                        results.Clear();
-
                         float nextScale = Math.Max(minScale, attemptScale * 0.65f);
-                        Console.WriteLine($"[AtlasPacker] Atlas allocation failed at scale {attemptScale:0.###} ({attemptEx.Message}); retrying at scale {nextScale:0.###}...");
+                        Console.WriteLine($"[AtlasPacker] CPU atlas prep failed at scale {attemptScale:0.###} ({attemptEx.Message}); retrying at scale {nextScale:0.###}...");
                         attemptScale = nextScale;
                         FnmmSceneRenderer.ForceCompactingGc();
                     }
@@ -246,14 +252,99 @@ public static class AtlasPacker
         }
         catch (Exception ex)
         {
+            Console.WriteLine($"[AtlasPacker] ERROR: {ex.Message}");
+            Console.WriteLine($"[AtlasPacker] Stack: {ex.StackTrace}");
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// Main/GL-thread half of atlas packing: uploads prepared CPU page pixel buffers into GPU
+    /// <see cref="Texture2D"/> instances and releases each page's pixel array immediately after upload.
+    /// </summary>
+    internal static List<PackResult> UploadPreparedAtlas(PreparedAtlas prepared, GraphicsDevice graphicsDevice)
+    {
+        var results = new List<PackResult>(prepared.Pages.Count);
+        try
+        {
+            for (int p = 0; p < prepared.Pages.Count; p++)
+            {
+                var page = prepared.Pages[p];
+                var pixels = page.Pixels ?? throw new InvalidOperationException("Prepared atlas page pixels already released.");
+                var atlasTex = new Texture2D(graphicsDevice, page.Width, page.Height);
+                atlasTex.SetData(pixels, 0, page.Width * page.Height);
+                page.Pixels = null; // Free CPU pixel buffer immediately after GPU upload
+
+                results.Add(new PackResult
+                {
+                    AtlasTexture = atlasTex,
+                    FrameCoordinates = p == 0 ? prepared.FrameCoordinates : new List<FrameRect>(),
+                    AtlasWidth = page.Width,
+                    AtlasHeight = page.Height,
+                    DownscaleFactor = prepared.DownscaleFactor
+                });
+
+                Console.WriteLine($"[AtlasPacker] Atlas {p}: uploaded {page.Width}x{page.Height}");
+            }
+
+            Console.WriteLine($"[AtlasPacker] Successfully packed {prepared.FrameCoordinates.Count} frame(s) into {results.Count} atlas(es) (scale={prepared.DownscaleFactor:0.###}, vram={prepared.TotalPackedBytes / (1024f * 1024f):0.##}MB)");
+            return results;
+        }
+        catch
+        {
             foreach (var partial in results)
                 partial.AtlasTexture?.Dispose();
             results.Clear();
-            Console.WriteLine($"[AtlasPacker] ERROR: {ex.Message}");
-            Console.WriteLine($"[AtlasPacker] Stack: {ex.StackTrace}");
+            throw;
         }
+    }
 
-        return results;
+    /// <summary>
+    /// Packs a horizontal spritesheet (or single-frame sprite) into one or more 2D texture atlases.
+    /// Streams row-by-row from PNG without allocating a full-resolution RGBA image for standard PNGs,
+    /// trims transparent margins, deduplicates identical frames, and enforces strip + level VRAM budgets.
+    /// </summary>
+    public static List<PackResult> PackHorizontalStrip(
+        byte[] pngBytes,
+        int frameCount,
+        int frameWidth,
+        int frameHeight,
+        int maxAtlasSize,
+        GraphicsDevice graphicsDevice,
+        Action<int, int>? onProgress = null,
+        long maxStripVramBytes = 0,
+        float maxScale = 1.0f)
+    {
+        float minScale = GetMinAdaptiveScale();
+        float currentMaxScale = Math.Clamp(maxScale, minScale, 1.0f);
+
+        while (true)
+        {
+            var prepared = PrepareHorizontalStripCpu(
+                pngBytes, frameCount, frameWidth, frameHeight, maxAtlasSize,
+                onProgress, maxStripVramBytes, currentMaxScale);
+            if (prepared == null)
+                return new List<PackResult>();
+
+            try
+            {
+                return UploadPreparedAtlas(prepared, graphicsDevice);
+            }
+            catch (Exception uploadEx) when (prepared.DownscaleFactor > minScale + 0.01f)
+            {
+                foreach (var page in prepared.Pages) page.Pixels = null;
+                float nextScale = Math.Max(minScale, prepared.DownscaleFactor * 0.65f);
+                Console.WriteLine($"[AtlasPacker] GPU upload failed at scale {prepared.DownscaleFactor:0.###} ({uploadEx.Message}); retrying at scale {nextScale:0.###}...");
+                currentMaxScale = nextScale;
+                FnmmSceneRenderer.ForceCompactingGc();
+            }
+            catch (Exception uploadEx)
+            {
+                foreach (var page in prepared.Pages) page.Pixels = null;
+                Console.WriteLine($"[AtlasPacker] GPU upload ERROR: {uploadEx.Message}");
+                return new List<PackResult>();
+            }
+        }
     }
 
     private sealed class DecodedFrameData
@@ -291,7 +382,7 @@ public static class AtlasPacker
         public readonly List<int> TileIndices = new();
     }
 
-    private static List<PackResult> PackWithScale(
+    private static PreparedAtlas PrepareWithScaleCpu(
         byte[] pngBytes,
         StreamingPngHeader? pngHeader,
         Image<Rgba32>? fallbackImage,
@@ -304,7 +395,6 @@ public static class AtlasPacker
         float requestedScale,
         long vramBudget,
         float minScale,
-        GraphicsDevice graphicsDevice,
         Action<int, int>? onProgress,
         out long totalPackedBytes,
         out bool overBudgetNeedsRetry)
@@ -348,9 +438,10 @@ public static class AtlasPacker
         }
 
         // Step 2: Deduplicate identical trimmed frames (exact pixel verification after 64-bit FNV-1a hash).
+        // Skip hashing entirely for single-frame sprites since they cannot contain duplicate frames.
         var uniqueTiles = new List<UniqueTile>(frameCount);
         var frameToTile = new int[frameCount];
-        var hashBuckets = new Dictionary<ulong, List<int>>(frameCount);
+        Dictionary<ulong, List<int>>? hashBuckets = frameCount > 1 ? new Dictionary<ulong, List<int>>(frameCount) : null;
         int emptyCount = 0;
         int dedupCount = 0;
 
@@ -368,23 +459,28 @@ public static class AtlasPacker
             int ty = fd.MinY;
             int tw = fd.TrimW;
             int th = fd.TrimH;
-            ulong hash = ComputeTrimmedFrameHash(fd.Pixels!, dstFrameW, tx, ty, tw, th);
-
             int matchedTile = -1;
-            if (hashBuckets.TryGetValue(hash, out var candidates))
+            List<int>? candidates = null;
+            ulong hash = 0;
+
+            if (hashBuckets != null)
             {
-                for (int c = 0; c < candidates.Count; c++)
+                hash = ComputeTrimmedFrameHash(fd.Pixels!, dstFrameW, tx, ty, tw, th);
+                if (hashBuckets.TryGetValue(hash, out candidates))
                 {
-                    int tileIdx = candidates[c];
-                    var existing = uniqueTiles[tileIdx];
-                    if (existing.Width == tw && existing.Height == th &&
-                        TrimmedPixelsEqual(
-                            fd.Pixels!, dstFrameW, tx, ty,
-                            frames[existing.SourceFrameIndex].Pixels!, dstFrameW, existing.TrimX, existing.TrimY,
-                            tw, th))
+                    for (int c = 0; c < candidates.Count; c++)
                     {
-                        matchedTile = tileIdx;
-                        break;
+                        int tileIdx = candidates[c];
+                        var existing = uniqueTiles[tileIdx];
+                        if (existing.Width == tw && existing.Height == th &&
+                            TrimmedPixelsEqual(
+                                fd.Pixels!, dstFrameW, tx, ty,
+                                frames[existing.SourceFrameIndex].Pixels!, dstFrameW, existing.TrimX, existing.TrimY,
+                                tw, th))
+                        {
+                            matchedTile = tileIdx;
+                            break;
+                        }
                     }
                 }
             }
@@ -409,35 +505,38 @@ public static class AtlasPacker
                 });
                 frameToTile[f] = newIdx;
 
-                if (candidates == null)
+                if (hashBuckets != null)
                 {
-                    candidates = new List<int>(2);
-                    hashBuckets[hash] = candidates;
+                    if (candidates == null)
+                    {
+                        candidates = new List<int>(2);
+                        hashBuckets[hash] = candidates;
+                    }
+                    candidates.Add(newIdx);
                 }
-                candidates.Add(newIdx);
             }
         }
 
         // Handle completely empty strip (all frames transparent)
         if (uniqueTiles.Count == 0)
         {
-            var emptyTex = new Texture2D(graphicsDevice, 1, 1);
-            emptyTex.SetData(new[] { Color.Transparent });
             var emptyCoords = new List<FrameRect>(frameCount);
             for (int f = 0; f < frameCount; f++)
                 emptyCoords.Add(new FrameRect(0, 0, 0, 0, 0, 0, 0, dstFrameW, dstFrameH));
             totalPackedBytes = 4;
-            return new List<PackResult>
+            var emptyPrepared = new PreparedAtlas
             {
-                new PackResult
-                {
-                    AtlasTexture = emptyTex,
-                    FrameCoordinates = emptyCoords,
-                    AtlasWidth = 1,
-                    AtlasHeight = 1,
-                    DownscaleFactor = actualDownscale
-                }
+                FrameCoordinates = emptyCoords,
+                DownscaleFactor = actualDownscale,
+                TotalPackedBytes = 4
             };
+            emptyPrepared.Pages.Add(new PreparedAtlasPage
+            {
+                Width = 1,
+                Height = 1,
+                Pixels = new[] { Color.Transparent }
+            });
+            return emptyPrepared;
         }
 
         // Step 3: Shelf-pack (NFDH: height descending, then width descending) into bounded 2D atlas pages.
@@ -542,94 +641,79 @@ public static class AtlasPacker
         {
             for (int f = 0; f < frames.Length; f++) frames[f].Pixels = null;
             overBudgetNeedsRetry = true;
-            return new List<PackResult>();
+            return new PreparedAtlas();
         }
 
         Console.WriteLine(
             $"[AtlasPacker] Layout: {pages.Count} atlas(es), unique={uniqueTiles.Count}/{frameCount} (dedup={dedupCount}, empty={emptyCount}), " +
             $"frame={dstFrameW}x{dstFrameH} (scale={actualDownscale:0.###}), vram={totalPackedBytes / (1024f * 1024f):0.##}MB");
 
-        // Step 4: Blit unique tiles into each atlas page and upload to GPU.
-        var results = new List<PackResult>(pages.Count);
-        var pixelBuffer = new Color[maxPagePixels];
-
-        try
+        // Step 4: Blit unique tiles into CPU page buffers (ready for main-thread GL upload).
+        var prepared = new PreparedAtlas
         {
-            for (int p = 0; p < pages.Count; p++)
+            DownscaleFactor = actualDownscale,
+            TotalPackedBytes = totalPackedBytes
+        };
+
+        for (int p = 0; p < pages.Count; p++)
+        {
+            var page = pages[p];
+            int pw = page.Width;
+            int ph = page.Height;
+            var pagePixels = new Color[pw * ph];
+
+            var tileIndices = page.TileIndices;
+            for (int i = 0; i < tileIndices.Count; i++)
             {
-                var page = pages[p];
-                int pw = page.Width;
-                int ph = page.Height;
-                int pixelCount = pw * ph;
-                Array.Clear(pixelBuffer, 0, pixelCount);
-
-                var tileIndices = page.TileIndices;
-                for (int i = 0; i < tileIndices.Count; i++)
+                var tile = uniqueTiles[tileIndices[i]];
+                var srcPixels = frames[tile.SourceFrameIndex].Pixels!;
+                for (int row = 0; row < tile.Height; row++)
                 {
-                    var tile = uniqueTiles[tileIndices[i]];
-                    var srcPixels = frames[tile.SourceFrameIndex].Pixels!;
-                    for (int row = 0; row < tile.Height; row++)
-                    {
-                        int srcOff = (tile.TrimY + row) * dstFrameW + tile.TrimX;
-                        int dstOff = (tile.PackedY + row) * pw + tile.PackedX;
-                        Array.Copy(srcPixels, srcOff, pixelBuffer, dstOff, tile.Width);
-                    }
-                    // Release frame pixels as soon as copied to page buffer
-                    frames[tile.SourceFrameIndex].Pixels = null;
+                    int srcOff = (tile.TrimY + row) * dstFrameW + tile.TrimX;
+                    int dstOff = (tile.PackedY + row) * pw + tile.PackedX;
+                    Array.Copy(srcPixels, srcOff, pagePixels, dstOff, tile.Width);
                 }
-
-                var atlasTex = new Texture2D(graphicsDevice, pw, ph);
-                atlasTex.SetData(pixelBuffer, 0, pixelCount);
-
-                results.Add(new PackResult
-                {
-                    AtlasTexture = atlasTex,
-                    FrameCoordinates = new List<FrameRect>(),
-                    AtlasWidth = pw,
-                    AtlasHeight = ph,
-                    DownscaleFactor = actualDownscale
-                });
-
-                Console.WriteLine($"[AtlasPacker] Atlas {p}: {tileIndices.Count} unique tile(s) packed into {pw}x{ph}");
+                // Release frame pixels as soon as copied to page buffer
+                frames[tile.SourceFrameIndex].Pixels = null;
             }
 
-            // Populate the complete ordered FrameCoordinates list (0..frameCount-1) on page 0.
-            // Each frame carries its own TrimX/TrimY even when sharing deduplicated tile pixels.
-            var allCoords = new List<FrameRect>(frameCount);
-            for (int f = 0; f < frameCount; f++)
+            prepared.Pages.Add(new PreparedAtlasPage
             {
-                int tileIdx = frameToTile[f];
-                if (tileIdx < 0)
-                {
-                    allCoords.Add(new FrameRect(0, 0, 0, 0, 0, 0, 0, dstFrameW, dstFrameH));
-                }
-                else
-                {
-                    var tile = uniqueTiles[tileIdx];
-                    var fd = frames[f];
-                    allCoords.Add(new FrameRect(
-                        tile.PackedX,
-                        tile.PackedY,
-                        tile.Width,
-                        tile.Height,
-                        tile.PackedAtlasIndex,
-                        fd.MinX,
-                        fd.MinY,
-                        dstFrameW,
-                        dstFrameH));
-                }
-            }
-            results[0].FrameCoordinates = allCoords;
+                Width = pw,
+                Height = ph,
+                Pixels = pagePixels
+            });
+        }
 
-            return results;
-        }
-        catch
+        // Populate the complete ordered FrameCoordinates list (0..frameCount-1).
+        // Each frame carries its own TrimX/TrimY even when sharing deduplicated tile pixels.
+        var allCoords = new List<FrameRect>(frameCount);
+        for (int f = 0; f < frameCount; f++)
         {
-            foreach (var partial in results)
-                partial.AtlasTexture?.Dispose();
-            results.Clear();
-            throw;
+            int tileIdx = frameToTile[f];
+            if (tileIdx < 0)
+            {
+                allCoords.Add(new FrameRect(0, 0, 0, 0, 0, 0, 0, dstFrameW, dstFrameH));
+            }
+            else
+            {
+                var tile = uniqueTiles[tileIdx];
+                var fd = frames[f];
+                allCoords.Add(new FrameRect(
+                    tile.PackedX,
+                    tile.PackedY,
+                    tile.Width,
+                    tile.Height,
+                    tile.PackedAtlasIndex,
+                    fd.MinX,
+                    fd.MinY,
+                    dstFrameW,
+                    dstFrameH));
+            }
         }
+        prepared.FrameCoordinates = allCoords;
+
+        return prepared;
     }
 
     // ══════════════════════════════════════════════════════════════════════════
@@ -833,28 +917,39 @@ public static class AtlasPacker
         byte[] currUnfiltered = new byte[stride];
 
         // Converted RGBA32 scanline cache: since y0Table[py] and y1Table[py] are monotonically
-        // non-decreasing with y1 - y0 <= 1, we only ever need at most two decoded RGBA scanlines in memory!
+        // non-decreasing with y1 - y0 <= 1, we only ever need at most two decoded RGBA scanlines in memory,
+        // and we skip RGBA conversion completely for source rows skipped during downscaling!
         Rgba32[] rowCacheA = new Rgba32[actualW];
         Rgba32[] rowCacheB = new Rgba32[actualW];
         int rowIndexA = -1;
         int rowIndexB = -1;
         int nextSourceRowToRead = 0;
 
-        void EnsureSourceRow(int targetSy)
+        void EnsureSourceRows(int needSy0, int needSy1)
         {
-            while (nextSourceRowToRead <= targetSy && nextSourceRowToRead < actualH)
+            while (nextSourceRowToRead <= needSy1 && nextSourceRowToRead < actualH)
             {
                 ReadExact(zlib, rawLine, 0, rawLine.Length);
                 UnfilterScanline(rawLine, prevUnfiltered, currUnfiltered, stride, bpp);
 
-                // Rotate caches so rowA holds the previous row and rowB holds the newest row
-                var tmpRgba = rowCacheA;
-                rowCacheA = rowCacheB;
-                rowCacheB = tmpRgba;
-                rowIndexA = rowIndexB;
+                if (nextSourceRowToRead == needSy0 || nextSourceRowToRead == needSy1)
+                {
+                    // Rotate caches so rowA holds the previous needed row and rowB holds the newest row
+                    var tmpRgba = rowCacheA;
+                    rowCacheA = rowCacheB;
+                    rowCacheB = tmpRgba;
+                    rowIndexA = rowIndexB;
 
-                ConvertScanlineToRgba(currUnfiltered, rowCacheB, actualW, h);
-                rowIndexB = nextSourceRowToRead;
+                    if (h.ColorType == 6)
+                    {
+                        MemoryMarshal.Cast<byte, Rgba32>(currUnfiltered.AsSpan(0, stride)).CopyTo(rowCacheB);
+                    }
+                    else
+                    {
+                        ConvertScanlineToRgba(currUnfiltered, rowCacheB, actualW, h);
+                    }
+                    rowIndexB = nextSourceRowToRead;
+                }
 
                 var tmpBytes = prevUnfiltered;
                 prevUnfiltered = currUnfiltered;
@@ -878,7 +973,7 @@ public static class AtlasPacker
         {
             if (useNative)
             {
-                EnsureSourceRow(py);
+                EnsureSourceRows(py, py);
                 var srcRow = GetRowBuffer(py);
                 WriteNativeRowToFrames(srcRow, actualW, frameCount, srcFrameW, py, dstFrameW, dstFrameH, frames);
             }
@@ -886,7 +981,7 @@ public static class AtlasPacker
             {
                 int sy0 = y0Table![py];
                 int sy1 = y1Table![py];
-                EnsureSourceRow(sy1);
+                EnsureSourceRows(sy0, sy1);
                 var srcRow0 = GetRowBuffer(sy0);
                 var srcRow1 = sy1 == sy0 ? srcRow0 : GetRowBuffer(sy1);
                 WriteBilinearRowToFrames(
@@ -1119,48 +1214,54 @@ public static class AtlasPacker
         }
     }
 
-    private static void UnfilterScanline(byte[] rawLine, byte[] prev, byte[] curr, int stride, int bpp)
+    private static void UnfilterScanline(byte[] rawLine, byte[] prevArr, byte[] currArr, int stride, int bpp)
     {
         byte filter = rawLine[0];
+        ReadOnlySpan<byte> raw = rawLine.AsSpan(1, stride);
+        ReadOnlySpan<byte> prev = prevArr.AsSpan(0, stride);
+        Span<byte> curr = currArr.AsSpan(0, stride);
+
         switch (filter)
         {
             case 0: // None
-                Buffer.BlockCopy(rawLine, 1, curr, 0, stride);
+                raw.CopyTo(curr);
                 break;
 
             case 1: // Sub
                 for (int i = 0; i < bpp; i++)
-                    curr[i] = rawLine[1 + i];
-                for (int i = bpp; i < stride; i++)
-                    curr[i] = (byte)(rawLine[1 + i] + curr[i - bpp]);
+                    curr[i] = raw[i];
+                for (int i = bpp; i < curr.Length; i++)
+                    curr[i] = (byte)(raw[i] + curr[i - bpp]);
                 break;
 
             case 2: // Up
-                for (int i = 0; i < stride; i++)
-                    curr[i] = (byte)(rawLine[1 + i] + prev[i]);
+                for (int i = 0; i < curr.Length; i++)
+                    curr[i] = (byte)(raw[i] + prev[i]);
                 break;
 
             case 3: // Average
                 for (int i = 0; i < bpp; i++)
-                    curr[i] = (byte)(rawLine[1 + i] + (prev[i] >> 1));
-                for (int i = bpp; i < stride; i++)
-                    curr[i] = (byte)(rawLine[1 + i] + ((curr[i - bpp] + prev[i]) >> 1));
+                    curr[i] = (byte)(raw[i] + (prev[i] >> 1));
+                for (int i = bpp; i < curr.Length; i++)
+                    curr[i] = (byte)(raw[i] + ((curr[i - bpp] + prev[i]) >> 1));
                 break;
 
             case 4: // Paeth
                 for (int i = 0; i < bpp; i++)
-                    curr[i] = (byte)(rawLine[1 + i] + prev[i]);
-                for (int i = bpp; i < stride; i++)
+                    curr[i] = (byte)(raw[i] + prev[i]);
+                for (int i = bpp; i < curr.Length; i++)
                 {
                     int a = curr[i - bpp];
                     int b = prev[i];
                     int c = prev[i - bpp];
-                    int p = a + b - c;
-                    int pa = p >= a ? p - a : a - p;
-                    int pb = p >= b ? p - b : b - p;
-                    int pc = p >= c ? p - c : c - p;
+                    int pa = b - c;
+                    int pb = a - c;
+                    int pc = pa + pb;
+                    if (pa < 0) pa = -pa;
+                    if (pb < 0) pb = -pb;
+                    if (pc < 0) pc = -pc;
                     int pr = (pa <= pb && pa <= pc) ? a : (pb <= pc ? b : c);
-                    curr[i] = (byte)(rawLine[1 + i] + pr);
+                    curr[i] = (byte)(raw[i] + pr);
                 }
                 break;
 

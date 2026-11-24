@@ -103,6 +103,25 @@ namespace FunkyMakerPlayer.Multiplayer
         private const int PING_HISTORY_SIZE = 10;
         private float _lastPacketReceivedTime;
         private const float CONNECTION_TIMEOUT = 70f; // Match server ClientTimeoutInterval (60s) + 10s buffer
+        private readonly System.Diagnostics.Stopwatch _loadPingWatch = System.Diagnostics.Stopwatch.StartNew();
+
+        /// <summary>
+        /// Keeps SignalR pings flowing while heavy main-thread level loading (e.g. SetupLevel on 5 GB levels)
+        /// temporarily pauses the normal Update() loop, preventing false silence/connection timeouts.
+        /// </summary>
+        public void PumpKeepAliveDuringLoad()
+        {
+            if (!IsConnected) return;
+            var hub = _hubConnection;
+            if (hub == null || hub.State != HubConnectionState.Connected) return;
+            _lastPacketReceivedTime = 0f;
+            if (_loadPingWatch.ElapsedMilliseconds >= (long)(PING_INTERVAL * 1000f))
+            {
+                _loadPingWatch.Restart();
+                _pingTimer = 0f;
+                SendPing();
+            }
+        }
 
         // Reconnection with exponential backoff
         private bool _shouldReconnect = false;
@@ -583,7 +602,9 @@ namespace FunkyMakerPlayer.Multiplayer
         /// </summary>
         public void Update(GameTime gameTime)
         {
-            float dt = (float)gameTime.ElapsedGameTime.TotalSeconds;
+            // Clamp dt so a long synchronous SetupLevel() frame cannot jump _lastPacketReceivedTime
+            // straight past CONNECTION_TIMEOUT and drop an otherwise healthy SignalR connection.
+            float dt = Math.Min((float)gameTime.ElapsedGameTime.TotalSeconds, 0.5f);
 
             while (_events.TryDequeue(out var action))
             {

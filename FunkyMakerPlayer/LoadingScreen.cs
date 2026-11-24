@@ -36,6 +36,7 @@ public class LoadingScreen
     // Multiplayer ready states
     public bool Player1Ready { get; set; } = false;
     public bool Player2Ready { get; set; } = false;
+    private (bool countdown, bool p1, bool p2)? _lastLoggedWaitState;
     public int MyPlayerRole { get; set; } = 0;  // 0=unknown, 1=Player1, 2=Player2
 
     /// <summary>One participant of an online room match, for the loading screen list.</summary>
@@ -189,8 +190,12 @@ public class LoadingScreen
                 // In single player: wait for ENTER key
                 if (_isMultiplayer)
                 {
-                    // Debug log
-                    Console.WriteLine($"[LoadingScreen] Waiting: countdown={startCountdown}, P1={Player1Ready}, P2={Player2Ready}");
+                    var waitState = (startCountdown, Player1Ready, Player2Ready);
+                    if (_lastLoggedWaitState != waitState)
+                    {
+                        _lastLoggedWaitState = waitState;
+                        Console.WriteLine($"[LoadingScreen] Waiting: countdown={startCountdown}, P1={Player1Ready}, P2={Player2Ready}");
+                    }
                     
                     // Only start clearing when server sends countdown signal
                     if (startCountdown && Player1Ready && Player2Ready)

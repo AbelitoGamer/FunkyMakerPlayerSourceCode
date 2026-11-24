@@ -192,6 +192,81 @@ public partial class Game1
         _loadingScreen.RoomMode = _roomMatch.Mode;
     }
 
+    /// <summary>
+    /// Guards the multiplayer loading/waiting screen against hanging forever if the server cancelled
+    /// the match, timed out / dropped this player during a slow load, lost connection, or already
+    /// started while <see cref="SetupLevel"/> was running on the main thread.
+    /// Returns true if the loading screen was aborted back to the room/error screen.
+    /// </summary>
+    private bool CheckMultiplayerLoadingScreenStatus(bool userCancelled)
+    {
+        if (_loadingScreen == null || !_isMultiplayerMatch || _roomMatch == null) return false;
+
+        var net = NetworkManager.Instance;
+        var room = RoomClient.Instance;
+
+        if (userCancelled && _loadState == LoadState.Done)
+        {
+            Console.WriteLine("[Online] Player cancelled while waiting on multiplayer loading screen");
+            QuitRoomMatch();
+            ResetMultiplayerMatchState();
+            _loadingScreen = null;
+            _level = null;
+            _inMultiplayer = true;
+            _multiplayerMenu?.ShowInfo("Cancelled loading and returned to the room.", 4f);
+            return true;
+        }
+
+        // Recover MatchStart from RoomState if it arrived while SetupLevel was busy or after reconnect.
+        var live = room.State?.Match;
+        if (live != null && live.MatchId == _roomMatch.MatchId && live.StartTimestamp > 0 && !_countdownSignalReceived)
+        {
+            Console.WriteLine($"[Online] Recovered MatchStart from RoomState (start={live.StartTimestamp})");
+            _roomMatch.StartTimestamp = live.StartTimestamp;
+            _multiplayerStartTimestamp = live.StartTimestamp;
+            _countdownSignalReceived = true;
+            _loadingScreen.Player1Ready = true;
+            _loadingScreen.Player2Ready = true;
+            return false;
+        }
+
+        if (_loadState != LoadState.Done) return false;
+
+        if (!net.IsConnected && !net.IsConnecting)
+        {
+            Console.WriteLine("[Online] Disconnected while waiting on loading screen; returning to online menu");
+            HandleSetupLevelFailure(new Exception("Connection lost while loading the match."));
+            return true;
+        }
+
+        var st = room.State;
+        if (st == null || st.Phase == Protocol.PhaseLobby || live == null || live.MatchId != _roomMatch.MatchId)
+        {
+            Console.WriteLine($"[Online] Server cancelled/ended match while loading (phase={st?.Phase ?? "null"}, liveMatch={live?.MatchId ?? "null"}); returning to room");
+            ResetMultiplayerMatchState();
+            _loadingScreen = null;
+            _level = null;
+            _inMultiplayer = true;
+            _multiplayerMenu?.ShowInfo("Server cancelled the match (load timeout or opponent left).", 5f);
+            return true;
+        }
+
+        if (!_onlineSpectating && live.Players.All(p => p.PlayerId != room.YouId))
+        {
+            Console.WriteLine("[Online] Server dropped this player during loading (load timeout); returning to room");
+            room.MarkLeftMatch(_roomMatch.MatchId);
+            room.LeftMatchScreen();
+            ResetMultiplayerMatchState();
+            _loadingScreen = null;
+            _level = null;
+            _inMultiplayer = true;
+            _multiplayerMenu?.ShowInfo("Loading took too long — returned to the room (press Watch to spectate).", 6f);
+            return true;
+        }
+
+        return false;
+    }
+
     private void OnRoomMatchStarting(MatchStartPacket p)
     {
         if (_roomMatch == null || p.MatchId != _roomMatch.MatchId) return;

@@ -1,8 +1,11 @@
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Runtime.InteropServices;
+using System.Threading;
+using System.Threading.Tasks;
 using Microsoft.Xna.Framework;
 using Microsoft.Xna.Framework.Graphics;
 using SixLabors.ImageSharp.Processing;
@@ -202,6 +205,16 @@ public static class FnmmSceneRenderer
                 $"levelBudget={levelVramBudget / (1024f * 1024f):0.#}MB, stripBudget={stripVramBudget / (1024f * 1024f):0.#}MB");
         }
 
+#if !BLAZORGL
+        if (Environment.ProcessorCount > 1 && level.Sprites.Count > 1)
+        {
+            return LoadLevelTexturesParallel(
+                gd, level, maxTexSize, persistentCache, onProgress, onRenderTick, releaseSourceBytes,
+                spriteUsage, levelVramBudget, stripVramBudget, minAdaptiveScale, gcCompactThreshold,
+                hasLevelBudget, totalLevelRawBytes, remainingCappedRawBytes, usedVramBytes);
+        }
+#endif
+
         int spriteIndex = 0;
         int totalSprites = level.Sprites.Count;
         int cacheHits = 0;
@@ -321,7 +334,7 @@ public static class FnmmSceneRenderer
 
                 estRawBytes = (long)pngW * Math.Max(1, pngH) * 4L;
                 int actualFrameCount = Math.Max(1, frameCount);
-                int fw0 = actualFrameCount > 1 ? pngW / actualFrameCount : pngW;
+                    int fw0 = actualFrameCount > 1 ? pngW / actualFrameCount : pngW;
                 if (actualFrameCount > 1 && fw0 < 10)
                 {
                     actualFrameCount = 1;
@@ -586,6 +599,699 @@ public static class FnmmSceneRenderer
         height = (int)rawH;
         return true;
     }
+
+#if !BLAZORGL
+    private sealed class ParallelUploadedFrame
+    {
+        public readonly List<Texture2D> Textures = new();
+        public List<AtlasPacker.FrameRect>? AtlasFrameRects;
+        public bool UsesPackedAtlas;
+        public bool HasSplitOffset;
+        public int ChunkFrames;
+        public int FrameWidth;
+        public float DownscaleCompensation = 1.0f;
+        public bool SetTextureIndex;
+    }
+
+    private sealed class ParallelPendingSprite
+    {
+        public string Name = "";
+        public FnmmSprite Def = null!;
+        public List<byte[]> Frames = null!;
+        public bool IsBgSprite;
+        public Dictionary<int, SpriteTextureCacheEntry>? SpriteCache;
+        public ParallelUploadedFrame[] FrameResults = Array.Empty<ParallelUploadedFrame>();
+        public int RemainingFrames;
+    }
+
+    private sealed class ParallelFrameJob
+    {
+        public ParallelPendingSprite Sprite = null!;
+        public int FrameIndex;
+        public byte[] FrameBytes = Array.Empty<byte>();
+        public int DeclaredFrameCount;
+        public int PngW;
+        public int PngH;
+        public bool HadPngHeader;
+        public long EstRawBytes;
+        public bool IsGiant;
+    }
+
+    private sealed class ParallelPreparedResult
+    {
+        public ParallelFrameJob Job = null!;
+        public int ActualFrameCount;
+        public int FrameW;
+        public int FrameH;
+        public long EstRawBytes;
+        public long ReservedEstVram;
+        public bool NeedsSplit;
+        public bool NeedsBgTile;
+        public bool NeedsDownscale;
+        public float UsedScale = 1.0f;
+        public AtlasPacker.PreparedAtlas? PreparedAtlas;
+        public Color[]? SinglePixels;
+        public int SingleTexW;
+        public int SingleTexH;
+        public bool HandleOnMainThread;
+        public Exception? Error;
+    }
+
+    /// <summary>
+    /// Multi-threaded texture loader (Android & Desktop): runs pure-CPU PNG streaming, downscaling,
+    /// trimming, deduplication, and shelf packing across bounded background workers while the
+    /// main/GL thread smoothly uploads finished textures, animates LoadingScreen, and pumps
+    /// SignalR keepalives. Preserves exact per-sprite frame ordering for all sprite types.
+    /// </summary>
+    private static Dictionary<string, List<Texture2D>> LoadLevelTexturesParallel(
+        GraphicsDevice gd,
+        FnmmLevel level,
+        int maxTexSize,
+        Dictionary<string, Dictionary<int, SpriteTextureCacheEntry>>? persistentCache,
+        Action<float, string>? onProgress,
+        Action? onRenderTick,
+        bool releaseSourceBytes,
+        Dictionary<string, (bool usedByBg, bool usedByChar)> spriteUsage,
+        long levelVramBudget,
+        long stripVramBudget,
+        float minAdaptiveScale,
+        long gcCompactThreshold,
+        bool hasLevelBudget,
+        long totalLevelRawBytes,
+        long initialRemainingCappedRawBytes,
+        long initialUsedVramBytes)
+    {
+        const long SMALL_SPRITE_EXEMPT_BYTES = 256L * 1024;
+        const long GIANT_STRIP_BYTES = 48L * 1024 * 1024;
+
+        var totalSw = System.Diagnostics.Stopwatch.StartNew();
+        var texCache = new Dictionary<string, List<Texture2D>>(StringComparer.OrdinalIgnoreCase);
+        int totalSprites = level.Sprites.Count;
+        int cacheHits = 0;
+
+        var giantQueue = new ConcurrentQueue<ParallelFrameJob>();
+        var normalQueue = new ConcurrentQueue<ParallelFrameJob>();
+        int totalJobs = 0;
+
+        // Pass 1 (main thread): satisfy cache hits and enqueue uncached frame jobs.
+        foreach (var (name, (def, frames)) in level.Sprites)
+        {
+            Dictionary<int, SpriteTextureCacheEntry>? spriteCache = null;
+            if (persistentCache != null)
+            {
+                if (!persistentCache.TryGetValue(name, out spriteCache))
+                {
+                    spriteCache = new Dictionary<int, SpriteTextureCacheEntry>();
+                    persistentCache[name] = spriteCache;
+                }
+
+                if (spriteCache.Count == frames.Count &&
+                    spriteCache.All(kvp => kvp.Value.Textures.Count > 0 &&
+                                           kvp.Value.Textures.All(t => t != null && !t.IsDisposed)))
+                {
+                    for (int fi = 0; fi < frames.Count; fi++)
+                    {
+                        if (!spriteCache.TryGetValue(fi, out var cached)) continue;
+                        if (fi < def.Data.Count)
+                        {
+                            def.Data[fi].SplitOffset = cached.SplitOffset;
+                            def.Data[fi].ChunkFrames = cached.ChunkFrames;
+                            def.Data[fi].FrameWidth = cached.FrameWidth;
+                            def.Data[fi].TextureIndex = cached.TextureIndex;
+                            def.Data[fi].DownscaleCompensation = cached.DownscaleCompensation;
+                            def.Data[fi].UsesPackedAtlas = cached.UsesPackedAtlas;
+                            def.Data[fi].AtlasFrameRects = cached.AtlasFrameRects;
+                        }
+                    }
+
+                    var cachedTextures = new List<Texture2D>();
+                    for (int fi = 0; fi < frames.Count; fi++)
+                    {
+                        if (spriteCache.TryGetValue(fi, out var cached))
+                            cachedTextures.AddRange(cached.Textures);
+                    }
+                    texCache[name] = cachedTextures;
+                    cacheHits++;
+                    continue;
+                }
+
+                spriteCache.Clear();
+            }
+
+            if (frames.Count == 0)
+            {
+                texCache[name] = new List<Texture2D>();
+                continue;
+            }
+
+            var (_, usedByChar) = spriteUsage.GetValueOrDefault(name, (false, false));
+            bool isBgSprite = def.Type == 2.0f || (def.Type == 0.0f && !usedByChar);
+
+            var pending = new ParallelPendingSprite
+            {
+                Name = name,
+                Def = def,
+                Frames = frames,
+                IsBgSprite = isBgSprite,
+                SpriteCache = spriteCache,
+                FrameResults = new ParallelUploadedFrame[frames.Count],
+                RemainingFrames = frames.Count
+            };
+
+            for (int fi = 0; fi < frames.Count; fi++)
+            {
+                byte[] frameBytes = frames[fi];
+                bool hadHeader = TryReadPngHeaderDimensions(frameBytes, out int pw, out int ph);
+                long estRaw = hadHeader ? (long)pw * Math.Max(1, ph) * 4L : 0L;
+                var job = new ParallelFrameJob
+                {
+                    Sprite = pending,
+                    FrameIndex = fi,
+                    FrameBytes = frameBytes,
+                    DeclaredFrameCount = fi < def.Data.Count ? def.Data[fi].FrameCount : 1,
+                    PngW = pw,
+                    PngH = ph,
+                    HadPngHeader = hadHeader,
+                    EstRawBytes = estRaw,
+                    IsGiant = estRaw >= GIANT_STRIP_BYTES
+                };
+
+                if (job.IsGiant) giantQueue.Enqueue(job);
+                else normalQueue.Enqueue(job);
+                totalJobs++;
+            }
+        }
+
+        if (totalJobs == 0)
+        {
+            if (persistentCache != null && totalSprites > 0)
+                Console.WriteLine($"[SceneCache] Textures: {cacheHits}/{totalSprites} sprite(s) reused from cache");
+            return texCache;
+        }
+
+        int workerCount;
+        int maxGiants;
+        if (!Environment.Is64BitProcess)
+        {
+            workerCount = Math.Clamp(Environment.ProcessorCount - 1, 2, 2);
+            maxGiants = 1;
+        }
+        else
+        {
+#if ANDROID
+            workerCount = Math.Clamp(Environment.ProcessorCount - 1, 2, 4);
+            maxGiants = Math.Min(2, workerCount);
+#else
+            long totalAvail = GC.GetGCMemoryInfo().TotalAvailableMemoryBytes;
+            bool lowRamPc = totalAvail > 0 && totalAvail <= 4L * 1024 * 1024 * 1024;
+            workerCount = lowRamPc
+                ? Math.Clamp(Environment.ProcessorCount - 1, 2, 2)
+                : Math.Clamp(Environment.ProcessorCount - 1, 2, 6);
+            maxGiants = lowRamPc ? 1 : Math.Min(2, workerCount);
+#endif
+        }
+        workerCount = Math.Min(workerCount, totalJobs);
+
+        Console.WriteLine($"[Scene] Parallel texture loader: workers={workerCount}, giantLimit={maxGiants}, jobs={totalJobs}");
+
+        long usedVramBytes = initialUsedVramBytes;
+        long inFlightEstVram = 0;
+        long remainingCappedRawBytes = initialRemainingCappedRawBytes;
+        int completedSprites = cacheHits;
+
+        using var readySlots = new SemaphoreSlim(workerCount, workerCount);
+        using var giantGate = new SemaphoreSlim(maxGiants, maxGiants);
+        using var completedSignal = new AutoResetEvent(false);
+        var completedQueue = new ConcurrentQueue<ParallelPreparedResult>();
+
+        ParallelFrameJob? TryDequeueJob(out bool acquiredGiant)
+        {
+            acquiredGiant = false;
+            // Prefer grabbing a giant strip if a giant slot is immediately free so giant strips start early.
+            if (!giantQueue.IsEmpty && giantGate.Wait(0))
+            {
+                if (giantQueue.TryDequeue(out var gJob))
+                {
+                    acquiredGiant = true;
+                    return gJob;
+                }
+                giantGate.Release();
+            }
+
+            // Otherwise process normal strips in parallel without blocking on giant strips.
+            if (normalQueue.TryDequeue(out var nJob))
+                return nJob;
+
+            // Only giant strips left: wait for a giant slot.
+            if (!giantQueue.IsEmpty)
+            {
+                giantGate.Wait();
+                if (giantQueue.TryDequeue(out var gJob2))
+                {
+                    acquiredGiant = true;
+                    return gJob2;
+                }
+                giantGate.Release();
+            }
+
+            return null;
+        }
+
+        var workers = new Task[workerCount];
+        for (int w = 0; w < workerCount; w++)
+        {
+            workers[w] = Task.Run(() =>
+            {
+                while (true)
+                {
+                    var job = TryDequeueJob(out bool heldGiant);
+                    if (job == null) break;
+
+                    // Backpressure: cap in-flight decoded CPU pixel buffers to workerCount.
+                    readySlots.Wait();
+                    var res = new ParallelPreparedResult { Job = job };
+                    try
+                    {
+                        byte[] frameBytes = job.FrameBytes;
+                        if (frameBytes.Length == 0)
+                            continue;
+
+                        int pngW = job.PngW;
+                        int pngH = job.PngH;
+                        bool hadHeader = job.HadPngHeader;
+
+                        if (!hadHeader)
+                        {
+                            using var msProbe = new MemoryStream(frameBytes, writable: false);
+                            var info = SixLabors.ImageSharp.Image.Identify(msProbe);
+                            pngW = info.Width;
+                            pngH = info.Height;
+                        }
+
+                        long estRaw = (long)pngW * Math.Max(1, pngH) * 4L;
+                        int actualFrameCount = Math.Max(1, job.DeclaredFrameCount);
+                        int fw0 = actualFrameCount > 1 ? pngW / actualFrameCount : pngW;
+                        if (actualFrameCount > 1 && fw0 < 10)
+                        {
+                            actualFrameCount = 1;
+                            fw0 = pngW;
+                        }
+
+                        long curUsed = Volatile.Read(ref usedVramBytes) + Volatile.Read(ref inFlightEstVram);
+                        long curRem = Volatile.Read(ref remainingCappedRawBytes);
+                        float dynamicLevelScale = 1.0f;
+                        if (hasLevelBudget && estRaw > SMALL_SPRITE_EXEMPT_BYTES && curRem > 0)
+                        {
+                            long remainingBudget = Math.Max(2L * 1024 * 1024, levelVramBudget - curUsed);
+                            if (curRem > remainingBudget)
+                            {
+                                dynamicLevelScale = Math.Clamp(
+                                    MathF.Sqrt((float)remainingBudget / curRem),
+                                    minAdaptiveScale,
+                                    1.0f);
+                            }
+                        }
+
+                        long cappedContrib = estRaw > SMALL_SPRITE_EXEMPT_BYTES ? Math.Min(estRaw, stripVramBudget) : 0L;
+                        if (hadHeader && cappedContrib > 0)
+                            Interlocked.Add(ref remainingCappedRawBytes, -cappedContrib);
+
+                        long estJobVram = estRaw > SMALL_SPRITE_EXEMPT_BYTES
+                            ? (long)(Math.Min(estRaw, stripVramBudget) * dynamicLevelScale * dynamicLevelScale)
+                            : estRaw;
+                        Interlocked.Add(ref inFlightEstVram, estJobVram);
+
+                        res.ActualFrameCount = actualFrameCount;
+                        res.FrameW = fw0;
+                        res.FrameH = pngH;
+                        res.EstRawBytes = estRaw;
+                        res.ReservedEstVram = estJobVram;
+                        res.UsedScale = dynamicLevelScale;
+
+                        var animData = job.FrameIndex < job.Sprite.Def.Data.Count ? job.Sprite.Def.Data[job.FrameIndex] : null;
+                        bool canPackSingleFrame = actualFrameCount == 1 && animData != null && !(job.Sprite.Def.Type == 2.0f && job.Sprite.Def.Data.Count > 1);
+                        bool levelWantsAtlas = hasLevelBudget && dynamicLevelScale < 0.99f &&
+                                               estRaw > SMALL_SPRITE_EXEMPT_BYTES &&
+                                               (actualFrameCount > 1 || canPackSingleFrame);
+
+                        bool needsDownscale = fw0 > maxTexSize || pngH > maxTexSize ||
+                                              (actualFrameCount > 1 && estRaw > stripVramBudget) ||
+                                              levelWantsAtlas;
+                        bool needsBgTile = !needsDownscale && job.Sprite.IsBgSprite && actualFrameCount == 1 && pngW > maxTexSize;
+                        bool needsSplit = !needsDownscale && !needsBgTile && pngW > maxTexSize && actualFrameCount > 1;
+
+                        res.NeedsDownscale = needsDownscale;
+                        res.NeedsBgTile = needsBgTile;
+                        res.NeedsSplit = needsSplit;
+
+                        if (needsDownscale || needsSplit)
+                        {
+                            res.PreparedAtlas = AtlasPacker.PrepareHorizontalStripCpu(
+                                frameBytes, actualFrameCount, fw0, pngH, maxTexSize,
+                                onProgress: null, maxStripVramBytes: stripVramBudget, maxScale: dynamicLevelScale);
+                            if (res.PreparedAtlas == null && needsSplit)
+                                res.HandleOnMainThread = true;
+                        }
+                        else if (needsBgTile)
+                        {
+                            res.HandleOnMainThread = true;
+                        }
+                        else
+                        {
+                            var single = PrepareSingleTextureCpu(frameBytes);
+                            if (single.HasValue)
+                            {
+                                res.SinglePixels = single.Value.Pixels;
+                                res.SingleTexW = single.Value.Width;
+                                res.SingleTexH = single.Value.Height;
+                            }
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        res.Error = ex;
+                    }
+                    finally
+                    {
+                        if (heldGiant) giantGate.Release();
+                        completedQueue.Enqueue(res);
+                        completedSignal.Set();
+                    }
+                }
+            });
+        }
+
+        // Main/GL thread: upload ready textures, animate LoadingScreen, pump SignalR keepalive, finalize sprites in exact order.
+        int uploadedJobs = 0;
+        var uiTickSw = System.Diagnostics.Stopwatch.StartNew();
+
+        try
+        {
+            while (uploadedJobs < totalJobs)
+            {
+                bool didWork = false;
+                while (completedQueue.TryDequeue(out var res))
+                {
+                    didWork = true;
+                    uploadedJobs++;
+                    var job = res.Job;
+                    var sprite = job.Sprite;
+                    int fi = job.FrameIndex;
+                    var uploaded = new ParallelUploadedFrame();
+
+                    try
+                    {
+                        if (res.Error != null)
+                        {
+                            NoteTextureFailure(res.Error);
+                            Console.WriteLine($"[Texture] {sprite.Name}[{fi}]: worker failed: {res.Error.Message}");
+                        }
+                        else if (res.PreparedAtlas != null)
+                        {
+                            List<AtlasPacker.PackResult> packResults;
+                            try
+                            {
+                                packResults = AtlasPacker.UploadPreparedAtlas(res.PreparedAtlas, gd);
+                            }
+                            catch (Exception upEx)
+                            {
+                                foreach (var pg in res.PreparedAtlas.Pages) pg.Pixels = null;
+                                Console.WriteLine($"[Texture] {sprite.Name}[{fi}]: GPU atlas upload failed ({upEx.Message}); retrying smaller on main thread...");
+                                ForceCompactingGc();
+                                float retryScale = Math.Max(minAdaptiveScale, res.PreparedAtlas.DownscaleFactor * 0.65f);
+                                packResults = AtlasPacker.PackHorizontalStrip(
+                                    job.FrameBytes, res.ActualFrameCount, res.FrameW, res.FrameH, maxTexSize, gd,
+                                    onProgress: null, maxStripVramBytes: stripVramBudget, maxScale: retryScale);
+                            }
+
+                            if (packResults.Count > 0)
+                            {
+                                var allRects = new List<AtlasPacker.FrameRect>();
+                                for (int i = 0; i < packResults.Count; i++)
+                                {
+                                    uploaded.Textures.Add(packResults[i].AtlasTexture);
+                                    var coords = packResults[i].FrameCoordinates;
+                                    for (int r = 0; r < coords.Count; r++)
+                                    {
+                                        var rect = coords[r];
+                                        if (rect.AtlasIndex < 0 || rect.AtlasIndex >= packResults.Count)
+                                            rect.AtlasIndex = i;
+                                        allRects.Add(rect);
+                                    }
+                                }
+                                uploaded.HasSplitOffset = true;
+                                uploaded.UsesPackedAtlas = true;
+                                uploaded.AtlasFrameRects = allRects;
+                                uploaded.FrameWidth = allRects.Count > 0
+                                    ? (allRects[0].OrigWidth > 0 ? allRects[0].OrigWidth : allRects[0].Width)
+                                    : res.FrameW;
+                                float ds = packResults[0].DownscaleFactor;
+                                uploaded.DownscaleCompensation = ds > 0.001f && ds < 0.999f ? 1.0f / ds : 1.0f;
+                            }
+                        }
+                        else if (res.SinglePixels != null)
+                        {
+                            var tex = new Texture2D(gd, res.SingleTexW, res.SingleTexH, false, SurfaceFormat.Color);
+                            try
+                            {
+                                tex.SetData(res.SinglePixels);
+                                res.SinglePixels = null;
+                                if (sprite.IsBgSprite && tex.Width > maxTexSize && job.DeclaredFrameCount > 1)
+                                {
+                                    int fw = tex.Width / job.DeclaredFrameCount;
+                                    int fh = tex.Height;
+                                    SplitTextureGpu(gd, tex, job.DeclaredFrameCount, fw, fh, uploaded.Textures);
+                                    tex.Dispose();
+                                    if (uploaded.Textures.Count > 0) uploaded.HasSplitOffset = true;
+                                }
+                                else
+                                {
+                                    uploaded.SetTextureIndex = true;
+                                    uploaded.Textures.Add(tex);
+                                }
+                            }
+                            catch (Exception exSet)
+                            {
+                                tex.Dispose();
+                                res.SinglePixels = null;
+                                NoteTextureFailure(exSet);
+                                Console.WriteLine($"[Texture] SetData failed {sprite.Name}[{fi}]: {exSet.Message}");
+                            }
+                        }
+                        else if (res.HandleOnMainThread && job.FrameBytes.Length > 0)
+                        {
+                            if (res.NeedsSplit)
+                            {
+                                if (sprite.IsBgSprite)
+                                {
+                                    int framesPerChunk = Math.Max(1, maxTexSize / Math.Max(1, res.FrameW));
+                                    SplitPngIntoChunks(gd, job.FrameBytes, res.ActualFrameCount, res.FrameW, res.FrameH, framesPerChunk, uploaded.Textures);
+                                    if (uploaded.Textures.Count > 0)
+                                    {
+                                        uploaded.HasSplitOffset = true;
+                                        uploaded.ChunkFrames = framesPerChunk;
+                                        uploaded.FrameWidth = res.FrameW;
+                                    }
+                                }
+                                else
+                                {
+                                    SplitPngIntoFrames(gd, job.FrameBytes, res.ActualFrameCount, res.FrameW, res.FrameH, uploaded.Textures);
+                                    if (uploaded.Textures.Count > 0)
+                                    {
+                                        uploaded.HasSplitOffset = true;
+                                        uploaded.ChunkFrames = 0;
+                                        uploaded.FrameWidth = res.FrameW;
+                                    }
+                                }
+                            }
+                            else if (res.NeedsBgTile)
+                            {
+                                int tileW = maxTexSize;
+                                SplitBgIntoTiles(gd, job.FrameBytes, res.FrameW, res.FrameH, tileW, uploaded.Textures);
+                                if (uploaded.Textures.Count > 0)
+                                {
+                                    uploaded.HasSplitOffset = true;
+                                    uploaded.ChunkFrames = 1;
+                                    uploaded.FrameWidth = tileW;
+                                }
+                            }
+                        }
+                    }
+                    finally
+                    {
+                        if (res.PreparedAtlas != null)
+                            foreach (var pg in res.PreparedAtlas.Pages) pg.Pixels = null;
+                        res.SinglePixels = null;
+
+                        if (uploaded.Textures.Count == 0)
+                        {
+                            var dummy = new Texture2D(gd, 1, 1);
+                            dummy.SetData(new[] { Color.Transparent });
+                            uploaded.Textures.Add(dummy);
+                        }
+
+                        long actualFrameVram = 0;
+                        for (int t = 0; t < uploaded.Textures.Count; t++)
+                        {
+                            var texU = uploaded.Textures[t];
+                            if (texU != null && !texU.IsDisposed)
+                                actualFrameVram += (long)texU.Width * texU.Height * 4L;
+                        }
+                        Interlocked.Add(ref usedVramBytes, actualFrameVram);
+                        if (res.ReservedEstVram > 0)
+                            Interlocked.Add(ref inFlightEstVram, -res.ReservedEstVram);
+
+                        if (releaseSourceBytes && fi < sprite.Frames.Count && sprite.Frames[fi].Length > 0)
+                            sprite.Frames[fi] = Array.Empty<byte>();
+
+                        sprite.FrameResults[fi] = uploaded;
+                        sprite.RemainingFrames--;
+
+                        // Release worker backpressure slot IMMEDIATELY now that CPU pixels are freed.
+                        readySlots.Release();
+
+                        // Finalize sprite in exact 0..frames.Count-1 order once all its frames are uploaded.
+                        if (sprite.RemainingFrames == 0)
+                        {
+                            var textures = new List<Texture2D>();
+                            var frameTexRanges = new (int Start, int Count)[sprite.Frames.Count];
+                            for (int i = 0; i < sprite.Frames.Count; i++)
+                            {
+                                int start = textures.Count;
+                                var fr = sprite.FrameResults[i];
+                                var animData = i < sprite.Def.Data.Count ? sprite.Def.Data[i] : null;
+                                if (fr != null)
+                                {
+                                    textures.AddRange(fr.Textures);
+                                    if (animData != null)
+                                    {
+                                        if (fr.HasSplitOffset) animData.SplitOffset = start;
+                                        if (fr.UsesPackedAtlas)
+                                        {
+                                            animData.UsesPackedAtlas = true;
+                                            animData.AtlasFrameRects = fr.AtlasFrameRects;
+                                            animData.FrameWidth = fr.FrameWidth;
+                                            animData.DownscaleCompensation = fr.DownscaleCompensation;
+                                        }
+                                        else if (fr.HasSplitOffset)
+                                        {
+                                            animData.ChunkFrames = fr.ChunkFrames;
+                                            animData.FrameWidth = fr.FrameWidth;
+                                        }
+                                        else if (fr.SetTextureIndex)
+                                        {
+                                            animData.TextureIndex = start;
+                                        }
+                                    }
+                                }
+                                frameTexRanges[i] = (start, Math.Max(0, textures.Count - start));
+                            }
+
+                            texCache[sprite.Name] = textures;
+                            if (sprite.SpriteCache != null)
+                            {
+                                for (int i = 0; i < sprite.Frames.Count; i++)
+                                {
+                                    var animData = i < sprite.Def.Data.Count ? sprite.Def.Data[i] : null;
+                                    var cached = new SpriteTextureCacheEntry
+                                    {
+                                        SplitOffset = animData?.SplitOffset ?? -1,
+                                        ChunkFrames = animData?.ChunkFrames ?? 0,
+                                        FrameWidth = animData?.FrameWidth ?? 0,
+                                        TextureIndex = animData?.TextureIndex ?? -1,
+                                        DownscaleCompensation = animData?.DownscaleCompensation ?? 1.0f,
+                                        UsesPackedAtlas = animData?.UsesPackedAtlas ?? false,
+                                        AtlasFrameRects = animData?.AtlasFrameRects
+                                    };
+                                    var (texStart, texCount) = frameTexRanges[i];
+                                    for (int t = texStart; t < texStart + texCount && t < textures.Count; t++)
+                                        cached.Textures.Add(textures[t]);
+                                    sprite.SpriteCache[i] = cached;
+                                }
+                            }
+                            sprite.FrameResults = Array.Empty<ParallelUploadedFrame>();
+                            completedSprites++;
+                        }
+
+                        if (res.EstRawBytes >= gcCompactThreshold)
+                            ForceCompactingGc();
+                    }
+
+                    if (uiTickSw.ElapsedMilliseconds >= 100)
+                    {
+                        float progress = (uploadedJobs / (float)Math.Max(1, totalJobs)) * 0.8f;
+                        onProgress?.Invoke(progress, $"Creating GPU textures... ({completedSprites}/{totalSprites})");
+                        onRenderTick?.Invoke();
+                        uiTickSw.Restart();
+                    }
+                }
+
+                if (uploadedJobs < totalJobs)
+                {
+                    if (!didWork)
+                        completedSignal.WaitOne(50);
+
+                    if (uiTickSw.ElapsedMilliseconds >= 100)
+                    {
+                        float progress = (uploadedJobs / (float)Math.Max(1, totalJobs)) * 0.8f;
+                        onProgress?.Invoke(progress, $"Creating GPU textures... ({completedSprites}/{totalSprites})");
+                        onRenderTick?.Invoke();
+                        uiTickSw.Restart();
+                    }
+                }
+            }
+        }
+        finally
+        {
+            try { Task.WaitAll(workers); } catch { }
+        }
+
+        if (totalLevelRawBytes > 0)
+        {
+            Console.WriteLine(
+                $"[Scene] Level GPU textures ready: raw={totalLevelRawBytes / (1024f * 1024f):0.#}MB -> " +
+                $"gpu={Volatile.Read(ref usedVramBytes) / (1024f * 1024f):0.#}MB" +
+                (hasLevelBudget ? $" (budget={levelVramBudget / (1024f * 1024f):0.#}MB)" : " (unlimited)") +
+                $" in {totalSw.Elapsed.TotalSeconds:0.0}s ({workerCount} workers)");
+        }
+
+        if (persistentCache != null && totalSprites > 0)
+            Console.WriteLine($"[SceneCache] Textures: {cacheHits}/{totalSprites} sprite(s) reused from cache");
+
+        return texCache;
+    }
+
+    private static (Color[] Pixels, int Width, int Height)? PrepareSingleTextureCpu(byte[] pngBytes)
+    {
+        using var ms = new MemoryStream(pngBytes, writable: false);
+        var decoderOptions = new SixLabors.ImageSharp.Formats.DecoderOptions { SkipMetadata = true };
+        using var img = SixLabors.ImageSharp.Image.Load<SixLabors.ImageSharp.PixelFormats.Rgba32>(decoderOptions, ms);
+
+        int srcW = img.Width;
+        int srcH = img.Height;
+        if (srcW <= 0 || srcH <= 0 || srcW > 16384 || srcH > 16384) return null;
+
+        int texW = (srcW + 3) & ~3;
+        int texH = srcH;
+        var pixels = new Color[texW * texH];
+
+        img.ProcessPixelRows(accessor =>
+        {
+            for (int y = 0; y < srcH; y++)
+            {
+                var row = accessor.GetRowSpan(y);
+                int rowBase = y * texW;
+                for (int x = 0; x < srcW; x++)
+                {
+                    var p = row[x];
+                    pixels[rowBase + x] = Color.FromNonPremultiplied(p.R, p.G, p.B, p.A);
+                }
+            }
+        });
+
+        return (pixels, texW, texH);
+    }
+#endif
 
     /// <summary>
     /// Forces a compacting garbage collection. On 32-bit Android (Mono runtime, SGen GC),

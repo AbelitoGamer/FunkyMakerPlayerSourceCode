@@ -972,6 +972,30 @@ Editor stage preview); `Game1` delegates to it.
       later sprites. On Android (`!_playtestingFromEditor`), `releaseSourceBytes: true` frees each
       `frames[fi]` PNG `byte[]` immediately after GPU upload instead of holding ~180 MB of raw PNG bytes
       across all sprites.
+    - **Streaming PNG speedup & Android multi-threaded texture pipeline (`AtlasPacker.cs`, `FnmmSceneRenderer.cs`, 2026-11-23):**
+      `DecodeStreamingPngToFrames` skips `ConvertScanlineToRgba` completely for source rows skipped
+      during downscaling, uses zero-copy `MemoryMarshal.Cast<byte, Rgba32>` for RGBA8 (`ColorType 6`),
+      uses `Span<byte>` in `UnfilterScanline`, skips deduplication hashing when `frameCount == 1`, and
+      uses tighter `1.10x` pre-trim headroom for >64 MB strips to avoid double-decoding 500–750 MB PNGs.
+      `AtlasPacker` is split into thread-safe CPU preparation (`PrepareHorizontalStripCpu`) and main/GL
+      upload (`UploadPreparedAtlas`). On both Android and Desktop (`#if !BLAZORGL`), `FnmmSceneRenderer.LoadLevelTexturesParallel`
+      runs PNG decode/downscale/trim/dedup/shelf-pack across bounded background workers (**2** workers
+      with `giantLimit = 1` on 32-bit; up to **4** workers / `giantLimit = 2` on 64-bit Android; up to
+      **6** workers / `giantLimit = 2` on >4 GB Desktop PC) with a bounded ready-slot semaphore so peak
+      RAM stays flat, while the main/GL thread smoothly uploads textures in exact frame order, animates
+      `LoadingScreen`, and pumps SignalR keepalives. Desktop 64-bit PC keeps `levelVramBudget = long.MaxValue`
+      (unlimited, 100% native quality untouched) while cutting massive 5+ GB level load times well under
+      the server's 60 s match-loading timeout.
+    - **Multiplayer long-load keepalive & infinite-wait guards (`NetworkManager.cs`, `Game1.LevelLoad.cs`,
+      `Game1.Online.cs`, `Game1.cs`, `LoadingScreen.cs`, 2026-11-23):** `RenderLoadingScreen` now calls
+      `NetworkManager.Instance.PumpKeepAliveDuringLoad()` so SignalR pings continue every 2 s during
+      heavy `SetupLevel` loads, and `NetworkManager.Update` clamps `dt` to `0.5 s` so a single slow load
+      frame never triggers a false `CONNECTION_TIMEOUT` disconnect. `CheckMultiplayerLoadingScreenStatus`
+      recovers `MatchStart` from `RoomState.Match.StartTimestamp` if missed during load, exits cleanly
+      back to the Waiting Room with a toast if the server cancelled the match or dropped the player for
+      taking too long (instead of hanging forever on `Waiting for ...`), allows ESC / Android Back / B
+      on the waiting screen to cancel and return to the room, and deduplicates `LoadingScreen`'s
+      per-frame `Waiting:` console log.
 - `Game1._spriteTextureCache` (`name → index → SpriteTextureCacheEntry`) avoids
   recreating textures on song restart/playtest; it is cleared when loading a
   different level.
