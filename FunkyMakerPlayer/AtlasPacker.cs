@@ -96,10 +96,10 @@ public static class AtlasPacker
             return 10L * 1024 * 1024;
         long totalAvail = GC.GetGCMemoryInfo().TotalAvailableMemoryBytes;
         if (totalAvail > 0 && totalAvail <= 4L * 1024 * 1024 * 1024)
-            return 96L * 1024 * 1024;
-        if (totalAvail > 0 && totalAvail <= 8L * 1024 * 1024 * 1024)
             return 128L * 1024 * 1024;
-        return 192L * 1024 * 1024;
+        // PC 64-bit (>4 GB RAM): never downscale sprites by per-strip VRAM budget; rely on
+        // lossless transparent-margin trimming + exact deduplication + GPU max texture fit.
+        return long.MaxValue;
 #endif
     }
 
@@ -194,11 +194,53 @@ public static class AtlasPacker
                 if (effectiveFrameWidth > maxAtlasSize || effectiveFrameHeight > maxAtlasSize)
                     fitScale = Math.Min((float)maxAtlasSize / effectiveFrameWidth, (float)maxAtlasSize / effectiveFrameHeight);
 
-                double headroom = rawStripBytes > 64L * 1024 * 1024 ? 1.10 : 1.30;
-                long preTrimBudget = vramBudget < long.MaxValue / 2 ? (long)(vramBudget * headroom) : vramBudget;
-                float budgetScale = rawStripBytes > preTrimBudget
-                    ? MathF.Sqrt((float)preTrimBudget / rawStripBytes)
-                    : 1.0f;
+                // Lossless-first sizing: when a streaming PNG's raw untrimmed bytes exceed vramBudget,
+                // run a ~0-RAM scanline probe to measure the EXACT trimmed + deduplicated footprint at
+                // 1.0x native quality BEFORE deciding to downscale. Sprites that fit after lossless
+                // trim + dedup keep 100% native quality; strips that still exceed budget only downscale
+                // by the exact minimum factor needed after trim + dedup.
+                StreamProbeFrame[]? probeFrames = null;
+                long effectiveEstimateBytes = rawStripBytes;
+                if (canStreamPng && vramBudget < long.MaxValue && rawStripBytes > vramBudget && fitScale >= 0.995f)
+                {
+                    try
+                    {
+                        probeFrames = ProbeStreamingPngTrimAndDedup(
+                            pngBytes, pngHeader!, frameCount, effectiveFrameWidth, effectiveFrameHeight,
+                            out long uniqueTrimmedArea, out _);
+                        long losslessPackedEst = (long)(uniqueTrimmedArea * 4L * 1.12);
+                        effectiveEstimateBytes = Math.Max(4L, losslessPackedEst);
+                        Console.WriteLine(
+                            $"[AtlasPacker] Lossless probe: raw={rawStripBytes / (1024f * 1024f):0.##}MB -> " +
+                            $"trimmed+dedupEst={effectiveEstimateBytes / (1024f * 1024f):0.##}MB (budget={vramBudget / (1024f * 1024f):0.##}MB)");
+                    }
+                    catch (Exception probeEx)
+                    {
+                        Console.WriteLine($"[AtlasPacker] Streaming lossless probe skipped ({probeEx.Message}); using raw estimate");
+                        probeFrames = null;
+                    }
+                }
+
+                float budgetScale;
+                if (vramBudget >= long.MaxValue / 2)
+                {
+                    budgetScale = 1.0f;
+                }
+                else if (probeFrames != null)
+                {
+                    // Exact lossless estimate already includes 12% shelf headroom: keep 1.0x whenever it fits!
+                    budgetScale = effectiveEstimateBytes > vramBudget
+                        ? MathF.Sqrt((float)vramBudget / effectiveEstimateBytes)
+                        : 1.0f;
+                }
+                else
+                {
+                    double headroom = rawStripBytes > 64L * 1024 * 1024 ? 1.35 : 1.50;
+                    long preTrimBudget = (long)(vramBudget * headroom);
+                    budgetScale = rawStripBytes > preTrimBudget
+                        ? MathF.Sqrt((float)preTrimBudget / rawStripBytes)
+                        : 1.0f;
+                }
 
                 float attemptScale = Math.Clamp(Math.Min(Math.Min(fitScale, budgetScale), maxScale), minScale, 1.0f);
 
@@ -219,6 +261,7 @@ public static class AtlasPacker
                             attemptScale,
                             vramBudget,
                             minScale,
+                            probeFrames,
                             onProgress,
                             out long packedBytes,
                             out bool overBudgetNeedsRetry);
@@ -347,15 +390,35 @@ public static class AtlasPacker
         }
     }
 
+    private struct StreamProbeFrame
+    {
+        public int MinX;
+        public int MinY;
+        public int MaxX;
+        public int MaxY;
+        public int NonZeroPixels;
+        public ulong Hash1;
+        public ulong Hash2;
+        public int DuplicateOfFrame; // -1 if unique in probe, else earlier identical frame index
+
+        public readonly bool IsEmpty => NonZeroPixels <= 0 || MaxX < MinX || MaxY < MinY;
+        public readonly int TrimW => IsEmpty ? 0 : (MaxX - MinX + 1);
+        public readonly int TrimH => IsEmpty ? 0 : (MaxY - MinY + 1);
+    }
+
     private sealed class DecodedFrameData
     {
-        public Color[]? Pixels; // dstFrameW * dstFrameH (null if completely transparent)
+        public Color[]? Pixels; // BufferWidth * bufH (null if empty or probe-deduped)
+        public int BufferWidth;
+        public int BufOriginX;
+        public int BufOriginY;
         public int MinX = int.MaxValue;
         public int MinY = int.MaxValue;
         public int MaxX = -1;
         public int MaxY = -1;
+        public int DuplicateOfFrame = -1;
 
-        public bool IsEmpty => Pixels == null || MaxX < MinX || MaxY < MinY;
+        public bool IsEmpty => (Pixels == null && DuplicateOfFrame < 0) || MaxX < MinX || MaxY < MinY;
         public int TrimW => IsEmpty ? 0 : (MaxX - MinX + 1);
         public int TrimH => IsEmpty ? 0 : (MaxY - MinY + 1);
     }
@@ -395,6 +458,7 @@ public static class AtlasPacker
         float requestedScale,
         long vramBudget,
         float minScale,
+        StreamProbeFrame[]? probeFrames,
         Action<int, int>? onProgress,
         out long totalPackedBytes,
         out bool overBudgetNeedsRetry)
@@ -418,7 +482,7 @@ public static class AtlasPacker
             {
                 frames = DecodeStreamingPngToFrames(
                     pngBytes, pngHeader, frameCount, srcFrameW, srcFrameH,
-                    dstFrameW, dstFrameH, useNative, onProgress);
+                    dstFrameW, dstFrameH, useNative, useNative ? probeFrames : null, onProgress);
             }
             catch (Exception streamEx)
             {
@@ -455,27 +519,40 @@ public static class AtlasPacker
                 continue;
             }
 
+            // Probe-deduplicated exact duplicate (same tight bounds + 128-bit pixel hash, skipped RAM alloc)
+            if (fd.DuplicateOfFrame >= 0 && fd.DuplicateOfFrame < f && frameToTile[fd.DuplicateOfFrame] >= 0)
+            {
+                frameToTile[f] = frameToTile[fd.DuplicateOfFrame];
+                dedupCount++;
+                continue;
+            }
+
             int tx = fd.MinX;
             int ty = fd.MinY;
             int tw = fd.TrimW;
             int th = fd.TrimH;
+            int bufStride = fd.BufferWidth > 0 ? fd.BufferWidth : dstFrameW;
+            int localTx = tx - fd.BufOriginX;
+            int localTy = ty - fd.BufOriginY;
             int matchedTile = -1;
             List<int>? candidates = null;
             ulong hash = 0;
 
             if (hashBuckets != null)
             {
-                hash = ComputeTrimmedFrameHash(fd.Pixels!, dstFrameW, tx, ty, tw, th);
+                hash = ComputeTrimmedFrameHash(fd.Pixels!, bufStride, localTx, localTy, tw, th);
                 if (hashBuckets.TryGetValue(hash, out candidates))
                 {
                     for (int c = 0; c < candidates.Count; c++)
                     {
                         int tileIdx = candidates[c];
                         var existing = uniqueTiles[tileIdx];
+                        var exFd = frames[existing.SourceFrameIndex];
+                        int exStride = exFd.BufferWidth > 0 ? exFd.BufferWidth : dstFrameW;
                         if (existing.Width == tw && existing.Height == th &&
                             TrimmedPixelsEqual(
-                                fd.Pixels!, dstFrameW, tx, ty,
-                                frames[existing.SourceFrameIndex].Pixels!, dstFrameW, existing.TrimX, existing.TrimY,
+                                fd.Pixels!, bufStride, localTx, localTy,
+                                exFd.Pixels!, exStride, existing.TrimX - exFd.BufOriginX, existing.TrimY - exFd.BufOriginY,
                                 tw, th))
                         {
                             matchedTile = tileIdx;
@@ -666,15 +743,19 @@ public static class AtlasPacker
             for (int i = 0; i < tileIndices.Count; i++)
             {
                 var tile = uniqueTiles[tileIndices[i]];
-                var srcPixels = frames[tile.SourceFrameIndex].Pixels!;
+                var srcFd = frames[tile.SourceFrameIndex];
+                var srcPixels = srcFd.Pixels!;
+                int srcStride = srcFd.BufferWidth > 0 ? srcFd.BufferWidth : dstFrameW;
+                int srcOffX = tile.TrimX - srcFd.BufOriginX;
+                int srcOffY = tile.TrimY - srcFd.BufOriginY;
                 for (int row = 0; row < tile.Height; row++)
                 {
-                    int srcOff = (tile.TrimY + row) * dstFrameW + tile.TrimX;
+                    int srcOff = (srcOffY + row) * srcStride + srcOffX;
                     int dstOff = (tile.PackedY + row) * pw + tile.PackedX;
                     Array.Copy(srcPixels, srcOff, pagePixels, dstOff, tile.Width);
                 }
                 // Release frame pixels as soon as copied to page buffer
-                frames[tile.SourceFrameIndex].Pixels = null;
+                srcFd.Pixels = null;
             }
 
             prepared.Pages.Add(new PreparedAtlasPage
@@ -882,6 +963,137 @@ public static class AtlasPacker
     private static uint ReadUInt32BE(byte[] b, int off) =>
         ((uint)b[off] << 24) | ((uint)b[off + 1] << 16) | ((uint)b[off + 2] << 8) | b[off + 3];
 
+    /// <summary>
+    /// Zero-frame-RAM streaming PNG pre-scan: streams scanlines through ZLib without allocating any
+    /// per-frame pixel buffers, computing each frame's exact tight non-transparent bounding box and a
+    /// 128-bit content fingerprint to measure the real post-trim + post-dedup GPU area at 1.0x native quality.
+    /// </summary>
+    private static StreamProbeFrame[] ProbeStreamingPngTrimAndDedup(
+        byte[] pngBytes,
+        StreamingPngHeader h,
+        int frameCount,
+        int srcFrameW,
+        int srcFrameH,
+        out long uniqueTrimmedArea,
+        out long totalTrimmedArea)
+    {
+        const ulong fnvOffset1 = 14695981039346656037UL;
+        const ulong fnvPrime1 = 1099511628211UL;
+        const ulong fnvOffset2 = 0x9E3779B97F4A7C15UL;
+        const ulong fnvPrime2 = 0xBF58476D1CE4E5B9UL;
+
+        var probe = new StreamProbeFrame[frameCount];
+        for (int f = 0; f < frameCount; f++)
+        {
+            probe[f] = new StreamProbeFrame
+            {
+                MinX = int.MaxValue,
+                MinY = int.MaxValue,
+                MaxX = -1,
+                MaxY = -1,
+                Hash1 = fnvOffset1,
+                Hash2 = fnvOffset2,
+                DuplicateOfFrame = -1
+            };
+        }
+
+        int actualW = h.Width;
+        int actualH = Math.Min(h.Height, srcFrameH);
+        int bpp = h.BytesPerPixel;
+        int stride = actualW * bpp;
+
+        using var idatStream = new PngIdatConcatStream(pngBytes, h.IdatChunks);
+        using var zlib = new ZLibStream(idatStream, CompressionMode.Decompress);
+
+        byte[] rawLine = new byte[1 + stride];
+        byte[] prevUnfiltered = new byte[stride];
+        byte[] currUnfiltered = new byte[stride];
+        Rgba32[] rowRgba = new Rgba32[actualW];
+
+        for (int py = 0; py < actualH; py++)
+        {
+            ReadExact(zlib, rawLine, 0, rawLine.Length);
+            UnfilterScanline(rawLine, prevUnfiltered, currUnfiltered, stride, bpp);
+
+            if (h.ColorType == 6)
+                MemoryMarshal.Cast<byte, Rgba32>(currUnfiltered.AsSpan(0, stride)).CopyTo(rowRgba);
+            else
+                ConvertScanlineToRgba(currUnfiltered, rowRgba, actualW, h);
+
+            for (int f = 0; f < frameCount; f++)
+            {
+                int srcX = f * srcFrameW;
+                if (srcX >= actualW) break;
+                int copyW = Math.Min(srcFrameW, actualW - srcX);
+
+                ref var pf = ref probe[f];
+                int minX = pf.MinX;
+                int maxX = pf.MaxX;
+                ulong h1 = pf.Hash1;
+                ulong h2 = pf.Hash2;
+                int nonZero = pf.NonZeroPixels;
+                bool rowHasAlpha = false;
+
+                for (int px = 0; px < copyW; px++)
+                {
+                    var p = rowRgba[srcX + px];
+                    if (p.A == 0) continue;
+
+                    uint packed = ToPremultipliedColor(p).PackedValue;
+                    uint coord = ((uint)py << 16) ^ (uint)px;
+                    h1 = (h1 ^ packed) * fnvPrime1;
+                    h1 = (h1 ^ coord) * fnvPrime1;
+                    h2 = (h2 ^ (packed ^ (coord * 2654435761U))) * fnvPrime2;
+                    if (px < minX) minX = px;
+                    if (px > maxX) maxX = px;
+                    nonZero++;
+                    rowHasAlpha = true;
+                }
+
+                if (rowHasAlpha)
+                {
+                    pf.MinX = minX;
+                    pf.MaxX = maxX;
+                    if (py < pf.MinY) pf.MinY = py;
+                    if (py > pf.MaxY) pf.MaxY = py;
+                    pf.NonZeroPixels = nonZero;
+                    pf.Hash1 = h1;
+                    pf.Hash2 = h2;
+                }
+            }
+
+            var tmp = prevUnfiltered;
+            prevUnfiltered = currUnfiltered;
+            currUnfiltered = tmp;
+        }
+
+        uniqueTrimmedArea = 0;
+        totalTrimmedArea = 0;
+        var seen = new Dictionary<(int MinX, int MinY, int MaxX, int MaxY, int Count, ulong H1, ulong H2), int>(frameCount);
+        int pad = frameCount > 1 ? 1 : 0;
+
+        for (int f = 0; f < frameCount; f++)
+        {
+            ref var pf = ref probe[f];
+            if (pf.IsEmpty) continue;
+            long area = (long)(pf.TrimW + pad) * (pf.TrimH + pad);
+            totalTrimmedArea += area;
+
+            var key = (pf.MinX, pf.MinY, pf.MaxX, pf.MaxY, pf.NonZeroPixels, pf.Hash1, pf.Hash2);
+            if (seen.TryGetValue(key, out int firstIdx))
+            {
+                pf.DuplicateOfFrame = firstIdx;
+            }
+            else
+            {
+                seen[key] = f;
+                uniqueTrimmedArea += area;
+            }
+        }
+
+        return probe;
+    }
+
     private static DecodedFrameData[] DecodeStreamingPngToFrames(
         byte[] pngBytes,
         StreamingPngHeader h,
@@ -891,10 +1103,38 @@ public static class AtlasPacker
         int dstFrameW,
         int dstFrameH,
         bool useNative,
+        StreamProbeFrame[]? tightNativeProbe,
         Action<int, int>? onProgress)
     {
         var frames = new DecodedFrameData[frameCount];
-        for (int f = 0; f < frameCount; f++) frames[f] = new DecodedFrameData();
+        bool useTightBuffers = useNative && tightNativeProbe != null && tightNativeProbe.Length == frameCount;
+        for (int f = 0; f < frameCount; f++)
+        {
+            var fd = new DecodedFrameData { BufferWidth = dstFrameW };
+            if (useTightBuffers)
+            {
+                var pf = tightNativeProbe![f];
+                if (!pf.IsEmpty)
+                {
+                    fd.MinX = pf.MinX;
+                    fd.MinY = pf.MinY;
+                    fd.MaxX = pf.MaxX;
+                    fd.MaxY = pf.MaxY;
+                    fd.BufOriginX = pf.MinX;
+                    fd.BufOriginY = pf.MinY;
+                    fd.BufferWidth = pf.TrimW;
+                    if (pf.DuplicateOfFrame >= 0)
+                    {
+                        fd.DuplicateOfFrame = pf.DuplicateOfFrame;
+                    }
+                    else
+                    {
+                        fd.Pixels = new Color[pf.TrimW * pf.TrimH];
+                    }
+                }
+            }
+            frames[f] = fd;
+        }
 
         int actualW = h.Width;
         int actualH = h.Height;
@@ -971,7 +1211,13 @@ public static class AtlasPacker
 
         for (int py = 0; py < copyH; py++)
         {
-            if (useNative)
+            if (useTightBuffers)
+            {
+                EnsureSourceRows(py, py);
+                var srcRow = GetRowBuffer(py);
+                WriteTightNativeRowToFrames(srcRow, actualW, frameCount, srcFrameW, py, frames);
+            }
+            else if (useNative)
             {
                 EnsureSourceRows(py, py);
                 var srcRow = GetRowBuffer(py);
@@ -1000,6 +1246,36 @@ public static class AtlasPacker
         }
 
         return frames;
+    }
+
+    private static void WriteTightNativeRowToFrames(
+        ReadOnlySpan<Rgba32> srcRow,
+        int actualWidth,
+        int frameCount,
+        int srcFrameW,
+        int py,
+        DecodedFrameData[] frames)
+    {
+        for (int f = 0; f < frameCount; f++)
+        {
+            var fd = frames[f];
+            var pixels = fd.Pixels;
+            if (pixels == null || py < fd.MinY || py > fd.MaxY)
+                continue;
+
+            int srcFrameStart = f * srcFrameW;
+            if (srcFrameStart >= actualWidth) break;
+
+            int rowOffset = (py - fd.BufOriginY) * fd.BufferWidth;
+            int minX = fd.MinX;
+            int maxX = Math.Min(fd.MaxX, actualWidth - srcFrameStart - 1);
+            for (int px = minX; px <= maxX; px++)
+            {
+                var p = srcRow[srcFrameStart + px];
+                if (p.A != 0)
+                    pixels[rowOffset + (px - minX)] = ToPremultipliedColor(p);
+            }
+        }
     }
 
     private static DecodedFrameData[] DecodeImageSharpToFrames(

@@ -131,29 +131,41 @@ public class NoteRenderer
     // ── Public API ────────────────────────────────────────────────────────────
     
     /// <summary>
-    /// Helper to check if a key is down (combines keyboard + touch controls)
+    /// Helper to check if a gameplay lane is currently down (keyboard + Android touch lane).
     /// </summary>
-    private bool IsKeyDown(KeyboardState kb, Keys key)
+    private bool IsLaneDown(KeyboardState kb, int lane)
     {
+        Keys key = PlayerKeys[lane];
 #if ANDROID
-        return kb.IsKeyDown(key) || (_touchControls?.IsKeyDown(key) ?? false);
+        return kb.IsKeyDown(key) || (_touchControls?.IsLaneDown(lane) ?? false);
 #else
         return kb.IsKeyDown(key);
 #endif
     }
-    
+
     /// <summary>
-    /// Helper to check if a key was just pressed THIS frame
-    /// On Android, uses tap detection from TouchControls instead of frame-to-frame comparison
+    /// Helper to check if a gameplay lane was down on the PREVIOUS frame (keyboard + Android touch lane).
     /// </summary>
-    private bool IsKeyJustPressed(KeyboardState kb, KeyboardState prevKb, Keys key)
+    private bool WasLaneDown(KeyboardState prevKb, int lane)
     {
+        Keys key = PlayerKeys[lane];
 #if ANDROID
-        // On Android, use TouchControls tap detection which is more reliable for touch
-        bool touchJustPressed = _touchControls?.IsKeyJustPressed(key) ?? false;
-        if (touchJustPressed) return true;
-        
-        // Also check keyboard for testing
+        return prevKb.IsKeyDown(key) || (_touchControls?.WasLaneDown(lane) ?? false);
+#else
+        return prevKb.IsKeyDown(key);
+#endif
+    }
+
+    /// <summary>
+    /// Helper to check if a gameplay lane was just pressed THIS frame.
+    /// On Android, uses per-finger tap detection from TouchControls so multi-touch and
+    /// same-lane double taps register reliably.
+    /// </summary>
+    private bool IsLaneJustPressed(KeyboardState kb, KeyboardState prevKb, int lane)
+    {
+        Keys key = PlayerKeys[lane];
+#if ANDROID
+        if (_touchControls?.IsLaneJustPressed(lane) == true) return true;
         return kb.IsKeyDown(key) && !prevKb.IsKeyDown(key);
 #else
         return kb.IsKeyDown(key) && !prevKb.IsKeyDown(key);
@@ -217,6 +229,7 @@ public class NoteRenderer
     private readonly float[] _holdHitDist  = new float[LANE_COUNT];  // initial hit dist
     private readonly float[] _holdStart    = new float[LANE_COUNT];  // song time when hold started
     private readonly float[] _holdDuration = new float[LANE_COUNT];  // total hold duration
+    private readonly float[] _holdReleaseTime = new float[LANE_COUNT]; // song time when hold first lost input (-1 = currently held)
 
     // Bonus score for completing a hold (awarded on release at the end)
     // (fork) FNF's 250/150/75/25 scaled like the hit points (×120/350).
@@ -228,6 +241,9 @@ public class NoteRenderer
     private const float HOLD_MIN_COMPLETION = 0.25f;
     // Within this many seconds of the end, releasing counts as "completed"
     private const float HOLD_END_LENIENCY = 0.10f;
+    // Brief drop grace (seconds) so 1-5 frame touchscreen / multi-touch micro-drops on mobile
+    // don't immediately cancel an active hold note (deterministic in songTime for replays).
+    private const float HOLD_RELEASE_GRACE = 0.085f;
 
     /// <summary>
     /// When true, receptors and notes are hidden when no note is active.
@@ -295,7 +311,10 @@ public class NoteRenderer
         }
         // Clear any active hold state
         for (int i = 0; i < LANE_COUNT; i++)
+        {
             _holdEndTime[i] = -1f;
+            _holdReleaseTime[i] = -1f;
+        }
         
         // Reset song start time for safe frames recalculation
         _songStartTime = targetTime > 0f ? targetTime : -1f;
@@ -482,10 +501,11 @@ public class NoteRenderer
 
         for (int i = 0; i < LANE_COUNT; i++)
         {
-            _holdEndTime[i]  = -1f;
-            _holdHitDist[i]  = -1f;
-            _holdStart[i]    = -1f;
-            _holdDuration[i] = -1f;
+            _holdEndTime[i]     = -1f;
+            _holdHitDist[i]     = -1f;
+            _holdStart[i]       = -1f;
+            _holdDuration[i]    = -1f;
+            _holdReleaseTime[i] = -1f;
         }
 
         var sl = level.Data.Strumlines;
@@ -823,9 +843,9 @@ public class NoteRenderer
         int heldMask = 0, prevMask = 0, pressedMask = 0;
         for (int lane = 0; lane < LANE_COUNT; lane++)
         {
-            if (IsKeyDown(kb, PlayerKeys[lane])) heldMask |= 1 << lane;
-            if (IsKeyDown(prevKb, PlayerKeys[lane])) prevMask |= 1 << lane;
-            if (IsKeyJustPressed(kb, prevKb, PlayerKeys[lane])) pressedMask |= 1 << lane;  // Use new tap detection
+            if (IsLaneDown(kb, lane)) heldMask |= 1 << lane;
+            if (WasLaneDown(prevKb, lane)) prevMask |= 1 << lane;
+            if (IsLaneJustPressed(kb, prevKb, lane)) pressedMask |= 1 << lane;
         }
 
         // Replays (fork): record every frame whose input differs from "nothing changed".
@@ -859,15 +879,23 @@ public class NoteRenderer
             {
                 float holdEnd  = _holdEndTime[lane];
                 float duration = _holdDuration[lane];
-                float elapsed  = songTime - _holdStart[lane];
-                float progress = duration > 0f ? Math.Clamp(elapsed / duration, 0f, 1f) : 1f;
+
+                if (held)
+                {
+                    _holdReleaseTime[lane] = -1f;
+                }
+                else if (_holdReleaseTime[lane] < 0f)
+                {
+                    _holdReleaseTime[lane] = songTime;
+                }
 
                 bool holdNaturallyEnded = songTime >= holdEnd || (!held && songTime >= holdEnd - HOLD_END_LENIENCY);
-                bool releasedEarly      = !held && !holdNaturallyEnded;
+                bool inReleaseGrace     = !held && !holdNaturallyEnded && (songTime - _holdReleaseTime[lane] < HOLD_RELEASE_GRACE);
+                bool releasedEarly      = !held && !holdNaturallyEnded && !inReleaseGrace;
 
-                if (held || holdNaturallyEnded)
+                if (held || holdNaturallyEnded || inReleaseGrace)
                 {
-                    // Still holding or hold just finished naturally
+                    // Still holding, within brief micro-drop grace, or hold just finished naturally
                     _glowTimer[lane] = 0.12f;
                     SetRecState(lane, 2);
 
@@ -879,17 +907,22 @@ public class NoteRenderer
                         // Fire Sick judgement for completing the hold
                         Sicks++;  // Count completed hold as Sick!
                         OnJudgement?.Invoke("Sick!");
-                        _holdEndTime[lane]  = -1f;
-                        _holdHitDist[lane]  = -1f;
-                        _holdStart[lane]    = -1f;
-                        _holdDuration[lane] = -1f;
-                        _glowTimer[lane]    = 0.20f;
+                        _holdEndTime[lane]     = -1f;
+                        _holdHitDist[lane]     = -1f;
+                        _holdStart[lane]       = -1f;
+                        _holdDuration[lane]    = -1f;
+                        _holdReleaseTime[lane] = -1f;
+                        _glowTimer[lane]       = 0.20f;
                         SetRecState(lane, 2);
                     }
                 }
                 else if (releasedEarly)
                 {
-                    // Released before the end
+                    // Released before the end (measure progress at the actual release time, not after grace)
+                    float releaseRef = _holdReleaseTime[lane] >= 0f ? _holdReleaseTime[lane] : songTime;
+                    float elapsed    = Math.Max(0f, releaseRef - _holdStart[lane]);
+                    float progress   = duration > 0f ? Math.Clamp(elapsed / duration, 0f, 1f) : 1f;
+
                     if (progress < HOLD_MIN_COMPLETION)
                     {
                         // Barely held — counts as a miss
@@ -913,10 +946,11 @@ public class NoteRenderer
                         OnJudgement?.Invoke(degraded);
                         // Keep score already awarded on hit, just no bonus
                     }
-                    _holdEndTime[lane]  = -1f;
-                    _holdHitDist[lane]  = -1f;
-                    _holdStart[lane]    = -1f;
-                    _holdDuration[lane] = -1f;
+                    _holdEndTime[lane]     = -1f;
+                    _holdHitDist[lane]     = -1f;
+                    _holdStart[lane]       = -1f;
+                    _holdDuration[lane]    = -1f;
+                    _holdReleaseTime[lane] = -1f;
                     SetRecState(lane, 0);
                 }
                 // Don't process justPressed while a hold is active on this lane
@@ -991,10 +1025,11 @@ public class NoteRenderer
 
                 if (best.Duration > 0)
                 {
-                    _holdEndTime[lane]  = holdEnd;
-                    _holdHitDist[lane]  = bestDist;
-                    _holdStart[lane]    = songTime;
-                    _holdDuration[lane] = best.Duration;
+                    _holdEndTime[lane]     = holdEnd;
+                    _holdHitDist[lane]     = bestDist;
+                    _holdStart[lane]       = songTime;
+                    _holdDuration[lane]    = best.Duration;
+                    _holdReleaseTime[lane] = -1f;
                 }
                 else
                     _glowTimer[lane] = RecAnimDuration(lane, 2, 0.15f);

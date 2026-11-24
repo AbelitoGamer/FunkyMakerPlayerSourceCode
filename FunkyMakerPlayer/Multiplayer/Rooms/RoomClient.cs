@@ -187,6 +187,12 @@ namespace FunkyMakerPlayer.Multiplayer.Rooms
             LevelState = Protocol.LevelMissing;
             LevelError = "";
             _transferCts?.Cancel();
+            foreach (var uCts in _uploadCtsByKey.Values)
+            {
+                try { uCts.Cancel(); } catch { }
+                try { uCts.Dispose(); } catch { }
+            }
+            _uploadCtsByKey.Clear();
             _uploadId = "";
             UploadProgress = -1f;
             Version++;
@@ -470,6 +476,19 @@ namespace FunkyMakerPlayer.Multiplayer.Rooms
                     LevelState = Protocol.LevelReady;
                     LevelProgress = 1f;
                     ReportLevel(Protocol.LevelReady, 1f);
+                    return;
+                }
+                if (song.Kind == Protocol.KindFnf && MultiplayerSettings.Instance.ChartOnlyMode)
+                {
+                    string chartPath = ChartOnlyCachePath(song.Hash);
+                    if (File.Exists(chartPath))
+                    {
+                        LevelPath = chartPath;
+                        LevelState = Protocol.LevelReady;
+                        LevelProgress = 1f;
+                        ReportLevel(Protocol.LevelReady, 1f);
+                        return;
+                    }
                 }
                 // else: the server sends TransferDownload when the file is on its way.
                 return;
@@ -555,9 +574,33 @@ namespace FunkyMakerPlayer.Multiplayer.Rooms
             if (state == Protocol.LevelReady && _pendingWatch) TryRaiseMatchLoad();
         }
 
-        /// <summary>0-1 while you upload the round's level for the room (osu!: also while packing = 0), else -1.</summary>
+        private static string ChartOnlyCachePath(string hash) =>
+            Path.Combine(MultiplayerSettings.GetStorageDirectory(), "chartonly_cache", SafeFileName($"{hash}.fnmm"));
+
+        /// <summary>Called when the player toggles Chart-Only mode (settings or waiting room).</summary>
+        public void OnChartOnlyModeChanged()
+        {
+            var song = CurrentSong;
+            if (!InRoom || song == null || song.Source != Protocol.SourceLocal || song.Kind != Protocol.KindFnf)
+                return;
+
+            bool chartOnly = MultiplayerSettings.Instance.ChartOnlyMode;
+            bool hasFull = LocalByHash(song.Hash) is { } local && File.Exists(local.FullPath);
+            if (!hasFull && ((!chartOnly && LevelState == Protocol.LevelReady) || LevelState == Protocol.LevelDownloading))
+            {
+                // Switched mode while holding only chart-only or downloading the previous variant: re-request.
+                _transferCts?.Cancel();
+                LevelPath = null;
+                LevelState = Protocol.LevelMissing;
+                LevelProgress = 0f;
+            }
+            EnsureSongLevel();
+        }
+
+        /// <summary>0-1 while you upload the round's level for the room (osu! / chartonly: also while packing = 0), else -1.</summary>
         public float UploadProgress { get; private set; } = -1f;
         private string _uploadId = "";
+        private readonly Dictionary<string, CancellationTokenSource> _uploadCtsByKey = new(StringComparer.Ordinal);
 
         private void OnTransferUpload(TransferUploadPacket t)
         {
@@ -567,11 +610,20 @@ namespace FunkyMakerPlayer.Multiplayer.Rooms
                 Error?.Invoke("The server asked for a level you no longer have.");
                 return;
             }
+            string uploadKey = $"{t.Hash}:{t.Variant}";
+            if (_uploadCtsByKey.TryGetValue(uploadKey, out var prevCts))
+            {
+                try { prevCts.Cancel(); } catch { }
+                try { prevCts.Dispose(); } catch { }
+            }
             var cts = new CancellationTokenSource();
+            _uploadCtsByKey[uploadKey] = cts;
+
             bool osu = t.Kind == Protocol.KindOsu;
+            bool chartOnly = !osu && t.Variant == Protocol.VariantChartOnly;
             _uploadId = t.TransferId;
             UploadProgress = 0f;
-            Console.WriteLine($"[Rooms] Uploading {local.FileName}{(osu ? $" ({t.Variant})" : "")} for the room");
+            Console.WriteLine($"[Rooms] Uploading {local.FileName}{(osu || chartOnly ? $" ({t.Variant})" : "")} for the room");
             _ = Task.Run(async () =>
             {
                 string? packed = null;
@@ -588,6 +640,15 @@ namespace FunkyMakerPlayer.Multiplayer.Rooms
                             throw new IOException($"The set is {size / (1024 * 1024)} MB, more than the server allows ({t.MaxSize / (1024 * 1024)} MB).");
                         path = packed;
                     }
+                    else if (chartOnly)
+                    {
+                        // FNF chart-only variant: strip all sprite PNGs and send only chart + audio (~3-12 MB).
+                        packed = Path.Combine(Path.GetTempPath(), $"fmp-{t.TransferId}-chartonly.fnmm");
+                        long size = FnmmLoader.PackChartOnlyFnmm(local.FullPath, packed);
+                        if (t.MaxSize > 0 && size > t.MaxSize)
+                            throw new IOException($"The chart-only file is {size / (1024 * 1024)} MB, more than the server allows ({t.MaxSize / (1024 * 1024)} MB).");
+                        path = packed;
+                    }
                     long total = Math.Max(1, new FileInfo(path).Length);
                     Net.Post(() => { if (_uploadId == t.TransferId) UploadProgress = 0f; });
                     var progress = new Progress<long>(bytes => Net.Post(() =>
@@ -596,13 +657,23 @@ namespace FunkyMakerPlayer.Multiplayer.Rooms
                     }));
                     await LevelTransferClient.UploadAsync(t, path, progress, cts.Token);
                 }
+                catch (OperationCanceledException) when (cts.IsCancellationRequested)
+                {
+                    Console.WriteLine($"[Rooms] Cancelled superseded/abandoned upload {t.TransferId}");
+                }
                 catch (Exception ex)
                 {
                     Net.Post(() => Error?.Invoke($"Sending the level failed: {ex.Message}"));
                 }
                 finally
                 {
-                    Net.Post(() => { if (_uploadId == t.TransferId) { _uploadId = ""; UploadProgress = -1f; } });
+                    Net.Post(() =>
+                    {
+                        if (_uploadCtsByKey.TryGetValue(uploadKey, out var cur) && ReferenceEquals(cur, cts))
+                            _uploadCtsByKey.Remove(uploadKey);
+                        try { cts.Dispose(); } catch { }
+                        if (_uploadId == t.TransferId) { _uploadId = ""; UploadProgress = -1f; }
+                    });
                     if (packed != null) { try { File.Delete(packed); } catch { } }
                 }
             });
@@ -613,7 +684,11 @@ namespace FunkyMakerPlayer.Multiplayer.Rooms
             if (HasLocal(t.Hash)) return;
             _transferCts?.Cancel();
             var cts = _transferCts = new CancellationTokenSource();
-            string folder = Path.Combine(FreeplayMenu.GetDefaultLevelsFolder(), "Received");
+            bool osu = t.Kind == Protocol.KindOsu;
+            bool chartOnly = !osu && t.Variant == Protocol.VariantChartOnly;
+            string folder = chartOnly
+                ? Path.Combine(MultiplayerSettings.GetStorageDirectory(), "chartonly_cache")
+                : Path.Combine(FreeplayMenu.GetDefaultLevelsFolder(), "Received");
             if (CurrentSong?.Hash == t.Hash)
             {
                 LevelState = Protocol.LevelDownloading;
@@ -624,7 +699,6 @@ namespace FunkyMakerPlayer.Multiplayer.Rooms
             {
                 if (_songHash == hash && t.Size > 0) LevelProgress = (float)bytes / t.Size;
             }));
-            bool osu = t.Kind == Protocol.KindOsu;
             _ = Task.Run(async () =>
             {
                 if (osu) folder = Path.GetTempPath();
@@ -636,6 +710,27 @@ namespace FunkyMakerPlayer.Multiplayer.Rooms
                     string expected = t.FileHash.Length > 0 ? t.FileHash : t.Hash;
                     if (!string.Equals(got, expected, StringComparison.OrdinalIgnoreCase))
                         throw new IOException("The downloaded file doesn't match the level (hash check failed).");
+                    if (chartOnly)
+                    {
+                        // Store in app-storage chartonly_cache/<hash>.fnmm outside mods/levels/ so
+                        // Freeplay / LocalLevelIndex never list it and we never claim full sprites.
+                        string finalChartPath = ChartOnlyCachePath(t.Hash);
+                        Directory.CreateDirectory(Path.GetDirectoryName(finalChartPath)!);
+                        if (File.Exists(finalChartPath)) File.Delete(finalChartPath);
+                        File.Move(part, finalChartPath);
+                        Net.Post(() =>
+                        {
+                            Net.Send("CompleteDownload", t.TransferId, true, null);
+                            if (_songHash == t.Hash && MultiplayerSettings.Instance.ChartOnlyMode)
+                            {
+                                LevelPath = finalChartPath;
+                                LevelState = Protocol.LevelReady;
+                                LevelProgress = 1f;
+                                ReportLevel(Protocol.LevelReady, 1f);
+                            }
+                        });
+                        return;
+                    }
                     LocalLevel level;
                     string final;
                     if (osu)

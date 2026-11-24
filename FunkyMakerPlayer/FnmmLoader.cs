@@ -30,7 +30,7 @@ public static class FnmmLoader
 
     // ── Public entry point ──────────────────────────────────────────────────
 
-    public static FnmmLevel Load(string fnmmPath, Action<float, string>? progressCallback = null)
+    public static FnmmLevel Load(string fnmmPath, Action<float, string>? progressCallback = null, bool chartOnly = false)
     {
         // osu!mania difficulty (fork, Osu/): converted in memory
         if (Osu.OsuLibrary.IsOsuChart(fnmmPath))
@@ -44,7 +44,7 @@ public static class FnmmLoader
             string? unpackedLevelDir = FindLevelDir(fnmmPath);
             if (unpackedLevelDir != null)
             {
-                return LoadFromDirectory(unpackedLevelDir, Path.GetFileName(fnmmPath.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)), progressCallback);
+                return LoadFromDirectory(unpackedLevelDir, Path.GetFileName(fnmmPath.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)), progressCallback, chartOnly);
             }
 
             // Check if it's a Psych Engine mod
@@ -72,27 +72,120 @@ public static class FnmmLoader
                 // Load directly from the ZIP on disk; legacy JSON files (data.json / evt.json /
                 // scene.json / sprite.json) are converted on the fly inside LoadFromZipArchive
                 // without unpacking and re-zipping the whole archive in RAM.
-                return LoadFromZip(fnmmPath, progressCallback);
+                return LoadFromZip(fnmmPath, progressCallback, chartOnly);
             }
             catch
             {
                 // Fallback to SharpCompress extraction (same logic as .rar) — handles .zip files
                 // that contain an inner .fnmm/.rar archive or non-standard directory structures
-                return LoadFromRar(fnmmPath, progressCallback);
+                return LoadFromRar(fnmmPath, progressCallback, chartOnly);
             }
         }
         if (isRar)
-            return LoadFromRar(fnmmPath, progressCallback);
+            return LoadFromRar(fnmmPath, progressCallback, chartOnly);
 
         // Final fallback: attempt SharpCompress extraction for any other supported archive container
         try
         {
-            return LoadFromRar(fnmmPath, progressCallback);
+            return LoadFromRar(fnmmPath, progressCallback, chartOnly);
         }
         catch
         {
             throw new Exception($"Unknown level container format (header: {header[0]:X2} {header[1]:X2})");
         }
+    }
+
+    /// <summary>
+    /// Creates a lightweight chart-only .fnmm ZIP at <paramref name="destZipPath"/> containing ONLY
+    /// canonical chart JSON (data.json), meta.json (if present), minimal orientation scene.json,
+    /// and music.ogg — stripping all sprite PNGs and loose images so low-RAM / 32-bit multiplayer
+    /// clients only download ~3-12 MB instead of 100-250 MB.
+    /// </summary>
+    public static long PackChartOnlyFnmm(string sourcePath, string destZipPath)
+    {
+        var loaded = Load(sourcePath, progressCallback: null, chartOnly: true);
+
+        string? dataJson = null;
+        string? metaJson = null;
+        bool landscape = loaded.Scene.Landscape;
+        byte[]? musicBytes = loaded.MusicData;
+
+        // Preserve exact original/converted data.json & meta.json text when possible so every field survives verbatim.
+        if (Directory.Exists(sourcePath))
+        {
+            string? dir = FindLevelDir(sourcePath);
+            if (dir != null)
+            {
+                string df = Path.Combine(dir, "data.json");
+                if (File.Exists(df))
+                {
+                    dataJson = File.ReadAllText(df);
+                    if (dataJson.Contains("\"notes\"") && !dataJson.Contains("\"strumlines\""))
+                        dataJson = FnmmConverter.ConvertData(dataJson);
+                }
+                string mf = Path.Combine(dir, "meta.json");
+                if (File.Exists(mf)) metaJson = File.ReadAllText(mf);
+            }
+        }
+        else
+        {
+            byte[] hdr = new byte[2];
+            using (var fs = File.OpenRead(sourcePath)) _ = fs.Read(hdr, 0, 2);
+            if (hdr[0] == 0x50 && hdr[1] == 0x4B)
+            {
+                try
+                {
+                    using var srcZip = ZipFile.OpenRead(sourcePath);
+                    string prefix = "";
+                    if (GetZipEntry(srcZip, "data.json") == null)
+                    {
+                        var nested = srcZip.Entries.FirstOrDefault(e => e.FullName.Replace('\\', '/').EndsWith("/data.json", StringComparison.OrdinalIgnoreCase));
+                        if (nested != null) prefix = nested.FullName.Replace('\\', '/')[..^"data.json".Length];
+                    }
+                    string? rawData = TryReadZipText(srcZip, prefix + "data.json");
+                    if (rawData != null)
+                    {
+                        bool isOld = FnmmConverter.IsOldZip(srcZip, prefix, rawData);
+                        dataJson = isOld ? FnmmConverter.ConvertData(rawData) : rawData;
+                    }
+                    metaJson = TryReadZipText(srcZip, prefix + "meta.json");
+                }
+                catch { /* fall back to serialized Data below */ }
+            }
+        }
+
+        if (string.IsNullOrEmpty(dataJson))
+            dataJson = JsonSerializer.Serialize(loaded.Data);
+        if (string.IsNullOrEmpty(metaJson))
+            metaJson = JsonSerializer.Serialize(loaded.Meta);
+
+        string sceneJson = $"{{\"landscape\":{(landscape ? "true" : "false")},\"objects\":[],\"icons\":[],\"cameras\":[]}}";
+
+        if (File.Exists(destZipPath)) File.Delete(destZipPath);
+        using (var outFs = File.Create(destZipPath))
+        using (var outZip = new ZipArchive(outFs, ZipArchiveMode.Create, leaveOpen: false))
+        {
+            static void WriteTextEntry(ZipArchive z, string name, string content)
+            {
+                var e = z.CreateEntry(name, CompressionLevel.Fastest);
+                using var sw = new StreamWriter(e.Open(), System.Text.Encoding.UTF8);
+                sw.Write(content);
+            }
+
+            WriteTextEntry(outZip, "data.json", dataJson);
+            WriteTextEntry(outZip, "meta.json", metaJson);
+            WriteTextEntry(outZip, "scene.json", sceneJson);
+
+            if (musicBytes != null && musicBytes.Length > 0)
+            {
+                // OGG is already compressed; store without re-compressing to keep packing fast.
+                var musicEntry = outZip.CreateEntry("music.ogg", CompressionLevel.NoCompression);
+                using var ms = musicEntry.Open();
+                ms.Write(musicBytes, 0, musicBytes.Length);
+            }
+        }
+
+        return new FileInfo(destZipPath).Length;
     }
 
     /// <summary>
@@ -228,13 +321,13 @@ public static class FnmmLoader
 
     // ── ZIP loader ──────────────────────────────────────────────────────────
 
-    private static FnmmLevel LoadFromZip(string path, Action<float, string>? progressCallback = null)
+    private static FnmmLevel LoadFromZip(string path, Action<float, string>? progressCallback = null, bool chartOnly = false)
     {
         using var zip = ZipFile.OpenRead(path);
-        return LoadFromZipArchive(zip, Path.GetFileNameWithoutExtension(path), progressCallback);
+        return LoadFromZipArchive(zip, Path.GetFileNameWithoutExtension(path), progressCallback, chartOnly);
     }
 
-    private static FnmmLevel LoadFromZipArchive(ZipArchive zip, string fallbackName, Action<float, string>? progressCallback = null)
+    private static FnmmLevel LoadFromZipArchive(ZipArchive zip, string fallbackName, Action<float, string>? progressCallback = null, bool chartOnly = false)
     {
         progressCallback?.Invoke(0.15f, "Parsing level data...");
         
@@ -289,6 +382,16 @@ public static class FnmmLoader
         // ── Music ────────────────────────────────────────────────────────────
         progressCallback?.Invoke(0.45f, "Loading audio...");
         level.MusicData = TryReadZipBytes(zip, prefix + "music.ogg");
+
+        if (chartOnly)
+        {
+            // Chart-only mode: keep only orientation (Landscape) + chart + audio; skip all sprites, loose PNGs & visual events.
+            level.Scene.Objects.Clear();
+            level.Scene.Icons.Clear();
+            level.Events = new FnmmEvents();
+            progressCallback?.Invoke(1.0f, "Complete!");
+            return level;
+        }
 
         // ── Loose root PNGs ──────────────────────────────────────────────────
         progressCallback?.Invoke(0.55f, "Loading textures...");
@@ -374,7 +477,7 @@ public static class FnmmLoader
 
     // ── Archive extraction loader (RAR / ZIP / nested containers) ──────────
 
-    private static FnmmLevel LoadFromRar(string path, Action<float, string>? progressCallback = null)
+    private static FnmmLevel LoadFromRar(string path, Action<float, string>? progressCallback = null, bool chartOnly = false)
     {
         progressCallback?.Invoke(0.15f, "Extracting archive...");
         string tmp = Path.Combine(Path.GetTempPath(), "fnmm_" + Path.GetRandomFileName());
@@ -388,7 +491,7 @@ public static class FnmmLoader
             if (levelDir != null)
             {
                 FnmmConverter.ConvertDirectoryIfNeeded(levelDir);
-                return LoadFromDirectory(levelDir, Path.GetFileNameWithoutExtension(path), progressCallback);
+                return LoadFromDirectory(levelDir, Path.GetFileNameWithoutExtension(path), progressCallback, chartOnly);
             }
 
             // Check if the archive contains an inner .fnmm / .zip / .rar level package
@@ -399,7 +502,7 @@ public static class FnmmLoader
                     f.EndsWith(".rar",  StringComparison.OrdinalIgnoreCase));
             if (innerArchive != null)
             {
-                var loaded = Load(innerArchive, progressCallback);
+                var loaded = Load(innerArchive, progressCallback, chartOnly);
                 if (string.IsNullOrEmpty(loaded.Meta.Name))
                     loaded.LevelName = Path.GetFileNameWithoutExtension(path);
                 return loaded;
@@ -413,7 +516,7 @@ public static class FnmmLoader
         }
     }
 
-    private static FnmmLevel LoadFromDirectory(string dir, string fallbackName, Action<float, string>? progressCallback = null)
+    private static FnmmLevel LoadFromDirectory(string dir, string fallbackName, Action<float, string>? progressCallback = null, bool chartOnly = false)
     {
         var level = new FnmmLevel { LevelName = fallbackName };
 
@@ -439,6 +542,14 @@ public static class FnmmLoader
         string musicPath = Path.Combine(dir, "music.ogg");
         if (File.Exists(musicPath))
             level.MusicData = File.ReadAllBytes(musicPath);
+
+        if (chartOnly)
+        {
+            level.Scene.Objects.Clear();
+            level.Scene.Icons.Clear();
+            level.Events = new FnmmEvents();
+            return level;
+        }
 
         // Loose PNGs
         foreach (var f in Directory.EnumerateFiles(dir, "*.png"))

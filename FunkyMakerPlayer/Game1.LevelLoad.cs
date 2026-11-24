@@ -118,6 +118,9 @@ public partial class Game1
         }
 
         // Load file on background thread (no GPU calls here)
+        bool chartOnly = _isMultiplayerMatch && MultiplayerSettings.Instance.ChartOnlyMode && !Osu.OsuLibrary.IsOsuChart(path);
+        if (chartOnly)
+            Console.WriteLine("[Online] Chart-Only mode active: loading chart + music only (skipping all sprites)");
         System.Threading.Tasks.Task.Run(() =>
         {
             try
@@ -128,7 +131,7 @@ public partial class Game1
                     // Update main window loading screen
                     _loadingScreen.LoadingProgress = progress;
                     _loadingScreen.CurrentStep = step;
-                });
+                }, chartOnly: chartOnly);
                 
                 _loadingComplete = true;
                 _loadState       = LoadState.Finalizing;

@@ -94,6 +94,12 @@ namespace FunkyMakerPlayer.Multiplayer
         /// downloads). Told to the server in Hello (resent when changed).
         /// </summary>
         public bool OsuSkipVideo { get; set; } = false;
+        /// <summary>
+        /// Online FNF Chart-Only mode: downloads and loads only charts + music (no sprites/stage)
+        /// in multiplayer matches so low-RAM / 32-bit devices can play heavy levels smoothly.
+        /// Told to the server in Hello so the server sends lightweight chart-only packages.
+        /// </summary>
+        public bool ChartOnlyMode { get; set; } = false;
 
         // ══════════════════════════════════════════════════════════════════════
         // Category 4: Performance Configuration

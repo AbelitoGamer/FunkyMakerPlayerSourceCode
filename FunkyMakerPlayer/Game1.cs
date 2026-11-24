@@ -961,6 +961,7 @@ public partial class Game1 : Game
         _touchControls.Initialize(GraphicsDevice, 
             GraphicsDevice.PresentationParameters.BackBufferWidth,
             GraphicsDevice.PresentationParameters.BackBufferHeight);
+        _touchControls.IsLaneHolding = lane => _noteRenderers.Count > 0 && _noteRenderers[0].IsHoldActive(lane);
         Console.WriteLine("[TouchControls] Initialized for Android");
         
         // Initialize touch controls for multiplayer menu
@@ -1114,19 +1115,29 @@ public partial class Game1 : Game
         // Never leave the window untouchable (see AndroidTouchGuardReady).
         if (_touchGuardFrames >= 0 && _loadState != LoadState.Finalizing) ReleaseAndroidTouchGuard();
 
-        // Update touch controls before merging virtual keys with physical keyboard state
-        _touchControls?.Update();
-        
-        // Auto-switch touch control mode based on game state
+        // Sync touch mode & screen bounds BEFORE polling TouchPanel.GetState() so gameplay hitboxes
+        // match the live touch coordinate space and are already active during countdown.
         if (_touchControls != null)
         {
-            // Results of an online round count as a menu (A / B buttons instead of the lane hitboxes).
-            bool inGameplay = _level != null && _started && !_inPauseMenu && _resultsScreen == null &&
+            int touchW = Microsoft.Xna.Framework.Input.Touch.TouchPanel.DisplayWidth;
+            int touchH = Microsoft.Xna.Framework.Input.Touch.TouchPanel.DisplayHeight;
+            if (touchW <= 0 || touchH <= 0)
+            {
+                touchW = GraphicsDevice.PresentationParameters.BackBufferWidth;
+                touchH = GraphicsDevice.PresentationParameters.BackBufferHeight;
+            }
+            _touchControls.SyncBounds(touchW, touchH);
+
+            // Results / Game Over / Loading count as menu (A/B buttons instead of the 4 lane hitboxes).
+            bool inGameplay = _level != null && _loadingScreen == null && _errorMsg == null &&
+                             _songTransition == null && !_inPauseMenu && _resultsScreen == null &&
+                             !(_gameOverOverlay?.IsActive ?? false) &&
                              !_inFreeplay && !(_settingsManager?.IsActive ?? false) &&
                              !(_arrowsMenu?.IsActive ?? false) && !(_splashMenu?.IsActive ?? false) &&
                              !(_countdownMenu?.IsActive ?? false) && !(_fontMenu?.IsActive ?? false) &&
                              !_inMultiplayer && !_inMainSettings && !_inHudEditor &&
-                             !_inEditorPicker && !_inLevelSelector && !_inEditor && !_inReplays;
+                             !_inEditorPicker && !_inLevelSelector && !_inEditor && !_inReplays &&
+                             !_keyBindOverlay.IsActive;
             
             var targetMode = inGameplay ? TouchControls.ControlMode.Gameplay : TouchControls.ControlMode.Menu;
             if (_touchControls.GetMode() != targetMode)
@@ -1137,6 +1148,9 @@ public partial class Game1 : Game
             // Allow pause button even in multiplayer (Minecraft-style non-blocking pause/settings)
             _touchControls.SetHidePauseButton(false);
         }
+
+        // Update touch controls before merging virtual keys with physical keyboard state
+        _touchControls?.Update();
         
         // Merge touch input into keyboard state for seamless integration
         rawKb = MergeTouchWithKeyboard(rawKb);
@@ -3540,9 +3554,19 @@ public partial class Game1 : Game
         // Get all currently pressed keys from keyboard
         var pressedKeys = new List<Keys>(kb.GetPressedKeys());
         
-        // Add virtual keys from touch controls
-        // Include D, F, J, K for gameplay (note lanes) + menu navigation keys + Q, E for settings tabs
-        foreach (var key in new[] { Keys.D, Keys.F, Keys.J, Keys.K, Keys.Left, Keys.Right, Keys.Up, Keys.Down, Keys.Space, Keys.Enter, Keys.Escape, Keys.P, Keys.Q, Keys.E })
+        // Add virtual gameplay lane keys (following current NoteRenderer.PlayerKeys)
+        for (int lane = 0; lane < NoteRenderer.LANE_COUNT && lane < NoteRenderer.PlayerKeys.Length; lane++)
+        {
+            if (_touchControls.IsLaneDown(lane))
+            {
+                var laneKey = NoteRenderer.PlayerKeys[lane];
+                if (!pressedKeys.Contains(laneKey))
+                    pressedKeys.Add(laneKey);
+            }
+        }
+
+        // Add virtual menu navigation keys + Q, E for settings tabs + P for pause
+        foreach (var key in new[] { Keys.Left, Keys.Right, Keys.Up, Keys.Down, Keys.Space, Keys.Enter, Keys.Escape, Keys.P, Keys.Q, Keys.E })
         {
             if (!_touchControls.IsKeyDown(key)) continue;
             // Touch Pause / tab buttons follow the rebindable hotkeys (Settings → CONTROLS)

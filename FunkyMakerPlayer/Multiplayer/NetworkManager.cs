@@ -47,6 +47,12 @@ namespace FunkyMakerPlayer.Multiplayer
         public long MaxUploadBytes { get; private set; } = 100L * 1024 * 1024;
         /// <summary>Highest room player limit the server allows (from Hello).</summary>
         public int MaxRoomPlayers { get; private set; } = Protocol.MaxPlayers;
+        /// <summary>True when the connected server supports chunked transfer uploads.</summary>
+        public bool SupportsChunkedUpload { get; private set; }
+        /// <summary>True when the connected server supports FNF chart-only variant transfers.</summary>
+        public bool SupportsFnfChartOnly { get; private set; }
+        /// <summary>Preferred chunk size in bytes for chunked uploads (default 4 MB).</summary>
+        public int UploadChunkBytes { get; private set; } = 4 * 1024 * 1024;
         public string ServerVersion { get; private set; } = "";
 
         private const string SignalREndpoint = "/multiplayer";
@@ -204,6 +210,7 @@ namespace FunkyMakerPlayer.Multiplayer
                 ClientVersion = typeof(NetworkManager).Assembly.GetName().Version?.ToString(3) ?? "",
                 ProtocolVersion = Protocol.Version,
                 OsuSkipVideo = settings.OsuSkipVideo,
+                FnfChartOnly = settings.ChartOnlyMode,
             };
         }
 
@@ -316,10 +323,11 @@ namespace FunkyMakerPlayer.Multiplayer
                     {
                         if (!IsActiveAttemptLocked(hub, generation)) return;
                     }
+                    HelloResult? reconnectHello = null;
                     try
                     {
-                        var hello = await hub.InvokeAsync<HelloResult>("Hello", BuildHello());
-                        if (!hello.Ok) throw new InvalidOperationException(hello.Error);
+                        reconnectHello = await hub.InvokeAsync<HelloResult>("Hello", BuildHello());
+                        if (!reconnectHello.Ok) throw new InvalidOperationException(reconnectHello.Error);
                     }
                     catch (Exception ex)
                     {
@@ -334,6 +342,14 @@ namespace FunkyMakerPlayer.Multiplayer
                         _currentReconnectDelay = MIN_RECONNECT_DELAY;
                         _lastPacketReceivedTime = 0f;
                         _pingTimer = 0f;
+                        if (reconnectHello is { Ok: true })
+                        {
+                            MaxUploadBytes = reconnectHello.MaxUploadBytes > 0 ? reconnectHello.MaxUploadBytes : MaxUploadBytes;
+                            MaxRoomPlayers = reconnectHello.MaxRoomPlayers >= Protocol.MinPlayers ? reconnectHello.MaxRoomPlayers : Protocol.MaxPlayers;
+                            SupportsChunkedUpload = reconnectHello.SupportsChunkedUpload;
+                            SupportsFnfChartOnly = reconnectHello.SupportsFnfChartOnly;
+                            UploadChunkBytes = reconnectHello.UploadChunkBytes > 0 ? reconnectHello.UploadChunkBytes : 4 * 1024 * 1024;
+                        }
                     }
                     Console.WriteLine($"[Multiplayer] Reconnected ({connectionId})");
                     SendPing();
@@ -384,6 +400,9 @@ namespace FunkyMakerPlayer.Multiplayer
                         _pingTimer = 0f;
                         MaxUploadBytes = hello.MaxUploadBytes > 0 ? hello.MaxUploadBytes : MaxUploadBytes;
                         MaxRoomPlayers = hello.MaxRoomPlayers >= Protocol.MinPlayers ? hello.MaxRoomPlayers : Protocol.MaxPlayers;
+                        SupportsChunkedUpload = hello.SupportsChunkedUpload;
+                        SupportsFnfChartOnly = hello.SupportsFnfChartOnly;
+                        UploadChunkBytes = hello.UploadChunkBytes > 0 ? hello.UploadChunkBytes : 4 * 1024 * 1024;
                         ServerVersion = hello.ServerVersion;
                         promoted = true;
 

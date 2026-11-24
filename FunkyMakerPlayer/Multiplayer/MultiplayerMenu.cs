@@ -1039,7 +1039,7 @@ namespace FunkyMakerPlayer.Multiplayer
             {
                 0 => 2,  // User: Username, Player Color
                 1 => 6,  // Gameplay: ShowOpponentNotes, Scores list, Scores list side, ShowConnectionQuality, Opponent Notes Opacity, Teams rival strumline
-                2 => 3,  // Performance: UpdateRate, EnableInterpolation, osu! videos
+                2 => 4,  // Performance: UpdateRate, EnableInterpolation, osu! videos, Chart Only (No Sprites)
                 _ => 3,  // Visual: HudOpacity, ConnectionIndicatorPosition, InterfaceMode
             };
         }
@@ -1175,6 +1175,12 @@ namespace FunkyMakerPlayer.Multiplayer
                     {
                         settings.OsuSkipVideo = !settings.OsuSkipVideo;
                         if (NetworkManager.Instance.IsConnected) ResendProfile(); // the server picks the variant
+                    }
+                    else if (selection == 3) // FNF Chart Only (No Sprites)
+                    {
+                        settings.ChartOnlyMode = !settings.ChartOnlyMode;
+                        RoomClient.Instance.OnChartOnlyModeChanged();
+                        if (NetworkManager.Instance.IsConnected) ResendProfile(); // tells the server to send chartonly variant
                     }
                     break;
             }
@@ -2481,6 +2487,14 @@ namespace FunkyMakerPlayer.Multiplayer
                         IsToggle = true,
                         IsAdjustable = true,
                         Description = "osu! songs you get from other players come without their background video: much smaller downloads. Songs you already have keep theirs."
+                    });
+                    list.Add(new SettingInfo
+                    {
+                        Label = "Chart Only (No Sprites)",
+                        Value = settings.ChartOnlyMode ? "ON" : "OFF",
+                        IsToggle = true,
+                        IsAdjustable = true,
+                        Description = "Online FNF matches: only download and load charts + music (no sprites or stage). Much faster & prevents OOM on low-RAM / 32-bit phones."
                     });
                     break;
                     

@@ -32,9 +32,24 @@ public class TouchControls
     private VirtualButton? _eButton;  // E button for settings tab navigation (next tab)
     private readonly Dictionary<Keys, bool> _keyStates = new();
     private readonly Dictionary<Keys, bool> _keyStatesPrev = new();  // Previous frame state for detecting justPressed
+    private readonly List<Keys> _keyBuffer = new();
+    private readonly bool[] _laneDown = new bool[4];
+    private readonly bool[] _laneDownPrev = new bool[4];
+    private readonly bool[] _laneJustPressed = new bool[4];
+    private readonly Dictionary<int, int> _fingerLane = new();      // Active gameplay touch.Id -> locked lane (0..3)
+    private readonly HashSet<int> _pauseFingerIds = new();          // Active touches that began on the pause button
+    private readonly HashSet<int> _seenTouchIds = new();
+    private readonly List<int> _staleTouchIds = new();
     private Texture2D? _hitboxTexture;
     private bool _showSettingsButtons = false;  // Flag to show/hide Q and E buttons
     private bool _allControlsVisible = true;  // Flag to show/hide ALL touch controls
+
+    /// <summary>
+    /// Optional callback returning true when a hold note is active on the given lane (0..3).
+    /// While a hold is active, the finger that pressed it stays locked to that lane until lifted
+    /// so slight thumb drift across invisible lane borders never cancels a hold note.
+    /// </summary>
+    public Func<int, bool>? IsLaneHolding { get; set; }
     
     // Hitbox colors (gameplay mode)
     private static readonly Color[] HITBOX_COLORS = new[]
@@ -97,27 +112,52 @@ public class TouchControls
     }
     
     /// <summary>
-    /// Initialize 4 vertical hitboxes for gameplay
+    /// Resync hitbox / button bounds if Android immersive mode, cutout, or rotation changes screen size.
+    /// </summary>
+    public void SyncBounds(int screenWidth, int screenHeight)
+    {
+        if (screenWidth <= 0 || screenHeight <= 0) return;
+        if (screenWidth == _screenWidth && screenHeight == _screenHeight) return;
+
+        _screenWidth = screenWidth;
+        _screenHeight = screenHeight;
+        InitializeGameplayHitboxes();
+        InitializeMenuButtons();
+        InitializePauseButton();
+        Console.WriteLine($"[TouchControls] Resynced bounds to {screenWidth}x{screenHeight}");
+    }
+
+    /// <summary>
+    /// Initialize 4 edge-to-edge vertical hitboxes for gameplay (no 1px rounding gaps).
     /// </summary>
     private void InitializeGameplayHitboxes()
     {
-        float hitboxWidth = _screenWidth / 4f;
-        
         for (int i = 0; i < 4; i++)
         {
+            int left = i * _screenWidth / 4;
+            int right = (i + 1) * _screenWidth / 4;
+            Keys laneKey = i < NoteRenderer.PlayerKeys.Length ? NoteRenderer.PlayerKeys[i] : HITBOX_KEYS[i];
             _hitboxes[i] = new Hitbox
             {
-                Key = HITBOX_KEYS[i],
+                Key = laneKey,
                 Color = HITBOX_COLORS[i],
                 Bounds = new Rectangle(
-                    (int)(i * hitboxWidth),
+                    left,
                     0,
-                    (int)hitboxWidth,
+                    Math.Max(1, right - left),
                     _screenHeight
                 ),
                 IsPressed = false
             };
         }
+    }
+
+    /// <summary>Maps any screen X coordinate to lane 0..3 with edge clamping (no dead margins).</summary>
+    private int LaneFromX(float x)
+    {
+        int w = Math.Max(1, _screenWidth);
+        int lane = (int)(x * 4f / w);
+        return Math.Clamp(lane, 0, 3);
     }
     
     /// <summary>
@@ -238,7 +278,15 @@ public class TouchControls
     /// </summary>
     public void SetMode(ControlMode mode)
     {
+        if (_mode == mode) return;
         _mode = mode;
+        _fingerLane.Clear();
+        _pauseFingerIds.Clear();
+        Array.Clear(_laneDown, 0, _laneDown.Length);
+        Array.Clear(_laneDownPrev, 0, _laneDownPrev.Length);
+        Array.Clear(_laneJustPressed, 0, _laneJustPressed.Length);
+        for (int i = 0; i < _hitboxes.Length; i++)
+            if (_hitboxes[i] != null) _hitboxes[i].IsPressed = false;
         Console.WriteLine($"[TouchControls] Switched to {mode} mode");
     }
     
@@ -301,38 +349,53 @@ public class TouchControls
             // Reset all states when hidden
             _keyStates.Clear();
             _keyStatesPrev.Clear();
+            _fingerLane.Clear();
+            _pauseFingerIds.Clear();
+            Array.Clear(_laneDown, 0, _laneDown.Length);
+            Array.Clear(_laneDownPrev, 0, _laneDownPrev.Length);
+            Array.Clear(_laneJustPressed, 0, _laneJustPressed.Length);
             if (_mode == ControlMode.Gameplay)
             {
                 foreach (var hitbox in _hitboxes)
-                    hitbox.IsPressed = false;
+                    if (hitbox != null) hitbox.IsPressed = false;
             }
             return;
         }
-        
+
         // Ensure TouchPanel is properly configured (fixes Android losing touch after scene changes)
         TouchPanel.EnabledGestures = GestureType.None;
-        
+
         // Save previous frame state BEFORE resetting
         _keyStatesPrev.Clear();
         foreach (var kvp in _keyStates)
             _keyStatesPrev[kvp.Key] = kvp.Value;
-        
+
+        for (int i = 0; i < 4; i++)
+        {
+            _laneDownPrev[i] = _laneDown[i];
+            _laneDown[i] = false;
+            _laneJustPressed[i] = false;
+        }
+
         // Reset current frame states
         if (_mode == ControlMode.Gameplay)
         {
-            foreach (var hitbox in _hitboxes)
-                hitbox.IsPressed = false;
+            for (int i = 0; i < _hitboxes.Length; i++)
+                if (_hitboxes[i] != null) _hitboxes[i].IsPressed = false;
         }
-        
-        var keys = new List<Keys>(_keyStates.Keys);
-        foreach (var key in keys)
+
+        _keyBuffer.Clear();
+        foreach (var key in _keyStates.Keys)
+            _keyBuffer.Add(key);
+        foreach (var key in _keyBuffer)
             _keyStates[key] = false;
-        
+
         // Process all active touch points.
         // (No per-touch logging here: this runs every frame on the Android UI thread, and a line per
         // finger per frame to logcat only slows the game down.)
         var touches = TouchPanel.GetState();
         bool anyDown = false;
+        _seenTouchIds.Clear();
 
         foreach (var touch in touches)
         {
@@ -342,26 +405,57 @@ public class TouchControls
                 touch.State == TouchLocationState.Moved)
             {
                 anyDown = true;
+                _seenTouchIds.Add(touch.Id);
                 var touchPos = touch.Position;
 
                 if (_mode == ControlMode.Gameplay)
                 {
-                    // Check pause button first (only in gameplay mode)
-                    if (_pauseButton != null &&
-                        _pauseButton.Bounds.Contains((int)touchPos.X, (int)touchPos.Y))
+                    bool isTrackedPause = _pauseFingerIds.Contains(touch.Id);
+                    bool isTrackedLane = _fingerLane.TryGetValue(touch.Id, out int lane);
+
+                    // Pause button only claims touches that started on it (never steals an active lane hold)
+                    if (isTrackedPause || (!isTrackedLane && !_hidePauseButton && _pauseButton != null &&
+                        _pauseButton.Bounds.Contains((int)touchPos.X, (int)touchPos.Y)))
                     {
+                        _pauseFingerIds.Add(touch.Id);
                         _keyStates[Keys.P] = true;
+                        continue;
                     }
 
-                    // Check hitboxes
-                    for (int i = 0; i < _hitboxes.Length; i++)
+                    if (!isTrackedLane || touch.State == TouchLocationState.Pressed)
                     {
-                        if (_hitboxes[i].Bounds.Contains((int)touchPos.X, (int)touchPos.Y))
+                        lane = LaneFromX(touchPos.X);
+                        _fingerLane[touch.Id] = lane;
+                        _laneJustPressed[lane] = true;
+                    }
+                    else
+                    {
+                        // Keep the finger locked to its starting lane while a hold note is active
+                        // on that lane (or while within a generous 35% lane-width hysteresis margin)
+                        // so slight thumb roll across invisible borders never breaks a hold note.
+                        bool holdActive = IsLaneHolding?.Invoke(lane) ?? false;
+                        if (!holdActive)
                         {
-                            _hitboxes[i].IsPressed = true;
-                            _keyStates[_hitboxes[i].Key] = true;
+                            float laneW = Math.Max(1f, _screenWidth / 4f);
+                            float laneLeft = lane * laneW;
+                            float laneRight = (lane + 1) * laneW;
+                            float hysteresis = laneW * 0.35f;
+                            if (touchPos.X < laneLeft - hysteresis || touchPos.X > laneRight + hysteresis)
+                            {
+                                int newLane = LaneFromX(touchPos.X);
+                                if (newLane != lane)
+                                {
+                                    lane = newLane;
+                                    _fingerLane[touch.Id] = lane;
+                                    _laneJustPressed[lane] = true;
+                                }
+                            }
                         }
                     }
+
+                    _laneDown[lane] = true;
+                    if (_hitboxes[lane] != null)
+                        _hitboxes[lane].IsPressed = true;
                 }
                 else // Menu mode
                 {
@@ -392,16 +486,65 @@ public class TouchControls
                     }
                 }
             }
+            else if (touch.State == TouchLocationState.Released)
+            {
+                _fingerLane.Remove(touch.Id);
+                _pauseFingerIds.Remove(touch.Id);
+            }
         }
+
+        // Prune any touch IDs that vanished without an explicit Released frame
+        if (_fingerLane.Count > 0)
+        {
+            _staleTouchIds.Clear();
+            foreach (var id in _fingerLane.Keys)
+                if (!_seenTouchIds.Contains(id)) _staleTouchIds.Add(id);
+            foreach (var id in _staleTouchIds)
+                _fingerLane.Remove(id);
+        }
+        if (_pauseFingerIds.Count > 0)
+        {
+            _staleTouchIds.Clear();
+            foreach (var id in _pauseFingerIds)
+                if (!_seenTouchIds.Contains(id)) _staleTouchIds.Add(id);
+            foreach (var id in _staleTouchIds)
+                _pauseFingerIds.Remove(id);
+        }
+
+        // Mirror active gameplay lanes into _keyStates using the live PlayerKeys mapping
+        if (_mode == ControlMode.Gameplay)
+        {
+            for (int i = 0; i < 4; i++)
+            {
+                Keys laneKey = i < NoteRenderer.PlayerKeys.Length ? NoteRenderer.PlayerKeys[i] : HITBOX_KEYS[i];
+                if (_hitboxes[i] != null) _hitboxes[i].Key = laneKey;
+                if (_laneDown[i])
+                    _keyStates[laneKey] = true;
+            }
+        }
+
         AnyTouchDown = anyDown;
     }
-    
-    /// <summary>
-    /// Check if a virtual key is currently pressed
-    /// </summary>
+
+    /// <summary>Check if a gameplay lane (0..3) is currently held down via touch.</summary>
+    public bool IsLaneDown(int lane) => lane >= 0 && lane < 4 && _laneDown[lane];
+
+    /// <summary>Check if a gameplay lane (0..3) was held down on the previous frame via touch.</summary>
+    public bool WasLaneDown(int lane) => lane >= 0 && lane < 4 && _laneDownPrev[lane];
+
+    /// <summary>Check if a finger newly tapped/entered gameplay lane (0..3) this frame.</summary>
+    public bool IsLaneJustPressed(int lane) => lane >= 0 && lane < 4 && _laneJustPressed[lane];
+
+    /// <summary>Check if a virtual key is currently pressed</summary>
     public bool IsKeyDown(Keys key)
     {
         return _keyStates.TryGetValue(key, out bool pressed) && pressed;
+    }
+
+    /// <summary>Check if a virtual key was pressed on the previous frame</summary>
+    public bool WasKeyDown(Keys key)
+    {
+        return _keyStatesPrev.TryGetValue(key, out bool pressed) && pressed;
     }
     
     /// <summary>

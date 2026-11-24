@@ -986,6 +986,11 @@ Editor stage preview); `Game1` delegates to it.
       `LoadingScreen`, and pumps SignalR keepalives. Desktop 64-bit PC keeps `levelVramBudget = long.MaxValue`
       (unlimited, 100% native quality untouched) while cutting massive 5+ GB level load times well under
       the server's 60 s match-loading timeout.
+    - **Lossless-first `AtlasPacker` probe & zero-downscale PC 64-bit (`AtlasPacker.cs`, `FnmmSceneRenderer.cs`, 2026-11-24):**
+      - `AtlasPacker.GetDefaultStripVramBudgetBytes()` now returns `long.MaxValue` on PC 64-bit (>4 GB RAM), removing the old 128–192 MB per-strip downscale cap on PC (100% native pixel quality for every sprite on PC).
+      - On memory-constrained platforms (Android 32/64-bit and ≤4 GB PC), `PrepareHorizontalStripCpu` now runs a ~0-RAM streaming scanline probe (`ProbeStreamingPngTrimAndDedup`) BEFORE deciding whether to downscale: it computes exact tight non-transparent frame bounds and 128-bit frame hashes in a single streaming pass. If the real post-trim + deduplicated atlas area (`uniqueTrimmedArea * 4 * 1.12`) already fits inside `stripVramBudget`, `budgetScale` stays `1.0f` (100% native quality, zero blur); if downscaling is still necessary, `budgetScale` is computed from the real post-trim+dedup size rather than bloated raw untrimmed bytes.
+      - When decoding at `1.0x` after probing (`WriteTightNativeRowToFrames`), only tight `TrimW × TrimH` buffers are allocated for unique non-empty frames (duplicate frames share the first matching frame without extra RAM allocation), keeping 32-bit Android peak RAM flat even for huge strips (e.g. *Trinity Encore*).
+      - `FnmmSceneRenderer` now estimates post-trim+dedup VRAM via `EstimateLosslessVramBytes` (`0.45x` multi-frame, `0.85x` single-frame, capped at `stripVramBudget`) instead of raw untrimmed RGBA bytes when computing `dynamicLevelScale`, and routes medium/large strips (`>512 KB` multi-frame / `>1 MB` single-frame) through lossless `1.0x` `AtlasPacker` when a level VRAM budget is active.
     - **Multiplayer long-load keepalive & infinite-wait guards (`NetworkManager.cs`, `Game1.LevelLoad.cs`,
       `Game1.Online.cs`, `Game1.cs`, `LoadingScreen.cs`, 2026-11-23):** `RenderLoadingScreen` now calls
       `NetworkManager.Instance.PumpKeepAliveDuringLoad()` so SignalR pings continue every 2 s during
@@ -1090,6 +1095,16 @@ Editor stage preview); `Game1` delegates to it.
 - Android touch hitboxes: invisible at rest; while pressed they show at `Game1.TouchHitboxOpacity`
   (Settings → CONTROLS → Touch Hitbox Opacity, 0-100 %, default 30 %, saved as `TouchHitboxOpacity`;
   was a fixed 40 %). Touch Hitbox Colors OFF still hides them completely.
+  - **Mobile touch & hold fixes (`TouchControls.cs`, `NoteRenderer.cs`, `Game1.cs`, 2026-11-24):**
+    - `TouchControls` now tracks active gameplay touches by `touch.Id` (`_fingerLane`), locks a finger to its
+      starting lane while a hold note is active (`IsLaneHolding`, else 35 % lane-width hysteresis before
+      sliding), supports multi-finger same-lane taps (`IsLaneJustPressed`), eliminates 1 px integer-rounding
+      gaps and screen-edge misses (`LaneFromX`), dynamically resyncs hitbox bounds (`SyncBounds`) against
+      `TouchPanel.DisplayWidth/Height`, prevents Pause button touches from also firing lane 3 (and vice versa),
+      switches into `Gameplay` mode *before* polling `TouchPanel.GetState()` (including during countdown), and
+      follows live `NoteRenderer.PlayerKeys` instead of hardcoded `D/F/J/K`.
+    - `NoteRenderer.UpdatePlayer` now reads `prevMask` from `WasLaneDown` (`_touchControls.WasLaneDown(lane)`)
+      instead of `IsKeyDown(prevKb, ...)` (which previously OR'd the *current* frame's touch state).
 - `HideExtraStrumlines`, `HideOpponentStrumline`, `NoteRenderer.ShowStrumlines`
   (master toggle) and `NoteRenderer.HidePlayerStrumline` (hides visuals, input
   still works) are settings. Splashes only show when the strumline is visible.
@@ -1139,9 +1154,12 @@ Editor stage preview); `Game1` delegates to it.
 ### 8.4 Holds
 
 - `duration > 0` creates a hold; `holdEnd = start + duration`.
-- Must hold through the body; release handling has a 100 ms end leniency.
+- Must hold through the body; release handling has a 100 ms end leniency (`HOLD_END_LENIENCY`) and an
+  85 ms deterministic `songTime` drop-grace (`HOLD_RELEASE_GRACE`, `_holdReleaseTime[lane]`) so brief
+  1–5 frame mobile touchscreen / multi-touch micro-drops don't immediately cancel active holds (if truly
+  released, completion progress is measured at the original release timestamp).
 - Completed hold counts as Sick and shows the hold confirm animation.
-- `_holdDuration[lane]` and `_holdEndTime[lane]` track active holds.
+- `_holdDuration[lane]`, `_holdEndTime[lane]`, and `_holdReleaseTime[lane]` track active holds.
 
 ### 8.5 Autoplay and note event packs
 
@@ -1943,6 +1961,14 @@ start, relay, results, history, turn).
   - **Transfer server slow-upload/download & loading resilience (`FunkyMakerPlayerTransferServer`, 2026-11-23, Protocol 3 compatible — no client changes):**
     - `Program.cs` + `TransferEndpoints.cs`: disabled Kestrel `MinRequestBodyDataRate` / `MinResponseDataRate` (and per-request rate features) so slow/mobile/proxy-buffered transfers aren't killed by Kestrel's default 5 s / 240 B/s limit; set `MaxRequestBodySize = null` (per-transfer size still validated against `ticket.Size`), `KeepAliveTimeout = 10 min`, `RequestHeadersTimeout = 2 min`, and raised SignalR `ClientTimeoutInterval` from `30 s` → `90 s` (avoids dropping uploaders during uplink bufferbloat while keeping `SilenceTimeout = 10 s` in-match).
     - `RoomRegistry.cs`, `TransferOptions.cs`, `appsettings.json`, `render.yaml`: raised `LoadingTimeout` from `100 s` → `180 s` (configurable via `TransferOptions.LoadingTimeoutSeconds` / `Transfer__LoadingTimeoutSeconds`), `StallTimeoutSeconds` from `60 s` → `300 s`, and added `DownloadCompletionGraceSeconds = 600` (`MarkDownloadStreamComplete`) so slow clients draining Render's reverse-proxy buffer & verifying SHA-256 aren't prematurely hit with `"The download timed out."`. `CompleteDownload(ok: true)` now also recovers a member to `LevelReady` even if `Sweep` already expired the pending download entry, and truncated uploads report `"The upload ended early (connection closed before finishing)."` instead of a misleading file-changed error. Verified with **41/41** passing server tests (`RoomFlowTests.cs`).
+  - **Chunked uploads & Online FNF "Chart Only (No Sprites)" mode (Client + `FunkyMakerPlayerTransferServer`, 2026-11-24, Protocol 3 backwards-compatible):**
+    - **Chunked level uploads (`TransferEndpoints.cs`, `RoomRegistry.cs`, `TransferOptions.cs`, `LevelTransferClient.cs`, `NetworkManager.cs`, `RoomClient.cs`, `LevelDownloader.cs`):**
+      - Server adds `PUT /api/transfers/{id}/chunks?offset=N` + `POST /api/transfers/{id}/complete` alongside legacy `PUT /api/transfers/{id}/file`, raises `HttpRequestsPerMinute` `60 → 360`, and advertises `SupportsChunkedUpload = true`, `SupportsFnfChartOnly = true`, `UploadChunkBytes = 4 MB` (`Transfer__UploadChunkMegabytes`) in `HelloResult`.
+      - Client (`LevelTransferClient`) uploads in 4 MB chunks (`85 s` per-chunk timeout, up to 4 idempotent retries with backoff, automatic fallback to legacy single-PUT on 404/405 against older servers), uses `SocketsHttpHandler` TCP keep-alives, passes `CancellationToken` into `ProgressStreamContent`, retries interrupted downloads up to 3 times, cancels superseded/abandoned uploads via `RoomClient._uploadCtsByKey`, and sets `LevelDownloader` timeout to `Timeout.InfiniteTimeSpan`. Bypasses Render/Cloudflare ~100 s request timeouts and ~100 MB single-body caps on large levels.
+    - **Online FNF "Chart Only (No Sprites)" mode (`MultiplayerSettings.ChartOnlyMode`, `FnmmLoader.cs`, `Game1.LevelLoad.cs`, `RoomClient.cs`, `MultiplayerMenu.cs`, `MultiplayerMenu.WaitingRoom.cs`, `RoomRegistry.cs`, `Protocol.cs`):**
+      - Toggleable in **Multiplayer Settings → Performance (`Chart Only (No Sprites)`)** and directly in the **Waiting Room** (`M` hotkey, left-panel button, and right beside Mirror's `1 PLAYER / 2 ENEMY` vote buttons).
+      - When enabled during online FNF matches (`Game1.LevelLoad.cs`), `FnmmLoader.Load(..., chartOnly: true)` skips loading sprites, stage layers, icons, and visual events — loading only chart + audio for minimal RAM/VRAM usage on low-RAM / 32-bit phones.
+      - Over the network (`Protocol.VariantChartOnly = "chartonly"`, announced via `HelloRequest.FnfChartOnly`), holders pack a minimal `.fnmm` ZIP via `FnmmLoader.PackChartOnlyFnmm` containing only `data.json`, `meta.json`, minimal `scene.json` (`landscape`), and `music.ogg` (~3–12 MB instead of 100–250 MB). Receivers cache it in app storage (`chartonly_cache/<hash>.fnmm`, outside `mods/levels/` so Freeplay / `LocalLevelIndex` never scan it) and are never registered as full-level holders (`Member.ChartOnlyHashes`). Toggling the option in a room immediately re-syncs `Hello`, cancels any in-flight download of the old variant, and requests the new variant if needed. Verified with **43/43** passing server tests.
 
 ### 12.0 Server URL, testing two windows
 
@@ -2558,6 +2584,7 @@ ppy/osu (MIT): `LegacyBeatmapDecoder`, `ConvertHitObjectParser`, `ManiaBeatmapCo
 | `multiplayer_settings.json` | `%AppData%\FunkyMakerPlayer\` (desktop); app personal folder (Android) | `MultiplayerSettings` |
 | `leaderboard_data.json`, `match_history.json` | same MP storage dir (legacy copies next to the exe are migrated) | `LeaderboardManager` |
 | `official_cache/*.fmc` | same MP storage dir | `LevelCache` |
+| `chartonly_cache/*.fnmm` | same MP storage dir (outside `mods/levels/`) | `RoomClient` (online FNF Chart-Only mode, §12) |
 | `level_hash_cache.json` | same MP storage dir | `LocalLevelIndex` (fork, §12.1) |
 | `multiplayer_settings.<profile>.json` | MP storage dir | `FUNKYMAKER_MP_PROFILE` test profiles (fork, §12.0) |
 | `mods_location.txt` | `%AppData%\FunkyMakerPlayer\` (desktop) | `ModsStorage` (fork, §13) |

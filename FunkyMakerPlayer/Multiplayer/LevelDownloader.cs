@@ -18,11 +18,14 @@ namespace FunkyMakerPlayer.Multiplayer
         private static readonly HttpClient _httpClient = new HttpClient(new SocketsHttpHandler
         {
             PooledConnectionLifetime = TimeSpan.FromMinutes(2),
+            KeepAlivePingPolicy = HttpKeepAlivePingPolicy.Always,
+            KeepAlivePingDelay = TimeSpan.FromSeconds(15),
+            KeepAlivePingTimeout = TimeSpan.FromSeconds(10),
             AutomaticDecompression = DecompressionMethods.GZip | DecompressionMethods.Deflate | DecompressionMethods.Brotli,
             MaxConnectionsPerServer = 8
         })
         {
-            Timeout = TimeSpan.FromMinutes(3)
+            Timeout = System.Threading.Timeout.InfiniteTimeSpan
         };
 
         public event Action<int>? OnDownloadProgress; // percentage 0-100

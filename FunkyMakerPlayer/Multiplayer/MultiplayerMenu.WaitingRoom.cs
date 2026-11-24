@@ -120,6 +120,7 @@ namespace FunkyMakerPlayer.Multiplayer
                 if (clicked == "settings") { OpenRoomSettings(Room.IsHost ? RoomSettingsMode.Edit : RoomSettingsMode.View); return; }
                 if (clicked == "vote0") { VoteAndReady(Protocol.SidePlayer); return; }
                 if (clicked == "vote1") { VoteAndReady(Protocol.SideEnemy); return; }
+                if (clicked == "chartonly") { ToggleChartOnlyMode(); return; }
                 if (clicked == "retry") { Room.RetryLevel(); return; }
                 if (clicked.StartsWith("kick:")) { _kickConfirmId = clicked[5..]; return; }
                 if (clicked.StartsWith("round:") && int.TryParse(clicked[6..], out int ri) && ri < rounds.Count)
@@ -134,6 +135,7 @@ namespace FunkyMakerPlayer.Multiplayer
             if (IsKeyPressed(kb, Keys.T)) { BeginChat(); return; }
             if (IsKeyPressed(kb, Keys.R)) { ToggleReady(); return; }
             if (IsKeyPressed(kb, Keys.S)) { SpectateOrWatch(); return; }
+            if (IsKeyPressed(kb, Keys.M)) { ToggleChartOnlyMode(); return; }
             if (IsKeyPressed(kb, Keys.C)) { OpenRoomSettings(Room.IsHost ? RoomSettingsMode.Edit : RoomSettingsMode.View); return; }
             if (IsKeyPressed(kb, Keys.W) && inMatch) { Room.WatchCurrentMatch(); return; }
             if (st.Settings.Mode == Protocol.ModeMirror && st.Song != null)
@@ -191,6 +193,19 @@ namespace FunkyMakerPlayer.Multiplayer
             _inputCooldown = INPUT_COOLDOWN_TIME;
         }
 
+        private void ToggleChartOnlyMode()
+        {
+            var settings = MultiplayerSettings.Instance;
+            settings.ChartOnlyMode = !settings.ChartOnlyMode;
+            settings.Save();
+            Room.OnChartOnlyModeChanged();
+            if (NetworkManager.Instance.IsConnected) ResendProfile();
+            ShowInfo(settings.ChartOnlyMode
+                ? "Chart Only ON: FNF matches load & download only chart + music (no sprites)."
+                : "Chart Only OFF: FNF matches load full sprites & stage.", 3.5f);
+            _inputCooldown = INPUT_COOLDOWN_TIME;
+        }
+
         /// <summary>A match you aren't playing is in progress and you aren't watching it yet.</summary>
         private bool CanWatchMatch(RoomStatePacket st) =>
             st.Phase is Protocol.PhaseLoading or Protocol.PhasePlaying && st.Match != null
@@ -243,7 +258,7 @@ namespace FunkyMakerPlayer.Multiplayer
             string subtitle = $"ID {st.RoomId}   •   {RoomClient.ModeName(st.Settings.Mode)}   •   {RoomClient.SelectionName(st.Settings.SongSelection)}   •   {st.Members.Count}/{st.Settings.MaxPlayers} players   •   {privacy}";
             int headerBottom = DrawScreenHeader(sb, font, pixel, sw, uiScale, st.Name.ToUpperInvariant(), subtitle, ModeColor(st.Settings.Mode), "ESC  Leave");
             int footerY = DrawFooterBar(sb, font, pixel, sw, sh, uiScale,
-                "T: Chat  |  R: Ready  |  S: Spectate (or watch the match)  |  P: Pick song (your turn)  |  C: Room settings  |  UP/DOWN + ENTER: Round details");
+                "T: Chat  |  R: Ready  |  S: Spectate  |  M: Chart Only  |  P: Pick song  |  C: Room settings  |  UP/DOWN + ENTER: Round details");
 
             int margin = Px(22, uiScale, 12);
             int gap = Px(14, uiScale, 8);
@@ -273,8 +288,7 @@ namespace FunkyMakerPlayer.Multiplayer
             DrawText(sb, font, $"PLAYERS  {st.Members.Count}/{st.Settings.MaxPlayers}", new Vector2(p.X + pad, p.Y + pad), TEXT_DISABLED * _fadeAlpha, headF);
 
             // Buttons at the bottom.
-            int btnH = Px(38, uiScale, 28);
-            int btnGap = Px(7, uiScale, 4);
+            int btnGap = Px(6, uiScale, 4);
             var me = Room.Me;
             bool inMatch = st.Phase is Protocol.PhaseLoading or Protocol.PhasePlaying;
             var buttons = new List<(string Key, string Label, Color Accent, bool Enabled, bool Strong)>();
@@ -288,7 +302,10 @@ namespace FunkyMakerPlayer.Multiplayer
                 buttons.Add(("spectate", "S  WATCH MATCH", ACCENT_PRIMARY, true, true));
             else
                 buttons.Add(("spectate", me?.Spectate == true ? "S  SPECTATING (ON)" : "S  SPECTATE", ACCENT_SECONDARY, true, me?.Spectate == true));
+            bool chartOnlyOn = MultiplayerSettings.Instance.ChartOnlyMode;
+            buttons.Add(("chartonly", chartOnlyOn ? "M  CHART ONLY (ON)" : "M  CHART ONLY (OFF)", chartOnlyOn ? ACCENT_SUCCESS : TEXT_SECONDARY, true, chartOnlyOn));
             buttons.Add(("settings", Room.IsHost ? "C  ROOM SETTINGS" : "C  VIEW SETTINGS", ACCENT_WARNING, true, false));
+            int btnH = buttons.Count >= 4 ? Px(34, uiScale, 25) : Px(38, uiScale, 28);
             int by = p.Bottom - pad - buttons.Count * (btnH + btnGap) + btnGap;
             foreach (var b in buttons)
             {
@@ -520,17 +537,23 @@ namespace FunkyMakerPlayer.Multiplayer
                 if (Room.LevelState == Protocol.LevelFailed)
                     DrawRoomButton(sb, font, pixel, uiScale, "retry", new Rectangle(r.Right - pad - Px(80, uiScale), lineY - 4, Px(80, uiScale), Px(26, uiScale, 20)), "RETRY", ACCENT_WARNING, fontSize: smallF);
 
-                // Bottom row: mirror vote (not for osu! songs: one chart), change song.
+                // Bottom row: mirror vote (not for osu! songs: one chart) + quick Chart Only toggle for FNF.
                 int byy = r.Bottom - pad - bh;
                 int bxx = r.X + pad;
                 if (st.Settings.Mode == Protocol.ModeMirror && Room.Me?.Spectate == false && !osu)
                 {
                     int votesP = st.Members.Count(m => m.Vote == Protocol.SidePlayer);
                     int votesE = st.Members.Count(m => m.Vote == Protocol.SideEnemy);
-                    int vw = Px(150, uiScale, 110);
+                    int vw = Px(136, uiScale, 96);
                     int myVote = Room.Me?.Vote ?? -1;
                     DrawRoomButton(sb, font, pixel, uiScale, "vote0", new Rectangle(bxx, byy, vw, bh), $"1  PLAYER ({votesP})", ACCENT_PRIMARY, strong: myVote == 0, fontSize: smallF);
-                    DrawRoomButton(sb, font, pixel, uiScale, "vote1", new Rectangle(bxx + vw + Px(8, uiScale), byy, vw, bh), $"2  ENEMY ({votesE})", ACCENT_ERROR, strong: myVote == 1, fontSize: smallF);
+                    bxx += vw + Px(6, uiScale);
+                    DrawRoomButton(sb, font, pixel, uiScale, "vote1", new Rectangle(bxx, byy, vw, bh), $"2  ENEMY ({votesE})", ACCENT_ERROR, strong: myVote == 1, fontSize: smallF);
+                    bxx += vw + Px(6, uiScale);
+                    bool co = MultiplayerSettings.Instance.ChartOnlyMode;
+                    int cw = Math.Min(Px(160, uiScale, 110), Math.Max(Px(90, uiScale, 76), r.Right - pad - bxx));
+                    if (bxx + cw <= r.Right - pad + 2)
+                        DrawRoomButton(sb, font, pixel, uiScale, "chartonly", new Rectangle(bxx, byy, cw, bh), co ? "CHART ONLY: ON" : "CHART ONLY: OFF", co ? ACCENT_SUCCESS : TEXT_SECONDARY, strong: co, fontSize: smallF);
                 }
                 // No CHANGE SONG: a pick is final for the round.
                 return;

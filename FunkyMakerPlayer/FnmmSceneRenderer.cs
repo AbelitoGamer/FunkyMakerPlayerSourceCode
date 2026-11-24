@@ -171,7 +171,7 @@ public static class FnmmSceneRenderer
         long remainingCappedRawBytes = 0;
         long usedVramBytes = 0;
 
-        foreach (var (preName, (_, preFrames)) in level.Sprites)
+        foreach (var (preName, (preDef, preFrames)) in level.Sprites)
         {
             if (persistentCache != null &&
                 persistentCache.TryGetValue(preName, out var preCache) &&
@@ -192,7 +192,10 @@ public static class FnmmSceneRenderer
                     long raw = (long)pw * ph * 4L;
                     totalLevelRawBytes += raw;
                     if (raw > SMALL_SPRITE_EXEMPT_BYTES)
-                        remainingCappedRawBytes += Math.Min(raw, stripVramBudget);
+                    {
+                        int declaredFc = fi < preDef.Data.Count ? Math.Max(1, preDef.Data[fi].FrameCount) : 1;
+                        remainingCappedRawBytes += EstimateLosslessVramBytes(raw, declaredFc, stripVramBudget);
+                    }
                 }
             }
         }
@@ -354,16 +357,20 @@ public static class FnmmSceneRenderer
                     }
                 }
                 if (hadPngHeader && estRawBytes > SMALL_SPRITE_EXEMPT_BYTES)
-                    remainingCappedRawBytes = Math.Max(0, remainingCappedRawBytes - Math.Min(estRawBytes, stripVramBudget));
+                    remainingCappedRawBytes = Math.Max(0, remainingCappedRawBytes - EstimateLosslessVramBytes(estRawBytes, Math.Max(1, frameCount), stripVramBudget));
 
                 var animData = fi < def.Data.Count ? def.Data[fi] : null;
                 bool canPackSingleFrame = actualFrameCount == 1 && animData != null && !(def.Type == 2.0f && def.Data.Count > 1);
+                bool wantsLosslessAtlas = hasLevelBudget &&
+                                          ((actualFrameCount > 1 && estRawBytes > 512L * 1024) ||
+                                           (canPackSingleFrame && estRawBytes > 1024L * 1024));
                 bool levelWantsAtlas = hasLevelBudget && dynamicLevelScale < 0.99f &&
                                        estRawBytes > SMALL_SPRITE_EXEMPT_BYTES &&
                                        (actualFrameCount > 1 || canPackSingleFrame);
 
                 bool needsDownscale = fw0 > maxTexSize || pngH > maxTexSize ||
                                       (actualFrameCount > 1 && estRawBytes > stripVramBudget) ||
+                                      wantsLosslessAtlas ||
                                       levelWantsAtlas;
                 bool needsBgTile = !needsDownscale && isBgSprite && actualFrameCount == 1 && pngW > maxTexSize;
                 bool needsSplit = !needsDownscale && !needsBgTile && pngW > maxTexSize && actualFrameCount > 1;
@@ -579,6 +586,15 @@ public static class FnmmSceneRenderer
             Console.WriteLine($"[SceneCache] Textures: {cacheHits}/{totalSprites} sprite(s) reused from cache");
 
         return texCache;
+    }
+
+    private static long EstimateLosslessVramBytes(long rawBytes, int declaredFrameCount, long stripVramBudget)
+    {
+        // Multi-frame FNF strips typically shrink by ~55-75% after lossless transparent-margin trimming
+        // and exact duplicate-frame removal; avoid prematurely downscaling early sprites on raw bytes alone.
+        double ratio = declaredFrameCount > 1 ? 0.45 : 0.85;
+        long est = Math.Max(4L, (long)(rawBytes * ratio));
+        return Math.Min(est, stripVramBudget);
     }
 
     private static bool TryReadPngHeaderDimensions(byte[] frameBytes, out int width, out int height)
@@ -912,12 +928,14 @@ public static class FnmmSceneRenderer
                             }
                         }
 
-                        long cappedContrib = estRaw > SMALL_SPRITE_EXEMPT_BYTES ? Math.Min(estRaw, stripVramBudget) : 0L;
+                        long cappedContrib = estRaw > SMALL_SPRITE_EXEMPT_BYTES
+                            ? EstimateLosslessVramBytes(estRaw, Math.Max(1, job.DeclaredFrameCount), stripVramBudget)
+                            : 0L;
                         if (hadHeader && cappedContrib > 0)
                             Interlocked.Add(ref remainingCappedRawBytes, -cappedContrib);
 
                         long estJobVram = estRaw > SMALL_SPRITE_EXEMPT_BYTES
-                            ? (long)(Math.Min(estRaw, stripVramBudget) * dynamicLevelScale * dynamicLevelScale)
+                            ? (long)(cappedContrib * dynamicLevelScale * dynamicLevelScale)
                             : estRaw;
                         Interlocked.Add(ref inFlightEstVram, estJobVram);
 
@@ -930,12 +948,16 @@ public static class FnmmSceneRenderer
 
                         var animData = job.FrameIndex < job.Sprite.Def.Data.Count ? job.Sprite.Def.Data[job.FrameIndex] : null;
                         bool canPackSingleFrame = actualFrameCount == 1 && animData != null && !(job.Sprite.Def.Type == 2.0f && job.Sprite.Def.Data.Count > 1);
+                        bool wantsLosslessAtlas = hasLevelBudget &&
+                                                  ((actualFrameCount > 1 && estRaw > 512L * 1024) ||
+                                                   (canPackSingleFrame && estRaw > 1024L * 1024));
                         bool levelWantsAtlas = hasLevelBudget && dynamicLevelScale < 0.99f &&
                                                estRaw > SMALL_SPRITE_EXEMPT_BYTES &&
                                                (actualFrameCount > 1 || canPackSingleFrame);
 
                         bool needsDownscale = fw0 > maxTexSize || pngH > maxTexSize ||
                                               (actualFrameCount > 1 && estRaw > stripVramBudget) ||
+                                              wantsLosslessAtlas ||
                                               levelWantsAtlas;
                         bool needsBgTile = !needsDownscale && job.Sprite.IsBgSprite && actualFrameCount == 1 && pngW > maxTexSize;
                         bool needsSplit = !needsDownscale && !needsBgTile && pngW > maxTexSize && actualFrameCount > 1;
