@@ -21,6 +21,98 @@ namespace FunkyMakerPlayer;
 /// <summary>Song clock: pause, resume, seek, restart (moved out of Game1.cs).</summary>
 public partial class Game1
 {
+    // ── Music ↔ chart sync (fork) ────────────────────────────────────────────────
+    // The song clock is the Stopwatch (multiplayer start times and replays rely on it); the music is
+    // an OpenAL source playing on its own. Nothing tied them together, so anything that stalled the
+    // audio but not the clock (a hitch on Android, an audio underrun, the PCM copy of a timeskip)
+    // left them apart for the rest of the song. Now the music's real position is compared with the
+    // clock every frame and moved back when they drift apart.
+    private float  _musicInstStart;        // song time where the current _musicInst's buffer starts
+    private double _musicDriftAvg;         // smoothed (music − clock) in seconds
+    private bool   _musicDriftValid;
+    private float  _musicSyncHold;         // seconds to wait before measuring (after a play / seek)
+    private const double MusicDriftSmoothing = 0.2;   // time constant of the smoothing, seconds
+    // Smoothed drift that triggers a resync. Widened (up to 150 ms) if resyncs come back to back,
+    // i.e. the device reports its position too coarsely / with a fixed bias, so it never loops.
+    private double _musicDriftTolerance = 0.045;
+    private double _musicLastResyncAt = double.NegativeInfinity; // wall-clock seconds
+
+    /// <summary>Forget the measured drift (new instance, seek, resume) and wait a moment before measuring.</summary>
+    private void ResetMusicSync(float hold = 0.25f)
+    {
+        _musicDriftValid = false;
+        _musicDriftAvg = 0;
+        _musicSyncHold = hold;
+    }
+
+    /// <summary>
+    /// Per frame while the song plays: keeps the music on the song clock. Small, short wobbles (the
+    /// mixer reports its position in ~10-20 ms steps) are smoothed out; a real drift moves the music
+    /// in place (no PCM copy), or recreates it at the clock's time when that isn't possible.
+    /// </summary>
+    private void KeepMusicInSync(float dt)
+    {
+        if (_musicInst == null || _music == null || _musicInst.State != SoundState.Playing)
+        {
+            _musicDriftValid = false;
+            return;
+        }
+        if (_musicSyncHold > 0f)
+        {
+            _musicSyncHold -= dt;
+            return;
+        }
+        if (MusicPosition.Get(_musicInst, _musicSampleRate) is not { } pos) return;
+
+        double bufferSeconds = _music.Duration.TotalSeconds;
+        if (pos >= bufferSeconds - 0.1) return; // about to end: nothing to fix
+
+        double drift = _musicInstStart + pos - _songTime; // > 0: music ahead of the chart
+        if (!_musicDriftValid)
+        {
+            _musicDriftAvg = drift;
+            _musicDriftValid = true;
+        }
+        else
+        {
+            double k = 1 - Math.Exp(-Math.Max(dt, 0.001f) / MusicDriftSmoothing);
+            _musicDriftAvg += (drift - _musicDriftAvg) * k;
+        }
+        if (Math.Abs(_musicDriftAvg) < _musicDriftTolerance) return;
+
+        Console.WriteLine($"[Audio Sync] Music {(_musicDriftAvg > 0 ? "ahead of" : "behind")} the chart by " +
+                          $"{Math.Abs(_musicDriftAvg) * 1000:0} ms at {_songTime:0.00}s, resyncing");
+        double now = Stopwatch.GetTimestamp() / (double)Stopwatch.Frequency;
+        if (now - _musicLastResyncAt < 3.0 && _musicDriftTolerance < 0.15)
+        {
+            _musicDriftTolerance = Math.Min(_musicDriftTolerance * 1.5, 0.15);
+            Console.WriteLine($"[Audio Sync] Back-to-back resyncs: tolerance now {_musicDriftTolerance * 1000:0} ms");
+        }
+        _musicLastResyncAt = now;
+        if (!MusicPosition.TrySet(_musicInst, _musicSampleRate, _songTime - _musicInstStart, bufferSeconds))
+            RecreateMusicAt(_songTime);
+        ResetMusicSync();
+    }
+
+    /// <summary>Recreates the music instance from the stored PCM starting at <paramref name="time"/>; plays it unless paused.</summary>
+    private bool RecreateMusicAt(float time)
+    {
+        if (_musicPcm == null) return false;
+        var seeked = OggLoader.SeekPcm(_musicPcm, _musicSampleRate, _musicChannels, time);
+        if (seeked == null) return false;
+        _musicInst?.Dispose();
+        _music?.Dispose();
+        _music = seeked;
+        _musicInstStart = time;
+        _musicInst = _music.CreateInstance();
+        _musicInst.Volume = SongPlaybackVolume;
+        _musicInst.IsLooped = false;
+        ApplyRunRateToMusic(); // Freeplay song rate (fork)
+        if (!_paused) _musicInst.Play();
+        ResetMusicSync();
+        return true;
+    }
+
     private void PauseSong()
     {
         if (!_started || _paused) return;
@@ -40,6 +132,7 @@ public partial class Game1
             _musicInst?.Resume();
         else
             _musicInst?.Play();
+        ResetMusicSync();
     }
 
     /// <summary>
@@ -134,21 +227,14 @@ public partial class Game1
         }
 
         // ── Seek audio ───────────────────────────────────────────────────────────
-        if (_musicPcm != null)
-        {
-            var seeked = OggLoader.SeekPcm(_musicPcm, _musicSampleRate, _musicChannels, targetTime);
-            if (seeked != null)
-            {
-                _musicInst?.Dispose();
-                _music?.Dispose();
-                _music = seeked;
-                _musicInst = _music.CreateInstance();
-                _musicInst.Volume = SongPlaybackVolume;
-                _musicInst.IsLooped = false;
-                ApplyRunRateToMusic(); // Freeplay song rate (fork)
-                if (!_paused) _musicInst.Play();
-            }
-        }
+        // In place when the current buffer covers the target (instant, no copy): copying the PCM
+        // tail can take long enough on Android to leave the music behind the already-moved clock.
+        // Otherwise (backwards past the buffer start, stopped instance) recreate it from the PCM.
+        if (_music != null && _musicInst != null && _musicInst.State != SoundState.Stopped &&
+            MusicPosition.TrySet(_musicInst, _musicSampleRate, targetTime - _musicInstStart, _music.Duration.TotalSeconds))
+            ResetMusicSync();
+        else
+            RecreateMusicAt(targetTime);
     }
 
     private void RestartSong()
@@ -185,6 +271,7 @@ public partial class Game1
         _songStopwatch.Reset();
         _pausedTime      = 0.0;
         _musicInst?.Stop();
+        ResetMusicSync();
         if (_level != null) SetupLevel();
     }
 }

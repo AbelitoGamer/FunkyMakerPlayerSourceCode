@@ -51,6 +51,16 @@ namespace FunkyMakerPlayer.Platforms.Android
             
             // THEN hide system UI after view is set
             HideSystemUI();
+
+            // Back button / gesture goes back one screen in the game instead of leaving it (fork).
+            // Android 13+ (and always with targetSdk 36 on Android 16+, predictive back) only
+            // delivers it through OnBackInvokedDispatcher; older versions call OnBackPressed.
+            if (Build.VERSION.SdkInt >= BuildVersionCodes.Tiramisu)
+            {
+                _backCallback = new GameBackCallback();
+                OnBackInvokedDispatcher.RegisterOnBackInvokedCallback(
+                    global::Android.Window.IOnBackInvokedDispatcher.PriorityDefault, _backCallback);
+            }
             
             // Run the game
             _game.Run();
@@ -537,8 +547,21 @@ namespace FunkyMakerPlayer.Platforms.Android
             }
         }
         
+        private GameBackCallback? _backCallback;
+
+        private sealed class GameBackCallback : Java.Lang.Object, global::Android.Window.IOnBackInvokedCallback
+        {
+            public void OnBackInvoked() => Game1.RequestAndroidBack();
+        }
+
+#pragma warning disable CS0672, CA1422 // OnBackPressed is obsolete, but it is what Android < 13 calls
+        public override void OnBackPressed() => Game1.RequestAndroidBack();
+#pragma warning restore CS0672, CA1422
+
         protected override void OnDestroy()
         {
+            if (_backCallback != null && Build.VERSION.SdkInt >= BuildVersionCodes.Tiramisu)
+                OnBackInvokedDispatcher.UnregisterOnBackInvokedCallback(_backCallback);
             _game?.Dispose();
             base.OnDestroy();
         }

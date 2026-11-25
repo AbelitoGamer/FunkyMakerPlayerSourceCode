@@ -169,83 +169,79 @@ public class TouchControls
         
         int buttonSize = (int)(_screenHeight * MENU_BUTTON_SIZE);
         int margin = (int)(_screenHeight * MENU_MARGIN);
-        int spacing = (int)(_screenHeight * 0.02f);
-        
-        // Extra margin for Android navigation bar (bottom 10% of screen)
-        int bottomSafeZone = (int)(_screenHeight * 0.10f);
-        
-        // ── D-Pad (Left side) ────────────────────────────────────────────
-        int dpadCenterX = margin + buttonSize;
-        int dpadCenterY = _screenHeight - margin - buttonSize - bottomSafeZone;
-        
+        int spacing = (int)(_screenHeight * 0.012f);
+        // Room for the gesture bar / rounded corners at the bottom (the app runs immersive).
+        int bottomSafe = (int)(_screenHeight * 0.03f);
+
+        // ── D-Pad (left side): a real cross, fully on screen ─────────────
+        // (fork, 2026-11-23: the old layout put Down below the screen edge and Left/Right
+        //  off-centre under Up.)
+        int padLeft = margin;
+        int padBottom = _screenHeight - margin - bottomSafe;
+        int cx = padLeft + buttonSize + spacing;              // left column of the middle button
+        int midY = padBottom - 2 * buttonSize - 2 * spacing;  // top of the middle row
+
         _menuButtons.Add(new VirtualButton
         {
             Key = Keys.Left,
-            Bounds = new Rectangle(margin, dpadCenterY, buttonSize, buttonSize),
-            Label = "<"  // Left arrow
+            Bounds = new Rectangle(padLeft, midY, buttonSize, buttonSize),
+            Label = "<"
         });
-        
         _menuButtons.Add(new VirtualButton
         {
             Key = Keys.Right,
-            Bounds = new Rectangle(dpadCenterX + spacing, dpadCenterY, buttonSize, buttonSize),
-            Label = ">"  // Right arrow
+            Bounds = new Rectangle(cx + buttonSize + spacing, midY, buttonSize, buttonSize),
+            Label = ">"
         });
-        
         _menuButtons.Add(new VirtualButton
         {
             Key = Keys.Up,
-            Bounds = new Rectangle(dpadCenterX, dpadCenterY - buttonSize - spacing, buttonSize, buttonSize),
-            Label = "^"  // Up arrow
+            Bounds = new Rectangle(cx, midY - buttonSize - spacing, buttonSize, buttonSize),
+            Label = "^"
         });
-        
         _menuButtons.Add(new VirtualButton
         {
             Key = Keys.Down,
-            Bounds = new Rectangle(dpadCenterX, dpadCenterY + buttonSize + spacing, buttonSize, buttonSize),
-            Label = "v"  // Down arrow
+            Bounds = new Rectangle(cx, midY + buttonSize + spacing, buttonSize, buttonSize),
+            Label = "v"
         });
-        
-        // ── Action Buttons (Right side) ──────────────────────────────
-        int actionX = _screenWidth - margin - buttonSize;
-        int actionY = _screenHeight - margin - buttonSize - bottomSafeZone;
-        
-        // Enter/Space (OK button) - botón A para confirmar (maneja ambas teclas)
+
+        // ── Action Buttons (right side) ──────────────────────────────────
+        int aSize = (int)(buttonSize * 1.1f);
+        int bSize = (int)(buttonSize * 0.85f);
+        int actionX = _screenWidth - margin - aSize;
+        int actionY = padBottom - aSize - buttonSize / 2;
+
+        // A = Enter (confirm)
         _menuButtons.Add(new VirtualButton
         {
             Key = Keys.Enter,
-            Bounds = new Rectangle(actionX, actionY, buttonSize, buttonSize),
+            Bounds = new Rectangle(actionX, actionY, aSize, aSize),
             Label = "A"
         });
-        
-        // Escape (back button) - botón B para volver
+        // B = Escape (back), lower-left of A like a gamepad
         _menuButtons.Add(new VirtualButton
         {
             Key = Keys.Escape,
-            Bounds = new Rectangle(actionX - buttonSize - spacing, actionY, (int)(buttonSize * 0.8f), (int)(buttonSize * 0.8f)),
+            Bounds = new Rectangle(actionX - bSize - spacing * 2, actionY + aSize - bSize / 2, bSize, bSize),
             Label = "B"
         });
-        
-        // ── Settings Tab Navigation (Q and E) ────────────────────────
-        // These buttons appear at the top of the screen, left and right sides
-        // Only visible when _showSettingsButtons is true
-        int tabButtonSize = (int)(buttonSize * 0.9f);
-        int topMargin = (int)(_screenHeight * 0.05f);
-        
-        // Q button - Previous tab (left side, top)
-        _qButton = new VirtualButton
-        {
-            Key = Keys.Q,
-            Bounds = new Rectangle(margin, topMargin, tabButtonSize, tabButtonSize),
-            Label = "Q"
-        };
-        
-        // E button - Next tab (right side, top)
+
+        // ── Settings tab buttons (Q / E) ─────────────────────────────────
+        // Above B and A, so they no longer cover the Settings title and tab bar (fork).
+        int tabButtonSize = (int)(buttonSize * 0.75f);
+        int tabY = actionY - tabButtonSize - spacing * 3;
         _eButton = new VirtualButton
         {
             Key = Keys.E,
-            Bounds = new Rectangle(_screenWidth - margin - tabButtonSize, topMargin, tabButtonSize, tabButtonSize),
+            Bounds = new Rectangle(actionX + (aSize - tabButtonSize) / 2, tabY, tabButtonSize, tabButtonSize),
             Label = "E"
+        };
+        _qButton = new VirtualButton
+        {
+            Key = Keys.Q,
+            Bounds = new Rectangle(_eButton.Bounds.X - tabButtonSize - spacing * 2, tabY, tabButtonSize, tabButtonSize),
+            Label = "Q"
         };
     }
     
@@ -321,6 +317,26 @@ public class TouchControls
         _allControlsVisible = visible;
     }
     
+    /// <summary>When the on-screen menu buttons (D-pad, A / B, Q / E) are shown (Settings → CONTROLS).</summary>
+    public enum MenuButtonsMode { Auto, On, Off }
+
+    /// <summary>Saved setting (<see cref="Game1.MenuButtonsMode"/>), shared by every instance (Game1's and the online menu's).</summary>
+    public static MenuButtonsMode ButtonsMode => (MenuButtonsMode)Math.Clamp(Game1.MenuButtonsMode, 0, 2);
+
+    /// <summary>
+    /// Set by the owner every frame: the current screen can be used fully by tapping, so in
+    /// <see cref="MenuButtonsMode.Auto"/> the D-pad / A / B are hidden and don't cover it
+    /// (Android's back gesture still goes back).
+    /// </summary>
+    public bool ScreenIsTouchReady { get; set; }
+
+    /// <summary>The menu buttons are drawn and react to touches.</summary>
+    public bool MenuButtonsShown => ButtonsMode == MenuButtonsMode.On ||
+                                    (ButtonsMode == MenuButtonsMode.Auto && !ScreenIsTouchReady);
+
+    /// <summary>The touches read by the last <see cref="Update"/> (read them here, not from TouchPanel again).</summary>
+    public TouchCollection LastTouches { get; private set; }
+
     /// <summary>
     /// Menu mode: touches on points where this returns true are not mapped to the D-pad / A / B
     /// (the screen has its own button there, which wins).
@@ -346,6 +362,7 @@ public class TouchControls
         if (!_allControlsVisible)
         {
             AnyTouchDown = false;
+            LastTouches = TouchPanel.GetState();
             // Reset all states when hidden
             _keyStates.Clear();
             _keyStatesPrev.Clear();
@@ -394,6 +411,7 @@ public class TouchControls
         // (No per-touch logging here: this runs every frame on the Android UI thread, and a line per
         // finger per frame to logcat only slows the game down.)
         var touches = TouchPanel.GetState();
+        LastTouches = touches;
         bool anyDown = false;
         _seenTouchIds.Clear();
 
@@ -457,7 +475,7 @@ public class TouchControls
                     if (_hitboxes[lane] != null)
                         _hitboxes[lane].IsPressed = true;
                 }
-                else // Menu mode
+                else if (MenuButtonsShown) // Menu mode
                 {
                     if (IgnorePoint != null && IgnorePoint(new Point((int)touchPos.X, (int)touchPos.Y)))
                         continue;
@@ -562,7 +580,7 @@ public class TouchControls
     /// </summary>
     public bool IsPointOnMenuControl(Point point)
     {
-        if (!_allControlsVisible || _mode != ControlMode.Menu) return false;
+        if (!_allControlsVisible || _mode != ControlMode.Menu || !MenuButtonsShown) return false;
 
         foreach (var button in _menuButtons)
         {
@@ -601,7 +619,7 @@ public class TouchControls
             DrawGameplayHitboxes(spriteBatch);
             DrawPauseButton(spriteBatch, font);  // Always draw pause button in gameplay
         }
-        else
+        else if (MenuButtonsShown)
         {
             DrawMenuButtons(spriteBatch, font);
             

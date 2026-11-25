@@ -56,7 +56,7 @@ public class HudEditor
         _font = font;
         _graphicsDevice = graphicsDevice;
         _prevKb = LayoutKeyboard.GetState();
-        _prevMouse = Mouse.GetState();
+        _prevMouse = UI.PointerInput.GetRawState();
         
         // Load actual positions from HudSettings
         LoadFromHudSettings(screenWidth, screenHeight);
@@ -165,7 +165,7 @@ public class HudEditor
         _isDragging = false;
         _isResizing = false;
         _prevKb = LayoutKeyboard.GetState();
-        _prevMouse = Mouse.GetState();
+        _prevMouse = UI.PointerInput.GetRawState();
     }
 
     public void Update(float dt, int screenWidth, int screenHeight)
@@ -183,7 +183,7 @@ public class HudEditor
         BackPressed = false;
         SavePressed = false;
 
-        var mouse = Mouse.GetState();
+        var mouse = UI.PointerInput.GetRawState();
         if (!Game1.CanAcceptInput)
         {
             _isDragging = false;

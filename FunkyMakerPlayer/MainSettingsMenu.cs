@@ -33,7 +33,7 @@ public class MainSettingsMenu : UI.IDirectScreen
         _font = font;
         _fontRenderer = fontRenderer;
         _prevKb = LayoutKeyboard.GetState();
-        _prevMs = Mouse.GetState();
+        _prevMs = UI.PointerInput.GetState();
     }
 
     public void SetFontRenderer(FontRenderer? fontRenderer) => _fontRenderer = fontRenderer;
@@ -44,7 +44,7 @@ public class MainSettingsMenu : UI.IDirectScreen
         _enterHovered = false;
         _backHovered = false;
         _prevKb = LayoutKeyboard.GetState();
-        _prevMs = Mouse.GetState();
+        _prevMs = UI.PointerInput.GetState();
     }
 
     public void Update(float dt, int screenWidth, int screenHeight)
@@ -54,7 +54,7 @@ public class MainSettingsMenu : UI.IDirectScreen
 
     public void Update(float dt, KeyboardState kb, int screenWidth, int screenHeight)
     {
-        var ms = Mouse.GetState();
+        var ms = UI.PointerInput.GetState();
 
         _pulseTimer += dt;
         BackPressed = false;
@@ -262,7 +262,7 @@ public class MainSettingsMenu : UI.IDirectScreen
 
         // Clickable "Press ENTER to open" action button cleanly spaced below card
         float pulse = (float)Math.Sin(_pulseTimer * Math.PI * 1.8) * 0.12f + 0.88f;
-        string enterPrompt = "Press ENTER to open HUD Editor";
+        string enterPrompt = UI.PointerInput.IsTouch ? "Tap to open HUD Editor" : "Press ENTER to open HUD Editor";
         var enterSize = MeasureText(enterPrompt, enterFontSize, enterFallbackScale);
         int enterBtnW = Math.Clamp((int)(enterSize.X + 48 * scale), 260, Math.Max(260, screenWidth - 48));
         int enterBtnX = centerX - enterBtnW / 2;

@@ -378,6 +378,8 @@ public partial class Game1 : Game
     public static bool   HideTouchHitboxColors = false;
     /// <summary>(fork) Opacity of a pressed touch hitbox (Settings → Touch Hitbox Opacity), default 30 %.</summary>
     public static float  TouchHitboxOpacity = 0.3f;
+    /// <summary>(fork) On-screen menu buttons (Android): 0 = Auto (hidden on tap-ready screens), 1 = On, 2 = Off.</summary>
+    public static int    MenuButtonsMode = 0;
     // Note style name — "Default" or a folder name in mods/notestyles/
     public static string NoteStyleName     = DefaultMods.NoteStyleName;
     // NoteSplash style name — "Default" (programmatic) or a folder name in mods/notesplashes/
@@ -1108,6 +1110,7 @@ public partial class Game1 : Game
 
     private void UpdateInternal(GameTime gameTime)
     {
+        UpdateAndroidBack(); // before the first keyboard read: back = Escape this frame (Game1.Touch.cs)
         var rawKb  = LayoutKeyboard.GetState();
         bool windowActive = ComputeWindowActive();
 
@@ -1151,7 +1154,8 @@ public partial class Game1 : Game
 
         // Update touch controls before merging virtual keys with physical keyboard state
         _touchControls?.Update();
-        
+        UpdateTouchPointer(gameTime); // taps / drags as a mouse for every menu (UI/PointerInput)
+
         // Merge touch input into keyboard state for seamless integration
         rawKb = MergeTouchWithKeyboard(rawKb);
 #endif
@@ -1159,7 +1163,7 @@ public partial class Game1 : Game
         float dt = Math.Min((float)gameTime.ElapsedGameTime.TotalSeconds, 0.1f);  // clamp to 100ms max to prevent camera jumps on first frame
         _lastDt  = gameTime.ElapsedGameTime.TotalSeconds;
 
-        var rawMs = Mouse.GetState();
+        var rawMs = UI.PointerInput.GetState(); // the mouse, or touches as a mouse on Android
         bool wasWaitingMouseRelease = _waitMouseReleaseAfterFocus;
         bool wasInGrace = _focusRegainGrace > 0f || wasWaitingMouseRelease;
 
@@ -1436,7 +1440,7 @@ public partial class Game1 : Game
         if (_inPauseMenu && _level != null && _pauseMenu != null)
         {
             _pauseMenu.IsMultiplayer = _isMultiplayerMatch;
-            var action = _pauseMenu.HandleInput(kb, _prevKb);
+            var action = _pauseMenu.HandleInput(kb, _prevKb, ms, prevMs); // keys, mouse or taps
 
             switch (action)
             {
@@ -2187,7 +2191,9 @@ public partial class Game1 : Game
                 }
             }
 
-            bool enterPressed = kb.IsKeyDown(Keys.Enter) && !_prevKb.IsKeyDown(Keys.Enter);
+            // Enter, or (fork) a click / tap anywhere: phones had to find the on-screen A button.
+            bool enterPressed = (kb.IsKeyDown(Keys.Enter) && !_prevKb.IsKeyDown(Keys.Enter)) ||
+                                (!suppressUserInput && ms.LeftButton == ButtonState.Pressed && prevMs.LeftButton == ButtonState.Released);
             bool cancelLoadingPressed = _isMultiplayerMatch && _loadState == LoadState.Done &&
                 (kb.IsKeyDown(Keys.Escape) && !_prevKb.IsKeyDown(Keys.Escape));
 #if ANDROID
@@ -2507,7 +2513,7 @@ public partial class Game1 : Game
 
         _errorReturnToMultiplayer = true;
         _errorDismissGrace = 0.25f;
-        _errorMsg = $"Opponent Disconnected\n{reason}\n\nPress ENTER, ESC, or click to return to menu";
+        _errorMsg = $"Opponent Disconnected\n{reason}\n\n{(UI.PointerInput.IsTouch ? "Tap to return to menu" : "Press ENTER, ESC, or click to return to menu")}";
     }
 
     private void DismissErrorToMenu()
@@ -2712,31 +2718,22 @@ public partial class Game1 : Game
                         _musicPcm = pcm;
 
                         _musicInst = _music.CreateInstance();
+                        _musicInstStart = 0f;
                         _musicInst.Volume = SongPlaybackVolume;
                         _musicInst.IsLooped = false;
                         ApplyRunRateToMusic(); // Freeplay song rate (fork)
                     }
                     _audioDeviceReset = false;
                 }
-                if (_musicPcm != null)
-                {
-                    var seeked = OggLoader.SeekPcm(_musicPcm, _musicSampleRate, _musicChannels, _songTime);
-                    if (seeked != null)
-                    {
-                        _musicInst?.Dispose();
-                        _music?.Dispose();
-                        _music = seeked;
-                        _musicInst = _music.CreateInstance();
-                        _musicInst.Volume = SongPlaybackVolume;
-                        _musicInst.IsLooped = false;
-                        ApplyRunRateToMusic(); // Freeplay song rate (fork)
-                        if (!_paused) _musicInst.Play();
-                    }
-                }
+                RecreateMusicAt(_songTime);
             }
             else if (songHasEnded && _musicInst?.State == SoundState.Stopped)
             {
                 Console.WriteLine($"[Audio] Song ended naturally at {_songTime:F2}s (end time: {_songEndTime:F2}s)");
+            }
+            else if (!_paused && !songHasEnded)
+            {
+                KeepMusicInSync(dt); // fork: pull the music back onto the song clock after stalls
             }
         }
 

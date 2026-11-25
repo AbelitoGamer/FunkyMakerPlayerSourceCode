@@ -146,7 +146,7 @@ public partial class Game1
         foreach (var r in _noteRenderers)
             if (r.Scroll != scroll) r.Scroll = scroll;
 
-        _osuVideo?.Update(_songTime, GraphicsDevice);
+        _osuVideo?.Update(_songTime, GraphicsDevice, clockRunning: !_paused);
         if (_started && !_paused)
             _osuStoryboard?.UpdateSamples(_songTime, OsuPassing, Math.Clamp(MasterVolume * OsuSettings.HitsoundVolume, 0f, 1f));
     }

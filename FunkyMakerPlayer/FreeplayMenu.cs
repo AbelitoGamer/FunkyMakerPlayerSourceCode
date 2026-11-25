@@ -58,6 +58,13 @@ public partial class FreeplayMenu
     }
 
     public bool IsPanelOpen => _panelOpen;
+
+    /// <summary>
+    /// The plain main menu is showing (no panel, credits, modal or animation): Android's back
+    /// gesture leaves the app from here instead of opening Settings (fork).
+    /// </summary>
+    public bool IsAtRoot => !_panelOpen && !_inPanel && !_importModalOpen && !_creditsOpen &&
+                            _transition == TransitionState.None && !_updateModalOpen && !_confirming;
     public string? SelectedLevelName => (_panelOpen && _selected >= 0 && _selected < _names.Count)
         ? _names[_selected]
         : null;
@@ -153,6 +160,8 @@ public partial class FreeplayMenu
     private bool      _prevTouchDown        = false;
     private Point     _touchStart, _touchLast;
     private bool      _touchDragging;
+    private float     _touchHeld;          // fork: hold a row = options menu (like a right click)
+    private bool      _touchLongPressed;
     #endif
     
     // Screen dimensions for mouse coordinate transformation
@@ -653,16 +662,24 @@ public partial class FreeplayMenu
         // Fork: a touch is a tap only when released without dragging; dragging scrolls the list
         // (it used to select rows as the finger moved).
         mouseClicked = false;
+        bool touchLongPress = false;
         if (touchDown && !_prevTouchDown)
         {
             _touchStart = rtMouse;
             _touchLast = rtMouse;
             _touchDragging = false;
+            _touchHeld = 0f;
+            _touchLongPressed = false;
         }
         else if (touchDown)
         {
             if (!_touchDragging && Math.Abs(rtMouse.Y - _touchStart.Y) > UiScale.Px(14, UiScale.FromScreen(screenWidth, screenHeight)))
                 _touchDragging = true;
+            if (!_touchDragging && !_touchLongPressed && (_touchHeld += dt) >= UI.PointerInput.LongPressSeconds)
+            {
+                _touchLongPressed = true;
+                touchLongPress = true;
+            }
             if (_touchDragging && _panelOpen)
             {
                 _manualScroll = true;
@@ -674,9 +691,12 @@ public partial class FreeplayMenu
         else if (_prevTouchDown)
         {
             rtMouse = _touchLast;
-            mouseClicked = !_touchDragging;
+            mouseClicked = !_touchDragging && !_touchLongPressed;
         }
         _prevTouchDown = touchDown;
+        if (touchLongPress)
+            mouse = new MouseState(mouse.X, mouse.Y, mouse.ScrollWheelValue, ButtonState.Released,
+                ButtonState.Released, ButtonState.Pressed, ButtonState.Released, ButtonState.Released);
         #endif
 
         if (!Game1.CanAcceptInput)
@@ -1208,7 +1228,7 @@ public partial class FreeplayMenu
             DrawRect(sb, leftW / 2 + lineW / 2 + dotOffset - dotSize, lineY, dotSize, lineThickness, new Color(255, 215, 0));
 
             // Subtitle - fitted so it never overflows into right panel
-            string sub = "Fan-made PC player for Funky Maker Mobile";
+            string sub = UI.PointerInput.IsTouch ? "Fan-made player for Funky Maker Mobile" : "Fan-made PC player for Funky Maker Mobile";
             int subSize = FitFontSize(sub, UiScale.FontPx(18, s), 11, maxLeftTitleW);
             var subSz = MeasureText(sub, subSize);
             float subY = lineY + UiScale.Px(16, s);
@@ -1217,7 +1237,7 @@ public partial class FreeplayMenu
 
             // Bottom hint position
             #if ANDROID
-            string mainMenuHint = "UP/DOWN Navigate  |  ENTER / Tap Select  |  ESC Settings";
+            string mainMenuHint = "Tap an option  |  Back gesture: return";
             #else
             string mainMenuHint = $"UP/DOWN Navigate  |  ENTER / Click Select  |  [{Controls.Hint(HotkeyAction.OpenChartEditor)}] Editors  |  ESC Settings";
             #endif
@@ -1338,7 +1358,11 @@ public partial class FreeplayMenu
             float detailsAlpha = Math.Clamp((0.5f - _panelX) * 2f, 0f, 1f);
             DrawLevelDetails(sb, leftW, sh, s, detailsAlpha);
 
-            string panelHint = _searchTyping
+            string panelHint = UI.PointerInput.IsTouch && !_searchTyping
+                ? (_online != null
+                    ? "Tap a song, tap it again to pick  |  \"...\" Options  |  Drag to scroll  |  Back: close"
+                    : "Tap a song, tap it again to play  |  \"...\" or hold: Options  |  Drag to scroll  |  Back: close")
+                : _searchTyping
                 ? "Type to search  |  UP/DOWN Results  |  ENTER / ESC Done  |  Ctrl+Backspace Clear"
                 : _online != null
                     ? $"ENTER Pick  |  [{Controls.Hint(HotkeyAction.PrevTab)}]/[{Controls.Hint(HotkeyAction.NextTab)}] Tabs  |  " +
@@ -1667,7 +1691,7 @@ public partial class FreeplayMenu
     private void DrawUpdateCornerBadge(SpriteBatch sb, int sw, int sh)
     {
         float s = UiScale.FromScreen(sw, sh);
-        string text = $"UPDATE {_updateTag} AVAILABLE  [{Controls.Hint(HotkeyAction.ShowUpdatePrompt)}]";
+        string text = UI.PointerInput.IsTouch ? $"UPDATE {_updateTag} AVAILABLE" : $"UPDATE {_updateTag} AVAILABLE  [{Controls.Hint(HotkeyAction.ShowUpdatePrompt)}]";
         int fontSize = UiScale.FontPx(15, s);
         var sz = MeasureText(text, fontSize);
         int padX = UiScale.Px(14, s);

@@ -303,6 +303,9 @@ namespace FunkyMakerPlayer.Multiplayer
             // Room screens are made for tapping: their buttons win over the D-pad drawn on top of them
             // (READY sits under the D-pad, the chat box under A/B on most phones).
             _touchControls.IgnorePoint = IsRoomHitAt;
+            // Every online screen works by tapping and the back gesture goes back (fork, 2026-11-23):
+            // with Settings → Menu Buttons = AUTO the D-pad / A / B stay hidden here.
+            _touchControls.ScreenIsTouchReady = true;
             _touchScreenHeight = screenHeight;
             Console.WriteLine("[MultiplayerMenu] Touch controls initialized for Android (Menu mode)");
 #endif
@@ -1738,7 +1741,7 @@ namespace FunkyMakerPlayer.Multiplayer
         private void DrawGameplaySettingsButton(SpriteBatch sb, SpriteFont font, Texture2D pixel, int x, int y, float uiScale)
         {
             string key = Controls.Hint(HotkeyAction.MultiplayerSettings);
-            string label = key == "-" ? "Settings" : $"{key}  Settings";
+            string label = key == "-" || FunkyMakerPlayer.UI.PointerInput.IsTouch ? "Settings" : $"{key}  Settings";
             int fontSize = FontPx(13, uiScale, 10, 18);
             Vector2 sz = MeasureText(font, label, fontSize);
             int btnW = (int)MathF.Ceiling(sz.X) + Px(24, uiScale);
@@ -1757,7 +1760,7 @@ namespace FunkyMakerPlayer.Multiplayer
         private void DrawGameplaySettingsButtonTopRight(SpriteBatch sb, SpriteFont font, Texture2D pixel, int screenWidth, float uiScale)
         {
             string key = Controls.Hint(HotkeyAction.MultiplayerSettings);
-            string label = key == "-" ? "Settings" : $"{key}  Settings";
+            string label = key == "-" || FunkyMakerPlayer.UI.PointerInput.IsTouch ? "Settings" : $"{key}  Settings";
             int fontSize = FontPx(13, uiScale, 10, 18);
             Vector2 sz = MeasureText(font, label, fontSize);
             int btnW = (int)MathF.Ceiling(sz.X) + Px(24, uiScale);
@@ -1781,8 +1784,9 @@ namespace FunkyMakerPlayer.Multiplayer
             DrawGameplaySettingsButton(sb, font, pixel, btnX, btnY, uiScale);
         }
 
-        private void DrawBackButton(SpriteBatch sb, SpriteFont font, Texture2D pixel, int screenWidth, float uiScale, string label = "ESC  Back")
+        private void DrawBackButton(SpriteBatch sb, SpriteFont font, Texture2D pixel, int screenWidth, float uiScale, string? label = null)
         {
+            label ??= FunkyMakerPlayer.UI.PointerInput.BackLabel;
             int fontSize = FontPx(14, uiScale, 11, 20);
             Vector2 sz = MeasureText(font, label, fontSize);
             int btnW = Math.Max(Px(120, uiScale), (int)sz.X + Px(28, uiScale));
@@ -1837,7 +1841,7 @@ namespace FunkyMakerPlayer.Multiplayer
             DrawText(sb, font, statusTxt, new Vector2(badgeX + dot + 5, y + (chipH - statusSz.Y) / 2f), statusCol * _fadeAlpha, subSize);
         }
 
-        private int DrawScreenHeader(SpriteBatch sb, SpriteFont font, Texture2D pixel, int sw, float uiScale, string title, string? subtitle, Color accent, string backLabel = "ESC  Back")
+        private int DrawScreenHeader(SpriteBatch sb, SpriteFont font, Texture2D pixel, int sw, float uiScale, string title, string? subtitle, Color accent, string? backLabel = null)
         {
             DrawBackButton(sb, font, pixel, sw, uiScale, backLabel);
 
@@ -2019,7 +2023,8 @@ namespace FunkyMakerPlayer.Multiplayer
             DrawText(sb, font, subtitle, new Vector2(screenWidth / 2f - subSz.X / 2f, subY), TEXT_SECONDARY * _fadeAlpha, subSize);
 
             int footerY = DrawFooterBar(sb, font, pixel, screenWidth, screenHeight, uiScale,
-                "UP/DOWN or MOUSE: Navigate  |  ENTER or CLICK: Select  |  ESC: Back");
+                FunkyMakerPlayer.UI.PointerInput.IsTouch ? "Tap an option  |  Back gesture: return"
+                    : "UP/DOWN or MOUSE: Navigate  |  ENTER or CLICK: Select  |  ESC: Back");
 
             // Vertical stack of 4 sleek option cards framed cleanly between hero and footer
             int contentTop = subY + (int)MathF.Ceiling(subSz.Y) + Px(20, uiScale);
@@ -2270,7 +2275,7 @@ namespace FunkyMakerPlayer.Multiplayer
             var settings = MultiplayerSettings.Instance;
             float uiScale = GetUiScale(screenWidth, screenHeight);
 
-            DrawBackButton(sb, font, pixel, screenWidth, uiScale, "ESC  Back");
+            DrawBackButton(sb, font, pixel, screenWidth, uiScale, FunkyMakerPlayer.UI.PointerInput.BackLabel);
             DrawGameplaySettingsButtonTopRight(sb, font, pixel, screenWidth, uiScale);
 
             // Title
@@ -2798,7 +2803,7 @@ namespace FunkyMakerPlayer.Multiplayer
         private void DrawLeaderboardModern(SpriteBatch sb, SpriteFont font, Texture2D pixel, int screenWidth, int screenHeight)
         {
             float uiScale = GetUiScale(screenWidth, screenHeight);
-            DrawBackButton(sb, font, pixel, screenWidth, uiScale, "ESC  Back");
+            DrawBackButton(sb, font, pixel, screenWidth, uiScale, FunkyMakerPlayer.UI.PointerInput.BackLabel);
 
             // Top-right Sync / Status button (works both via SignalR when connected and HTTP before connecting)
             int gap = Px(10, uiScale, 6);

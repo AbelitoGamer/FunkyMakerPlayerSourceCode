@@ -306,7 +306,7 @@ namespace FunkyMakerPlayer.Multiplayer
 
             int by = y + panelH - pad - buttonsH;
             int bw = (w - pad * 3) / 2;
-            DrawRoomButton(sb, font, pixel, uiScale, "rs-back", new Rectangle(x + pad, by, bw, buttonsH), "ESC  Back", TEXT_SECONDARY);
+            DrawRoomButton(sb, font, pixel, uiScale, "rs-back", new Rectangle(x + pad, by, bw, buttonsH), FunkyMakerPlayer.UI.PointerInput.BackLabel, TEXT_SECONDARY);
             if (_roomSettingsMode != RoomSettingsMode.View)
             {
                 string save = _rsBusy ? "..." : _roomSettingsMode == RoomSettingsMode.Create ? "CREATE ROOM" : "SAVE";

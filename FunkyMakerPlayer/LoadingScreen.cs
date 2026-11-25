@@ -379,7 +379,7 @@ public class LoadingScreen
             }
             else
             {
-                status = "Press ENTER to play";
+                status = UI.PointerInput.IsTouch ? "Tap to play" : "Press ENTER or click to play";
             }
         }
 

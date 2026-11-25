@@ -161,7 +161,9 @@ public class MultiplayerResultsScreen
 #if ANDROID
             string hint = _result == null ? "Tap to go back to the room (results will be in the round list)" : "Tap to continue";
 #else
-            string hint = _result == null ? "Press ENTER or ESC to go back to the room (results will be in the round list)" : "Press ENTER or ESC to continue";
+            string hint = UI.PointerInput.IsTouch
+                ? (_result == null ? "Tap to go back to the room (results will be in the round list)" : "Tap to continue")
+                : _result == null ? "Press ENTER or ESC to go back to the room (results will be in the round list)" : "Press ENTER or ESC to continue";
 #endif
             DrawCentered(sb, font, hint, sh * 0.93f, 0.55f, Color.White * (a * pulse), sw);
         }

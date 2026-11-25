@@ -17,7 +17,19 @@ namespace FunkyMakerPlayer;
 public static class LayoutKeyboard
 {
 #if ANDROID
-    public static KeyboardState GetState() => Keyboard.GetState();
+    /// <summary>
+    /// Android's back button / gesture, held as Escape for one frame (set by Game1 at the start of
+    /// the frame, so every screen that reads the keyboard sees it, the online menu included).
+    /// </summary>
+    public static bool BackHeld { get; set; }
+
+    public static KeyboardState GetState()
+    {
+        var kb = Keyboard.GetState();
+        if (!BackHeld || kb.IsKeyDown(Keys.Escape)) return kb;
+        var keys = new List<Keys>(kb.GetPressedKeys()) { Keys.Escape };
+        return new KeyboardState(keys.ToArray());
+    }
     public static string? DisplayName(Keys key) => null;
 #else
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)] private delegate IntPtr GetKeyboardStateFn(out int numKeys);

@@ -128,13 +128,15 @@ Notes:
 │   │                            UpdateInternal (menu dispatch + gameplay), DrawInternal
 │   │                            (~3,800 lines; split into partials on 2026-11-21, see below)
 │   ├── Game1.LevelLoad.cs       partial: StartLoadingLevel, Reset/Finalize, SetupLevel, icons, textures
-│   ├── Game1.SongClock.cs       partial: PauseSong / ResumeSong / SeekSong / RestartSong
+│   ├── Game1.SongClock.cs       partial: PauseSong / ResumeSong / SeekSong / RestartSong,
+│   │                            music ↔ clock sync (KeepMusicInSync; MusicPosition.cs)
 │   ├── Game1.Editors.cs         partial: Editor Hub, Level Selector, Chart Editor, playtests
 │   ├── Game1.Import.cs          partial: drag-and-drop + copying levels into mods/levels
 │   ├── Game1.Window.cs          partial: FPS cap, fullscreen, render target, letterbox, present
 │   ├── Game1.Discord.cs         partial: Rich Presence + display names
 │   ├── Game1.SettingsMenu.cs    partial: in-game settings overlay results
 │   ├── Game1.Android.cs         partial (Android): touch guard, APK assets, SAF / mods picker
+│   ├── Game1.Touch.cs           partial (Android): back gesture, shared touch pointer, menu-button auto-hide (§13)
 │   ├── Game1.Osu.cs             partial: osu! background, .osz / .osk import, replay lookup (§14.2)
 │   ├── Osu/                     osu! support (fork, §14.2): OsuBeatmap (parser), OsuLibrary
 │   │                            (mods/osu, import), OsuLevelLoader (.osu → FnmmLevel + extras),
@@ -194,6 +196,8 @@ Notes:
 │   ├── UI/OptionsMenu.cs        (fork) reusable "..." options menu with confirmations (§10.0)
 │   ├── UI/ModifiersWindow.cs    (fork) modifiers window (categories), openable from any screen
 │   ├── UI/AttemptsWindow.cs     (fork) all attempts of a level + their replays
+│   ├── UI/PointerInput.cs       (fork) menus' pointer: the mouse, or touches as a mouse on Android (§13)
+│   ├── UI/PickerTouch.cs        (fork) taps + BACK/APPLY + scaling for the 4 Settings style pickers
 │   ├── PlatformPaths.cs         mods/levels/assets paths + Android SAF import
 │   ├── PlatformShare.cs         reveal file in file manager + clipboard (SDL2) / Android share sheet
 │   ├── FreeplayMenu.cs          main menu + level panel + import modal +
@@ -1216,6 +1220,22 @@ Editor stage preview); `Game1` delegates to it.
 - Single player transitions back to Freeplay; multiplayer shows
   `MultiplayerResultsScreen`.
 - `RestartSong()` resets health/timers/notes, resets scene objects, seeks to 0.
+- **Music ↔ chart sync (fork, 2026-11-23, `Game1.SongClock.cs` + `MusicPosition.cs`)**: the song
+  clock is the Stopwatch (master: multiplayer start times and replays rely on it); the music is an
+  OpenAL source that used to run unchecked, so an audio stall (Android hitch, underrun, the PCM copy
+  of a timeskip running after the clock was already moved) desynced them for the rest of the song.
+  `MusicPosition` reads / sets the source's `AL_SAMPLE_OFFSET` via MonoGame's internal
+  `MonoGame.OpenAL.AL` (`GetSource`, `alSourcei`, `GetError`; `SoundEffectInstance.SourceId` /
+  `HasSourceId`), bound once with compiled expressions; clears the AL error queue (a leftover error
+  would make MonoGame's next checked call throw); if binding fails `Available` is false and the sync
+  is off. `_musicInstStart` = song time where the current instance's buffer starts (0 after load,
+  the seek time after `RecreateMusicAt`). `KeepMusicInSync` (per frame while playing, not paused,
+  not ended) smooths `music − clock` (τ 0.2 s) and, past 45 ms, moves the music in place
+  (`TrySet`) or recreates it at the clock time; 0.25 s hold after play / resume / seek; back-to-back
+  resyncs (< 3 s apart) widen the tolerance ×1.5 up to 150 ms so coarse position reporting can't
+  loop. `SeekSong` also seeks in place when the buffer covers the target (no PCM copy; works
+  without `_musicPcm`, e.g. 32-bit matches), else `RecreateMusicAt`. Log tag `[Audio Sync]`.
+  Verified on desktop OpenAL (read, set, set while paused, pitch/rate, out-of-range refusal).
 
 ### 8.7 Freeplay modifiers and personal bests (fork, `Game1.Freeplay.cs`)
 
@@ -1629,12 +1649,21 @@ runs before opening.
   the selected element's visibility; right-click selects + toggles.
 - Click-drag elements; arrow keys nudge (Left Shift = 1 px, otherwise 5 px);
   Tab cycles elements.
-- Saves through `HudSettings.Instance.Save()` → `Assets/data/hud_settings.json`.
+- Saves through `HudSettings.Instance.Save()` → `Assets/data/hud_settings.json`
+  (Android: app internal storage, next to settings.json; see §15).
+- (fork) Reads the pointer with `PointerInput.GetRawState()`: on Android a finger held down is
+  the left button, so elements can be dragged / resized by touch. The keyboard-only actions
+  (S / R / G / H / A / V) still have no touch buttons; ESC = the back gesture saves and leaves.
 
 ### 10.5 Overlays
 
 `ArrowsMenu`, `NoteSplashMenu`, `CountdownMenu`, `FontMenu` are opened from
-settings/results and drawn after the letterboxed blit. `KeyBindingOverlay`
+settings/results and drawn after the letterboxed blit. (fork, 2026-11-23) They share
+`UI/PickerTouch`: layout scales with `sh / 720` (header, rows; they were fixed pixels, 38 px
+rows on a 1080 px phone), each row drawn is registered for hit tests, the header has BACK and
+APPLY buttons, and `Poll(Selection)` turns clicks / taps into: a row = preview it, the previewed
+row again or APPLY = apply (same as Enter), BACK = cancel (same as Esc). Works with the mouse
+on desktop too. `KeyBindingOverlay`
 handles rebinding the four lane keys. `ModsHelpScreen` is Android-only.
 
 ### 10.6 UI sound effects (fork)
@@ -2227,6 +2256,53 @@ States: `MainMenu` → `Connecting` → `RoomBrowser` → `RoomSettings` (create
   the old `8 | 2` meant search + local-only). **Not compiled or tested** (no Android
   workload on the dev machine). No desktop-style "move to AppData" option on Android.
 
+- **Touch UI (fork, 2026-11-23).** Reviewed on a phone (Galaxy A36, 2340x1080):
+  - **Back gesture / button** (`Game1.Touch.cs`): it used to *leave the app* from every screen
+    (targetSdk 36 on Android 16+ uses predictive back, so the key never reached the game).
+    `MainActivity` registers an `OnBackInvokedCallback` (API 33+; manifest
+    `enableOnBackInvokedCallback="true"`) and overrides `OnBackPressed` (older), both calling
+    `Game1.RequestAndroidBack()`; a gamepad Back edge counts too. At the start of the frame
+    `UpdateAndroidBack()` turns it into Escape held for one frame through
+    `LayoutKeyboard.BackHeld` (so every screen sees it, the online menu included), or, on the
+    plain main menu (`FreeplayMenu.IsAtRoot`, no overlay), `MoveTaskToBack` like other apps.
+  - **Shared pointer** (`UI/PointerInput`): `Game1` feeds it `TouchControls.LastTouches` (touches
+    are read once per frame: MonoGame ages them on every `TouchPanel.GetState()`) right after
+    `TouchControls.Update`. `GetState()` = the mouse on desktop; on Android a finger moves the
+    pointer (hover) without pressing, **lifting it without a drag = left click for one frame**,
+    a drag past `max(24, 3.5 % of height)` px scrolls (wheel notch per 4 % of height, plus
+    `DragDeltaY` for 1:1 lists) and never clicks, holding still `LongPressSeconds` (0.5 s) = a
+    right click (options menus). `GetRawState()` (HUD editor) = left held while the finger is
+    down. Touches starting on a visible D-pad / A / B are left to those buttons. Used by
+    `Game1` (`rawMs`: Settings, pause, error / loading screens), `MainSettingsMenu`,
+    `ReplayBrowser`, `EditorPicker`, the style pickers, `HudEditor`. Freeplay and the online menu
+    keep their own touch code (Freeplay got a long press = options; the online menu's
+    `TouchAsMouse` is unchanged).
+  - **Menu buttons auto-hide**: Settings → CONTROLS → **Menu Buttons** AUTO / ON / OFF
+    (`Game1.MenuButtonsMode`, settings.json `MenuButtonsMode`, default AUTO). In AUTO the D-pad,
+    A / B and Q / E are hidden (not drawn, no input, `IsPointOnMenuControl` false) where
+    `TouchControls.ScreenIsTouchReady` is set: Game1 sets it every frame except in the chart
+    editor, HUD editor, Level Selector and key-binding overlay; the online menu's own instance
+    always sets it. Gameplay (hitboxes + pause button) is unaffected.
+  - **D-pad geometry**: a real cross fully on screen (Down used to be below the screen edge and
+    Left/Right off-centre); A bigger, B lower-left of A; Q / E moved above B / A (they covered
+    the Settings title and tab bar).
+  - **Settings**: tabs / rows / `< >` were D-pad only (no touch reached `UpdateMouse`). Now: tap
+    a tab, tap a row (toggles / actions; adjustable rows just select), finger-sized `< >` with a
+    button background, hold `< >` to repeat (after 0.5 s, every 90 ms), drag scrolls 1:1,
+    `< BACK` button. Pointer selections no longer re-centre the list (`_followSelectionScroll`
+    off; with touch it made the next tap land on another row and undid drags); a finger never
+    hover-selects.
+  - **Pause menu**: items record hit boxes in `Draw`; hover selects, click / tap runs (desktop
+    mouse too). **Loading screen**: a click / tap anywhere = Enter ("Tap to play"; with the
+    D-pad hidden it was a dead end). **Replays**: on touch the first tap selects a row, a tap on
+    the selected row watches it (no hover-select while scrolling).
+  - **Texts**: key hints are replaced on touch (`PointerInput.IsTouch`): main menu, Freeplay
+    footer / buttons (`Controls.Tag(action)` = "[key] " or nothing), Settings, pause, pickers,
+    attempts, replays, Editor Hub, online main menu, loading / opponent-disconnected / online
+    results prompts, "ESC  Back" → `PointerInput.BackLabel` ("<  Back").
+  - Not done: HUD editor touch buttons (save/reset/grid/toggle), Chart Editor / Level Selector
+    by touch, the online menu's other keyboard hints (room browser footer, "ESC Disconnect").
+
 **Note:** the app's default mods path is its external files directory. The
 in-game instructions (`ModsHelpScreen`) and `PlatformPaths` messages explain
 that content is **imported** by selecting a folder containing a `mods`
@@ -2467,7 +2543,13 @@ ppy/osu (MIT): `LegacyBeatmapDecoder`, `ConvertHitObjectParser`, `ManiaBeatmapCo
     reader thread per run (`Session`: 6-frame queue, own Ended flag, so a killed old run can't
     end the new one); the game thread uploads the newest due frame (640×360 RGBA, letterboxed).
     Starts at the Video event time from the video's beginning, fades in / out over 500 ms,
-    reopens the decoder at the new time after seeks / restarts.
+    reopens the decoder at the new time after seeks / restarts. Restart checks (behind > 1 s,
+    back > 0.25 s) only use frames of the *current* run (`Session.Shown`; before its first frame
+    only "skipped back before `Requested`"): `_shownTime` keeps the old run's frame on screen, and
+    comparing against it restarted the decoder every frame after a forward timeskip / lag spike, so
+    the video froze for good (fixed 2026-11-23). Mid-video starts decode from `videoTime + _lead`
+    so the first frame isn't already late; `_lead` is learned from the decoder's start-up time
+    (×1.25 + 0.1, 0.15–4 s; MediaCodec decodes from the previous keyframe), no lead while paused.
     - *Desktop* (`FfmpegVideoStream`): ffmpeg pipe `-ss T -i v -an -vf scale+pad -r 30 -f rawvideo
       -pix_fmt rgba -`. The shipped ffmpeg is a **minimal static LGPL build** (~5.5 MB vs ~138 MB):
       `Tools/build-ffmpeg-min.sh` (ffmpeg 8.0 source, `--disable-everything` + only file/pipe,
@@ -2564,8 +2646,8 @@ ppy/osu (MIT): `LegacyBeatmapDecoder`, `ConvertHitObjectParser`, `ManiaBeatmapCo
       `Settings.UiFontFile` (file name in mods/fonts) + `Game1.ApplyUiFont`, applied right after
       `Settings.Load`.
     - Log spam: TouchControls "Pause button visible" every frame; countdown rescan every 2 s.
-  - Still not touch-friendly on Android (original design, D-pad only): pause menu, Settings
-    list/tabs (Q/E buttons work). A .osz rejected as non-mania stays in mods/osu and is re-read
+  - ~~Still not touch-friendly on Android: pause menu, Settings list/tabs~~ fixed 2026-11-23 (§13
+    "Touch UI"). A .osz rejected as non-mania stays in mods/osu and is re-read
     on every refresh.
   - Android testing recipe: adb at %LOCALAPPDATA%\Android\Sdk\platform-tools; the debug APK
     installs as com.funkymakergame.player next to the official app; mods at
@@ -2592,7 +2674,7 @@ ppy/osu (MIT): `LegacyBeatmapDecoder`, `ConvertHitObjectParser`, `ManiaBeatmapCo
 | `mods/osu/<set>/` | mods root | extracted osu! beatmap sets (fork, §14.2) |
 | `freeplay_data.json` | MP storage dir | `FreeplayData` (fork, §10.1, §8.7): per-level favourite / plays / last played / attempts (keyed by path relative to the levels folder, lower-case), last selected, sort, favourites filter, song rate + Slower / Faster rates, enemy mode |
 | `mods/levels/Received/` | levels folder | room level downloads (fork, §12.1) |
-| `hud_settings.json` | `<exe dir>\Assets\data\` via `GetAppBaseDirectory()` (desktop, fork fix for single-file builds); `AppContext.BaseDirectory/Assets/data` on Android | `HudSettings` |
+| `hud_settings.json` | `<exe dir>\Assets\data\` via `GetAppBaseDirectory()` (desktop, fork fix for single-file builds); Android: `SpecialFolder.Personal` (app files/Documents, next to settings.json; was the read-only `/Assets/data` until 2026-11-23) | `HudSettings` |
 | `update.log` | `<exe dir>` | updater scripts |
 | `crash/crash_*.log`, `crash.log` | `<exe dir>\crash\` | `Program.HandleCrash`, `CrashLogger` |
 | `crashes/` | Android external storage | `PlatformPaths.GetCrashLogsPath` |
@@ -2687,6 +2769,8 @@ ppy/osu (MIT): `LegacyBeatmapDecoder`, `ConvertHitObjectParser`, `ManiaBeatmapCo
 | 7 | open Chart Editor (solo) / return to editor during playtest |
 
 ### Settings
+
+(Android: tap tabs / rows, `< >` change values (hold repeats), drag scrolls, back gesture = Esc.)
 
 | Key | Action |
 |---|---|
@@ -2809,7 +2893,10 @@ Status key: **[fixed]** resolved in the current tree; **[open]** still applies
 18. **[fixed in fork]** **`hud_settings.json` in single-file builds.** On
     desktop `HudSettings` now uses `PlatformPaths.GetAppBaseDirectory()`
     instead of `AppContext.BaseDirectory` (the temp extraction folder in
-    single-file publishes). Android is unchanged.
+    single-file publishes). (2026-11-23) Android: it used `AppContext.BaseDirectory` = "/",
+    so `/Assets/data` was read-only and every save failed ("Save failed: Read-only file
+    system"): HUD toggles and the HUD editor layout never persisted. Now
+    `SpecialFolder.Personal` (next to settings.json).
 19. **[fixed in fork]** **Linux file picker.** `PickDesktopFiles` falls back to
     zenity/kdialog on non-Windows desktops; without either it returns nothing.
 20. **[by design]** **Multiplayer pause.** Esc in a match opens an overlay but the

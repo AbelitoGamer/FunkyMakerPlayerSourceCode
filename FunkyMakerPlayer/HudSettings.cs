@@ -159,11 +159,14 @@ public class HudSettings
             // AppContext.BaseDirectory is a temp extraction folder, so the layout
             // would not persist next to the exe.
 #if ANDROID
-            string baseDir = AppContext.BaseDirectory;
+            // (fork, 2026-11-23) Next to settings.json in the app's internal storage. It used
+            // AppContext.BaseDirectory, which is "/" on Android: "/Assets/data" is read-only, so
+            // every save failed and HUD settings / the HUD editor layout never persisted.
+            string assetsPath = Environment.GetFolderPath(Environment.SpecialFolder.Personal);
 #else
             string baseDir = PlatformPaths.GetAppBaseDirectory();
-#endif
             string assetsPath = Path.Combine(baseDir, "Assets", "data");
+#endif
             
             // Create directory if it doesn't exist
             if (!Directory.Exists(assetsPath))
