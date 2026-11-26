@@ -1104,8 +1104,10 @@ public class EventProcessor
                         
                         Console.WriteLine($"[ObjectAnimationSet] t={_currentSongTime:F2} Obj {objIdx} ({objs[objIdx].Spr}) → anim={anim} (setByEvent={setByEvent})");
                         
-                        // Pass setByEvent based on whether it's an idle animation
-                        _objAnimators[objIdx]?.SetAnimation(anim, setByEvent: setByEvent);
+                        // Pass setByEvent based on whether it's an idle animation. Notes of this
+                        // moment leave it alone, later notes interrupt it (BlocksNoteAt).
+                        _objAnimators[objIdx]?.SetAnimation(anim, setByEvent: setByEvent,
+                            eventTime: _actionPackNoteTime ?? eventTime);
                     }
                     break;
 
@@ -1208,6 +1210,7 @@ public class EventProcessor
                             // swapping sprites mid-song (e.g. HEART mark ↔ markalt), so the current
                             // pose/hold must carry over to the new sprite.
                             bool wasSetByEvent = oldAnim?.IsSetByEvent ?? false;
+                            float eventLockTime = oldAnim?.EventTime ?? -1f;
                             int currentAnim = oldAnim?.CurrentAnimIndex ?? 0;
                             float holdUntil = oldAnim?.HoldUntil ?? -1f;
 
@@ -1232,7 +1235,7 @@ public class EventProcessor
                             if (newAnimator.AnimCount > 0)
                             {
                                 int safeAnim = Math.Clamp(currentAnim, 0, newAnimator.AnimCount - 1);
-                                newAnimator.SetAnimation(safeAnim, setByEvent: wasSetByEvent);
+                                newAnimator.SetAnimation(safeAnim, setByEvent: wasSetByEvent, eventTime: eventLockTime);
                                 newAnimator.HoldUntil = holdUntil;
 
                                 Console.WriteLine($"[ObjectSpriteSet] t={_currentSongTime:F2} Obj {objIdx} ({objs[objIdx]!.Spr}) → preserved anim={safeAnim} IsSetByEvent={wasSetByEvent} IsFixed={isFixed}");
@@ -1806,7 +1809,7 @@ public class EventProcessor
                     // Execute an action_pack by index (0-based) from the timeline
                     int packIdx = (int)(action.Props.ActionPack ?? -1f);
                     Console.WriteLine($"[RunActionPack] Executing ActionPack {packIdx} at time {_currentSongTime:F2}s");
-                    FireActionPack(packIdx);
+                    FireActionPack(packIdx, _actionPackNoteTime); // nested in a note's pack: keep its time
                     break;
                 }
 
@@ -1857,7 +1860,20 @@ public class EventProcessor
     /// Execute an action_pack by index (1-based, matching note properties).
     /// Called from NoteRenderer callbacks when onPressEvent/onMissEvent fires.
     /// </summary>
-    public void FireActionPack(int packIndex)
+    public void FireActionPack(int packIndex, float? noteTime = null)
+    {
+        _actionPackNoteTime = noteTime;
+        try { FireActionPackCore(packIndex); }
+        finally { _actionPackNoteTime = null; }
+    }
+
+    /// <summary>
+    /// Chart time of the note whose action pack is firing (null for timeline events / RunActionPack):
+    /// animations set by the pack are protected from that note's moment only (SpriteAnimator.BlocksNoteAt).
+    /// </summary>
+    private float? _actionPackNoteTime;
+
+    private void FireActionPackCore(int packIndex)
     {
         var packs = _level.Events.ActionPacks;
         Console.WriteLine($"[FireActionPack] Requested pack {packIndex} (0-based), total packs available: {packs.Count}");

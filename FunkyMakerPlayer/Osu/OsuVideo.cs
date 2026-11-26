@@ -6,6 +6,12 @@ using Microsoft.Xna.Framework.Graphics;
 
 namespace FunkyMakerPlayer.Osu;
 
+/// <summary>Size (RGBA frame) and frame rate a video is decoded to.</summary>
+internal readonly record struct VideoFormat(int Width, int Height, double Fps)
+{
+    public int FrameBytes => Width * Height * 4;
+}
+
 /// <summary>
 /// One decoding run of a video from a start time (fork). Created and read on the video's reader
 /// thread; <see cref="Cancel"/> may be called from the game thread to unblock it.
@@ -14,7 +20,7 @@ internal interface IOsuVideoStream : IDisposable
 {
     /// <summary>
     /// Blocks until the next frame is decoded into <paramref name="rgba"/>
-    /// (<see cref="OsuVideo.Width"/>×<see cref="OsuVideo.Height"/> RGBA, letterboxed) and returns its
+    /// (the run's <see cref="VideoFormat"/> size, RGBA, letterboxed) and returns its
     /// video time in seconds, or null at the end of the video / on an error.
     /// </summary>
     double? ReadFrame(byte[] rgba);
@@ -31,15 +37,33 @@ internal interface IOsuVideoStream : IDisposable
 /// thread shows the frame for the song time.
 /// Like osu! (DrawableStoryboardVideo) the video starts from its beginning at the Video event's
 /// time, fades in over 500 ms and out at its end. Seeks / restarts reopen the decoder at the new time.
+/// Standard quality decodes every video to 640×360 at 30 fps; Full quality (Settings → osu! songs →
+/// Video Quality) keeps the video's own size and frame rate (capped: 4K / 1080p on Android, 60 fps).
 /// </summary>
 public sealed class OsuVideo : IDisposable
 {
-    public const int Width = 640, Height = 360, Fps = 30;
-    internal const int FrameBytes = Width * Height * 4;
+    /// <summary>Standard quality: every video is decoded to this size and frame rate (cheap).</summary>
+    public const int StandardWidth = 640, StandardHeight = 360, StandardFps = 30;
+    /// <summary>Full quality limits (the video's own size / frame rate, capped to these).</summary>
+#if ANDROID
+    private const int FullMaxWidth = 1920, FullMaxHeight = 1080; // frames are converted on the CPU
+#else
+    private const int FullMaxWidth = 3840, FullMaxHeight = 2160;
+#endif
+    private const double FullMaxFps = 60;
+    /// <summary>Decoded frames kept in memory per run at most (6 at standard size, fewer for big frames).</summary>
+    private const long QueueBudgetBytes = 64L * 1024 * 1024;
+
+    /// <summary>Size and frame rate the frames are decoded to.</summary>
+    internal VideoFormat Format { get; }
+    /// <summary>Made with Settings → osu! songs → Video Quality = Full.</summary>
+    public bool FullQuality { get; }
+    private int QueueCapacity => (int)Math.Clamp(QueueBudgetBytes / Format.FrameBytes, 2, 6);
 
     private sealed class Session
     {
-        public readonly BlockingCollection<(double Time, byte[] Pixels)> Frames = new(boundedCapacity: 6);
+        public readonly BlockingCollection<(double Time, byte[] Pixels)> Frames;
+        public Session(int capacity) { Frames = new(boundedCapacity: capacity); }
         public readonly CancellationTokenSource Cts = new();
         public volatile IOsuVideoStream? Stream;
         public volatile bool Ended;
@@ -51,7 +75,7 @@ public sealed class OsuVideo : IDisposable
 
     private readonly string _file;
     private readonly double _startSec;
-    private readonly Func<string, double, IOsuVideoStream?> _open;
+    private readonly Func<string, double, VideoFormat, IOsuVideoStream?> _open;
     private Session? _session;
     private bool _ended;                    // the last run reached the end of the video
     private double _shownTime = -1;
@@ -68,19 +92,29 @@ public sealed class OsuVideo : IDisposable
     /// <summary>0..1 (fade in at the start, out at the end).</summary>
     public float Alpha { get; private set; }
 
-    private OsuVideo(string file, double startSec, Func<string, double, IOsuVideoStream?> open)
+    private OsuVideo(string file, double startSec, VideoFormat format, bool fullQuality,
+                     Func<string, double, VideoFormat, IOsuVideoStream?> open)
     {
         _file = file;
         _startSec = startSec;
+        Format = format;
+        FullQuality = fullQuality;
         _open = open;
     }
 
-    /// <summary>A player for <paramref name="file"/>, or null (no decoder on this platform, missing file).</summary>
-    public static OsuVideo? TryCreate(string? file, double startSec)
+    /// <summary>
+    /// A player for <paramref name="file"/>, or null (no decoder on this platform, missing file).
+    /// <paramref name="fullQuality"/>: decode at the video's own size and frame rate (probed from the
+    /// file; falls back to standard quality if that fails) instead of 640×360 at 30 fps.
+    /// </summary>
+    public static OsuVideo? TryCreate(string? file, double startSec, bool fullQuality = false)
     {
         if (file == null || !File.Exists(file)) return null;
+        var standard = new VideoFormat(StandardWidth, StandardHeight, StandardFps);
 #if ANDROID
-        return new OsuVideo(file, startSec, (f, t) => new Platforms.Android.MediaCodecVideoStream(f, t));
+        var format = fullQuality ? FullFormat(Platforms.Android.MediaCodecVideoStream.Probe(file)) ?? standard : standard;
+        Console.WriteLine($"[OsuVideo] {Path.GetFileName(file)}: decoding at {format.Width}x{format.Height} {format.Fps:0.##} fps");
+        return new OsuVideo(file, startSec, format, fullQuality, (f, t, fmt) => new Platforms.Android.MediaCodecVideoStream(f, t, fmt));
 #else
         string? ffmpeg = FfmpegVideoStream.FindFfmpeg();
         if (ffmpeg == null)
@@ -88,8 +122,21 @@ public sealed class OsuVideo : IDisposable
             Console.WriteLine("[OsuVideo] ffmpeg not found (next to the game, mods/tools or PATH): video skipped");
             return null;
         }
-        return new OsuVideo(file, startSec, (f, t) => new FfmpegVideoStream(ffmpeg, f, t));
+        var format = fullQuality ? FullFormat(FfmpegVideoStream.Probe(ffmpeg, file)) ?? standard : standard;
+        Console.WriteLine($"[OsuVideo] {Path.GetFileName(file)}: decoding at {format.Width}x{format.Height} {format.Fps:0.##} fps");
+        return new OsuVideo(file, startSec, format, fullQuality, (f, t, fmt) => new FfmpegVideoStream(ffmpeg, f, t, fmt));
 #endif
+    }
+
+    /// <summary>The video's own size (fitted into the full-quality cap, even) and frame rate (capped).</summary>
+    private static VideoFormat? FullFormat((int Width, int Height, double Fps)? probe)
+    {
+        if (probe is not { } p || p.Width < 2 || p.Height < 2) return null;
+        double scale = Math.Min(1.0, Math.Min(FullMaxWidth / (double)p.Width, FullMaxHeight / (double)p.Height));
+        int w = Math.Max(2, (int)(p.Width * scale) & ~1);
+        int h = Math.Max(2, (int)(p.Height * scale) & ~1);
+        double fps = p.Fps > 0 && double.IsFinite(p.Fps) ? Math.Min(p.Fps, FullMaxFps) : StandardFps;
+        return new VideoFormat(w, h, fps);
     }
 
     /// <summary>
@@ -153,7 +200,7 @@ public sealed class OsuVideo : IDisposable
                     if (clockRunning && _session.Requested > 0)
                         _lead = Math.Clamp((videoTime - _session.Requested) * 1.25 + 0.1, 0.15, 4.0);
                 }
-                if (frame.Time > videoTime + 0.5 / Fps)
+                if (frame.Time > videoTime + 0.5 / Format.Fps)
                 {
                     _pending = frame; // not due yet
                     break;
@@ -162,7 +209,7 @@ public sealed class OsuVideo : IDisposable
             }
             if (latest is { } show)
             {
-                _texture ??= new Texture2D(gd, Width, Height, false, SurfaceFormat.Color);
+                _texture ??= new Texture2D(gd, Format.Width, Format.Height, false, SurfaceFormat.Color);
                 _texture.SetData(show.Pixels);
                 _shownTime = show.Time;
                 _session.Shown = true;
@@ -173,7 +220,7 @@ public sealed class OsuVideo : IDisposable
         float fadeIn = (float)Math.Clamp(videoTime / 0.5, 0, 1);
         bool finished = _ended && _pending == null;
         float fadeOut = finished && _shownTime >= 0
-            ? (float)Math.Clamp(1 - (videoTime - _shownTime - 1.0 / Fps) / 0.5, 0, 1)
+            ? (float)Math.Clamp(1 - (videoTime - _shownTime - 1.0 / Format.Fps) / 0.5, 0, 1)
             : 1f;
         Alpha = Math.Min(fadeIn, fadeOut);
     }
@@ -182,7 +229,7 @@ public sealed class OsuVideo : IDisposable
     {
         Stop();
         _ended = false;
-        var session = new Session { Start = videoTime, Requested = requested };
+        var session = new Session(QueueCapacity) { Start = videoTime, Requested = requested };
         _session = session;
         var token = session.Cts.Token;
         var thread = new Thread(() =>
@@ -190,12 +237,12 @@ public sealed class OsuVideo : IDisposable
             IOsuVideoStream? stream = null;
             try
             {
-                stream = _open(_file, videoTime);
+                stream = _open(_file, videoTime, Format);
                 session.Stream = stream;
                 if (stream == null || token.IsCancellationRequested) return;
                 while (!token.IsCancellationRequested)
                 {
-                    var buf = new byte[FrameBytes];
+                    var buf = new byte[Format.FrameBytes];
                     double? time = stream.ReadFrame(buf);
                     if (time == null) break;
                     session.Frames.Add((time.Value, buf), token);

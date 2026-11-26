@@ -19,7 +19,32 @@ public readonly record struct GameplayStats(
     int Goods,
     int Bads,
     int Shits,
-    float Accuracy);
+    float Accuracy)
+{
+    /// <summary>Combo rating shown next to the accuracy (see <see cref="FcRating"/>).</summary>
+    public string Rating => FcRating(Sicks, Goods, Bads, Shits, Misses);
+
+    /// <summary>
+    /// FNF-style combo rating: PFC (all Sick!), GFC (Sick!/Good only), FC (no misses),
+    /// SDCB (1–9 misses), Clear (10+); "" before any note was judged.
+    /// </summary>
+    public static string FcRating(int sicks, int goods, int bads, int shits, int misses)
+    {
+        if (sicks + goods + bads + shits + misses == 0) return "";
+        if (misses == 0)
+            return bads + shits > 0 ? "FC" : goods > 0 ? "GFC" : "PFC";
+        return misses < 10 ? "SDCB" : "Clear";
+    }
+
+    public static Color RatingColor(string rating) => rating switch
+    {
+        "PFC" => new Color(120, 230, 255),
+        "GFC" => new Color(100, 255, 100),
+        "FC" => Color.Yellow,
+        "SDCB" => new Color(255, 200, 100),
+        _ => new Color(200, 200, 200),
+    };
+}
 
 /// <summary>
 /// Renders the in-game HUD (health bars, singleplayer/multiplayer stats, timer bar,
@@ -103,12 +128,13 @@ public static class GameplayHudOverlay
             return;
         }
 
-        bool levelHasOwnBar = level != null &&
-            level.Scene.Objects.Exists(o => o.Spr == "barra" && o.Fixed);
+        // The health bar and stats always show: FMM has no way to hide only them (the GUI event
+        // hides the whole HUD, above). A level with a fixed "barra" object used to be taken as
+        // having its own health bar, which hid it in HEART (whose "barra" is a song progress bar).
 
         // Fork: online matches use the normal health bar too (it shows the score difference there,
         // see Game1.Online.cs); the old VS HUD with two bars is gone.
-        if (!levelHasOwnBar && healthBar != null)
+        if (healthBar != null)
             healthBar.Draw(sh, NoteRenderer.Downscroll);
 
         if (font == null || noteRenderers.Count == 0 || level == null) return;
@@ -119,8 +145,7 @@ public static class GameplayHudOverlay
         var playerStats = CalculateStats(playerRenderer);
 
         {
-            if (!levelHasOwnBar)
-                DrawSingleplayerStats(spriteBatch, font, hudSettings, playerStats);
+            DrawSingleplayerStats(spriteBatch, font, hudSettings, playerStats);
 
             if (timerBar != null)
             {
@@ -325,11 +350,20 @@ public static class GameplayHudOverlay
                              stats.Accuracy >= 80f ? Color.Yellow :
                              stats.Accuracy >= 60f ? new Color(255, 200, 100) :
                                                      new Color(255, 100, 100);
-            DrawShadowedText(
-                spriteBatch, font,
-                ErrorOverlay.Safe($"Accuracy: {stats.Accuracy:F1}%"),
-                new Vector2(hudSettings.AccuracyPosition.X, hudSettings.AccuracyPosition.Y),
-                accColor, statsScale * hudSettings.AccuracyScale);
+            string accText = ErrorOverlay.Safe($"Accuracy: {stats.Accuracy:F1}%");
+            float accScale = statsScale * hudSettings.AccuracyScale;
+            var accPos = new Vector2(hudSettings.AccuracyPosition.X, hudSettings.AccuracyPosition.Y);
+            DrawShadowedText(spriteBatch, font, accText, accPos, accColor, accScale);
+
+            // Combo rating (PFC / GFC / FC / SDCB / Clear) right after the accuracy.
+            string rating = stats.Rating;
+            if (rating.Length > 0)
+            {
+                float accW = font.MeasureString(accText).X * accScale;
+                DrawShadowedText(spriteBatch, font, $"[{rating}]",
+                    accPos + new Vector2(accW + 10f * accScale, 0f),
+                    GameplayStats.RatingColor(rating), accScale);
+            }
         }
     }
 

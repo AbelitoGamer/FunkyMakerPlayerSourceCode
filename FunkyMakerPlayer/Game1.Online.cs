@@ -367,7 +367,7 @@ public partial class Game1
         {
             if ((int)objs[j].StrumLine != chart) continue;
             var anim = _objAnimators[j];
-            if (anim == null || anim.IsSetByEvent) continue;
+            if (anim == null || anim.BlocksNoteAt(_songTime, 2f * NoteRenderer.HIT_WINDOW)) continue;
             int singAnim = Math.Clamp(lane + 1, 1, Math.Max(1, anim.AnimCount - 1));
             anim.SetAnimation(singAnim, setByEvent: false);
             if (holdEnd > 0f) anim.HoldUntil = holdEnd;
