@@ -79,6 +79,7 @@ public sealed class CharacterEditor : IEditor, IDisposable
     // ── Input State ──────────────────────────────────────────────────────────
     private KeyboardState _prevKb;
     private MouseState _prevMouse;
+    private MouseState _prevRawMouse;
     private float _inputCooldown = 0.2f;
     private readonly List<(Rectangle Rect, Action OnClick)> _clickTargets = new();
 
@@ -116,7 +117,8 @@ public sealed class CharacterEditor : IEditor, IDisposable
         _font = font;
         _fontRenderer = fontRenderer;
         _prevKb = LayoutKeyboard.GetState();
-        _prevMouse = Mouse.GetState();
+        _prevMouse = PointerInput.GetState();
+        _prevRawMouse = PointerInput.GetRawState();
 
         RefreshLibrary();
 
@@ -139,7 +141,8 @@ public sealed class CharacterEditor : IEditor, IDisposable
         _draggingOffset = false;
         _panningStage = false;
         _prevKb = LayoutKeyboard.GetState();
-        _prevMouse = Mouse.GetState();
+        _prevMouse = PointerInput.GetState();
+        _prevRawMouse = PointerInput.GetRawState();
     }
 
     public void SyncInputState()
@@ -148,7 +151,8 @@ public sealed class CharacterEditor : IEditor, IDisposable
         _draggingOffset = false;
         _panningStage = false;
         _prevKb = LayoutKeyboard.GetState();
-        _prevMouse = Mouse.GetState();
+        _prevMouse = PointerInput.GetState();
+        _prevRawMouse = PointerInput.GetRawState();
     }
 
     public void RefreshLibrary()
@@ -173,13 +177,15 @@ public sealed class CharacterEditor : IEditor, IDisposable
             if (_toastTimer <= 0f) _toastText = null;
         }
 
-        var ms = Mouse.GetState();
+        var ms = PointerInput.GetState();
+        var rawMs = PointerInput.GetRawState();
         if (!Game1.CanAcceptInput)
         {
             _draggingOffset = false;
             _panningStage = false;
             _prevKb = default;
             _prevMouse = Game1.NeutralMouseState(ms);
+            _prevRawMouse = Game1.NeutralMouseState(rawMs);
             return;
         }
 
@@ -209,6 +215,7 @@ public sealed class CharacterEditor : IEditor, IDisposable
             }
             _prevKb = kb;
             _prevMouse = ms;
+            _prevRawMouse = rawMs;
             return;
         }
 
@@ -242,6 +249,7 @@ public sealed class CharacterEditor : IEditor, IDisposable
             _inputCooldown -= dt;
             _prevKb = kb;
             _prevMouse = ms;
+            _prevRawMouse = rawMs;
             return;
         }
 
@@ -250,14 +258,16 @@ public sealed class CharacterEditor : IEditor, IDisposable
             HandleNameTyping(kb, ms);
             _prevKb = kb;
             _prevMouse = ms;
+            _prevRawMouse = rawMs;
             return;
         }
 
         HandleKeyboard(kb);
-        HandleMouse(ms, kb);
+        HandleMouse(ms, rawMs, kb);
 
         _prevKb = kb;
         _prevMouse = ms;
+        _prevRawMouse = rawMs;
     }
 
     private void ComputeLayout(int sw, int sh)
@@ -374,9 +384,20 @@ public sealed class CharacterEditor : IEditor, IDisposable
         }
     }
 
-    private void HandleMouse(MouseState ms, KeyboardState kb)
+    private bool IsOverClickTarget(Point pos)
+    {
+        for (int i = 0; i < _clickTargets.Count; i++)
+        {
+            if (_clickTargets[i].Rect.Contains(pos))
+                return true;
+        }
+        return false;
+    }
+
+    private void HandleMouse(MouseState ms, MouseState rawMs, KeyboardState kb)
     {
         bool leftClick = ms.LeftButton == ButtonState.Pressed && _prevMouse.LeftButton == ButtonState.Released;
+        bool rawLeftPressed = rawMs.LeftButton == ButtonState.Pressed && _prevRawMouse.LeftButton == ButtonState.Released;
         int wheel = ms.ScrollWheelValue - _prevMouse.ScrollWheelValue;
 
         if (wheel != 0)
@@ -394,20 +415,22 @@ public sealed class CharacterEditor : IEditor, IDisposable
             {
                 _slotScroll = Math.Clamp(_slotScroll + step, 0, Math.Max(0, _project.Slots.Count - 5));
             }
-            else if (_stageRect.Contains(ms.Position))
+            else if (_stageRect.Contains(ms.Position) && !PointerInput.IsTouch)
             {
                 float factor = wheel > 0 ? 1.12f : (1f / 1.12f);
                 _viewZoom = Math.Clamp(_viewZoom * factor, 0.15f, 4.0f);
             }
         }
 
-        // Check registered UI buttons first
+        // Check registered UI buttons first (tap-on-release on Android, click-on-press on desktop)
         if (leftClick)
         {
             for (int i = _clickTargets.Count - 1; i >= 0; i--)
             {
                 if (_clickTargets[i].Rect.Contains(ms.Position))
                 {
+                    _draggingOffset = false;
+                    _panningStage = false;
                     _clickTargets[i].OnClick();
                     return;
                 }
@@ -420,25 +443,27 @@ public sealed class CharacterEditor : IEditor, IDisposable
             return;
         }
 
-        // Stage viewport drag: Left-drag = adjust active animation offset; Right/Middle-drag = pan camera
-        if (_stageRect.Contains(ms.Position) && _project != null)
+        // Stage viewport drag: Left-drag = adjust active animation offset; Right/Middle-drag = pan camera.
+        // Uses rawMs so holding and dragging a finger on Android moves the character pose live without
+        // interfering with button taps (which start inside _clickTargets).
+        if (_stageRect.Contains(rawMs.Position) && _project != null && !IsOverClickTarget(rawMs.Position))
         {
             bool panKey = kb.IsKeyDown(Keys.LeftAlt) || kb.IsKeyDown(Keys.RightAlt);
-            if (ms.RightButton == ButtonState.Pressed && _prevMouse.RightButton == ButtonState.Released ||
-                ms.MiddleButton == ButtonState.Pressed && _prevMouse.MiddleButton == ButtonState.Released ||
-                (panKey && leftClick))
+            if (rawMs.RightButton == ButtonState.Pressed && _prevRawMouse.RightButton == ButtonState.Released ||
+                rawMs.MiddleButton == ButtonState.Pressed && _prevRawMouse.MiddleButton == ButtonState.Released ||
+                (panKey && rawLeftPressed))
             {
                 _panningStage = true;
-                _panStartMouse = ms.Position;
+                _panStartMouse = rawMs.Position;
                 _panStartOffset = _viewPan;
             }
-            else if (leftClick)
+            else if (rawLeftPressed)
             {
                 var slot = GetActiveSlot();
                 if (slot != null)
                 {
                     _draggingOffset = true;
-                    _dragStartMouse = ms.Position;
+                    _dragStartMouse = rawMs.Position;
                     _dragStartUserOffset = new Vector2(slot.UserOffsetX, slot.UserOffsetY);
                 }
             }
@@ -446,9 +471,9 @@ public sealed class CharacterEditor : IEditor, IDisposable
 
         if (_panningStage)
         {
-            if (ms.RightButton == ButtonState.Pressed || ms.MiddleButton == ButtonState.Pressed || ms.LeftButton == ButtonState.Pressed)
+            if (rawMs.RightButton == ButtonState.Pressed || rawMs.MiddleButton == ButtonState.Pressed || rawMs.LeftButton == ButtonState.Pressed)
             {
-                _viewPan = _panStartOffset + new Vector2(ms.Position.X - _panStartMouse.X, ms.Position.Y - _panStartMouse.Y);
+                _viewPan = _panStartOffset + new Vector2(rawMs.Position.X - _panStartMouse.X, rawMs.Position.Y - _panStartMouse.Y);
             }
             else
             {
@@ -458,14 +483,14 @@ public sealed class CharacterEditor : IEditor, IDisposable
 
         if (_draggingOffset)
         {
-            if (ms.LeftButton == ButtonState.Pressed)
+            if (rawMs.LeftButton == ButtonState.Pressed)
             {
                 var slot = GetActiveSlot();
                 if (slot != null)
                 {
                     float effScale = Math.Max(0.05f, _viewZoom * Math.Max(0.1f, _project?.Scale ?? 1f));
-                    float dx = (ms.Position.X - _dragStartMouse.X) / effScale;
-                    float dy = (ms.Position.Y - _dragStartMouse.Y) / effScale;
+                    float dx = (rawMs.Position.X - _dragStartMouse.X) / effScale;
+                    float dy = (rawMs.Position.Y - _dragStartMouse.Y) / effScale;
                     slot.UserOffsetX = MathF.Round(_dragStartUserOffset.X + dx, 1);
                     slot.UserOffsetY = MathF.Round(_dragStartUserOffset.Y + dy, 1);
                     _modified = true;
@@ -514,7 +539,7 @@ public sealed class CharacterEditor : IEditor, IDisposable
         int fontBtn = UiScale.FontPx(12, s);
 
         var backRect = new Rectangle(pad, pad, UiScale.Px(78, s), btnH);
-        DrawBtn(sb, backRect, "< ESC", BG_CARD, Color.White, fontBtn, Color.White * 0.2f, () => BackPressed = true);
+        DrawBtn(sb, backRect, PointerInput.IsTouch ? "Back" : "< ESC", BG_CARD, Color.White, fontBtn, Color.White * 0.2f, () => BackPressed = true);
 
         // Right-side import & save buttons
         int rx = _headerRect.Right - pad;
@@ -887,7 +912,9 @@ public sealed class CharacterEditor : IEditor, IDisposable
             if (sl != null) { sl.UserOffsetX = 0f; sl.UserOffsetY = 0f; _modified = true; }
         });
 
-        string hint = "Drag: Align Pose  |  Arrows: 1px (Shift=5px)  |  D/F/J/K: Test Sing  |  R-Drag: Pan";
+        string hint = PointerInput.IsTouch
+            ? "Drag: Align Pose  |  Tap arrows: Nudge  |  Back gesture: Exit"
+            : "Drag: Align Pose  |  Arrows: 1px (Shift=5px)  |  D/F/J/K: Test Sing  |  R-Drag: Pan";
         int hf = UiScale.FontPx(11, s);
         var hSz = MeasureText(hint, hf);
         if (nbx + UiScale.Px(80, s) + hSz.X < _stageRect.Right)
@@ -1498,6 +1525,7 @@ public sealed class CharacterEditor : IEditor, IDisposable
         switch (text)
         {
             case "< ESC": return ("back", "ESC");
+            case "Back": return ("back", "Back");
             case "<": return ("prev", "");
             case ">": return ("next", "");
             case "+": return ("add", "");

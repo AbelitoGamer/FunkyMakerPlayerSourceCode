@@ -49,7 +49,10 @@ namespace FunkyMakerPlayer.Multiplayer
         private ClientWebSocket? _socket;
         private long _nextId;
         private int _stopped;
-        private DateTime _lastReceivedUtc = DateTime.UtcNow;
+        private long _lastReceivedUtcTicks = DateTime.UtcNow.Ticks;
+
+        private void TouchLastReceived() => Interlocked.Exchange(ref _lastReceivedUtcTicks, DateTime.UtcNow.Ticks);
+        private DateTime LastReceivedUtc => new(Interlocked.Read(ref _lastReceivedUtcTicks), DateTimeKind.Utc);
 
         public HubConnectionState State { get; private set; } = HubConnectionState.Disconnected;
         /// <summary>The connection counts as dropped after this long without any message (the server pings every 10 s).</summary>
@@ -105,7 +108,7 @@ namespace FunkyMakerPlayer.Multiplayer
                 socket.Dispose();
                 throw;
             }
-            _lastReceivedUtc = DateTime.UtcNow;
+            TouchLastReceived();
             lock (_fragments) _fragments.Clear();
             return socket;
         }
@@ -231,7 +234,7 @@ namespace FunkyMakerPlayer.Multiplayer
                         throw new InvalidDataException("Message too large.");
                     if (!r.EndOfMessage) continue;
 
-                    _lastReceivedUtc = DateTime.UtcNow;
+                    TouchLastReceived();
                     string text = Encoding.UTF8.GetString(message.GetBuffer(), 0, (int)message.Length);
                     message.SetLength(0);
                     if (message.Capacity > 4 * 1024 * 1024) message = new MemoryStream();
@@ -314,7 +317,7 @@ namespace FunkyMakerPlayer.Multiplayer
                 while (ReferenceEquals(socket, _socket) && socket.State == WebSocketState.Open)
                 {
                     await Task.Delay(2000, _lifetime.Token).ConfigureAwait(false);
-                    if (DateTime.UtcNow - _lastReceivedUtc > ServerTimeout)
+                    if (DateTime.UtcNow - LastReceivedUtc > ServerTimeout)
                     {
                         Console.WriteLine("[Multiplayer] No message from the server for too long; dropping the socket.");
                         socket.Abort(); // the receive loop notices and reconnects

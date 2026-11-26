@@ -265,12 +265,14 @@ Notes:
 │   │   └── Transfer/            LevelTransferClient.cs (HTTP level up/download, replay
 │   │                            tracks), LocalLevelIndex.cs (hash cache) (§12.1)
 │   ├── Editors/
-│   │   ├── EditorPicker.cs      "Editor Hub": New Chart / Chart Editor / HUD Editor
-│   │   ├── EditorType.cs        NewChart, Chart, Hud (+ unused placeholders:
-│   │   │                        Character/Stage/Alphabet/Sprite/Event/Week/Dialogue)
+│   │   ├── EditorPicker.cs      "Editor Hub": New Chart / Chart Editor / HUD Editor / Character Editor
+│   │   ├── EditorType.cs        NewChart, Chart, Hud, Character (+ upcoming placeholders:
+│   │   │                        Stage/Alphabet/Sprite/Event/Week/Dialogue)
 │   │   ├── IEditor.cs           IDirectScreen + Update/BackPressed/IsModified
+│   │   ├── Character/           CharacterEditor.cs, CharacterLibrary.cs, CharacterModels.cs,
+│   │   │                        SparrowCharacterImporter.cs, SpritemapCharacterImporter.cs (§11)
 │   │   ├── Chart/
-│   │   │   ├── ChartEditor.cs   redesigned chart editor (§11)
+│   │   │   ├── ChartEditor.cs   redesigned chart editor + ChartEditor.Characters.cs modal (§11)
 │   │   │   ├── ChartTimeline.cs
 │   │   │   ├── NoteGrid.cs
 │   │   │   ├── EditorAudioManager.cs
@@ -292,6 +294,7 @@ Notes:
 │   │                            NOTE_hold_FMM.png (hold fallback for skins without one)
 │   │   └── ui/multiplayer/      multiplayer menu icons (back, connect, create,
 │   │                            join, leaderboard, lock, quickplay, settings)
+│   │   └── ui/character_editor/ Material Design PNG icons for Character Editor & Chart char modal (40 files)
 │   ├── LoadingScreen/           AnkushCat.png
 │   ├── sounds/ui/               UI sound effects (*.wav, §10.6)
 │   ├── music/online/            online menu music (*.mp3, §10.7)
@@ -333,7 +336,7 @@ Read `FunkyMakerPlayer/FunkyMakerPlayer.csproj` before changing build behavior.
 | `OutputType` | `Exe` (`WinExe` for Windows Release) |
 | `TargetFrameworks` | `net10.0;net10.0-android` |
 | `RollForward` | `Major` |
-| `Version` / `AssemblyVersion` | `0.4.8` |
+| `Version` / `AssemblyVersion` | `0.5.0` |
 | `Nullable` | `enable` |
 | `ImplicitUsings` | `disable` |
 | `PublishReadyToRun` / `TieredCompilation` | `false` |
@@ -1856,6 +1859,7 @@ playback), hitsounds and metronome, toasts, UI scaled with `UiScale`.
 - **Interactive stage & baking (`CharacterEditor.cs`, `CharacterLibrary.cs`):**
   - **Icon buttons:** the editor's buttons use white Material Design PNG icons (Apache 2.0) from `Assets/images/ui/character_editor/*.png` (40 files; loaded via `TitleContainer`, premultiplied, tinted by the button colour). `CharacterEditor.ResolveIcon` maps button labels to icon names; if an icon file is missing the button falls back to plain text.
   - Live stage viewport anchored at ground foot pivot `(0, 0)` with **Onion Skin (`G`)** ghosting `IDLE` frame 0 behind active poses, mouse/touch drag alignment, arrow-key/touch nudge buttons, live `D/F/J/K` (`1`–`5`) sing testing, `Flip X` baking, 1-click `Swap Left <-> Right`, `NativeFacing` (`Left` BF vs `Right` Opponent), `Smooth`/`Pixel` filter toggle, and automatic 2-frame FNF health icon strip splitting (`300x150` → `icon/0.png` normal + `icon/1.png` losing).
+  - **Android touch support (`Game1.Touch.cs`, `CharacterEditor.cs`):** `UpdateTouchPointer` sets `ScreenIsTouchReady = true` for `CharacterEditor` (auto-hiding the on-screen D-pad/A/B buttons); UI buttons and scrollable lists use `PointerInput.GetState()`, while dragging open canvas inside `_stageRect` uses `PointerInput.GetRawState()` so poses can be aligned by touch without interfering with button taps.
   - Saves FunkyMaker-native packages into `mods/characters/<slug>/` (`sprite.json`, `0.png..N.png`, `character.json`, optional `icon/`), also imported on Android SAF via `PlatformPaths.GetCharactersPath()`.
 - **Local Online Custom Character Equip (client-side only):**
   - Persisted as `MultiplayerSettings.EquippedCharacter` (`""` = Level Default); selectable in **Multiplayer → Settings → User → `My Character (Local)`** and **Waiting Room** (`B` hotkey / `B  CHAR:` button).
@@ -1933,8 +1937,7 @@ goal is $0. Workers and R2 don't charge for bandwidth. Playerbase is tiny (≤ 2
   15 matches) was imported into the Worker. Saved `*.onrender.com` URLs in a player's settings are
   ignored (§12.0), so they move to the new server.
 - **Status (2026-11-26)**: deployed, client builds for desktop and Android, end-to-end script passes
-  against production. **Not yet tested with the real game** (rooms, transfers, matches). Client code
-  is on branch `cloudflare-workers` in both repos, not merged into `master` / `main` yet.
+  against production. Client code merged into `master` (PR #4 / PR #5). **Not yet tested with the real game** (rooms, transfers, matches).
 
 ### 12.x osu!mania songs online + song select = Freeplay (fork, protocol 3, 2026-11-21)
 
@@ -2107,8 +2110,9 @@ goal is $0. Workers and R2 don't charge for bandwidth. Playerbase is tiny (≤ 2
 - `WsHubConnection` (protocol 4, replaces the SignalR `HubConnection` with the same shape:
   `InvokeAsync` / `SendAsync` / `On<T>` / `Closed` / `Reconnecting` / `Reconnected`): `ClientWebSocket`
   with the JSON envelope of §12.z, fragmentation both ways (incoming capped at 64 MB), a silence
-  watchdog (`ServerTimeout` 60 s; the server pings every 10 s) and automatic reconnect over the given
-  delays (a new socket; `NetworkManager` then sends `Hello` again). Handlers run on the receive thread.
+  watchdog (`ServerTimeout` 60 s using atomic `_lastReceivedUtcTicks` via `Interlocked` for 32-bit ARM
+  safety; the server pings every 10 s) and automatic reconnect over the given delays (a new socket;
+  `NetworkManager` then sends `Hello` again). Handlers run on the receive thread.
 - `NetworkManager`: connection, reconnect (backoff + `WsHubConnection` auto reconnect; `Hello` again, then
   `RoomClient` re-joins the room), ping / `TimeSyncManager`, leaderboard, official level list (HTTP).
   **All server messages except Pong are queued and raised on the game thread** by `Update` (Game1 calls
@@ -2395,8 +2399,8 @@ States: `MainMenu` → `Connecting` → `RoomBrowser` → `RoomSettings` (create
     (`Game1.MenuButtonsMode`, settings.json `MenuButtonsMode`, default AUTO). In AUTO the D-pad,
     A / B and Q / E are hidden (not drawn, no input, `IsPointOnMenuControl` false) where
     `TouchControls.ScreenIsTouchReady` is set: Game1 sets it every frame except in the chart
-    editor, HUD editor, Level Selector and key-binding overlay; the online menu's own instance
-    always sets it. Gameplay (hitboxes + pause button) is unaffected.
+    editor, HUD editor, Level Selector and key-binding overlay (`CharacterEditor` sets it true);
+    the online menu's own instance always sets it. Gameplay (hitboxes + pause button) is unaffected.
   - **D-pad geometry**: a real cross fully on screen (Down used to be below the screen edge and
     Left/Right off-centre); A bigger, B lower-left of A; Q / E moved above B / A (they covered
     the Settings title and tab bar).
