@@ -9,7 +9,8 @@ namespace FunkyMakerPlayer.Osu;
 /// <summary>
 /// Desktop video decoder for <see cref="OsuVideo"/> (fork): runs ffmpeg and reads raw RGBA frames
 /// from its stdout:
-/// <c>ffmpeg -ss T -i video -an -vf scale+pad=640x360 -r 30 -f rawvideo -pix_fmt rgba -</c>.
+/// <c>ffmpeg -ss T -i video -an -vf scale+pad=WxH -r FPS -f rawvideo -pix_fmt rgba -</c>
+/// (640×360 at 30 fps, or the video's own size / frame rate at full quality, see <see cref="Probe"/>).
 /// The shipped ffmpeg is a minimal LGPL build made by Tools/build-ffmpeg-min.sh (only these
 /// demuxers/decoders/filters, a few MB); any full ffmpeg works too. It is looked for next to the
 /// game, in mods/tools and on PATH.
@@ -40,14 +41,54 @@ internal sealed class FfmpegVideoStream : IOsuVideoStream
         return null;
     }
 
+    /// <summary>
+    /// The video's size and frame rate, read from <c>ffmpeg -i file</c>'s stream info (the bundled
+    /// minimal build has no ffprobe), e.g. "Stream #0:0: Video: h264 …, 1280x720, …, 24 fps, 24 tbr".
+    /// Null when it can't be read.
+    /// </summary>
+    public static (int Width, int Height, double Fps)? Probe(string ffmpeg, string file)
+    {
+        try
+        {
+            var psi = new ProcessStartInfo(ffmpeg)
+            {
+                UseShellExecute = false,
+                RedirectStandardError = true,
+                RedirectStandardOutput = true,
+                CreateNoWindow = true,
+            };
+            foreach (var a in new[] { "-hide_banner", "-nostdin", "-i", file }) psi.ArgumentList.Add(a);
+            using var p = Process.Start(psi);
+            if (p == null) return null;
+            var stderr = p.StandardError.ReadToEndAsync();
+            p.StandardOutput.ReadToEnd();
+            if (!p.WaitForExit(5000)) { try { p.Kill(); } catch { } return null; }
+            foreach (var line in stderr.Result.Split('\n'))
+            {
+                if (!line.Contains("Video:", StringComparison.Ordinal)) continue;
+                var size = System.Text.RegularExpressions.Regex.Match(line, @"\b(\d{2,5})x(\d{2,5})\b");
+                if (!size.Success) continue;
+                var fps = System.Text.RegularExpressions.Regex.Match(line, @"([\d.]+)\s*fps");
+                if (!fps.Success) fps = System.Text.RegularExpressions.Regex.Match(line, @"([\d.]+)\s*tbr");
+                double f = fps.Success && double.TryParse(fps.Groups[1].Value, NumberStyles.Float, CultureInfo.InvariantCulture, out var v) ? v : 0;
+                return (int.Parse(size.Groups[1].Value, CultureInfo.InvariantCulture),
+                        int.Parse(size.Groups[2].Value, CultureInfo.InvariantCulture), f);
+            }
+        }
+        catch (Exception ex) { Console.WriteLine($"[OsuVideo] Probe failed: {ex.Message}"); }
+        return null;
+    }
+
     private readonly Process? _process;
     private readonly Stream? _stdout;
     private readonly double _start;
+    private readonly VideoFormat _format;
     private int _frame;
 
-    public FfmpegVideoStream(string ffmpeg, string file, double startSec)
+    public FfmpegVideoStream(string ffmpeg, string file, double startSec, VideoFormat format)
     {
         _start = startSec;
+        _format = format;
         var psi = new ProcessStartInfo(ffmpeg)
         {
             UseShellExecute = false,
@@ -55,14 +96,19 @@ internal sealed class FfmpegVideoStream : IOsuVideoStream
             RedirectStandardError = false,
             CreateNoWindow = true,
         };
-        int w = OsuVideo.Width, h = OsuVideo.Height;
+        int w = format.Width, h = format.Height;
         foreach (var a in new[]
                  {
                      "-hide_banner", "-loglevel", "error", "-nostdin",
                      "-ss", startSec.ToString("0.###", CultureInfo.InvariantCulture),
                      "-i", file, "-an",
                      "-vf", $"scale={w}:{h}:force_original_aspect_ratio=decrease,pad={w}:{h}:(ow-iw)/2:(oh-ih)/2",
-                     "-r", OsuVideo.Fps.ToString(CultureInfo.InvariantCulture),
+                     "-r", format.Fps.ToString("0.###", CultureInfo.InvariantCulture),
+                     // Constant frame rate: frames land on their real timestamps (ReadFrame counts
+                     // frames). Without it the rawvideo muxer passes frames through, so gaps (AVI null
+                     // frames, a stream whose first frame is late, e.g. Mesmerizer's ~2.5 s) were
+                     // dropped and the whole video ran early.
+                     "-fps_mode", "cfr",
                      "-f", "rawvideo", "-pix_fmt", "rgba", "-",
                  })
             psi.ArgumentList.Add(a);
@@ -81,13 +127,13 @@ internal sealed class FfmpegVideoStream : IOsuVideoStream
     {
         if (_stdout == null) return null;
         int read = 0;
-        while (read < OsuVideo.FrameBytes)
+        while (read < _format.FrameBytes)
         {
-            int got = _stdout.Read(rgba, read, OsuVideo.FrameBytes - read);
+            int got = _stdout.Read(rgba, read, _format.FrameBytes - read);
             if (got <= 0) return null; // end of the video, or ffmpeg killed / failed
             read += got;
         }
-        return _start + _frame++ / (double)OsuVideo.Fps;
+        return _start + _frame++ / _format.Fps;
     }
 
     public void Cancel()

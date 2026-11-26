@@ -462,6 +462,8 @@ public class NoteRenderer
     public Action?             OnNoteMiss;
     /// <summary>Lane of the miss being reported, valid while OnNoteMiss runs.</summary>
     public int                 LastMissLane { get; private set; } = -1;
+    /// <summary>Chart time of the note being hit (valid during OnNoteHit / OnNotePressEvent).</summary>
+    public float               LastHitNoteTime { get; private set; } = -1f;
     /// <summary>Fired when player presses arrow key (for multiplayer animation sync). Args: lane index.</summary>
     public Action<int>?        OnKeyPress;
     /// <summary>Fired with rating string ("Sick!", "Good", "Bad", "Shit") on manual hit.</summary>
@@ -808,6 +810,7 @@ public class NoteRenderer
                 ComboScale = COMBO_BOUNCE_SCALE;  // Trigger bounce animation
                 OnComboChanged?.Invoke(Combo);  // Fire combo changed event
                 float holdEnd = note.Duration > 0 ? note.Start + note.Duration : -1f;
+                LastHitNoteTime = note.Start;
                 OnNoteHit?.Invoke(lane, holdEnd);
                 // Botplay hits are perfect, so the player's strumline shows a splash (as in FNF)
                 if (_isPlayer)
@@ -1015,6 +1018,7 @@ public class NoteRenderer
                     TriggerSplash(lane);
                 
                 float holdEnd = best.Duration > 0 ? best.Start + best.Duration : -1f;
+                LastHitNoteTime = best.Start;
                 OnNoteHit?.Invoke(lane, holdEnd);
                 OnJudgement?.Invoke(judgement);
 

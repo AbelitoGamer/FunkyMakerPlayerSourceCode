@@ -21,6 +21,11 @@ public static class OsuSettings
     public static float HitsoundVolume = 0.8f;
     /// <summary>Background videos (desktop: ffmpeg, Android: MediaCodec).</summary>
     public static bool Video = true;
+    /// <summary>
+    /// False: videos are decoded to 640×360 at 30 fps (cheap). True: at their own size and frame rate
+    /// (capped to 4K / 60 fps; 1080p on Android, where frames are converted on the CPU).
+    /// </summary>
+    public static bool VideoFullQuality = false;
     public static bool Storyboard = true;
     /// <summary>How much the background / video / storyboard is darkened, 0..1 (osu!'s background dim).</summary>
     public static float BackgroundDim = 0.7f;
@@ -33,6 +38,7 @@ public static class OsuSettings
         public bool Hitsounds { get; set; } = true;
         public float HitsoundVolume { get; set; } = 0.8f;
         public bool Video { get; set; } = true;
+        public bool VideoFullQuality { get; set; } = false;
         public bool Storyboard { get; set; } = true;
         public float BackgroundDim { get; set; } = 0.7f;
     }
@@ -44,6 +50,7 @@ public static class OsuSettings
         Hitsounds = Hitsounds,
         HitsoundVolume = HitsoundVolume,
         Video = Video,
+        VideoFullQuality = VideoFullQuality,
         Storyboard = Storyboard,
         BackgroundDim = BackgroundDim,
     };
@@ -56,6 +63,7 @@ public static class OsuSettings
         Hitsounds = d.Hitsounds;
         HitsoundVolume = Math.Clamp(d.HitsoundVolume, 0f, 1f);
         Video = d.Video;
+        VideoFullQuality = d.VideoFullQuality;
         Storyboard = d.Storyboard;
         BackgroundDim = Math.Clamp(d.BackgroundDim, 0f, 1f);
     }

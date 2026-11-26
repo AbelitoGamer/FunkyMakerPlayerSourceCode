@@ -300,7 +300,18 @@ public static class OsuManiaSkin
             // Tail: osu! draws it flipped for falling notes; the renderer flips this column for
             // downscroll, so it is stored as the file is (upscroll then shows it unflipped, like osu!).
             if (tails[lane] is { } tail)
+            {
+                // osu! runs the body on under the tail (to about its middle): T images usually leave
+                // their inner part transparent (e.g. a tip drawn on the outer half). Without the body
+                // underneath, that showed as a gap between the body and the tail.
+                int under = Math.Max(1, tail.Height / 2);
+                using (var b = body.Clone(x => x.Resize(Width, Math.Max(texH, under)).Flip(FlipMode.Vertical)))
+                {
+                    b.Mutate(x => x.Crop(new Rectangle(0, 0, Width, under)));
+                    sheet.Mutate(x => x.DrawImage(b, new Point((lane * 2 + 1) * Width, 0), 1f));
+                }
                 sheet.Mutate(x => x.DrawImage(tail, new Point((lane * 2 + 1) * Width, 0), 1f));
+            }
         }
         return ToTexture(gd, sheet);
     }
