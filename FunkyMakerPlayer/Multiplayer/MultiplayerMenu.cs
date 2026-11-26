@@ -1037,11 +1037,35 @@ namespace FunkyMakerPlayer.Multiplayer
         {
             return category switch
             {
-                0 => 2,  // User: Username, Player Color
+                0 => 3,  // User: Username, Player Color, My Character (Local)
                 1 => 6,  // Gameplay: ShowOpponentNotes, Scores list, Scores list side, ShowConnectionQuality, Opponent Notes Opacity, Teams rival strumline
                 2 => 4,  // Performance: UpdateRate, EnableInterpolation, osu! videos, Chart Only (No Sprites)
                 _ => 3,  // Visual: HudOpacity, ConnectionIndicatorPosition, InterfaceMode
             };
+        }
+
+        private void CycleEquippedCharacter(int direction)
+        {
+            var settings = MultiplayerSettings.Instance;
+            var chars = Editors.Character.CharacterLibrary.ScanCharacters(bakedOnly: false);
+            var options = new List<string>(chars.Count + 1) { "" };
+            foreach (var c in chars)
+                options.Add(c.Slug);
+
+            int curIdx = options.FindIndex(s => string.Equals(s, settings.EquippedCharacter ?? "", StringComparison.OrdinalIgnoreCase));
+            if (curIdx < 0) curIdx = 0;
+            int nextIdx = (curIdx + direction + options.Count) % options.Count;
+            settings.EquippedCharacter = options[nextIdx];
+            settings.Save();
+        }
+
+        private static string GetEquippedCharacterLabel(string? slug)
+        {
+            if (string.IsNullOrWhiteSpace(slug))
+                return "Level Default";
+            var chars = Editors.Character.CharacterLibrary.ScanCharacters(bakedOnly: false);
+            var match = chars.Find(c => string.Equals(c.Slug, slug, StringComparison.OrdinalIgnoreCase));
+            return match != null ? match.Name : $"{slug} (missing)";
         }
         
         private void ModifySettingValue(int category, int selection, int direction)
@@ -1053,6 +1077,11 @@ namespace FunkyMakerPlayer.Multiplayer
                 case 0: // User
                     if (selection == 1) // Player Color
                         settings.PlayerColorHue = (settings.PlayerColorHue + direction * 10 + 360) % 360;
+                    else if (selection == 2) // My Character (Local)
+                    {
+                        CycleEquippedCharacter(direction);
+                        return;
+                    }
                     break;
                     
                 case 1: // Gameplay
@@ -1145,6 +1174,8 @@ namespace FunkyMakerPlayer.Multiplayer
                 case 0: // User
                     if (selection == 0) // Username - start text editing
                         BeginUsernameEdit();
+                    else if (selection == 2)
+                        CycleEquippedCharacter(1);
                     break;
                     
                 case 1: // Gameplay
@@ -2408,6 +2439,14 @@ namespace FunkyMakerPlayer.Multiplayer
                         IsToggle = false,
                         IsAdjustable = true,
                         Description = "Color hue (0-350 deg) used to tint your player name in the multiplayer HUD, results screen, and leaderboard."
+                    });
+                    list.Add(new SettingInfo
+                    {
+                        Label = "My Character (Local)",
+                        Value = GetEquippedCharacterLabel(settings.EquippedCharacter),
+                        IsToggle = false,
+                        IsAdjustable = true,
+                        Description = "Equip a custom character from mods/characters/ on your side during online matches (local visual skin & health icon; skipped in Chart-Only mode)."
                     });
                     break;
                     

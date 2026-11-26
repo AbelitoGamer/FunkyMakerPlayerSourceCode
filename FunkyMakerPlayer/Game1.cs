@@ -1906,6 +1906,22 @@ public partial class Game1 : Game
                     base.Update(gameTime);
                     return;
                 }
+                if (ce.OpenCharacterEditorRequested)
+                {
+                    string? initSlug = ce.ConsumeOpenCharacterEditorRequest();
+                    _suspendedChartEditor = ce;
+                    var charEd = new Editors.Character.CharacterEditor(GraphicsDevice, _pixel!, _font, _fontRenderer, initSlug);
+                    charEd.ResetInputCooldown();
+                    _activeEditor = charEd;
+                    Window.Title = "Funky Maker Character Editor";
+                    _prevKb = kb;
+                    base.Update(gameTime);
+                    return;
+                }
+            }
+            else if (_activeEditor is Editors.Character.CharacterEditor charEd)
+            {
+                charEd.Update(dt, kb, Math.Max(1, winBounds.Width), Math.Max(1, winBounds.Height));
             }
             else
             {

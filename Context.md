@@ -1718,16 +1718,17 @@ Menus and editors play short sound effects through `UI/UiSfx.cs`.
 ## 11. Editors
 
 `EditorPicker` ("Editor Hub"; opened by the `EDITORS` card or `7` on the main
-menu) now lists only three working entries (arrows/mouse, Enter/Space, Esc):
+menu) lists four working entries (arrows/mouse, Enter/Space, Esc):
 
 | Entry | `EditorType` | Opens |
 |---|---|---|
 | New Chart | `NewChart` | `LevelSelector` with the create modal open |
 | Chart Editor | `Chart` | `LevelSelector` → `ChartEditor` |
 | HUD Editor | `Hud` | `MainSettingsMenu` launcher → `HudEditor` |
+| Character Editor | `Character` | `CharacterEditor` (`Editors/Character/CharacterEditor.cs`) |
 
-The other `EditorType` values (Character, Stage, Alphabet, Sprite, Event, Week,
-Dialogue) remain in the enum but are not shown.
+The other `EditorType` values (Stage, Alphabet, Sprite, Event, Week,
+Dialogue) remain in the enum as upcoming tools.
 
 `IEditor : UI.IDirectScreen` (drawn directly to the window):
 `Update(float dt, KeyboardState kb)`, `bool BackPressed`, `bool IsModified`.
@@ -1760,6 +1761,7 @@ playback), hitsounds and metronome, toasts, UI scaled with `UiScale`.
 | Left / Right | Move selected note across the 8 columns |
 | Delete / Backspace | Delete selected note |
 | `M` | Mirror current measure |
+| `B` | Open/close **Scene Characters & Icons** modal (`CHARS (B)` button) |
 | Ctrl+C / Ctrl+V | Copy current measure / paste at playhead |
 | Ctrl+Z / Ctrl+Y | Undo / Redo |
 | `V` | Show/hide stage preview |
@@ -1804,6 +1806,26 @@ playback), hitsounds and metronome, toasts, UI scaled with `UiScale`.
   back to the editor.
 - From gameplay (solo, level loaded) `7` opens the Chart Editor for the
   current level (`ChartEditorReturnTarget.Gameplay`).
+- **Scene Characters & Icons modal (`ChartEditor.Characters.cs`, `CHARS (B)`):**
+  assigns any character from `mods/characters/` onto **Player (`SL0`)**, **Opponent (`SL1`)**,
+  or **Extra (`SL2+`, with `+ NEW SL`)**, fine-tunes scene `X` / `Y` / `Scale` / `Flip`,
+  optionally updates `scene.Icons`, and can suspend `ChartEditor` to launch `CharacterEditor`
+  directly (`+ CHARACTER EDITOR`) and return cleanly on `Esc`. Saved `.FNMM` files embed
+  standard `sprites/<name>/sprite.json` + `0.png..N.png` strips for 100% FunkyMaker compatibility.
+
+### Character Editor (`Editors/Character/`, 2026-11-25)
+
+- **Supported input formats (`CharacterLibrary.ImportAny`):**
+  1. **Sparrow v2 (`PNG + XML`, `SparrowCharacterImporter.cs`):** handles trimmed `frameX/frameY/frameWidth/frameHeight` and `rotated="true"` subtextures (`Rotate270`), plus automatic detection of companion **Psych Engine `.json`**, **V-Slice `.json`**, or **Codename `.xml`** definitions (`animations`, `indices`, `offsets`, `fps`, `loop`, `scale`, `flip_x`, `no_antialiasing`, and nearby `icon-*.png`).
+  2. **Adobe Animate Texture Atlas / Spritemaps (`SpritemapCharacterImporter.cs`):** software rasterizer supporting `Animation.json` (both compact `AN/SD/TL/L/FR/E/ASI/SI/M3D/MX` and verbose keys, plus `STI` stage instances) and one or multiple `spritemap*.json` + `spritemap*.png` limb sheets, frame-label timelines, symbol dictionary (`addBySymbol`) timelines, loop modes (`LP`/`PO`/`SF`), color/alpha transforms, and premultiplied bilinear limb sampling.
+  3. **`.ZIP` character packs & `.FNMM` levels:** auto-detects Sparrow, Spritemap, or FNMM archives and extracts characters + health icons from existing `.fnmm` levels.
+- **Interactive stage & baking (`CharacterEditor.cs`, `CharacterLibrary.cs`):**
+  - **Icon buttons:** the editor's buttons use white Material Design PNG icons (Apache 2.0) from `Assets/images/ui/character_editor/*.png` (40 files; loaded via `TitleContainer`, premultiplied, tinted by the button colour). `CharacterEditor.ResolveIcon` maps button labels to icon names; if an icon file is missing the button falls back to plain text.
+  - Live stage viewport anchored at ground foot pivot `(0, 0)` with **Onion Skin (`G`)** ghosting `IDLE` frame 0 behind active poses, mouse/touch drag alignment, arrow-key/touch nudge buttons, live `D/F/J/K` (`1`–`5`) sing testing, `Flip X` baking, 1-click `Swap Left <-> Right`, `NativeFacing` (`Left` BF vs `Right` Opponent), `Smooth`/`Pixel` filter toggle, and automatic 2-frame FNF health icon strip splitting (`300x150` → `icon/0.png` normal + `icon/1.png` losing).
+  - Saves FunkyMaker-native packages into `mods/characters/<slug>/` (`sprite.json`, `0.png..N.png`, `character.json`, optional `icon/`), also imported on Android SAF via `PlatformPaths.GetCharactersPath()`.
+- **Local Online Custom Character Equip (client-side only):**
+  - Persisted as `MultiplayerSettings.EquippedCharacter` (`""` = Level Default); selectable in **Multiplayer → Settings → User → `My Character (Local)`** and **Waiting Room** (`B` hotkey / `B  CHAR:` button).
+  - In `Game1.SetupLevel` (`Game1.LevelLoad.cs`), during online FNF matches (when not spectating and `ChartOnlyMode` is off), clones `_level` in memory and applies the equipped character + health icon onto `myLocalCharStrum` (`0` for Role 1 / BF, `1` for Role 2 / Enemy), auto-aligning feet & visual height to the replaced character and auto-mirroring + swapping `Sing Left ↔ Sing Right` when placed on the opposite stage side without any server protocol changes.
 
 ---
 
@@ -2857,6 +2879,7 @@ Status key: **[fixed]** resolved in the current tree; **[open]** still applies
 | Mod paths/Android import | `PlatformPaths.cs`, `Platforms/Android/*` |
 | Default note style / countdown / font | `DefaultMods/` (files), `DefaultMods.cs` (install + fallback) |
 | Chart editing / new chart / playtest | `Editors/Chart/*`, `Editors/EditorPicker.cs`, `Game1.BeginEditorPlaytest` / `ReturnFromPlaytest` |
+| Character editor / Sparrow & Spritemap import / online local equip | `Editors/Character/*`, `Editors/Chart/ChartEditor.Characters.cs`, `Multiplayer/MultiplayerSettings.cs`, `Multiplayer/MultiplayerMenu*.cs`, `Game1.LevelLoad.cs`, `PlatformPaths.cs` |
 | Multiplayer protocol | `Multiplayer/NetworkPackets.cs`, `NetworkManager.cs`, `MultiplayerMenu.cs` |
 | Official level cache / usernames | `Multiplayer/LevelCache.cs`, `LevelDownloader.cs`, `UserDirectoryClient.cs` |
 | Private-room level sharing | `Multiplayer/MultiplayerMenu.LevelSharing.cs`, `Multiplayer/Transfer/*`, server repo `FunkyMakerTransferServer` (keep `TransferProtocol.cs` and the server's `Protocol.cs` in sync) |

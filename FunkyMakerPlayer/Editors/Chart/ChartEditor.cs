@@ -16,7 +16,7 @@ namespace FunkyMakerPlayer.Editors.Chart
     /// working Select/Move/Hold-resize/Delete tools, Undo/Redo, Playtest hook, and toggleable
     /// docked stage preview that never obscures the chart grid.
     /// </summary>
-    public class ChartEditor : IEditor
+    public partial class ChartEditor : IEditor
     {
         // ── Core data ────────────────────────────────────────────────────────
         private string _levelPath;
@@ -651,6 +651,12 @@ namespace FunkyMakerPlayer.Editors.Chart
         // ── Keyboard Input ───────────────────────────────────────────────────
         private void HandleKeyboard(KeyboardState kb, float dt)
         {
+            if (_charModalOpen)
+            {
+                HandleCharacterModalKeyboard(kb);
+                return;
+            }
+
             bool ctrl = kb.IsKeyDown(Keys.LeftControl) || kb.IsKeyDown(Keys.RightControl);
             bool shift = kb.IsKeyDown(Keys.LeftShift) || kb.IsKeyDown(Keys.RightShift);
 
@@ -726,6 +732,7 @@ namespace FunkyMakerPlayer.Editors.Chart
                 ShowToast(_metronomeEnabled ? "Metronome ON" : "Metronome OFF");
             }
             if (!ctrl && JustPressed(kb, Keys.M)) MirrorCurrentMeasure();
+            if (!ctrl && JustPressed(kb, Keys.B)) { ToggleCharacterModal(); return; }
 
             // Snap cycle Z/X
             if (JustPressed(kb, Keys.Z)) CycleSnap(-1);
@@ -1068,6 +1075,12 @@ namespace FunkyMakerPlayer.Editors.Chart
         // ── Mouse Input ──────────────────────────────────────────────────────
         private void HandleMouse(MouseState ms)
         {
+            if (_charModalOpen)
+            {
+                HandleCharacterModalMouse(ms);
+                return;
+            }
+
             var pt = ms.Position;
             bool leftDown = ms.LeftButton == ButtonState.Pressed;
             bool leftJustPressed = leftDown && _prevMouse.LeftButton == ButtonState.Released;
@@ -2099,7 +2112,8 @@ namespace FunkyMakerPlayer.Editors.Chart
             int btnH = UiScale.Px(28, s, 22);
             int btnY = UiScale.Px(40, s, 30);
             _saveBtnRect = AllocRightButton(ref rightX, btnY, UiScale.Px(70, s), btnH, btnGap);
-            _previewToggleRect = AllocRightButton(ref rightX, btnY, UiScale.Px(94, s), btnH, btnGap);
+            _charsBtnRect = AllocRightButton(ref rightX, btnY, UiScale.Px(82, s), btnH, btnGap);
+            _previewToggleRect = AllocRightButton(ref rightX, btnY, UiScale.Px(90, s), btnH, btnGap);
             _redoBtnRect = AllocRightButton(ref rightX, btnY, UiScale.Px(58, s), btnH, btnGap);
             _undoBtnRect = AllocRightButton(ref rightX, btnY, UiScale.Px(60, s), btnH, btnGap);
             _playtestBtnRect = AllocRightButton(ref rightX, btnY, UiScale.Px(98, s), btnH, btnGap);
@@ -2213,6 +2227,9 @@ namespace FunkyMakerPlayer.Editors.Chart
 
             if (_showPreview)
                 DrawCharacterPreview(sb);
+
+            if (_charModalOpen)
+                DrawCharacterModal(sb, sw, sh);
         }
 
         // ── Timeline Header ──────────────────────────────────────────────────
@@ -2299,6 +2316,7 @@ namespace FunkyMakerPlayer.Editors.Chart
             DrawButton(sb, _undoBtnRect, "UNDO", _undoManager.CanUndo ? BG_CARD : new Color(24, 24, 34), _undoManager.CanUndo ? Color.White : Color.Gray, smallBtnFont, Color.White * 0.2f, Undo);
             DrawButton(sb, _redoBtnRect, "REDO", _undoManager.CanRedo ? BG_CARD : new Color(24, 24, 34), _undoManager.CanRedo ? Color.White : Color.Gray, smallBtnFont, Color.White * 0.2f, Redo);
             DrawButton(sb, _previewToggleRect, _showPreview ? "PREV ON" : "PREV OFF", _showPreview ? new Color(46, 54, 88) : BG_CARD, _showPreview ? ACCENT_GOLD : Color.Gray, smallBtnFont, _showPreview ? ACCENT_GOLD * 0.6f : Color.White * 0.15f, () => { _showPreview = !_showPreview; UI.UiSfx.Play(UI.UiSound.Toggle); });
+            DrawButton(sb, _charsBtnRect, "CHARS (B)", _charModalOpen ? new Color(78, 46, 112) : new Color(42, 30, 64), new Color(215, 175, 255), smallBtnFont, new Color(178, 102, 255), ToggleCharacterModal);
             DrawButton(sb, _saveBtnRect, IsModified ? "SAVE*" : "SAVE", IsModified ? new Color(150, 50, 88) : BG_CARD, Color.White, btnFont, IsModified ? ACCENT_PINK : Color.White * 0.2f, SaveLevel);
         }
 

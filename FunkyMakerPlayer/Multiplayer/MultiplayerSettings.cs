@@ -71,6 +71,11 @@ namespace FunkyMakerPlayer.Multiplayer
         public string Username { get; set; } = "Player";
         public int AvatarIndex { get; set; } = 0; // Kept for wire/JSON backwards compatibility (hidden in UI)
         public int PlayerColorHue { get; set; } = 180; // 0-360 for HSV hue
+        /// <summary>
+        /// Optional custom character slug from <c>mods/characters/&lt;slug&gt;/</c> equipped locally on your side
+        /// during online FNF matches (empty = use the level's default character). Client-side only.
+        /// </summary>
+        public string EquippedCharacter { get; set; } = "";
 
         // ══════════════════════════════════════════════════════════════════════
         // Category 3: Gameplay Configuration
@@ -342,6 +347,7 @@ namespace FunkyMakerPlayer.Multiplayer
             Username = "Player";
             AvatarIndex = 0;
             PlayerColorHue = 180;
+            EquippedCharacter = "";
             
             ShowOpponentNotes = true;   // also saved in settings.json (shared with Opponent Strumline)
             ShowOpponentScore = true;

@@ -121,6 +121,7 @@ namespace FunkyMakerPlayer.Multiplayer
                 if (clicked == "vote0") { VoteAndReady(Protocol.SidePlayer); return; }
                 if (clicked == "vote1") { VoteAndReady(Protocol.SideEnemy); return; }
                 if (clicked == "chartonly") { ToggleChartOnlyMode(); return; }
+                if (clicked == "mychar") { CycleWaitingRoomCharacter(); return; }
                 if (clicked == "retry") { Room.RetryLevel(); return; }
                 if (clicked.StartsWith("kick:")) { _kickConfirmId = clicked[5..]; return; }
                 if (clicked.StartsWith("round:") && int.TryParse(clicked[6..], out int ri) && ri < rounds.Count)
@@ -136,6 +137,7 @@ namespace FunkyMakerPlayer.Multiplayer
             if (IsKeyPressed(kb, Keys.R)) { ToggleReady(); return; }
             if (IsKeyPressed(kb, Keys.S)) { SpectateOrWatch(); return; }
             if (IsKeyPressed(kb, Keys.M)) { ToggleChartOnlyMode(); return; }
+            if (IsKeyPressed(kb, Keys.B)) { CycleWaitingRoomCharacter(); return; }
             if (IsKeyPressed(kb, Keys.C)) { OpenRoomSettings(Room.IsHost ? RoomSettingsMode.Edit : RoomSettingsMode.View); return; }
             if (IsKeyPressed(kb, Keys.W) && inMatch) { Room.WatchCurrentMatch(); return; }
             if (st.Settings.Mode == Protocol.ModeMirror && st.Song != null)
@@ -206,6 +208,21 @@ namespace FunkyMakerPlayer.Multiplayer
             _inputCooldown = INPUT_COOLDOWN_TIME;
         }
 
+        private void CycleWaitingRoomCharacter()
+        {
+            var chars = Editors.Character.CharacterLibrary.ScanCharacters(bakedOnly: false);
+            if (chars.Count == 0)
+            {
+                ShowInfo("No custom characters in mods/characters/ yet. Create one in Editor Hub -> Character Editor!", 3.5f);
+                _inputCooldown = INPUT_COOLDOWN_TIME;
+                return;
+            }
+            CycleEquippedCharacter(1);
+            string label = GetEquippedCharacterLabel(MultiplayerSettings.Instance.EquippedCharacter);
+            ShowInfo($"My Online Character (Local): {label}", 2.8f);
+            _inputCooldown = INPUT_COOLDOWN_TIME;
+        }
+
         /// <summary>A match you aren't playing is in progress and you aren't watching it yet.</summary>
         private bool CanWatchMatch(RoomStatePacket st) =>
             st.Phase is Protocol.PhaseLoading or Protocol.PhasePlaying && st.Match != null
@@ -258,7 +275,7 @@ namespace FunkyMakerPlayer.Multiplayer
             string subtitle = $"ID {st.RoomId}   •   {RoomClient.ModeName(st.Settings.Mode)}   •   {RoomClient.SelectionName(st.Settings.SongSelection)}   •   {st.Members.Count}/{st.Settings.MaxPlayers} players   •   {privacy}";
             int headerBottom = DrawScreenHeader(sb, font, pixel, sw, uiScale, st.Name.ToUpperInvariant(), subtitle, ModeColor(st.Settings.Mode), "ESC  Leave");
             int footerY = DrawFooterBar(sb, font, pixel, sw, sh, uiScale,
-                "T: Chat  |  R: Ready  |  S: Spectate  |  M: Chart Only  |  P: Pick song  |  C: Room settings  |  UP/DOWN + ENTER: Round details");
+                "T: Chat  |  R: Ready  |  S: Spectate  |  M: Chart Only  |  B: My Char  |  P: Pick song  |  C: Room settings");
 
             int margin = Px(22, uiScale, 12);
             int gap = Px(14, uiScale, 8);
@@ -304,8 +321,12 @@ namespace FunkyMakerPlayer.Multiplayer
                 buttons.Add(("spectate", me?.Spectate == true ? "S  SPECTATING (ON)" : "S  SPECTATE", ACCENT_SECONDARY, true, me?.Spectate == true));
             bool chartOnlyOn = MultiplayerSettings.Instance.ChartOnlyMode;
             buttons.Add(("chartonly", chartOnlyOn ? "M  CHART ONLY (ON)" : "M  CHART ONLY (OFF)", chartOnlyOn ? ACCENT_SUCCESS : TEXT_SECONDARY, true, chartOnlyOn));
+            string eqSlug = MultiplayerSettings.Instance.EquippedCharacter;
+            bool hasCustomChar = !string.IsNullOrWhiteSpace(eqSlug);
+            string charBtnLbl = hasCustomChar ? $"B  CHAR: {GetEquippedCharacterLabel(eqSlug)}" : "B  CHAR: DEFAULT";
+            buttons.Add(("mychar", charBtnLbl, hasCustomChar ? new Color(178, 102, 255) : TEXT_SECONDARY, true, hasCustomChar));
             buttons.Add(("settings", Room.IsHost ? "C  ROOM SETTINGS" : "C  VIEW SETTINGS", ACCENT_WARNING, true, false));
-            int btnH = buttons.Count >= 4 ? Px(34, uiScale, 25) : Px(38, uiScale, 28);
+            int btnH = buttons.Count >= 5 ? Px(30, uiScale, 22) : (buttons.Count >= 4 ? Px(34, uiScale, 25) : Px(38, uiScale, 28));
             int by = p.Bottom - pad - buttons.Count * (btnH + btnGap) + btnGap;
             foreach (var b in buttons)
             {

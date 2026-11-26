@@ -152,6 +152,16 @@ public static class PlatformPaths
                 totalImported += count;
             }
 
+            // Import custom characters
+            var charactersFolder = FindSubfolder(modsFolder, "characters");
+            if (charactersFolder != null)
+            {
+                Console.WriteLine($"[PlatformPaths] --- Importing characters ---");
+                int count = ImportFolderContents(context, charactersFolder, GetCharactersPath());
+                Console.WriteLine($"[PlatformPaths] Imported {count} character items");
+                totalImported += count;
+            }
+
             // Import osu! songs (fork): extracted set folders or .osz / .osk files (the Freeplay
             // scan imports loose archives found in mods/osu).
             var osuFolder = FindSubfolder(modsFolder, "osu");
@@ -447,6 +457,21 @@ public static class PlatformPaths
         
         return countdownsPath;
     }
+
+    /// <summary>
+    /// Get the characters directory path (custom playable/opponent characters for Chart Editor and Online)
+    /// </summary>
+    public static string GetCharactersPath()
+    {
+        var charactersPath = Path.Combine(GetModsBasePath(), "characters");
+
+        if (!Directory.Exists(charactersPath))
+        {
+            Directory.CreateDirectory(charactersPath);
+        }
+
+        return charactersPath;
+    }
     
     /// <summary>
     /// Get the Assets directory path (readonly, bundled with app)
@@ -494,6 +519,7 @@ public static class PlatformPaths
             string noteSplashes = GetNoteSplashesPath();
             string fonts = GetFontsPath();
             string countdowns = GetCountdownsPath();
+            string characters = GetCharactersPath();
             
             Console.WriteLine($"[PlatformPaths] [OK] Mods base: {modsBase}");
             Console.WriteLine($"[PlatformPaths] [OK] Levels: {levels}");
@@ -501,6 +527,7 @@ public static class PlatformPaths
             Console.WriteLine($"[PlatformPaths] [OK] NoteSplashes: {noteSplashes}");
             Console.WriteLine($"[PlatformPaths] [OK] Fonts: {fonts}");
             Console.WriteLine($"[PlatformPaths] [OK] Countdowns: {countdowns}");
+            Console.WriteLine($"[PlatformPaths] [OK] Characters: {characters}");
             
             // Scan for content and count items
             int totalLevels = ScanModContent(levels, "levels", new[] { ".fnmm", ".zip", ".rar" });
@@ -508,8 +535,9 @@ public static class PlatformPaths
             int totalNoteSplashes = ScanModContent(noteSplashes, "notesplashes", null);
             int totalFonts = ScanModContent(fonts, "fonts", new[] { ".otf", ".ttf" });
             int totalCountdowns = ScanModContent(countdowns, "countdowns", null);
+            int totalCharacters = ScanModContent(characters, "characters", null);
             
-            int totalItems = totalLevels + totalNoteStyles + totalNoteSplashes + totalFonts + totalCountdowns;
+            int totalItems = totalLevels + totalNoteStyles + totalNoteSplashes + totalFonts + totalCountdowns + totalCharacters;
             
             Console.WriteLine("[PlatformPaths] Mod directories initialized successfully!");
             
