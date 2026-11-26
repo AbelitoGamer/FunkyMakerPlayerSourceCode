@@ -10,10 +10,12 @@ namespace FunkyMakerPlayer.Multiplayer.Rooms;
 public static class Protocol
 {
     /// <summary>
+    /// 4 = Cloudflare Workers server: plain WebSocket JSON hub instead of SignalR, R2 chunked uploads
+    ///     (equal-size chunks), X-File-Hash on packed uploads.
     /// 3 = osu!mania songs (level kinds, room song types, packed set transfers with variants).
     /// 2 = room system (room list, waiting room, turns, N players). 1 was the old pair-transfer server.
     /// </summary>
-    public const int Version = 3;
+    public const int Version = 4;
 
     // ── Level kinds ──────────────────────────────────────────────────────────
     /// <summary>A Funky Maker level file (.fnmm / .zip / .rar).</summary>
@@ -87,6 +89,8 @@ public static class Protocol
     public const int SideEnemy = 1;
 
     public const string TokenHeader = "X-Transfer-Token";
+    /// <summary>SHA-256 (hex) of a packed upload (osu! .osz, FNF chartonly): the server can't hash big files itself.</summary>
+    public const string FileHashHeader = "X-File-Hash";
 
     public const int MinPlayers = 2;
     public const int MaxPlayers = 8;

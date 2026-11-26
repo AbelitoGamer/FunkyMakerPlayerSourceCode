@@ -177,7 +177,6 @@
   </ItemGroup>
   
   <ItemGroup>
-    <PackageReference Include="Microsoft.AspNetCore.SignalR.Client" Version="10.0.15" />
     <PackageReference Include="MonoGame.Extended" Version="6.1.1" />
     <PackageReference Include="MonoGame.Framework.DesktopGL" Version="3.8.*" Condition="!$(TargetFramework.Contains('android'))" />
     <PackageReference Include="MonoGame.Framework.Android" Version="3.8.*" Condition="$(TargetFramework.Contains('android'))" />
