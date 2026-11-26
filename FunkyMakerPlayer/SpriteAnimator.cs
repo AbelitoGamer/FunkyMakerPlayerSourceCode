@@ -36,6 +36,17 @@ public class SpriteAnimator
     public int     AnimCount        => _def.Data.Count;
     public int     CurrentAnimIndex => _currentAnim;
     public bool    IsSetByEvent => _setByEvent;  // Check if current animation was set by an event
+    /// <summary>Song time the current event animation was set at (-1 = unknown / not set by an event).</summary>
+    public float   EventTime => _eventTime;
+
+    /// <summary>
+    /// True when a note at <paramref name="noteTime"/> must leave the current event animation alone.
+    /// An event animation only wins over the notes of its own moment (the note whose action pack set
+    /// it, the rest of that chord, a late hit of a note at the event's time); any later note
+    /// interrupts it, like FMM. Before, notes were skipped until the event animation had ended.
+    /// </summary>
+    public bool BlocksNoteAt(float noteTime, float window = NoteRenderer.HIT_WINDOW) =>
+        _setByEvent && (_eventTime < 0f || Math.Abs(noteTime - _eventTime) <= window);
     public float   CurrentSprScale  => _def.Data.Count > 0 ? _def.Data[_currentAnim].Scale : 1f;
     public Vector2 CurrentFrameSize
     {
@@ -228,6 +239,7 @@ public class SpriteAnimator
     private bool  _wasHolding   = false;  // Track if we were holding in the previous frame
     private bool  _completingHold = false; // True when completing animation after hold release
     private bool  _setByEvent = false;  // Track if current animation was set by an event (not gameplay)
+    private float _eventTime = -1f;     // song time of that event (see BlocksNoteAt)
     private const int HOLD_LOOP_FRAMES = 2;  // Loop first 2 frames during hold
 
     // Seconds to hold a sing pose before returning to idle.
@@ -255,7 +267,7 @@ public class SpriteAnimator
     /// <summary>A character's idle is always animation 0 (fixed by the FMM format).</summary>
     public const int IdleAnim = 0;
 
-    public void SetAnimation(int animIndex, bool setByEvent = false)
+    public void SetAnimation(int animIndex, bool setByEvent = false, float eventTime = -1f)
     {
         if (animIndex < 0 || animIndex >= _def.Data.Count) return;
 
@@ -269,6 +281,7 @@ public class SpriteAnimator
         _missTintTimer = 0f;
         _completingHold = false;  // Reset hold completion flag
         _setByEvent = setByEvent;  // Mark if this was set by an event
+        _eventTime = setByEvent ? eventTime : -1f;
 
         // Characters: set sing timer for non-idle animations:
         // - Loop=true: hold pose for minimum SingHold/animDuration before returning to idle.

@@ -674,6 +674,7 @@ public partial class Game1
                 characterStrumLineToAnimate = 1 - i;  // Freeplay enemy mode (fork)
             }
             
+            var hitRenderer = _noteRenderers[i];
             _noteRenderers[i].OnNoteHit = (lane, holdEnd) =>
             {
                 // Animate ALL characters on this strumline (hidden ones too, so they already show the
@@ -685,9 +686,9 @@ public partial class Game1
                     var anim = _objAnimators[j];
                     if (anim == null) continue;
                     
-                    // Skip if this character's animation is currently controlled by an event
+                    // Skip if an event animation of this note's moment controls this character (a later note interrupts it)
                     // Events have priority over note-driven animations
-                    if (anim.IsSetByEvent)
+                    if (anim.BlocksNoteAt(hitRenderer.LastHitNoteTime))
                     {
                         Console.WriteLine($"[NoteHit] t={_songTime:F2} Obj {j} ({objs[j].Spr}) - skipping note anim (controlled by event)");
                         continue;
@@ -755,8 +756,9 @@ public partial class Game1
                     var anim = _objAnimators[j];
                     if (anim == null) continue;
                     
-                    // Skip if controlled by event
-                    if (anim.IsSetByEvent)
+                    // Skip if an event animation of this moment controls it (a passed note is
+                    // detected up to HIT_WINDOW after its time, hence the wider window)
+                    if (anim.BlocksNoteAt(_songTime, 2f * NoteRenderer.HIT_WINDOW))
                     {
                         Console.WriteLine($"[NoteMiss] t={_songTime:F2} Obj {j} ({objs[j].Spr}) - skipping miss anim (controlled by event)");
                         continue;
@@ -819,7 +821,7 @@ public partial class Game1
             foreach (var renderer in _noteRenderers)
             {
                 var r = renderer;  // capture for lambda
-                r.OnNotePressEvent = eventId => _events?.FireActionPack(eventId);
+                r.OnNotePressEvent = eventId => _events?.FireActionPack(eventId, r.LastHitNoteTime);
                 r.OnNoteMissEvent  = eventId => _events?.FireActionPack(eventId);
             }
 

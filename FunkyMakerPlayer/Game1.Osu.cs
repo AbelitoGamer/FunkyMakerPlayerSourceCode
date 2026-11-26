@@ -81,7 +81,7 @@ public partial class Game1
                 catch (Exception ex) { Console.WriteLine($"[Osu] Storyboard images failed: {ex.Message}"); }
             }
             if (OsuSettings.Video)
-                _osuVideo = OsuVideo.TryCreate(extras.VideoPath, extras.VideoStartSec);
+                _osuVideo = OsuVideo.TryCreate(extras.VideoPath, extras.VideoStartSec, OsuSettings.VideoFullQuality);
         }
 
         // Scroll speed changes on every strumline.
@@ -132,9 +132,16 @@ public partial class Game1
             _osuStoryboard.Dispose();
             _osuStoryboard = null;
         }
+        // Video Quality changed mid-song: reopen at the new quality (it resumes at the song time).
+        if (_osuVideo != null && _osuVideo.FullQuality != OsuSettings.VideoFullQuality)
+        {
+            _osuVideo.Dispose();
+            _osuVideo = null;
+            _osuVideoUnavailable = false;
+        }
         if (OsuSettings.Video && _osuVideo == null && extras.VideoPath != null && !_osuVideoUnavailable)
         {
-            _osuVideo = OsuVideo.TryCreate(extras.VideoPath, extras.VideoStartSec);
+            _osuVideo = OsuVideo.TryCreate(extras.VideoPath, extras.VideoStartSec, OsuSettings.VideoFullQuality);
             _osuVideoUnavailable = _osuVideo == null; // no decoder: don't retry every frame
         }
         else if (!OsuSettings.Video && _osuVideo != null)

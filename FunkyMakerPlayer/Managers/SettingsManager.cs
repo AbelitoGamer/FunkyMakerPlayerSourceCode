@@ -433,6 +433,19 @@ public class SettingsManager
             "Plays the map's background video (bundled ffmpeg; or one on PATH / in mods/tools).",
 #endif
             () => Osu.OsuSettings.Video = !Osu.OsuSettings.Video));
+        entries.Add(new SettingItem
+        {
+            Label = "  Video Quality",
+            Value = Osu.OsuSettings.VideoFullQuality ? "Full" : "Standard",
+            Kind = SettingKind.Adjustable,
+#if ANDROID
+            Description = "Standard: 640x360 at 30 fps (light). Full: the video's own resolution and frame rate (up to 1080p / 60 fps); uses more CPU and memory.",
+#else
+            Description = "Standard: 640x360 at 30 fps (light). Full: the video's own resolution and frame rate (up to 4K / 60 fps); uses more CPU and memory.",
+#endif
+            OnSelect = () => { Osu.OsuSettings.VideoFullQuality = !Osu.OsuSettings.VideoFullQuality; return new SettingsActionResult { NeedsSave = true }; },
+            OnAdjust = (_, _) => { Osu.OsuSettings.VideoFullQuality = !Osu.OsuSettings.VideoFullQuality; return new SettingsActionResult { NeedsSave = true }; }
+        });
         entries.Add(OsuToggle("Storyboard", Osu.OsuSettings.Storyboard,
             "Plays the map's storyboard (.osb / [Events]) behind and over the notes.",
             () => Osu.OsuSettings.Storyboard = !Osu.OsuSettings.Storyboard));
