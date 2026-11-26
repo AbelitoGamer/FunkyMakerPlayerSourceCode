@@ -2694,7 +2694,22 @@ ppy/osu (MIT): `LegacyBeatmapDecoder`, `ConvertHitObjectParser`, `ManiaBeatmapCo
       MediaCodec (device decoders, nothing bundled), synchronous, YUV_420_888 `Image` → nearest-
       neighbour BT.601 RGBA on the CPU (only the sampled rows copied via the direct buffer address),
       seek with `PreviousSync` then drop frames before the target, frames < 1/30 s apart dropped.
-      Containers MediaExtractor reads (mp4/mov, mkv/webm, 3gp, ts); avi/flv/wmv videos don't play.
+      Containers MediaExtractor reads (mp4/mov, mkv/webm, 3gp, ts). **AVI** (MediaExtractor can't,
+      and many beatmaps ship one, e.g. Mesmerizer's H.264 `vid.avi`) goes through `Osu/AviDemuxer`
+      (pure C#, platform-neutral): scans the movi chunks of the first video stream (RIFF-AVIX parts,
+      `rec ` lists; zero-size null chunks keep their slot), keyframes from idx1 flags or the bitstream,
+      codec config as `csd-N` (H.264 SPS/PPS from avcC or the first keyframe, avcC frames converted to
+      Annex B; MPEG-4/Xvid VOL header) → `video/avc` / `video/mp4v-es`. Frames are fed in decode
+      order with slot times; output times come from a min-queue of pending input times (correct with
+      B-frames). Verified 2026-11-26 on the A36 (Mesmerizer 1280×720 at Full). flv/wmv still don't play.
+      **1080p at Full** (e.g. Cubibibibism, 1920×1080 30 fps) used to choke: the single-threaded
+      conversion couldn't keep up, the video fell > 1 s behind and restarted every 1-3 s. Now the
+      conversion runs in parallel row bands (≤ 4, own row buffers, per-column offsets precomputed),
+      frames already late for the game clock (`IOsuVideoStream.SetClock`, fed by `OsuVideo._clockNow`)
+      are decoded but not converted (at most 0.25 s in a row), and `OsuVideo` reuses frame buffers
+      (`_freeBuffers`; was a new 8 MB array per frame, GC churn on both platforms; the letterbox bars
+      are repainted each frame since buffers aren't zeroed anymore). A36 Debug build: ~30 fps, dips to
+      ~21 fps in busy parts, no restarts.
       Compiles; not yet tested on a device.
   - **Background Dim** is a black rectangle over background + video + storyboard.
   - Freeplay details list "video", "storyboard" and "own note skin" for sets that have them

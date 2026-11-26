@@ -27,6 +27,12 @@ internal interface IOsuVideoStream : IDisposable
 
     /// <summary>Thread-safe: makes a blocked <see cref="ReadFrame"/> return soon.</summary>
     void Cancel();
+
+    /// <summary>
+    /// The game's current video time (thread-safe getter), for streams that can skip work on frames
+    /// that are already late. Optional.
+    /// </summary>
+    void SetClock(Func<double> videoNow) { }
 }
 
 /// <summary>
@@ -87,6 +93,18 @@ public sealed class OsuVideo : IDisposable
     /// spawns in ~0.1-0.3 s, MediaCodec has to decode from the previous keyframe (can be seconds).
     /// </summary>
     private double _lead = 0.3;
+    /// <summary>Video time of the last Update, read by the reader thread (late frames skip conversion).</summary>
+    private double _clockNow = double.NegativeInfinity;
+    /// <summary>
+    /// Frame buffers handed back after upload and reused by the reader thread: a new one per frame
+    /// was 8 MB at 1080p, 30 times a second, and the GC churn alone made such videos stutter.
+    /// </summary>
+    private readonly ConcurrentQueue<byte[]> _freeBuffers = new();
+
+    private void Recycle(byte[] buffer)
+    {
+        if (buffer.Length == Format.FrameBytes && _freeBuffers.Count < QueueCapacity + 2) _freeBuffers.Enqueue(buffer);
+    }
 
     public Texture2D? Texture => _shownTime >= 0 ? _texture : null;
     /// <summary>0..1 (fade in at the start, out at the end).</summary>
@@ -146,6 +164,7 @@ public sealed class OsuVideo : IDisposable
     public void Update(double songTime, GraphicsDevice gd, bool clockRunning = true)
     {
         double videoTime = songTime - _startSec;
+        Volatile.Write(ref _clockNow, clockRunning ? videoTime : double.NegativeInfinity);
         if (videoTime < -0.5)
         {
             // Before the video (e.g. a restart's countdown): drop the old stream so it starts fresh.
@@ -205,12 +224,14 @@ public sealed class OsuVideo : IDisposable
                     _pending = frame; // not due yet
                     break;
                 }
+                if (latest is { } skipped) Recycle(skipped.Pixels);
                 latest = frame;
             }
             if (latest is { } show)
             {
                 _texture ??= new Texture2D(gd, Format.Width, Format.Height, false, SurfaceFormat.Color);
                 _texture.SetData(show.Pixels);
+                Recycle(show.Pixels);
                 _shownTime = show.Time;
                 _session.Shown = true;
             }
@@ -240,11 +261,12 @@ public sealed class OsuVideo : IDisposable
                 stream = _open(_file, videoTime, Format);
                 session.Stream = stream;
                 if (stream == null || token.IsCancellationRequested) return;
+                stream.SetClock(() => Volatile.Read(ref _clockNow));
                 while (!token.IsCancellationRequested)
                 {
-                    var buf = new byte[Format.FrameBytes];
+                    if (!_freeBuffers.TryDequeue(out var buf)) buf = new byte[Format.FrameBytes];
                     double? time = stream.ReadFrame(buf);
-                    if (time == null) break;
+                    if (time == null) { Recycle(buf); break; }
                     session.Frames.Add((time.Value, buf), token);
                 }
             }

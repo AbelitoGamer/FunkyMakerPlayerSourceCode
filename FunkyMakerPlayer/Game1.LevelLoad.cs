@@ -72,6 +72,7 @@ public partial class Game1
             string levelName = ResetGameplayStateForLevelLoad(path);
             _loadState = LoadState.Loading;
             _preloadedPlaytestPcm = null;
+            _musicPcm = null; // a new level never reuses the previous level's decoded music
             bool cacheOwnedByEditor = _spriteCacheOwnedByEditor;
             _spriteCacheOwnedByEditor = false;
             if (!preserveSpriteCache)
@@ -309,6 +310,8 @@ public partial class Game1
             _audioDeviceReset = false;  // clear any stale device reset flag
             _musicInst?.Dispose();
             _music?.Dispose();
+            _musicInst = null; // never leave a disposed instance behind (Play() on it throws)
+            _music = null;
 
         // ── Window aspect ratio / render target ──────────────────────────────
         bool landscape = _level.Scene.Landscape;
@@ -975,6 +978,21 @@ public partial class Game1
                     _musicPcm = null;
             }
 #endif
+        }
+        else if (_musicPcm != null)
+        {
+            // Restart after MusicData was freed (Android frees it once decoded): rebuild from the
+            // decoded PCM kept for seeking. Without this a restart played a disposed instance.
+            _music = OggLoader.CreateFromPcm(_musicPcm, _musicSampleRate, _musicChannels);
+            _musicInst = _music.CreateInstance();
+            _musicInstStart = 0f;
+            ResetMusicSync();
+            _musicInst.Volume = SongPlaybackVolume;
+            _musicInst.IsLooped = false;
+            ApplyRunRateToMusic(); // Freeplay song rate (fork)
+            _musicDurationSeconds = _music.Duration.TotalSeconds > 0.1
+                ? (float)_music.Duration.TotalSeconds
+                : float.MaxValue;
         }
         else
         {
