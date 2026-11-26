@@ -242,12 +242,14 @@ Notes:
 │   │   ├── UiSfx.cs             UI sound effects: UiSound enum, queue, loading (§10.6)
 │   │   └── Multiplayer/UI/...   (under Multiplayer)
 │   ├── Multiplayer/
-│   │   ├── NetworkManager.cs    SignalR client singleton (reconnect/backoff, events on game thread, §12.1)
-│   │   ├── Rooms/RoomProtocol.cs room protocol wire types (copy of the server's Protocol.cs)
+│   │   ├── NetworkManager.cs    online hub client singleton (reconnect/backoff, events on game thread, §12.1)
+│   │   ├── WsHubConnection.cs   WebSocket JSON hub transport (protocol 4, replaces SignalR, §12.1)
+│   │   ├── Rooms/RoomProtocol.cs room protocol wire types (keep in sync with the server's worker/src/protocol.ts)
 │   │   ├── Rooms/RoomClient.cs  room state, chat, round level, match events (§12.1)
 │   │   ├── UserDirectoryClient.cs PlayerId → username cache (REST + packets)
 │   │   ├── NetworkPackets.cs    ping, official level list, leaderboard / history DTOs
 │   │   ├── MultiplayerMenu.cs   online menu core + settings + leaderboard (partial, §12.2)
+│   │   ├── MultiplayerMenu.MatchHistory.cs  leaderboard RECENT MATCHES cards + match detail popup (§12.2)
 │   │   ├── MultiplayerMenu.Rooms.cs / .RoomBrowser.cs / .RoomSettings.cs / .WaitingRoom.cs /
 │   │   │   .SongSelect.cs      room screens (§12.2)
 │   │   ├── MultiplayerMenu.LevelFiles.cs    LOCAL list auto-refresh / import / delete
@@ -340,7 +342,6 @@ Read `FunkyMakerPlayer/FunkyMakerPlayer.csproj` before changing build behavior.
 
 | Package | Version | Platform |
 |---|---|---|
-| `Microsoft.AspNetCore.SignalR.Client` | 10.0.15 (fork: 10.0.8 had CVE-2026-70159, DoS, fixed in 10.0.13) | all |
 | `MonoGame.Extended` | 6.1.1 | all |
 | `MonoGame.Framework.DesktopGL` | 3.8.* | non-Android |
 | `MonoGame.Framework.Android` | 3.8.* | Android |
@@ -352,6 +353,10 @@ Read `FunkyMakerPlayer/FunkyMakerPlayer.csproj` before changing build behavior.
 | `DiscordRichPresence` | 1.2.1.24 | non-Android |
 | `FontStashSharp.MonoGame` | 1.3.7 | all |
 | `Xamarin.AndroidX.DocumentFile` | 1.0.1.14 | Android |
+
+`Microsoft.AspNetCore.SignalR.Client` was removed with protocol 4 (2026-11-25): the online
+server is now a Cloudflare Worker and the client talks to it over a plain `ClientWebSocket`
+(`Multiplayer/WsHubConnection.cs`, §12).
 
 ### Copied / embedded content
 
@@ -435,7 +440,7 @@ given away and switched off later.
   `TestGate.Enabled`. Normal builds never contact the server for this.
 - `TestGate.cs`: on `Game1.Initialize` a background check does `GET
   {DefaultServerUrl}/api/testing` up to `MaxAttempts` = 5 times (20 s timeout each, 3 s
-  apart, so a sleeping Render server can wake). Server URL is the built-in default;
+  apart; written for the old Render server that slept, the Worker answers at once). Server URL is the built-in default;
   Settings.json / `FUNKYMAKER_SERVER_URL` are ignored on purpose. Debug builds only:
   `FUNKYMAKER_TESTGATE_URL` overrides it (local testing).
   Results: `Passed` (`{"open":true}`), `Closed` (`open:false`, optional `message`),
@@ -447,10 +452,10 @@ given away and switched off later.
   setting is reachable. Closed → "TESTING IS CLOSED" + server message, ENTER/ESC (tap /
   BACK on Android) quits. NoInternet / Unreachable → ENTER/tap retries (5 more
   attempts), ESC quits. Checking → "Attempt N/5". Checked once per launch only.
-- Server side (FunkyMakerTransferServer `TestingOptions`, `/api/testing`): config
-  section `Testing` → on Render env vars `Testing__Open=false` and
-  `Testing__Message=...`. Default open. Deploy the server before giving out a test
-  build, or every test build reports "can't reach the server".
+- Server side (Worker, `GET /api/testing`): `[vars]` `TESTING_OPEN = "false"` and
+  `TESTING_MESSAGE = "..."` in `FunkyMakerTransferServer/worker/wrangler.toml`, then
+  `npx wrangler deploy` in `worker/` (§12.z). Default open. (The old ASP.NET server used the
+  `Testing__Open` / `Testing__Message` env vars on Render.)
 - Not tamper-proof: the exe isn't obfuscated, so a determined user could patch it.
 
 ### Obfuscation
@@ -987,9 +992,9 @@ Editor stage preview); `Game1` delegates to it.
       with `giantLimit = 1` on 32-bit; up to **4** workers / `giantLimit = 2` on 64-bit Android; up to
       **6** workers / `giantLimit = 2` on >4 GB Desktop PC) with a bounded ready-slot semaphore so peak
       RAM stays flat, while the main/GL thread smoothly uploads textures in exact frame order, animates
-      `LoadingScreen`, and pumps SignalR keepalives. Desktop 64-bit PC keeps `levelVramBudget = long.MaxValue`
+      `LoadingScreen`, and pumps hub keepalives. Desktop 64-bit PC keeps `levelVramBudget = long.MaxValue`
       (unlimited, 100% native quality untouched) while cutting massive 5+ GB level load times well under
-      the server's 60 s match-loading timeout.
+      the server's match-loading timeout (180 s).
     - **Lossless-first `AtlasPacker` probe & zero-downscale PC 64-bit (`AtlasPacker.cs`, `FnmmSceneRenderer.cs`, 2026-11-24):**
       - `AtlasPacker.GetDefaultStripVramBudgetBytes()` now returns `long.MaxValue` on PC 64-bit (>4 GB RAM), removing the old 128–192 MB per-strip downscale cap on PC (100% native pixel quality for every sprite on PC).
       - On memory-constrained platforms (Android 32/64-bit and ≤4 GB PC), `PrepareHorizontalStripCpu` now runs a ~0-RAM streaming scanline probe (`ProbeStreamingPngTrimAndDedup`) BEFORE deciding whether to downscale: it computes exact tight non-transparent frame bounds and 128-bit frame hashes in a single streaming pass. If the real post-trim + deduplicated atlas area (`uniqueTrimmedArea * 4 * 1.12`) already fits inside `stripVramBudget`, `budgetScale` stays `1.0f` (100% native quality, zero blur); if downscaling is still necessary, `budgetScale` is computed from the real post-trim+dedup size rather than bloated raw untrimmed bytes.
@@ -997,7 +1002,7 @@ Editor stage preview); `Game1` delegates to it.
       - `FnmmSceneRenderer` now estimates post-trim+dedup VRAM via `EstimateLosslessVramBytes` (`0.45x` multi-frame, `0.85x` single-frame, capped at `stripVramBudget`) instead of raw untrimmed RGBA bytes when computing `dynamicLevelScale`, and routes medium/large strips (`>512 KB` multi-frame / `>1 MB` single-frame) through lossless `1.0x` `AtlasPacker` when a level VRAM budget is active.
     - **Multiplayer long-load keepalive & infinite-wait guards (`NetworkManager.cs`, `Game1.LevelLoad.cs`,
       `Game1.Online.cs`, `Game1.cs`, `LoadingScreen.cs`, 2026-11-23):** `RenderLoadingScreen` now calls
-      `NetworkManager.Instance.PumpKeepAliveDuringLoad()` so SignalR pings continue every 2 s during
+      `NetworkManager.Instance.PumpKeepAliveDuringLoad()` so hub pings continue every 2 s during
       heavy `SetupLevel` loads, and `NetworkManager.Update` clamps `dt` to `0.5 s` so a single slow load
       frame never triggers a false `CONNECTION_TIMEOUT` disconnect. `CheckMultiplayerLoadingScreenStatus`
       recovers `MatchStart` from `RoomState.Match.StartTimestamp` if missed during load, exits cleanly
@@ -1836,18 +1841,78 @@ playback), hitsounds and metronome, toasts, UI scaled with `UiScale`.
 
 ---
 
-## 12. Multiplayer (fork: room system, protocol 2, 2026-11-20)
+## 12. Multiplayer (fork: room system; current protocol 4, 2026-11-25)
 
 The 1v1 matchmaking (QUICK PLAY / PRIVATE ROOM with a 6-char code, the official game server's
 `FindMatch` / `MatchFound` / `GameStart`) was replaced by **rooms** on the fork's own online server
-(repo `AbelitoGamer/FunkyMakerPlayerTransferServer`, local path `C:/Users/abeli/Documents/FunkyMakerTransferServer`;
-its README documents the protocol). That server now also contains the official server's code
-(leaderboard + pairwise ELO, users, verified levels), level transfers and replays; the plan is to copy
-it into the official server repo once tested. **Old game builds can't use it and new builds can't use
-the old server** (`Hello` refuses other protocol versions with "Update the game"). Not tested yet with
-two real game windows; a harness that drives the real `NetworkManager` / `RoomClient` passed the whole
-round flow against a local server (create, list, join, chat, local-level transfer, ready, load, synced
-start, relay, results, history, turn).
+(repo `AbelitoGamer/FunkyMakerPlayerTransferServer`, local path
+`C:/Users/abeli/Desktop/sources/FunkyMakerTransferServer`). That server also contains the official
+server's code (leaderboard + pairwise ELO, users, verified levels), level transfers and replays.
+**Since protocol 4 it runs on Cloudflare Workers + Durable Objects + R2** (`worker/` folder, §12.z);
+the ASP.NET version in `src/` (SignalR, Render) is retired but kept as the reference the Worker was
+ported from. **Old game builds can't use the new server and new builds can't use the old ones**
+(`Hello` refuses other protocol versions with "Update the game").
+
+Sections 12.x / 12.y below describe protocol 3 work on the ASP.NET server; the room rules, limits
+and client behaviour still apply (the Worker is a port), but anything about Render, Kestrel,
+SignalR, `render.yaml` or `Transfer__*` env vars is history: see §12.z for the current equivalents.
+
+### 12.z Cloudflare Workers server (protocol 4, 2026-11-25 / 26)
+
+Why: Render's free plan caps bandwidth at 5 GB/month and level transfers blew through it; the
+goal is $0. Workers and R2 don't charge for bandwidth. Playerbase is tiny (≤ 20, sporadic).
+
+- **Deployed**: `https://funkymaker-online.abelitogameryt.workers.dev` (= client
+  `MultiplayerSettings.DefaultServerUrl`). R2 bucket `funkymaker-online`; lifecycle rules
+  `transfers-1d` / `replays-1d` delete leftovers after a day. `GET /` redirects to
+  `/api/server/info`; `/health` for checks.
+- **Server code** (`FunkyMakerTransferServer/worker/`, TypeScript, docs in `worker/README.md`):
+  | Piece | Old ASP.NET server (Render) | Worker |
+  |---|---|---|
+  | Rooms, matches, chat | `RoomRegistry` + SignalR hub | `Hub` Durable Object (`src/registry.ts` pure logic, `src/hub.ts`), WebSocket `/multiplayer` |
+  | Level files | temp folder on disk | R2 `transfers/` (chunked upload = R2 multipart) |
+  | Official levels | `verified_levels/` folder | R2 `verified/` + precomputed `verified/index.json` (`npm run sync-levels -- --remote`) |
+  | Leaderboard, history, users | JSON files / MongoDB | `Leaderboard` Durable Object (SQLite), `src/leaderboard-book.ts` (pure logic, ELO K = 32) |
+  | Replays | memory | R2 `replays/` (`src/replays.ts`) |
+  HTTP routes and JSON are unchanged: `/api/testing`, `/api/server/info`, `/api/leaderboard`,
+  `/api/users[/{id}]`, `/api/verified_levels[/{id}/download]`,
+  `/api/transfers/{id}/file|chunks|complete`, `/api/replays`, plus `POST /api/admin/import`
+  (Bearer `ADMIN_TOKEN` secret; `"replace": true` wipes leaderboard / history / users first).
+- **Settings** = `[vars]` in `worker/wrangler.toml` (the old `Transfer__*` / `Testing__*` env
+  vars): `MAX_UPLOAD_MB` 250, `UPLOAD_CHUNK_MB` 6, `MAX_ROOM_MEMBERS` 16, `STALL_TIMEOUT_SECONDS`
+  300, `DOWNLOAD_COMPLETION_GRACE_SECONDS` 600, `LOADING_TIMEOUT_SECONDS` 180, `CACHE_MINUTES` 15,
+  `PROGRESS_INTERVAL_MS` 200, `TESTING_OPEN` / `TESTING_MESSAGE`, `HUB_LOCATION_HINT` (region of
+  the room server when first created; empty = near the first player). Change → `npx wrangler deploy`
+  in `worker/`. Secrets: `npx wrangler secret put ADMIN_TOKEN`; locally in `worker/.dev.vars`
+  (gitignored). Node isn't on PATH on the dev PC: use `C:\Program Files\nodejs`.
+- **Commands** (in `worker/`): `npm test` (unit tests, port of `RoomFlowTests` / ranking / ELO;
+  44 passing), `npm run typecheck`, `npm run dev` (local server `http://127.0.0.1:8787`),
+  `node scripts/e2e.mjs [url]`. **Running e2e against production writes fake players A / B into
+  the leaderboard**: re-import the old data with `replace: true` afterwards.
+- **Free-plan limits it is designed around**: 10 ms CPU per request, so the Worker never hashes
+  or byte-counts big files (bytes are piped between the client and R2); 100 k requests/day
+  (Workers and Durable Objects; 20 WebSocket messages = 1 request); R2 10 GB stored, free egress.
+  Going over the free tier is billed, not capped.
+- **Protocol 4 wire format** (client `Multiplayer/WsHubConnection.cs`, server `src/hub.ts`):
+  plain WebSocket to `wss://<host>/multiplayer`, every frame JSON text:
+  `{"type":"invoke","id":7,"method":"JoinRoom","args":[…]}` (no `id` = fire and forget) →
+  `{"type":"result","id":7,"result":…}` / `"error":"…"`; server events
+  `{"type":"event","method":"RoomState","payload":{…}}`; server `{"type":"ping"}` every 10 s; the
+  client must send something every 90 s (its `Ping` invoke is enough). Messages over ~384 KB come
+  as `{"type":"frag","fid","i","n","data"}` and the client splits its own big messages (64 K chars
+  per fragment). Method names, arguments and payloads are the same as with SignalR (camelCase).
+- **Other protocol 4 changes**: chunked uploads use exactly `HelloResult.UploadChunkBytes` (6 MiB)
+  for every chunk but the last (R2 multipart parts must be equal and ≥ 5 MiB); packed uploads
+  (osu! `.osz`, FNF `chartonly`) send `X-File-Hash: <sha256>` (`Protocol.FileHashHeader`) because the
+  Worker can't hash them; single PUT is capped at 100 MB by Workers (chunked is always preferred);
+  download progress `SetLevelStatus` reports keep a download alive (the server no longer counts bytes).
+- **Old servers**: `funkymaker-transfer.onrender.com` (protocol 3) is suspended.
+  `funkymakerserver.onrender.com` (the older 1v1 server) is still up; its leaderboard (4 players,
+  15 matches) was imported into the Worker. Saved `*.onrender.com` URLs in a player's settings are
+  ignored (§12.0), so they move to the new server.
+- **Status (2026-11-26)**: deployed, client builds for desktop and Android, end-to-end script passes
+  against production. **Not yet tested with the real game** (rooms, transfers, matches). Client code
+  is on branch `cloudflare-workers` in both repos, not merged into `master` / `main` yet.
 
 ### 12.x osu!mania songs online + song select = Freeplay (fork, protocol 3, 2026-11-21)
 
@@ -2003,19 +2068,30 @@ start, relay, results, history, turn).
 
 - `MultiplayerSettings.EffectiveServerUrl`: env `FUNKYMAKER_SERVER_URL`, else `ServerUrl` in
   `multiplayer_settings.json` (JSON only), else `TransferServerUrl` (old name), else
-  `DefaultServerUrl` = `https://funkymaker-transfer.onrender.com`. SignalR hub `/multiplayer`.
+  `DefaultServerUrl` = `https://funkymaker-online.abelitogameryt.workers.dev` (protocol 4; it was
+  `https://funkymaker-transfer.onrender.com` up to protocol 3). Saved `ServerUrl` /
+  `TransferServerUrl` values containing `.onrender.com` are ignored (`IsUsableSavedUrl`), so players
+  with an old URL in their file reach the new server. WebSocket hub `/multiplayer` (§12.z).
+- Every online menu uses this one URL: leaderboard sync, server info and the user directory used to
+  fall back to the old `funkymakerserver.onrender.com`; they now use `DefaultServerUrl` too.
 - `FUNKYMAKER_MP_PROFILE=<name>` uses `multiplayer_settings.<name>.json` (own PlayerId / name / colour),
   for two windows on one PC. The same PlayerId joining a room again **takes over** the old place (the
   other window gets `Kicked`: "joined from another window").
 
 ### 12.1 Client code
 
-- `Multiplayer/Rooms/RoomProtocol.cs`: copy of the server's `Protocol.cs` (keep in sync).
-- `NetworkManager`: connection, reconnect (backoff + SignalR auto reconnect; `Hello` again, then
+- `Multiplayer/Rooms/RoomProtocol.cs`: wire types, `Protocol.Version = 4`, `Protocol.FileHashHeader`
+  (keep in sync with the server's `worker/src/protocol.ts`; it was a copy of the ASP.NET `Protocol.cs`).
+- `WsHubConnection` (protocol 4, replaces the SignalR `HubConnection` with the same shape:
+  `InvokeAsync` / `SendAsync` / `On<T>` / `Closed` / `Reconnecting` / `Reconnected`): `ClientWebSocket`
+  with the JSON envelope of §12.z, fragmentation both ways (incoming capped at 64 MB), a silence
+  watchdog (`ServerTimeout` 60 s; the server pings every 10 s) and automatic reconnect over the given
+  delays (a new socket; `NetworkManager` then sends `Hello` again). Handlers run on the receive thread.
+- `NetworkManager`: connection, reconnect (backoff + `WsHubConnection` auto reconnect; `Hello` again, then
   `RoomClient` re-joins the room), ping / `TimeSyncManager`, leaderboard, official level list (HTTP).
   **All server messages except Pong are queued and raised on the game thread** by `Update` (Game1 calls
   it every frame); `Call<T>` / `Send` invoke hub methods (results also on the game thread).
-  Connect timeout 90 s (sleeping free Render instance).
+  Connect timeout 30 s (was 90 s for the sleeping free Render instance; the Worker never sleeps).
 - `Rooms/RoomClient` (singleton): room list, current `RoomStatePacket` (Levels / History merged, they are
   null when unchanged), chat, the round's level (official: `LevelDownloader` / `LevelCache`; local: your
   file, or the server's `TransferDownload` into `mods/levels/Received/`, hash-checked; `TransferUpload`
@@ -2025,6 +2101,9 @@ start, relay, results, history, turn).
   The server sends the first RoomState + chat history before CreateRoom / JoinRoom return: buffered
   while joining.
 - `Transfer/LevelTransferClient`: static HTTP helpers (level up/download with progress, replay tracks).
+  Chunked uploads use exactly the server's chunk size (6 MiB; R2 multipart); packed variants
+  (osu! `.osz`, FNF `chartonly`) are hashed locally (`HashFileAsync`) and the hash is sent as
+  `X-File-Hash` on `POST /complete` or the single `PUT /file`.
 - `UI/TextEntry`: free text (desktop `Window.TextInput`; Android `KeyboardInput.Show` dialog).
 
 ### 12.2 Menus (`MultiplayerMenu*.cs`)
@@ -2036,7 +2115,7 @@ States: `MainMenu` → `Connecting` → `RoomBrowser` → `RoomSettings` (create
   per player (hover = name), players / max. Password prompt overlay. Polls `ListRooms` every 3 s.
 - **Room settings** (`.RoomSettings.cs`): name (fixed after creation), mode, song selection (turns /
   host only), privacy + password, player limit 2..`NetworkManager.MaxRoomPlayers` (server env
-  `Transfer__MaxRoomMembers`, default 8, max 32, sent in `HelloResult.MaxRoomPlayers`; it used to be unused, always 8) (≥ current players), guests' local levels. Host
+  `MAX_ROOM_MEMBERS` in wrangler.toml, set to 16 (was `Transfer__MaxRoomMembers`, default 8), max 32, sent in `HelloResult.MaxRoomPlayers`; it used to be unused, always 8) (≥ current players), guests' local levels. Host
   edits between rounds; others see it read-only (C in the waiting room).
 - **Waiting room** (`.WaitingRoom.cs`): left = players in join order (colour, HOST, PICKING, status
   READY / NOT READY / PLAYING / FINISHED / LEFT MATCH / SPECTATING (server sends room state on every
@@ -2053,6 +2132,19 @@ States: `MainMenu` → `Connecting` → `RoomBrowser` → `RoomSettings` (create
   (3 rows per notch on desktop, 1 on Android), the highlight stays in view (it used to only move the highlight). LOCAL (`.LocalRows.cs`)
   lists only levels you may pick (server `Pickable`): `YOUR LEVELS` + `FROM <player>` sections with
   holder squares; I imports, DEL deletes your own. ENTER picks and returns to the waiting room.
+- **Leaderboard** (`MultiplayerMenu.cs` `DrawLeaderboardModern`, tab 1 = RECENT MATCHES in
+  `.MatchHistory.cs`, 2026-11-26): the server's match history (`GET /api/leaderboard` +
+  `MatchHistoryResponsePacket`) carries every room round: `Mode` (versus / teams / mirror; empty =
+  old 1v1 duel), `Players[]` (place, team −1 / 0 Player / 1 Enemy, side, score, accuracy, max combo,
+  misses, disconnected, ELO change) and `WinningTeam`. `LeaderboardManager.ApplyServerMatchHistory`
+  keeps all of it in `match_history.json` (`MatchHistoryEntry.Players`, `IsRoomMatch`, `Participants`,
+  `Involves`; entries cached before this get their players filled in on the next sync); it used to
+  keep only the first two players, so every match showed as a duel. Cards: mode pill (+ "· NP" for
+  3+ players), level, time ago, result pill ("YOU #n" if you played, else "X won" / "Team Enemy won" /
+  "Draw"), then the players by place with scores (Teams: each team's average + members; old duels:
+  "A (score) VS B (score)"; overflow → "+N more"). ENTER / SPACE / click opens the **match detail**
+  popup (#, player, team / side, score, accuracy, combo, misses, ELO ±); ENTER / ESC / click closes.
+  `UserDirectoryClient` also learns names from every player of a room match (server too: `knownUsers`).
 - Shared helpers in `.Rooms.cs` (named click targets `Hit` / `ClickedHit`, text field, checkbox,
   room events). Online settings rows added: Show Scores List, Scores List Side, Teams: Rival Strumline.
 - **Text fields** (`BeginTextField` / `UpdateTextField`): chat, room name, password, search and the
@@ -2142,7 +2234,7 @@ States: `MainMenu` → `Connecting` → `RoomBrowser` → `RoomSettings` (create
   **their own song times**, so the replay shows when they really pressed, not when packets
   arrived. A track whose `MatchStartServerMs` (synced server time at song start) differs by more
   than 30 s is from an older match and is ignored. Disconnected matches aren't saved. Needs the
-  transfer server's replay endpoints (repo commit "Add replay track exchange").
+  server's replay endpoints (`/api/replays`; on the Worker stored in R2 `replays/`, kept 1 day).
 - **Watching:** main menu → REPLAYS (`UI/ReplayBrowser`: ALL / SOLO / ONLINE, Enter / click
   watch; "..." options menu (§10.0) with WATCH, SHOW IN FOLDER (desktop), DELETE (asks first);
   Delete opens that confirmation directly — the old "DEL twice" is gone), or Freeplay's
@@ -2542,6 +2634,14 @@ ppy/osu (MIT): `LegacyBeatmapDecoder`, `ConvertHitObjectParser`, `ManiaBeatmapCo
     `IOsuVideoStream` (`ReadFrame(rgba)` → video time, thread-safe `Cancel`), opened and read on a
     reader thread per run (`Session`: 6-frame queue, own Ended flag, so a killed old run can't
     end the new one); the game thread uploads the newest due frame (640×360 RGBA, letterboxed).
+    **Video Quality** (Settings → osu! songs, `OsuSettings.VideoFullQuality`, default Standard):
+    Standard decodes to 640×360 @ 30 fps; Full probes the file (`FfmpegVideoStream.Probe` parses
+    `ffmpeg -i` stream info; `MediaCodecVideoStream.Probe` reads the MediaExtractor track) and decodes
+    at its own size / fps, capped to 4K (1080p on Android) and 60 fps, falling back to Standard if the
+    probe fails. Each `OsuVideo` carries a `VideoFormat`; the frame queue shrinks for big frames
+    (64 MB budget, 2–6 frames). Changing it mid-song reopens the video. ffmpeg runs with
+    `-fps_mode cfr` so frames land on their real timestamps (AVI null frames / late first frame used to
+    shift the whole video early, e.g. Mesmerizer by ~2.5 s).
     Starts at the Video event time from the video's beginning, fades in / out over 500 ms,
     reopens the decoder at the new time after seeks / restarts. Restart checks (behind > 1 s,
     back > 0.25 s) only use frames of the *current* run (`Session.Shown`; before its first frame
@@ -2910,11 +3010,13 @@ Status key: **[fixed]** resolved in the current tree; **[open]** still applies
     hit `+0.023` and miss `-0.0475` (`Game1.SetupLevel`) are FNF values; it is
     not verified whether FunkyMaker starts at half health or changes health on
     plain hits/misses. Confirm against FMM before changing.
-24. **[open]** **Room system untested in-game** (§12). Server: 24 xUnit tests. Client: a harness
-    driving the real `NetworkManager` / `RoomClient` passed a full round against a local server.
-    Still to do with real windows (use `FUNKYMAKER_MP_PROFILE` for the second one): the menus,
-    spectating / late joining, Teams / Mirror layouts, CPU extra strumlines, the score bar, results.
-    The new server must be deployed (Render: push the transfer-server repo) before the default URL works.
+24. **[open]** **Protocol 4 (Cloudflare Workers) untested in-game** (§12.z). Rooms were played for
+    real on the protocol 3 Render server (Mirror / Teams rounds with 2–3 players are in the match
+    history). The Worker is deployed and passes 44 unit tests + `scripts/e2e.mjs`, and the client
+    builds, but nobody has played on it with the real game yet: check connect / reconnect, room
+    list, big level lists (fragmentation), chunked uploads + downloads (FNF, osu! `.osz`, chartonly),
+    a full match, results, leaderboard / RECENT MATCHES and replays (use `FUNKYMAKER_MP_PROFILE` for
+    a second window). The client changes live on branch `cloudflare-workers` until merged.
 25. **[open]** **Package advisories (pre-existing):** `SixLabors.ImageSharp` 3.1.12 (moderate +
     high) is flagged by NuGet at build time (`SharpCompress` 0.39.0 was too; upstream bumped it to 0.48.1).
 
@@ -2944,9 +3046,11 @@ Status key: **[fixed]** resolved in the current tree; **[open]** still applies
 | Mod paths/Android import | `PlatformPaths.cs`, `Platforms/Android/*` |
 | Default note style / countdown / font | `DefaultMods/` (files), `DefaultMods.cs` (install + fallback) |
 | Chart editing / new chart / playtest | `Editors/Chart/*`, `Editors/EditorPicker.cs`, `Game1.BeginEditorPlaytest` / `ReturnFromPlaytest` |
-| Multiplayer protocol | `Multiplayer/NetworkPackets.cs`, `NetworkManager.cs`, `MultiplayerMenu.cs` |
+| Multiplayer protocol | `Multiplayer/Rooms/RoomProtocol.cs`, `WsHubConnection.cs`, `NetworkManager.cs`, `NetworkPackets.cs`; server `FunkyMakerTransferServer/worker/src/protocol.ts` + `hub.ts` (keep in sync) |
+| Online server (rooms, transfers, leaderboard, settings) | `FunkyMakerTransferServer/worker/` (`src/registry.ts`, `leaderboard-book.ts`, `transfers.ts`, `wrangler.toml` `[vars]`), §12.z |
+| Leaderboard / match history UI | `Multiplayer/MultiplayerMenu.cs` (`DrawLeaderboardModern`), `MultiplayerMenu.MatchHistory.cs`, `Leaderboard/*` |
 | Official level cache / usernames | `Multiplayer/LevelCache.cs`, `LevelDownloader.cs`, `UserDirectoryClient.cs` |
-| Private-room level sharing | `Multiplayer/MultiplayerMenu.LevelSharing.cs`, `Multiplayer/Transfer/*`, server repo `FunkyMakerTransferServer` (keep `TransferProtocol.cs` and the server's `Protocol.cs` in sync) |
+| Room level sharing | `Multiplayer/Rooms/RoomClient.cs`, `Multiplayer/Transfer/*`, server `worker/src/transfers.ts` |
 | Build/package/signing | `FunkyMakerPlayer.csproj` |
 | Updater | `Updater.cs` (`CheckForUpdatesAsync`, `DownloadAndApplyUpdateAsync`), `FreeplayMenu.SetAvailableUpdate`, `Game1.Initialize`, `FunkyMakerUpdater/Program.cs` |
 | Controls | `NoteRenderer.PlayerKeys`, `SettingsManager`, `KeyBindingOverlay.cs`, `Game1.UpdateInternal` |
