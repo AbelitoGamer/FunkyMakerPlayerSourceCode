@@ -246,7 +246,7 @@ namespace FunkyMakerPlayer.Multiplayer
             {
                 string baseUrl = NetworkManager.Instance.ServerUrl;
                 if (string.IsNullOrWhiteSpace(baseUrl))
-                    baseUrl = "https://funkymakerserver.onrender.com";
+                    baseUrl = MultiplayerSettings.DefaultServerUrl;
 
                 string url = $"{baseUrl.TrimEnd('/')}/api/leaderboard?take=50&matchesTake=50";
                 string response = await _leaderboardHttpClient.GetStringAsync(url);
@@ -1295,7 +1295,7 @@ namespace FunkyMakerPlayer.Multiplayer
                 client.Timeout = TimeSpan.FromSeconds(5);
 
                 string serverUrl = string.IsNullOrWhiteSpace(NetworkManager.Instance.ServerUrl)
-                    ? "https://funkymakerserver.onrender.com"
+                    ? MultiplayerSettings.DefaultServerUrl
                     : NetworkManager.Instance.ServerUrl.TrimEnd('/');
                 string response = await client.GetStringAsync($"{serverUrl}/api/server/info");
 

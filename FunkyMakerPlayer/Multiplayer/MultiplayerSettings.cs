@@ -157,12 +157,19 @@ namespace FunkyMakerPlayer.Multiplayer
             {
                 string? env = Environment.GetEnvironmentVariable(ServerUrlEnvironmentVariable);
                 string url = !string.IsNullOrWhiteSpace(env) ? env
-                    : !string.IsNullOrWhiteSpace(ServerUrl) ? ServerUrl
-                    : !string.IsNullOrWhiteSpace(TransferServerUrl) ? TransferServerUrl
+                    : IsUsableSavedUrl(ServerUrl) ? ServerUrl
+                    : IsUsableSavedUrl(TransferServerUrl) ? TransferServerUrl
                     : DefaultServerUrl;
                 return url.Trim().TrimEnd('/');
             }
         }
+
+        /// <summary>
+        /// Saved URLs of the retired Render servers (protocol 3 and older) are ignored, so players who
+        /// had one in their settings file move to the new server instead of getting "update the game".
+        /// </summary>
+        private static bool IsUsableSavedUrl(string? url) =>
+            !string.IsNullOrWhiteSpace(url) && !url.Contains(".onrender.com", StringComparison.OrdinalIgnoreCase);
 
         /// <summary>What the strumline of the other side shows in Teams matches.</summary>
         public enum RivalStrumlineMode

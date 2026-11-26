@@ -68,7 +68,7 @@ namespace FunkyMakerPlayer.Multiplayer
                 : serverUrl;
 
             if (string.IsNullOrWhiteSpace(url))
-                url = "https://funkymakerserver.onrender.com";
+                url = MultiplayerSettings.DefaultServerUrl;
 
             url = url.Trim().TrimEnd('/');
             if (url.EndsWith("/multiplayer", StringComparison.OrdinalIgnoreCase))
