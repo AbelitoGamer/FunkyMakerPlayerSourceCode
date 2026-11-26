@@ -55,9 +55,6 @@ public class SettingsManager
     private const int AudioVideoTab = 3;
     private const int ControlsTab = 4;
 
-    // Available countdown packs (cached)
-    private List<string> _availableCountdowns = new() { "default" };
-
     // Scroll & mouse hit-test state (updated during Draw)
     private bool _followSelectionScroll = true;
     private int _lastItemCount = 8;
@@ -76,7 +73,6 @@ public class SettingsManager
     public SettingsManager()
     {
         Console.WriteLine("[SettingsManager] Initialized with tabs");
-        ScanAvailableCountdowns();
     }
 
     public void Reset()
@@ -103,54 +99,6 @@ public class SettingsManager
         _followSelectionScroll = true;
     }
 
-    /// <summary>
-    /// Scans mods/countdowns/ folder for available countdown packs.
-    /// </summary>
-    private DateTime _lastCountdownScan = DateTime.UtcNow;
-    private string? _lastCountdownSummary;
-
-    private void ScanAvailableCountdowns()
-    {
-        _availableCountdowns.Clear();
-        _availableCountdowns.Add("default");
-
-        try
-        {
-            string countdownsDir = PlatformPaths.GetCountdownsPath();
-            if (System.IO.Directory.Exists(countdownsDir))
-            {
-                foreach (var dir in System.IO.Directory.GetDirectories(countdownsDir))
-                {
-                    string name = System.IO.Path.GetFileName(dir);
-                    if (!string.IsNullOrEmpty(name) && !DefaultMods.IsDefaultCountdown(name))
-                    {
-                        string readyPath = CaseInsensitivePaths.Find(dir, "ready.png");
-                        string setPath = CaseInsensitivePaths.Find(dir, "set.png");
-                        string goPath = CaseInsensitivePaths.Find(dir, "go.png");
-
-                        if (System.IO.File.Exists(readyPath) &&
-                            System.IO.File.Exists(setPath) &&
-                            System.IO.File.Exists(goPath))
-                        {
-                            _availableCountdowns.Add(name);
-                        }
-                    }
-                }
-            }
-
-            // Rescanned every 2 s while the Notes tab is open: log only when the list changed.
-            string summary = string.Join(", ", _availableCountdowns);
-            if (summary != _lastCountdownSummary)
-            {
-                _lastCountdownSummary = summary;
-                Console.WriteLine($"[SettingsManager] Found {_availableCountdowns.Count} countdown packs: {summary}");
-            }
-        }
-        catch (Exception ex)
-        {
-            Console.WriteLine($"[SettingsManager] Error scanning countdowns: {ex.Message}");
-        }
-    }
 
     // ── Tab Navigation ───────────────────────────────────────────────────────
 
@@ -506,13 +454,6 @@ public class SettingsManager
 
     private void BuildNotesEntries(List<SettingItem> entries)
     {
-        // Countdown packs added since the game started show up too (fork: scanned once before).
-        // The entries are rebuilt every frame, so the folder is rescanned at most every 2 s.
-        if ((DateTime.UtcNow - _lastCountdownScan).TotalSeconds > 2)
-        {
-            _lastCountdownScan = DateTime.UtcNow;
-            ScanAvailableCountdowns();
-        }
         entries.Add(new SettingItem
         {
             Label = "Note Style",
@@ -543,20 +484,12 @@ public class SettingsManager
         {
             Label = "Countdown Style",
             Value = Game1.SelectedCountdown,
-            Kind = SettingKind.Adjustable,
-            Description = "Visual 3-2-1-GO countdown pack before the song starts (ENTER opens preview menu, LEFT/RIGHT cycles).",
+            Kind = SettingKind.Action,
+            Description = "Visual 3-2-1-GO countdown pack before the song starts (mods/countdowns/).",
             OnSelect = () =>
             {
                 IsActive = false;
                 return new SettingsActionResult { OpenCountdownMenu = true, NeedsSave = false };
-            },
-            OnAdjust = (isLeft, _) =>
-            {
-                int currentIndex = _availableCountdowns.IndexOf(Game1.SelectedCountdown);
-                if (currentIndex == -1) currentIndex = 0;
-                int newIndex = (currentIndex + (isLeft ? -1 : 1) + _availableCountdowns.Count) % _availableCountdowns.Count;
-                Game1.SelectedCountdown = _availableCountdowns[newIndex];
-                return new SettingsActionResult { NeedsSave = true };
             }
         });
 
@@ -1404,21 +1337,7 @@ public class SettingsManager
         var item = entries[Selection];
         if (item.Kind == SettingKind.Adjustable)
         {
-            // Countdown Style keeps Enter-to-open-menu? Wait: if focused, Enter unfocuses;
-            // if it's a pure adjustable value (Scroll Speed, Volume, etc.), Enter focuses/unfocuses!
-            if (item.OnSelect != null && IsFocused)
-            {
-                IsFocused = false;
-                return new SettingsActionResult();
-            }
-            if (item.OnSelect != null && !IsFocused && item.Label == "Countdown Style")
-            {
-                // Still allow clicking '<' '>' or focusing? Better: Enter toggles focus cleanly on ALL adjustable items,
-                // OR for Countdown Style opens the Countdown menu! Let's check: Countdown Style has < default > visual preview,
-                // so Left/Right focuses/cycles OR Enter opens visual preview! Calling OnSelect opens the visual picker menu cleanly.
-                return item.OnSelect();
-            }
-
+            // Enter focuses / unfocuses an adjustable value (Scroll Speed, Volume, ...).
             IsFocused = !IsFocused;
             return new SettingsActionResult();
         }
