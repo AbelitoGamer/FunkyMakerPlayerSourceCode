@@ -2708,9 +2708,12 @@ ppy/osu (MIT): `LegacyBeatmapDecoder`, `ConvertHitObjectParser`, `ManiaBeatmapCo
       frames already late for the game clock (`IOsuVideoStream.SetClock`, fed by `OsuVideo._clockNow`)
       are decoded but not converted (at most 0.25 s in a row), and `OsuVideo` reuses frame buffers
       (`_freeBuffers`; was a new 8 MB array per frame, GC churn on both platforms; the letterbox bars
-      are repainted each frame since buffers aren't zeroed anymore). A36 Debug build: ~30 fps, dips to
-      ~21 fps in busy parts, no restarts.
-      Compiles; not yet tested on a device.
+      are repainted each frame since buffers aren't zeroed anymore; 32-bit processes cap the queue
+      budget at 24 MB and `Stop()`/`Dispose()` drain/release pooled buffers). A36 Debug build: ~30 fps,
+      dips to ~21 fps in busy parts, no restarts.
+      Hardened 2026-11-26: `AviDemuxer` reads `strf` extradata from `size - 40` (handles `biSize == 40`),
+      bounds-checks `idx1`/dimensions/`avcC` NAL lengths and scans up to 8 keyframes for in-band config;
+      `MediaCodecVideoStream` guards `GetDirectBufferAddress == IntPtr.Zero` and resets `_psY` in `BuildMap`.
   - **Background Dim** is a black rectangle over background + video + storyboard.
   - Freeplay details list "video", "storyboard" and "own note skin" for sets that have them
     (`OsuSet.HasVideo / HasStoryboard / HasSkin`).

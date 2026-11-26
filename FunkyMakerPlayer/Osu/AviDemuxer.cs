@@ -121,6 +121,7 @@ internal sealed class AviDemuxer : IDisposable
                     string id = Fcc(rd);
                     long size = rd.ReadUInt32();
                     long data = p + 8;
+                    if (size > to - data) size = to - data;
                     if (id == "strh" && size >= 32)
                     {
                         string type = Fcc(rd);
@@ -136,12 +137,12 @@ internal sealed class AviDemuxer : IDisposable
                     }
                     else if (id == "strf" && isVideo && size >= 40)
                     {
-                        uint biSize = rd.ReadUInt32();
+                        _ = rd.ReadUInt32(); // biSize (many muxers leave it at 40 even when extradata follows)
                         width = rd.ReadInt32();
                         height = Math.Abs(rd.ReadInt32());
                         _fs.Position = data + 16;
                         fourcc = Fcc(rd);
-                        long extraLen = Math.Min(size, Math.Max(biSize, 40)) - 40;
+                        long extraLen = size - 40;
                         if (extraLen > 0 && extraLen < 1 << 20)
                         {
                             _fs.Position = data + 40;
@@ -180,12 +181,12 @@ internal sealed class AviDemuxer : IDisposable
             void ReadIdx1(BinaryReader rd, long data, long size)
             {
                 string tag = videoIndex.ToString("00");
-                long n = size / 16;
                 _fs.Position = data;
                 var buf = rd.ReadBytes((int)Math.Min(size, int.MaxValue));
-                for (long i = 0; i < n; i++)
+                int n = buf.Length / 16;
+                for (int i = 0; i < n; i++)
                 {
-                    int o = (int)(i * 16);
+                    int o = i * 16;
                     if (buf[o] != tag[0] || buf[o + 1] != tag[1]) continue;
                     if (!((buf[o + 2] == 'd' && buf[o + 3] == 'c') || (buf[o + 2] == 'd' && buf[o + 3] == 'b'))) continue;
                     keyFlags.Add((BitConverter.ToUInt32(buf, o + 4) & 0x10) != 0);
@@ -193,6 +194,7 @@ internal sealed class AviDemuxer : IDisposable
             }
 
             if (videoIndex < 0 || _frames.Count == 0) throw new InvalidDataException("no video stream");
+            if (width <= 0 || height <= 0) throw new InvalidDataException($"invalid video dimensions {width}x{height}");
             if (scale == 0 || rate == 0) { scale = 1; rate = 30; }
             _frameDuration = scale / (double)rate;
             _start = startFrames * _frameDuration;
@@ -273,6 +275,7 @@ internal sealed class AviDemuxer : IDisposable
     /// <summary>Annex B in-band config: the first keyframe's SPS + PPS (H.264) or the header before the first VOP (MPEG-4).</summary>
     private void FindInBandConfig()
     {
+        int checkedKeys = 0;
         foreach (var f in _frames)
         {
             if (!f.Key || f.Size == 0) continue;
@@ -293,7 +296,7 @@ internal sealed class AviDemuxer : IDisposable
                 int vop = IndexOfStartCode(data, 0xB6);
                 if (vop > 0) CodecConfig.Add(data.AsSpan(0, vop).ToArray());
             }
-            return;
+            if (CodecConfig.Count > 0 || ++checkedKeys >= 8) return;
         }
     }
 
@@ -308,9 +311,11 @@ internal sealed class AviDemuxer : IDisposable
                     int len = 0;
                     for (int i = 0; i < _nalLengthSize; i++) len = (len << 8) | data[p + i];
                     p += _nalLengthSize;
+                    if (len <= 0) break;
                     int type = data[p] & 0x1F;
                     if (type == 5) return true;
                     if (type is 1) return false;
+                    if (len > data.Length - p) break;
                     p += len;
                 }
                 return false;

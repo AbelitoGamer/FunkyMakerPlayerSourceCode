@@ -175,10 +175,7 @@ internal sealed class MediaCodecVideoStream : IOsuVideoStream
             {
                 using var image = _codec.GetOutputImage(index);
                 if (image != null)
-                {
-                    Convert(image, rgba);
-                    converted = true;
-                }
+                    converted = Convert(image, rgba);
             }
             _codec.ReleaseOutputBuffer(index, false);
             if (converted)
@@ -204,7 +201,14 @@ internal sealed class MediaCodecVideoStream : IOsuVideoStream
                 return;
             }
             n = Math.Min(n, buffer.Capacity());
-            Marshal.Copy(_aviBuf, 0, JNIEnv.GetDirectBufferAddress(buffer.Handle), n);
+            IntPtr dst = JNIEnv.GetDirectBufferAddress(buffer.Handle);
+            if (dst != IntPtr.Zero)
+                Marshal.Copy(_aviBuf, 0, dst, n);
+            else
+            {
+                buffer.Clear();
+                buffer.Put(_aviBuf, 0, n);
+            }
             long us = (long)Math.Round(t * 1_000_000);
             _pending!.Enqueue(us, us);
             _codec.QueueInputBuffer(index, 0, n, us, key ? MediaCodecBufferFlags.KeyFrame : MediaCodecBufferFlags.None);
@@ -223,22 +227,23 @@ internal sealed class MediaCodecVideoStream : IOsuVideoStream
         }
     }
 
-    private void Convert(Image image, byte[] rgba)
+    private bool Convert(Image image, byte[] rgba)
     {
         var crop = image.CropRect;
         int cx = crop?.Left ?? 0, cy = crop?.Top ?? 0;
         int cw = crop is { } c1 && c1.Width() > 0 ? c1.Width() : image.Width;
         int ch = crop is { } c2 && c2.Height() > 0 ? c2.Height() : image.Height;
         if (cw != _srcW || ch != _srcH || cx != _srcX || cy != _srcY) BuildMap(cx, cy, cw, ch);
-        // Frame buffers are reused (OsuVideo's pool): paint the letterbox bars opaque black every
-        // frame, like ffmpeg's pad.
-        if (_dstW < _format.Width || _dstH < _format.Height) PaintBars(rgba);
 
         var planes = image.GetPlanes()!;
         var pY = planes[0]; var pU = planes[1]; var pV = planes[2];
         IntPtr aY = Address(pY.Buffer!, out int lenY);
         IntPtr aU = Address(pU.Buffer!, out int lenU);
         IntPtr aV = Address(pV.Buffer!, out int lenV);
+        if (aY == IntPtr.Zero || aU == IntPtr.Zero || aV == IntPtr.Zero) return false;
+        // Frame buffers are reused (OsuVideo's pool): paint the letterbox bars opaque black every
+        // frame, like ffmpeg's pad.
+        if (_dstW < _format.Width || _dstH < _format.Height) PaintBars(rgba);
         int rsY = pY.RowStride, rsU = pU.RowStride, rsV = pV.RowStride;
         int psY = pY.PixelStride, psU = pU.PixelStride, psV = pV.PixelStride;
         if (psY != _psY || psU != _psU || psV != _psV || _colY.Length != _dstW)
@@ -294,6 +299,7 @@ internal sealed class MediaCodecVideoStream : IOsuVideoStream
                 }
             }
         });
+        return true;
     }
 
     /// <summary>Opaque black outside the picture rect.</summary>
@@ -330,6 +336,7 @@ internal sealed class MediaCodecVideoStream : IOsuVideoStream
         _mapY = new int[_dstH];
         for (int x = 0; x < _dstW; x++) _mapX[x] = cx + Math.Min(cw - 1, (int)((x + 0.5) * cw / _dstW));
         for (int y = 0; y < _dstH; y++) _mapY[y] = cy + Math.Min(ch - 1, (int)((y + 0.5) * ch / _dstH));
+        _psY = -1; // force _colY/_colU/_colV rebuild even when _dstW didn't change
     }
 
     private static IntPtr Address(Java.Nio.ByteBuffer buffer, out int length)
@@ -340,6 +347,7 @@ internal sealed class MediaCodecVideoStream : IOsuVideoStream
 
     private static void CopyRow(IntPtr plane, int planeLen, int offset, byte[] row, int stride)
     {
+        if (offset < 0) return;
         int n = Math.Min(stride, planeLen - offset); // the last row of a plane can be shorter
         if (n > 0) Marshal.Copy(plane + offset, row, 0, n);
     }

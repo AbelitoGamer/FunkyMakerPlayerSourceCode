@@ -57,8 +57,8 @@ public sealed class OsuVideo : IDisposable
     private const int FullMaxWidth = 3840, FullMaxHeight = 2160;
 #endif
     private const double FullMaxFps = 60;
-    /// <summary>Decoded frames kept in memory per run at most (6 at standard size, fewer for big frames).</summary>
-    private const long QueueBudgetBytes = 64L * 1024 * 1024;
+    /// <summary>Decoded frames kept in memory per run at most (6 at standard size, fewer for big frames / 32-bit).</summary>
+    private static long QueueBudgetBytes => Environment.Is64BitProcess ? 64L * 1024 * 1024 : 24L * 1024 * 1024;
 
     /// <summary>Size and frame rate the frames are decoded to.</summary>
     internal VideoFormat Format { get; }
@@ -286,10 +286,13 @@ public sealed class OsuVideo : IDisposable
     {
         var s = _session;
         _session = null;
+        if (_pending is { } pend) Recycle(pend.Pixels);
         _pending = null;
         if (s == null) return;
         try { s.Cts.Cancel(); } catch { }
         try { s.Stream?.Cancel(); } catch { }
+        // Return already-queued buffers to the pool so restarts don't stack extra 8 MB LOH frames.
+        while (s.Frames.TryTake(out var dropped)) Recycle(dropped.Pixels);
         // The reader thread disposes the stream; the token source is left to the GC (the thread
         // may still be checking it).
     }
@@ -297,6 +300,7 @@ public sealed class OsuVideo : IDisposable
     public void Dispose()
     {
         Stop();
+        while (_freeBuffers.TryDequeue(out _)) { }
         _texture?.Dispose();
         _texture = null;
     }
