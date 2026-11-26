@@ -27,6 +27,10 @@
   <!-- Android-specific properties -->
   <PropertyGroup Condition="$(TargetFramework.Contains('android'))">
     <OutputType>Exe</OutputType>
+    <!-- `dotnet publish` of a self-contained / trimmed app without a single RuntimeIdentifier makes
+         the SDK default it to the build machine's (win-x64), which has no Android runtime pack
+         (NETSDK1082 with SDK 10.0.404). Android picks its RIDs from RuntimeIdentifiers itself. -->
+    <UseDefaultPublishRuntimeIdentifier>false</UseDefaultPublishRuntimeIdentifier>
     <SupportedOSPlatformVersion>29</SupportedOSPlatformVersion>
     <AndroidPackageFormat>apk</AndroidPackageFormat>
     <ApplicationId>com.funkymakergame.player</ApplicationId>
