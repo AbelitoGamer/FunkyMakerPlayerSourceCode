@@ -269,7 +269,9 @@ public sealed class AttemptsWindow
             _rows.Add((i, row, replay ? watch : Rectangle.Empty, more));
         }
 
-        string hint = $"{_attempts.Count} attempt{(_attempts.Count == 1 ? "" : "s")}   |   ENTER Watch replay   |   [{Controls.Hint(HotkeyAction.FreeplayOptions)}] Options   |   ESC Close";
+        string hint = UI.PointerInput.IsTouch
+            ? $"{_attempts.Count} attempt{(_attempts.Count == 1 ? "" : "s")}   |   WATCH: replay   |   \"...\": Options   |   Back: close"
+            : $"{_attempts.Count} attempt{(_attempts.Count == 1 ? "" : "s")}   |   ENTER Watch replay   |   [{Controls.Hint(HotkeyAction.FreeplayOptions)}] Options   |   ESC Close";
         int hf = _ui.FitFontSize(hint, UiScale.FontPx(13, s), 9, w - pad * 2);
         var hsz = _ui.Measure(hint, hf);
         _ui.Text(sb, hint, new Vector2(_panel.X + pad, _panel.Bottom - footerH + (footerH - hsz.Y) / 2f), Color.White * (0.4f * a), hf);

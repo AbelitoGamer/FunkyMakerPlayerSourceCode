@@ -43,7 +43,10 @@ public sealed class OsuVideo : IDisposable
         public readonly CancellationTokenSource Cts = new();
         public volatile IOsuVideoStream? Stream;
         public volatile bool Ended;
-        public double Start;                // video time this run started at
+        public double Start;                // video time this run decodes from
+        public double Requested;            // video time when it was started (Start minus the lead)
+        public bool Arrived;                // its first frame came out of the decoder
+        public bool Shown;                  // one of its frames is on screen
     }
 
     private readonly string _file;
@@ -54,6 +57,12 @@ public sealed class OsuVideo : IDisposable
     private double _shownTime = -1;
     private (double Time, byte[] Pixels)? _pending;
     private Texture2D? _texture;
+    /// <summary>
+    /// How far ahead of the song a mid-video (re)start decodes from, so its first frame is due when it
+    /// arrives instead of already late (fork). Learned from how long the decoder took to start: ffmpeg
+    /// spawns in ~0.1-0.3 s, MediaCodec has to decode from the previous keyframe (can be seconds).
+    /// </summary>
+    private double _lead = 0.3;
 
     public Texture2D? Texture => _shownTime >= 0 ? _texture : null;
     /// <summary>0..1 (fade in at the start, out at the end).</summary>
@@ -83,8 +92,11 @@ public sealed class OsuVideo : IDisposable
 #endif
     }
 
-    /// <summary>Per frame: keeps the decoder at the right place and uploads the frame for <paramref name="songTime"/>.</summary>
-    public void Update(double songTime, GraphicsDevice gd)
+    /// <summary>
+    /// Per frame: keeps the decoder at the right place and uploads the frame for <paramref name="songTime"/>.
+    /// <paramref name="clockRunning"/> is false while the song is paused (no lead, no latency learning).
+    /// </summary>
+    public void Update(double songTime, GraphicsDevice gd, bool clockRunning = true)
     {
         double videoTime = songTime - _startSec;
         if (videoTime < -0.5)
@@ -99,13 +111,25 @@ public sealed class OsuVideo : IDisposable
 
         if (_session is { Ended: true } s && s.Frames.Count == 0) _ended = true;
 
-        // (Re)start the decoder when not running or when the song jumped away from the stream. It
-        // is started half a second early so the first frame is ready on time.
-        double startAt = Math.Max(0, videoTime);
-        bool behind = !_ended && _shownTime >= 0 && videoTime > _shownTime + 1.0; // not after the video ended
-        bool before = _session != null && startAt < _session.Start - 0.05;
-        if ((_session == null && !_ended) || behind || before)
-            Start(startAt);
+        // (Re)start the decoder when not running or when the song jumped away from the stream. At the
+        // video's beginning it is started half a second early (above) so the first frame is ready on
+        // time; mid-video it decodes from a bit ahead of the song (_lead) for the same reason.
+        // Only frames of the current run count: _shownTime keeps the previous run's frame until the
+        // new one arrives (it stays on screen meanwhile), and comparing against it made every frame
+        // restart the decoder after a forward timeskip, so the video froze for good.
+        bool restart;
+        var cur = _session;
+        if (cur == null) restart = !_ended;
+        else if (cur.Shown)
+            restart = (!_ended && videoTime > _shownTime + 1.0)  // fell behind / skipped forward (not after the video ended)
+                   || videoTime < _shownTime - 0.25;              // skipped back
+        else
+            restart = Math.Max(0, videoTime) < cur.Requested - 0.05; // skipped back before its first frame (not the pre-roll)
+        if (restart)
+        {
+            double startAt = videoTime <= 0 ? 0 : videoTime + (clockRunning ? _lead : 0);
+            Start(startAt, requested: Math.Max(0, videoTime));
+        }
         if (videoTime < 0)
         {
             Alpha = 0f;
@@ -121,6 +145,14 @@ public sealed class OsuVideo : IDisposable
                 (double Time, byte[] Pixels) frame;
                 if (_pending is { } p) { frame = p; _pending = null; }
                 else if (!_session.Frames.TryTake(out frame)) break;
+                if (!_session.Arrived)
+                {
+                    _session.Arrived = true;
+                    // Learn the start-up time for the next mid-video start (song seconds the decoder
+                    // needed to deliver its first frame).
+                    if (clockRunning && _session.Requested > 0)
+                        _lead = Math.Clamp((videoTime - _session.Requested) * 1.25 + 0.1, 0.15, 4.0);
+                }
                 if (frame.Time > videoTime + 0.5 / Fps)
                 {
                     _pending = frame; // not due yet
@@ -133,6 +165,7 @@ public sealed class OsuVideo : IDisposable
                 _texture ??= new Texture2D(gd, Width, Height, false, SurfaceFormat.Color);
                 _texture.SetData(show.Pixels);
                 _shownTime = show.Time;
+                _session.Shown = true;
             }
         }
 
@@ -145,11 +178,11 @@ public sealed class OsuVideo : IDisposable
         Alpha = Math.Min(fadeIn, fadeOut);
     }
 
-    private void Start(double videoTime)
+    private void Start(double videoTime, double requested)
     {
         Stop();
         _ended = false;
-        var session = new Session { Start = videoTime };
+        var session = new Session { Start = videoTime, Requested = requested };
         _session = session;
         var token = session.Cts.Token;
         var thread = new Thread(() =>

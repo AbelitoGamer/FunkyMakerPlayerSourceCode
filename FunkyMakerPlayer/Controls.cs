@@ -158,6 +158,12 @@ public static class Controls
         return (!b[0].IsNone ? b[0] : b[1]).ToString();
     }
 
+    /// <summary>
+    /// "[key] " in front of a button label, or nothing on touch screens (fork: phones showed
+    /// keyboard keys on every button).
+    /// </summary>
+    public static string Tag(HotkeyAction action) => UI.PointerInput.IsTouch ? "" : $"[{Hint(action)}] ";
+
     // ── Matching ─────────────────────────────────────────────────────────────
 
     private static bool ModsHeld(KeyBinding b, KeyboardState kb)

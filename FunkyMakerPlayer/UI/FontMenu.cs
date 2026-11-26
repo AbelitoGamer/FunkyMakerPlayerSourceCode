@@ -19,6 +19,7 @@ public class FontMenu : IScreenOverlay
     public bool IsActive { get; set; } = false;
     public int Selection { get; set; } = 0;
     public bool SelectionConfirmed { get; private set; } = false;
+    private readonly PickerTouch _touch = new(); // taps / clicks (fork)
     
     private List<(string name, string path)> _fonts = new();
     private FontRenderer? _previewFont = null;
@@ -41,6 +42,7 @@ public class FontMenu : IScreenOverlay
         
         if (_fonts.Count > 0)
             LoadPreview(_fonts[Selection].path, graphicsDevice);
+        _touch.Sync();
         IsActive = true;
     }
     
@@ -120,6 +122,14 @@ public class FontMenu : IScreenOverlay
     {
         if (!IsActive) return;
         
+
+        // Taps / clicks (fork): a row previews it, the previewed row again or APPLY applies, BACK cancels.
+        var tap = _touch.Poll(Selection);
+        if (tap.Select is int pick && pick >= 0 && pick < _fonts.Count && pick != Selection)
+        {
+            Selection = pick;
+            LoadPreview(_fonts[Selection].path, graphicsDevice);
+        }
         // Navigation
         if (_fonts.Count > 0 && kb.IsKeyDown(Keys.Up) && !prevKb.IsKeyDown(Keys.Up))
         {
@@ -134,7 +144,8 @@ public class FontMenu : IScreenOverlay
         }
         
         // Confirm selection
-        if ((kb.IsKeyDown(Keys.Enter) && !prevKb.IsKeyDown(Keys.Enter)) ||
+        if (tap.Confirm ||
+            (kb.IsKeyDown(Keys.Enter) && !prevKb.IsKeyDown(Keys.Enter)) ||
             (kb.IsKeyDown(Keys.Space) && !prevKb.IsKeyDown(Keys.Space)))
         {
             // Font selection confirmed
@@ -143,7 +154,7 @@ public class FontMenu : IScreenOverlay
         }
         
         // Cancel
-        if (kb.IsKeyDown(Keys.Escape) && !prevKb.IsKeyDown(Keys.Escape))
+        if (tap.Cancel || (kb.IsKeyDown(Keys.Escape) && !prevKb.IsKeyDown(Keys.Escape)))
         {
             Close();
         }
@@ -164,47 +175,53 @@ public class FontMenu : IScreenOverlay
         // Background
         DrawRect(spriteBatch, 0, 0, sw, sh, Color.Black * 0.92f);
         
-        // Header
-        for (int y = 0; y < 54; y++)
+        // Header (fork: scales with the screen; it was fixed pixels, tiny rows on phones)
+        float u = PickerTouch.Scale(sh);
+        int hh = PickerTouch.HeaderHeight(sh);
+        _touch.BeginRows();
+        for (int y = 0; y < hh; y++)
         {
-            float factor = (float)y / 54f;
+            float factor = (float)y / hh;
             Color barColor = Color.Lerp(new Color(25, 15, 35), new Color(15, 15, 28), factor);
             DrawRect(spriteBatch, 0, y, sw, 1, barColor);
         }
         
-        DrawRect(spriteBatch, 0, 52, sw, 3, new Color(0xFF, 0x44, 0x88) * 0.8f);
+        DrawRect(spriteBatch, 0, hh - 2, sw, 3, new Color(0xFF, 0x44, 0x88) * 0.8f);
         
         // Title
         if (_fontRenderer != null)
         {
             int titleSize = Math.Clamp((int)(sh * 0.055f), 32, 64);
             _fontRenderer.DrawString(spriteBatch, "SELECT FONT",
-                new Vector2(20, 10), new Color(0xFF, 0x44, 0x88), titleSize);
+                new Vector2(20 * u, 6 * u), new Color(0xFF, 0x44, 0x88), titleSize);
         }
         else
         {
             spriteBatch.DrawString(_font, "SELECT FONT",
-                new Vector2(20, 10), new Color(0xFF, 0x44, 0x88), 0f, Vector2.Zero, 1.1f, SpriteEffects.None, 0f);
+                new Vector2(20 * u, 6 * u), new Color(0xFF, 0x44, 0x88), 0f, Vector2.Zero, 1.1f, SpriteEffects.None, 0f);
         }
         
+        _touch.DrawHeaderButtons(spriteBatch, _pixel, _font, _fontRenderer, sw, sh, new Color(0xFF, 0x44, 0x88));
+
         // List panel
         float panelX = sw * 0.08f;
         float panelW = sw * 0.35f;
-        float panelY = 80f;
-        float panelH = sh - panelY - 30f;
+        float panelY = hh + 26f * u;
+        float panelH = sh - panelY - 40f * u;
         
         DrawRect(spriteBatch, (int)panelX - 5, (int)panelY - 5, (int)panelW + 10, (int)panelH + 10, 
             new Color(15, 15, 25) * 0.8f);
         
         // List items
-        float itemH = 48f;
-        float listY = panelY + 10f;
+        float itemH = 48f * u;
+        float listY = panelY + 10f * u;
         
         for (int i = 0; i < _fonts.Count; i++)
         {
             bool sel = i == Selection;
             float y = listY + i * itemH;
             
+            _touch.AddRow(i, new Rectangle((int)panelX, (int)y - 2, (int)panelW, (int)itemH - 4));
             if (sel)
             {
                 DrawRect(spriteBatch, (int)panelX, (int)y - 2, (int)panelW, (int)itemH - 4, 
@@ -217,14 +234,14 @@ public class FontMenu : IScreenOverlay
             
             if (_fontRenderer != null)
             {
-                int textSize = Math.Clamp((int)(itemH * 0.5f), 18, 28);
+                int textSize = Math.Clamp((int)(itemH * 0.5f), 18, 40);
                 _fontRenderer.DrawString(spriteBatch, _fonts[i].name,
-                    new Vector2(panelX + 10, y + 8), textColor, textSize);
+                    new Vector2(panelX + 10 * u, y + 8 * u), textColor, textSize);
             }
             else
             {
                 spriteBatch.DrawString(_font, _fonts[i].name,
-                    new Vector2(panelX + 10, y + 8), textColor, 0f, Vector2.Zero, 0.7f, SpriteEffects.None, 0f);
+                    new Vector2(panelX + 10 * u, y + 8 * u), textColor, 0f, Vector2.Zero, 0.7f, SpriteEffects.None, 0f);
             }
         }
         
@@ -300,7 +317,7 @@ public class FontMenu : IScreenOverlay
         }
         
         // Instructions
-        string hint = "Navigate: Up/Down  |  Select: ENTER  |  Back: ESC";
+        string hint = PickerTouch.HintText;
         Color hintColor = Color.White * 0.5f;
         
         if (_fontRenderer != null)

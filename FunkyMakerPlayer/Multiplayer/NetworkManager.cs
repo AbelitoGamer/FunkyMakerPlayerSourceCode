@@ -5,7 +5,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using FunkyMakerPlayer.Multiplayer.Rooms;
 using Microsoft.Xna.Framework;
-using Microsoft.AspNetCore.SignalR.Client;
+using System.Net.WebSockets;
 
 namespace FunkyMakerPlayer.Multiplayer
 {
@@ -23,7 +23,7 @@ namespace FunkyMakerPlayer.Multiplayer
     }
 
     /// <summary>
-    /// The SignalR connection to the online server (fork: room system, protocol 2).
+    /// The WebSocket connection to the online server (room system, protocol 4; see <see cref="WsHubConnection"/>).
     /// <para>
     /// Server messages arrive on thread-pool threads. Except Pong (timed on arrival for the clock sync)
     /// they are queued and raised on the game thread by <see cref="Update"/>, so handlers can touch game
@@ -55,7 +55,7 @@ namespace FunkyMakerPlayer.Multiplayer
         public int UploadChunkBytes { get; private set; } = 4 * 1024 * 1024;
         public string ServerVersion { get; private set; } = "";
 
-        private const string SignalREndpoint = "/multiplayer";
+        private const string HubEndpoint = "/multiplayer";
         private string? _serverUrlOverride;
 
         /// <summary>Base URL of the online server (no trailing slash).</summary>
@@ -65,10 +65,10 @@ namespace FunkyMakerPlayer.Multiplayer
             set => _serverUrlOverride = string.IsNullOrWhiteSpace(value) ? null : value.Trim().TrimEnd('/');
         }
 
-        public string SignalRUrl => $"{ServerUrl}{SignalREndpoint}";
+        public string HubUrl => $"{ServerUrl}{HubEndpoint}";
 
-        // SignalR connection & cancellation tracking
-        private HubConnection? _hubConnection;
+        // Hub connection & cancellation tracking
+        private WsHubConnection? _hubConnection;
         private CancellationTokenSource? _connectCts;
         private int _connectGeneration = 0;
         private readonly object _connectionStateLock = new object();
@@ -112,7 +112,7 @@ namespace FunkyMakerPlayer.Multiplayer
         private readonly System.Diagnostics.Stopwatch _loadPingWatch = System.Diagnostics.Stopwatch.StartNew();
 
         /// <summary>
-        /// Keeps SignalR pings flowing while heavy main-thread level loading (e.g. SetupLevel on 5 GB levels)
+        /// Keeps hub pings flowing while heavy main-thread level loading (e.g. SetupLevel on 5 GB levels)
         /// temporarily pauses the normal Update() loop, preventing false silence/connection timeouts.
         /// </summary>
         public void PumpKeepAliveDuringLoad()
@@ -138,9 +138,9 @@ namespace FunkyMakerPlayer.Multiplayer
         private const float MIN_RECONNECT_DELAY = 2f;
         private const float MAX_RECONNECT_DELAY = 30f;
 
-        // Connection timeout. A sleeping free Render instance can take up to a minute to wake up.
+        // Connection timeout (the Workers server never sleeps, so this only covers bad networks).
         private float _connectionTimeoutTimer = 0f;
-        private const float CONNECTION_ATTEMPT_TIMEOUT = 90f;
+        private const float CONNECTION_ATTEMPT_TIMEOUT = 30f;
 
         // KeyPress throttling (prevent spam)
         private readonly Dictionary<int, long> _lastKeyPressSent = new Dictionary<int, long>();
@@ -151,10 +151,10 @@ namespace FunkyMakerPlayer.Multiplayer
         /// <summary>Queues work to run on the game thread at the next <see cref="Update"/>.</summary>
         public void Post(Action action) => _events.Enqueue(action);
 
-        private bool IsActiveAttemptLocked(HubConnection hub, int generation) =>
+        private bool IsActiveAttemptLocked(WsHubConnection hub, int generation) =>
             generation == _connectGeneration && ReferenceEquals(_hubConnection, hub);
 
-        private void DetachConnectionLocked(out HubConnection? hubToDispose, out CancellationTokenSource? ctsToDispose)
+        private void DetachConnectionLocked(out WsHubConnection? hubToDispose, out CancellationTokenSource? ctsToDispose)
         {
             unchecked { _connectGeneration++; }
             ctsToDispose = _connectCts;
@@ -172,16 +172,16 @@ namespace FunkyMakerPlayer.Multiplayer
             try { cts.Dispose(); } catch { }
         }
 
-        private static async Task DisposeHubQuietlyAsync(HubConnection? hub)
+        private static async Task DisposeHubQuietlyAsync(WsHubConnection? hub)
         {
             if (hub == null) return;
             try { await hub.StopAsync().ConfigureAwait(false); } catch { }
             try { await hub.DisposeAsync().ConfigureAwait(false); } catch { }
         }
 
-        private void HandleFailedInitialAttempt(HubConnection hub, int generation, string errorMessage)
+        private void HandleFailedInitialAttempt(WsHubConnection hub, int generation, string errorMessage)
         {
-            HubConnection? hubToDispose = null;
+            WsHubConnection? hubToDispose = null;
             CancellationTokenSource? ctsToDispose = null;
             bool wasActiveAttempt;
 
@@ -219,9 +219,9 @@ namespace FunkyMakerPlayer.Multiplayer
         /// </summary>
         public async void Connect(string username)
         {
-            HubConnection? staleHub = null;
+            WsHubConnection? staleHub = null;
             CancellationTokenSource? staleCts = null;
-            HubConnection hub;
+            WsHubConnection hub;
             CancellationTokenSource cts;
             int generation;
 
@@ -253,21 +253,15 @@ namespace FunkyMakerPlayer.Multiplayer
 
                 Console.WriteLine($"[Multiplayer] Connecting to {ServerUrl} as {username}...");
 
-                hub = new HubConnectionBuilder()
-                    .WithUrl(SignalRUrl)
-                    .WithAutomaticReconnect(new[]
-                    {
-                        TimeSpan.FromSeconds(0),
-                        TimeSpan.FromSeconds(2),
-                        TimeSpan.FromSeconds(5),
-                        TimeSpan.FromSeconds(10),
-                        TimeSpan.FromSeconds(20),
-                    })
-                    .Build();
-
-                hub.KeepAliveInterval = TimeSpan.FromSeconds(10);
+                hub = new WsHubConnection(HubUrl, new[]
+                {
+                    TimeSpan.FromSeconds(0),
+                    TimeSpan.FromSeconds(2),
+                    TimeSpan.FromSeconds(5),
+                    TimeSpan.FromSeconds(10),
+                    TimeSpan.FromSeconds(20),
+                });
                 hub.ServerTimeout = TimeSpan.FromSeconds(60);
-                hub.HandshakeTimeout = TimeSpan.FromSeconds(CONNECTION_ATTEMPT_TIMEOUT);
 
                 _hubConnection = hub;
             }
@@ -376,7 +370,7 @@ namespace FunkyMakerPlayer.Multiplayer
                     if (generation == _connectGeneration) OnPongPacket(p);
                 });
 
-                Console.WriteLine($"[Multiplayer] Starting SignalR connection: {SignalRUrl}");
+                Console.WriteLine($"[Multiplayer] Opening WebSocket: {HubUrl}");
                 await hub.StartAsync(cts.Token);
 
                 var hello = await hub.InvokeAsync<HelloResult>("Hello", BuildHello(), cts.Token);
@@ -432,7 +426,7 @@ namespace FunkyMakerPlayer.Multiplayer
                 Console.WriteLine("[Multiplayer] [X] Connection attempt timed out or was cancelled");
                 HandleFailedInitialAttempt(hub, generation, "Connection timeout");
             }
-            catch (System.Net.Http.HttpRequestException ex)
+            catch (Exception ex) when (ex is System.Net.Http.HttpRequestException or WebSocketException)
             {
                 Console.WriteLine($"[Multiplayer] [X] Network error: {ex.Message}");
                 HandleFailedInitialAttempt(hub, generation, "Network error. Check your internet connection.");
@@ -449,7 +443,7 @@ namespace FunkyMakerPlayer.Multiplayer
             }
         }
 
-        private void On<T>(HubConnection hub, int generation, string method, Action<T> handler) =>
+        private void On<T>(WsHubConnection hub, int generation, string method, Action<T> handler) =>
             hub.On<T>(method, payload =>
             {
                 if (generation != _connectGeneration) return;
@@ -464,7 +458,7 @@ namespace FunkyMakerPlayer.Multiplayer
         {
             bool wasConnected;
             bool hadPendingState;
-            HubConnection? hubToStop;
+            WsHubConnection? hubToStop;
             CancellationTokenSource? ctsToDispose;
 
             lock (_connectionStateLock)
@@ -622,7 +616,7 @@ namespace FunkyMakerPlayer.Multiplayer
         public void Update(GameTime gameTime)
         {
             // Clamp dt so a long synchronous SetupLevel() frame cannot jump _lastPacketReceivedTime
-            // straight past CONNECTION_TIMEOUT and drop an otherwise healthy SignalR connection.
+            // straight past CONNECTION_TIMEOUT and drop an otherwise healthy connection.
             float dt = Math.Min((float)gameTime.ElapsedGameTime.TotalSeconds, 0.5f);
 
             while (_events.TryDequeue(out var action))
@@ -632,7 +626,7 @@ namespace FunkyMakerPlayer.Multiplayer
             }
 
             bool timedOut = false;
-            HubConnection? timedOutHub = null;
+            WsHubConnection? timedOutHub = null;
             CancellationTokenSource? timedOutCts = null;
             lock (_connectionStateLock)
             {
@@ -791,7 +785,7 @@ namespace FunkyMakerPlayer.Multiplayer
 
         public void ForceReset()
         {
-            HubConnection? hubToReset;
+            WsHubConnection? hubToReset;
             CancellationTokenSource? ctsToReset;
             lock (_connectionStateLock)
             {

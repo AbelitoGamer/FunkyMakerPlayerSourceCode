@@ -117,6 +117,9 @@ public static class Settings
 
         /// <summary>(fork) Opacity of a touch hitbox while it is pressed, 0-1 (android only). Default 30 %.</summary>
         public float TouchHitboxOpacity      { get; set; } = 0.3f;
+
+        /// <summary>(fork) On-screen menu buttons (android only): 0 = Auto, 1 = On, 2 = Off.</summary>
+        public int   MenuButtonsMode         { get; set; } = 0;
         
         /// <summary>
         /// Selected Arrow Effect: 0=Random, 1=WhiteGlow, 2=BounceVertical, 3=Spin360, 4=BounceHorizontal, 5=Dizzy
@@ -199,6 +202,7 @@ public static class Settings
             Game1.SelectedCountdown            = d.SelectedCountdown;
             Game1.HideTouchHitboxColors        = d.HideTouchHitboxColors;
             Game1.TouchHitboxOpacity           = Math.Clamp(d.TouchHitboxOpacity, 0f, 1f);
+            Game1.MenuButtonsMode              = Math.Clamp(d.MenuButtonsMode, 0, 2);
             
             // Load key bindings
             if (d.PlayerKeyBindings != null && d.PlayerKeyBindings.Length == 4)
@@ -269,6 +273,7 @@ public static class Settings
                 SelectedCountdown = Game1.SelectedCountdown,
                 HideTouchHitboxColors = Game1.HideTouchHitboxColors,
                 TouchHitboxOpacity = Game1.TouchHitboxOpacity,
+                MenuButtonsMode = Game1.MenuButtonsMode,
                 PlayerKeyBindings = new string[]
                 {
                     NoteRenderer.PlayerKeys[0].ToString(),

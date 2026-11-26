@@ -220,6 +220,7 @@ namespace FunkyMakerPlayer.Multiplayer
             _leaderboardSelection = 0;
             _leaderboardScrollOffset = 0;
             _leaderboardSyncedOnline = false;
+            _matchDetail = null;
             RequestLeaderboardRefresh();
         }
 
@@ -246,7 +247,7 @@ namespace FunkyMakerPlayer.Multiplayer
             {
                 string baseUrl = NetworkManager.Instance.ServerUrl;
                 if (string.IsNullOrWhiteSpace(baseUrl))
-                    baseUrl = "https://funkymakerserver.onrender.com";
+                    baseUrl = MultiplayerSettings.DefaultServerUrl;
 
                 string url = $"{baseUrl.TrimEnd('/')}/api/leaderboard?take=50&matchesTake=50";
                 string response = await _leaderboardHttpClient.GetStringAsync(url);
@@ -303,6 +304,9 @@ namespace FunkyMakerPlayer.Multiplayer
             // Room screens are made for tapping: their buttons win over the D-pad drawn on top of them
             // (READY sits under the D-pad, the chat box under A/B on most phones).
             _touchControls.IgnorePoint = IsRoomHitAt;
+            // Every online screen works by tapping and the back gesture goes back (fork, 2026-11-23):
+            // with Settings → Menu Buttons = AUTO the D-pad / A / B stay hidden here.
+            _touchControls.ScreenIsTouchReady = true;
             _touchScreenHeight = screenHeight;
             Console.WriteLine("[MultiplayerMenu] Touch controls initialized for Android (Menu mode)");
 #endif
@@ -1323,7 +1327,7 @@ namespace FunkyMakerPlayer.Multiplayer
                 client.Timeout = TimeSpan.FromSeconds(5);
 
                 string serverUrl = string.IsNullOrWhiteSpace(NetworkManager.Instance.ServerUrl)
-                    ? "https://funkymakerserver.onrender.com"
+                    ? MultiplayerSettings.DefaultServerUrl
                     : NetworkManager.Instance.ServerUrl.TrimEnd('/');
                 string response = await client.GetStringAsync($"{serverUrl}/api/server/info");
 
@@ -1769,7 +1773,7 @@ namespace FunkyMakerPlayer.Multiplayer
         private void DrawGameplaySettingsButton(SpriteBatch sb, SpriteFont font, Texture2D pixel, int x, int y, float uiScale)
         {
             string key = Controls.Hint(HotkeyAction.MultiplayerSettings);
-            string label = key == "-" ? "Settings" : $"{key}  Settings";
+            string label = key == "-" || FunkyMakerPlayer.UI.PointerInput.IsTouch ? "Settings" : $"{key}  Settings";
             int fontSize = FontPx(13, uiScale, 10, 18);
             Vector2 sz = MeasureText(font, label, fontSize);
             int btnW = (int)MathF.Ceiling(sz.X) + Px(24, uiScale);
@@ -1788,7 +1792,7 @@ namespace FunkyMakerPlayer.Multiplayer
         private void DrawGameplaySettingsButtonTopRight(SpriteBatch sb, SpriteFont font, Texture2D pixel, int screenWidth, float uiScale)
         {
             string key = Controls.Hint(HotkeyAction.MultiplayerSettings);
-            string label = key == "-" ? "Settings" : $"{key}  Settings";
+            string label = key == "-" || FunkyMakerPlayer.UI.PointerInput.IsTouch ? "Settings" : $"{key}  Settings";
             int fontSize = FontPx(13, uiScale, 10, 18);
             Vector2 sz = MeasureText(font, label, fontSize);
             int btnW = (int)MathF.Ceiling(sz.X) + Px(24, uiScale);
@@ -1812,8 +1816,9 @@ namespace FunkyMakerPlayer.Multiplayer
             DrawGameplaySettingsButton(sb, font, pixel, btnX, btnY, uiScale);
         }
 
-        private void DrawBackButton(SpriteBatch sb, SpriteFont font, Texture2D pixel, int screenWidth, float uiScale, string label = "ESC  Back")
+        private void DrawBackButton(SpriteBatch sb, SpriteFont font, Texture2D pixel, int screenWidth, float uiScale, string? label = null)
         {
+            label ??= FunkyMakerPlayer.UI.PointerInput.BackLabel;
             int fontSize = FontPx(14, uiScale, 11, 20);
             Vector2 sz = MeasureText(font, label, fontSize);
             int btnW = Math.Max(Px(120, uiScale), (int)sz.X + Px(28, uiScale));
@@ -1868,7 +1873,7 @@ namespace FunkyMakerPlayer.Multiplayer
             DrawText(sb, font, statusTxt, new Vector2(badgeX + dot + 5, y + (chipH - statusSz.Y) / 2f), statusCol * _fadeAlpha, subSize);
         }
 
-        private int DrawScreenHeader(SpriteBatch sb, SpriteFont font, Texture2D pixel, int sw, float uiScale, string title, string? subtitle, Color accent, string backLabel = "ESC  Back")
+        private int DrawScreenHeader(SpriteBatch sb, SpriteFont font, Texture2D pixel, int sw, float uiScale, string title, string? subtitle, Color accent, string? backLabel = null)
         {
             DrawBackButton(sb, font, pixel, sw, uiScale, backLabel);
 
@@ -2050,7 +2055,8 @@ namespace FunkyMakerPlayer.Multiplayer
             DrawText(sb, font, subtitle, new Vector2(screenWidth / 2f - subSz.X / 2f, subY), TEXT_SECONDARY * _fadeAlpha, subSize);
 
             int footerY = DrawFooterBar(sb, font, pixel, screenWidth, screenHeight, uiScale,
-                "UP/DOWN or MOUSE: Navigate  |  ENTER or CLICK: Select  |  ESC: Back");
+                FunkyMakerPlayer.UI.PointerInput.IsTouch ? "Tap an option  |  Back gesture: return"
+                    : "UP/DOWN or MOUSE: Navigate  |  ENTER or CLICK: Select  |  ESC: Back");
 
             // Vertical stack of 4 sleek option cards framed cleanly between hero and footer
             int contentTop = subY + (int)MathF.Ceiling(subSz.Y) + Px(20, uiScale);
@@ -2301,7 +2307,7 @@ namespace FunkyMakerPlayer.Multiplayer
             var settings = MultiplayerSettings.Instance;
             float uiScale = GetUiScale(screenWidth, screenHeight);
 
-            DrawBackButton(sb, font, pixel, screenWidth, uiScale, "ESC  Back");
+            DrawBackButton(sb, font, pixel, screenWidth, uiScale, FunkyMakerPlayer.UI.PointerInput.BackLabel);
             DrawGameplaySettingsButtonTopRight(sb, font, pixel, screenWidth, uiScale);
 
             // Title
@@ -2735,6 +2741,9 @@ namespace FunkyMakerPlayer.Multiplayer
         {
             if (_inputCooldown > 0f) return;
 
+            // RECENT MATCHES: ENTER / click opens a match's full standings; while open it takes all input.
+            if (UpdateMatchDetail(kb, mouse)) return;
+
             // Back via ESC button or key
             if (IsKeyPressed(kb, Keys.Escape) || IsRectClicked(mouse, _backButtonRect))
             {
@@ -2837,7 +2846,7 @@ namespace FunkyMakerPlayer.Multiplayer
         private void DrawLeaderboardModern(SpriteBatch sb, SpriteFont font, Texture2D pixel, int screenWidth, int screenHeight)
         {
             float uiScale = GetUiScale(screenWidth, screenHeight);
-            DrawBackButton(sb, font, pixel, screenWidth, uiScale, "ESC  Back");
+            DrawBackButton(sb, font, pixel, screenWidth, uiScale, FunkyMakerPlayer.UI.PointerInput.BackLabel);
 
             // Top-right Sync / Status button (works both via SignalR when connected and HTTP before connecting)
             int gap = Px(10, uiScale, 6);
@@ -2907,7 +2916,9 @@ namespace FunkyMakerPlayer.Multiplayer
             }
 
             int footerY = DrawFooterBar(sb, font, pixel, screenWidth, screenHeight, uiScale,
-                "Q/E or LEFT/RIGHT: Switch Tab  |  UP/DOWN or WHEEL: Scroll  |  F5: Sync Online  |  ESC: Back");
+                _leaderboardTab == 1
+                    ? "Q/E or LEFT/RIGHT: Switch Tab  |  UP/DOWN or WHEEL: Scroll  |  ENTER / CLICK: Details  |  F5: Sync Online  |  ESC: Back"
+                    : "Q/E or LEFT/RIGHT: Switch Tab  |  UP/DOWN or WHEEL: Scroll  |  F5: Sync Online  |  ESC: Back");
 
             int panelW = ClampUi(Px(960, uiScale), 360, screenWidth - Px(60, uiScale));
             int panelY = tabY + tabH + Px(14, uiScale, 8);
@@ -2928,6 +2939,9 @@ namespace FunkyMakerPlayer.Multiplayer
                     DrawMyStatsTab(sb, font, pixel, uiScale, panelX, panelY, panelW, panelH);
                     break;
             }
+
+            if (_matchDetail != null)
+                DrawMatchDetail(sb, font, pixel, uiScale, screenWidth, screenHeight, _matchDetail);
         }
 
         private void DrawTopPlayersTab(SpriteBatch sb, SpriteFont font, Texture2D pixel, float uiScale, int panelX, int panelY, int panelW, int panelH)
@@ -3026,96 +3040,6 @@ namespace FunkyMakerPlayer.Multiplayer
             if (hasScroll)
             {
                 DrawScrollBar(sb, pixel, panelX + padX + usableW + Px(10, uiScale), listTop, availH, topPlayers.Count, MAX_LEADERBOARD_VISIBLE, _leaderboardScrollOffset, ACCENT_PRIMARY);
-            }
-        }
-
-        private void DrawRecentMatchesTab(SpriteBatch sb, SpriteFont font, Texture2D pixel, float uiScale, int panelX, int panelY, int panelW, int panelH)
-        {
-            var recentMatches = LeaderboardManager.Instance.GetRecentMatches(50);
-
-            if (recentMatches.Count == 0)
-            {
-                DrawCenteredTextInPanel(sb, font, "No match history yet", panelX, panelY + panelH / 2 - Px(20, uiScale), panelW, TEXT_SECONDARY, FontPx(19, uiScale, 14, 28));
-                DrawCenteredTextInPanel(sb, font, "Play your first multiplayer match!", panelX, panelY + panelH / 2 + Px(12, uiScale), panelW, TEXT_DISABLED, FontPx(14, uiScale, 11, 20));
-                return;
-            }
-
-            bool hasScroll = recentMatches.Count > MAX_LEADERBOARD_VISIBLE;
-            int padX = Px(22, uiScale, 12);
-            int cardW = panelW - padX * 2 - (hasScroll ? Px(18, uiScale, 12) : 0);
-            int listTop = panelY + Px(16, uiScale);
-            int availH = Math.Max(160, panelY + panelH - Px(16, uiScale) - listTop);
-            int cardGap = Px(8, uiScale, 5);
-            int cardH = ClampUi((availH - cardGap * (MAX_LEADERBOARD_VISIBLE - 1)) / MAX_LEADERBOARD_VISIBLE, 46, Px(68, uiScale));
-
-            int startIdx = _leaderboardScrollOffset;
-            int endIdx = Math.Min(startIdx + MAX_LEADERBOARD_VISIBLE, recentMatches.Count);
-
-            int levelFont = FontPx(15, uiScale, 12, 21);
-            int timeFont = FontPx(12, uiScale, 10, 17);
-            int rowFont = FontPx(14, uiScale, 11, 20);
-            int badgeFont = FontPx(11, uiScale, 9, 15);
-
-            for (int i = startIdx; i < endIdx; i++)
-            {
-                var match = recentMatches[i];
-                bool selected = i == _leaderboardSelection;
-                int displayIdx = i - startIdx;
-                int currentY = listTop + displayIdx * (cardH + cardGap);
-
-                if (currentY + cardH > panelY + panelH - Px(10, uiScale))
-                    break;
-
-                var cardRect = new Rectangle(panelX + padX, currentY, cardW, cardH);
-                _clickableAreas.Add(cardRect);
-
-                Color winAccent = match.Winner > 0 ? ACCENT_SUCCESS : ACCENT_WARNING;
-                DrawPanel(sb, pixel, cardRect.X, cardRect.Y, cardRect.Width, cardRect.Height,
-                    selected ? BG_LIGHT : BG_DARK, selected ? ACCENT_PRIMARY : BORDER_SUBTLE, selected ? 2 : 1,
-                    selected ? ACCENT_PRIMARY : winAccent * 0.7f);
-
-                int infoX = cardRect.X + Px(16, uiScale);
-                string levelName = string.IsNullOrWhiteSpace(match.LevelName) ? "Match" : match.LevelName;
-                DrawText(sb, font, levelName, new Vector2(infoX, currentY + Px(6, uiScale)), ACCENT_PRIMARY * _fadeAlpha, levelFont, shadow: selected);
-
-                Vector2 timeSize = MeasureText(font, match.TimeAgo, timeFont);
-                DrawText(sb, font, match.TimeAgo, new Vector2(cardRect.Right - Px(16, uiScale) - timeSize.X, currentY + Px(8, uiScale)), TEXT_DISABLED * _fadeAlpha, timeFont);
-
-                int vsY = currentY + cardH - Px(26, uiScale);
-                string player1Text = $"{match.Player1.Username} ({match.Player1.Score:N0})";
-                string vsText = "  VS  ";
-                string player2Text = $"{match.Player2.Username} ({match.Player2.Score:N0})";
-                string winBadge = match.Winner == 1 ? "WIN P1" : (match.Winner == 2 ? "WIN P2" : "DRAW");
-
-                Color p1Color = match.Winner == 1 ? ACCENT_SUCCESS : TEXT_SECONDARY;
-                Color p2Color = match.Winner == 2 ? ACCENT_SUCCESS : TEXT_SECONDARY;
-                Color badgeColor = match.Winner > 0 ? ACCENT_SUCCESS : ACCENT_WARNING;
-
-                int pillH = Px(20, uiScale, 16);
-                Vector2 bSz = MeasureText(font, winBadge, badgeFont);
-                int pillW = (int)MathF.Ceiling(bSz.X) + Px(16, uiScale);
-                int pillX = cardRect.Right - Px(16, uiScale) - pillW;
-                DrawPillBadge(sb, font, pixel, pillX, vsY - Px(2, uiScale), pillH, winBadge, badgeColor, badgeFont, Px(8, uiScale), filledStrong: true);
-
-                float vsWidth = MeasureText(font, vsText, rowFont).X;
-                float availVsRow = Math.Max(120f, pillX - Px(14, uiScale) - infoX - vsWidth);
-                float maxPlayerW = availVsRow / 2f;
-                string fitP1 = TruncateToWidth(font, player1Text, maxPlayerW, rowFont);
-                string fitP2 = TruncateToWidth(font, player2Text, maxPlayerW, rowFont);
-
-                float drawX = infoX;
-                DrawText(sb, font, fitP1, new Vector2(drawX, vsY), p1Color * _fadeAlpha, rowFont);
-                drawX += MeasureText(font, fitP1, rowFont).X;
-
-                DrawText(sb, font, vsText, new Vector2(drawX, vsY), TEXT_DISABLED * _fadeAlpha, rowFont);
-                drawX += vsWidth;
-
-                DrawText(sb, font, fitP2, new Vector2(drawX, vsY), p2Color * _fadeAlpha, rowFont);
-            }
-
-            if (hasScroll)
-            {
-                DrawScrollBar(sb, pixel, panelX + padX + cardW + Px(10, uiScale), listTop, availH, recentMatches.Count, MAX_LEADERBOARD_VISIBLE, _leaderboardScrollOffset, ACCENT_PRIMARY);
             }
         }
 

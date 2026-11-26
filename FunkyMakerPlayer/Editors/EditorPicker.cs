@@ -89,7 +89,7 @@ public class EditorPicker : FunkyMakerPlayer.UI.IDirectScreen
         _fontRenderer = fontRenderer;
         _cardBounds = new Rectangle[_cards.Length];
         _prevKb = LayoutKeyboard.GetState();
-        _prevMouse = Mouse.GetState();
+        _prevMouse = UI.PointerInput.GetState();
     }
 
     public void ResetInputCooldown()
@@ -99,7 +99,7 @@ public class EditorPicker : FunkyMakerPlayer.UI.IDirectScreen
         EditorChosen = false;
         _hoveredCard = -1;
         _prevKb = LayoutKeyboard.GetState();
-        _prevMouse = Mouse.GetState();
+        _prevMouse = UI.PointerInput.GetState();
         _lastMousePos = _prevMouse.Position;
     }
 
@@ -109,13 +109,13 @@ public class EditorPicker : FunkyMakerPlayer.UI.IDirectScreen
         _hoveredCard = -1;
         _backHovered = false;
         _prevKb = LayoutKeyboard.GetState();
-        _prevMouse = Mouse.GetState();
+        _prevMouse = UI.PointerInput.GetState();
         _lastMousePos = _prevMouse.Position;
     }
 
     public void Update(float dt, KeyboardState kb, int screenWidth, int screenHeight)
     {
-        var ms = Mouse.GetState();
+        var ms = UI.PointerInput.GetState();
         if (!Game1.CanAcceptInput)
         {
             _hoveredCard = -1;
@@ -213,8 +213,8 @@ public class EditorPicker : FunkyMakerPlayer.UI.IDirectScreen
         DrawRect(sb, _backBtnBounds.X, _backBtnBounds.Y, backW, backH, _backHovered ? new Color(56, 48, 76) : new Color(34, 30, 48));
         DrawBorder(sb, _backBtnBounds, _backHovered ? new Color(255, 68, 136) : Color.White * 0.16f);
         int backTextSize = UiScale.FontPx(15, s);
-        var backSz = MeasureText("ESC  Back", backTextSize);
-        DrawText(sb, "ESC  Back", new Vector2(_backBtnBounds.X + (backW - backSz.X) / 2f, _backBtnBounds.Y + (backH - backSz.Y) / 2f),
+        var backSz = MeasureText(UI.PointerInput.BackLabel, backTextSize);
+        DrawText(sb, UI.PointerInput.BackLabel, new Vector2(_backBtnBounds.X + (backW - backSz.X) / 2f, _backBtnBounds.Y + (backH - backSz.Y) / 2f),
             Color.White * (_backHovered ? 1f : 0.85f), backTextSize);
 
         // Header
@@ -328,7 +328,9 @@ public class EditorPicker : FunkyMakerPlayer.UI.IDirectScreen
             rx += pw + pillGap;
         }
 
-        string hint = $"UP/DOWN or MOUSE: Navigate  |  ENTER or CLICK: Open  |  ESC / {Controls.Hint(HotkeyAction.OpenChartEditor)}: Back";
+        string hint = UI.PointerInput.IsTouch
+            ? "Tap a tool to open it  |  Back gesture: return"
+            : $"UP/DOWN or MOUSE: Navigate  |  ENTER or CLICK: Open  |  ESC / {Controls.Hint(HotkeyAction.OpenChartEditor)}: Back";
         int hintSize = UiScale.FontPx(15, s);
         var hintSz = MeasureText(hint, hintSize);
         DrawText(sb, hint, new Vector2(sw / 2f - hintSz.X / 2f, sh - UiScale.Px(34, s)), Color.White * 0.42f, hintSize);

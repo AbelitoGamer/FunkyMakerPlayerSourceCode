@@ -909,6 +909,8 @@ public partial class Game1
             _musicPcm        = cachedPcm;
             _music           = OggLoader.CreateFromPcm(cachedPcm, cachedSr, cachedCh);
             _musicInst       = _music.CreateInstance();
+            _musicInstStart  = 0f;
+            ResetMusicSync();
             _musicInst.Volume = SongPlaybackVolume;
             _musicInst.IsLooped = false;
             ApplyRunRateToMusic(); // Freeplay song rate (fork)
@@ -947,6 +949,8 @@ public partial class Game1
             _musicPcm        = pcm;
             
             _musicInst = _music.CreateInstance();
+            _musicInstStart = 0f;
+            ResetMusicSync();
             _musicInst.Volume = SongPlaybackVolume;
             _musicInst.IsLooped = false;
             ApplyRunRateToMusic(); // Freeplay song rate (fork)

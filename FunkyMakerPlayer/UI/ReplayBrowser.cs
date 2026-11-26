@@ -65,7 +65,7 @@ public sealed class ReplayBrowser : IDirectScreen
         _ui = new UiDraw(pixel, font, fontRenderer);
         _menu = new OptionsMenu(_ui);
         _prevKb = LayoutKeyboard.GetState();
-        _prevMouse = Mouse.GetState();
+        _prevMouse = UI.PointerInput.GetState();
         Reload();
     }
 
@@ -91,7 +91,7 @@ public sealed class ReplayBrowser : IDirectScreen
         BackPressed = false;
         ChosenReplay = null;
         _prevKb = LayoutKeyboard.GetState();
-        _prevMouse = Mouse.GetState();
+        _prevMouse = UI.PointerInput.GetState();
     }
 
     private void ApplyFilter()
@@ -117,7 +117,7 @@ public sealed class ReplayBrowser : IDirectScreen
     {
         _time += dt;
         if (_messageTimer > 0f && (_messageTimer -= dt) <= 0f) _message = null;
-        var ms = Mouse.GetState();
+        var ms = UI.PointerInput.GetState();
         if (!Game1.CanAcceptInput)
         {
             _prevKb = default;
@@ -150,7 +150,9 @@ public sealed class ReplayBrowser : IDirectScreen
         for (int i = 0; i < _rowRects.Count; i++)
             if (_rowRects[i].Contains(ms.Position)) { hovered = _scroll + i; break; }
         int hoveredMore = _moreRects.FindIndex(m => m.Rect.Contains(ms.Position));
-        if (hovered >= 0 && moved && hovered != _selected) { _selected = hovered; UiSfx.Play(UiSound.MoveList); }
+        // Touch (fork): a finger doesn't hover-select (it would select every row it crosses while
+        // scrolling); the first tap selects a row, a tap on the selected row watches it.
+        if (hovered >= 0 && moved && hovered != _selected && !PointerInput.IsTouch) { _selected = hovered; UiSfx.Play(UiSound.MoveList); }
 
         int wheel = ms.ScrollWheelValue - _prevMouse.ScrollWheelValue;
         if (wheel != 0 && _shown.Count > 0)
@@ -220,6 +222,11 @@ public sealed class ReplayBrowser : IDirectScreen
             {
                 OpenOptions(_moreRects[hoveredMore].Index, null, kb);
             }
+            else if (hovered >= 0 && hovered < _shown.Count && PointerInput.IsTouch && hovered != _selected)
+            {
+                _selected = hovered;
+                UiSfx.Play(UiSound.MoveList);
+            }
             else if (hovered >= 0 && hovered < _shown.Count)
             {
                 ChosenReplay = _shown[hovered];
@@ -288,7 +295,7 @@ public sealed class ReplayBrowser : IDirectScreen
         bool backHover = _backRect.Contains(_lastMouse);
         Rect(sb, _backRect.X, _backRect.Y, backW, backH, backHover ? CardHi : Card);
         Rect(sb, _backRect.X, _backRect.Bottom - 2, backW, 2, backHover ? Pink : Pink * 0.5f);
-        CenterText(sb, "ESC  Back", _backRect, Color.White, UiScale.FontPx(15, s));
+        CenterText(sb, UI.PointerInput.BackLabel, _backRect, Color.White, UiScale.FontPx(15, s));
 
         // Title
         int titleSize = UiScale.FontPx(42, s);
@@ -394,7 +401,9 @@ public sealed class ReplayBrowser : IDirectScreen
 
         // Footer
         Rect(sb, 0, sh - footerH, sw, footerH, Color.Black * 0.45f);
-        string hint = $"UP/DOWN: Select  |  ENTER: Watch  |  [{Controls.Hint(HotkeyAction.FreeplayOptions)}] / ...: Options  |  DEL: Delete  |  Q/E: Filter  |  ESC: Back";
+        string hint = UI.PointerInput.IsTouch
+            ? "Tap a replay, tap it again to watch  |  \"...\" or hold: Options  |  Drag to scroll  |  Back: return"
+            : $"UP/DOWN: Select  |  ENTER: Watch  |  [{Controls.Hint(HotkeyAction.FreeplayOptions)}] / ...: Options  |  DEL: Delete  |  Q/E: Filter  |  ESC: Back";
         int hf = UiScale.FontPx(13, s);
         var hsz = Measure(hint, hf);
         Text(sb, hint, new Vector2(sw / 2f - hsz.X / 2f, sh - footerH + (footerH - hsz.Y) / 2f), Dim, hf);

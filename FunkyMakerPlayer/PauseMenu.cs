@@ -18,6 +18,10 @@ public class PauseMenu
     
     public int Selection { get; set; } = 0;
 
+    // Item hit boxes in window coordinates, recorded by Draw (fork: tap / click an item).
+    private readonly Rectangle[] _itemRects = new Rectangle[5];
+    private Point _lastPointer = new(-1, -1);
+
     /// <summary>When true, displays live-match pause options (Resume, Settings, Exit Match) without freezing gameplay.</summary>
     public bool IsMultiplayer
     {
@@ -65,8 +69,29 @@ public class PauseMenu
     /// Handle input for pause menu navigation and selection.
     /// Returns the action that should be executed.
     /// </summary>
-    public PauseAction HandleInput(KeyboardState kb, KeyboardState prevKb)
+    public PauseAction HandleInput(KeyboardState kb, KeyboardState prevKb) =>
+        HandleInput(kb, prevKb, default, default);
+
+    /// <summary>Keyboard plus pointer: hovering an item selects it, a click / tap runs it.</summary>
+    public PauseAction HandleInput(KeyboardState kb, KeyboardState prevKb, MouseState ms, MouseState prevMs)
     {
+        // Pointer (fork): the menu was keyboard / D-pad only, also on phones.
+        if (ms.Position != _lastPointer)
+        {
+            _lastPointer = ms.Position;
+            for (int i = 0; i < ItemCount; i++)
+                if (_itemRects[i].Contains(ms.Position)) { Selection = i; break; }
+        }
+        if (ms.LeftButton == ButtonState.Pressed && prevMs.LeftButton == ButtonState.Released)
+        {
+            for (int i = 0; i < ItemCount; i++)
+            {
+                if (!_itemRects[i].Contains(ms.Position)) continue;
+                Selection = i;
+                return ActionFor(i);
+            }
+        }
+
         // Navigation
         if (kb.IsKeyDown(Keys.Up) && !prevKb.IsKeyDown(Keys.Up))
             Selection = (Selection - 1 + ItemCount) % ItemCount;
@@ -77,42 +102,45 @@ public class PauseMenu
         // Selection with Enter or Space
         if ((kb.IsKeyDown(Keys.Enter) && !prevKb.IsKeyDown(Keys.Enter)) ||
             (kb.IsKeyDown(Keys.Space) && !prevKb.IsKeyDown(Keys.Space)))
-        {
-            if (_isMultiplayer)
-            {
-                return Selection switch
-                {
-                    0 => PauseAction.Resume,
-                    1 => PauseAction.OpenSettings,
-                    2 => PauseAction.ExitToMenu,
-                    _ => PauseAction.None
-                };
-            }
-#if ANDROID
-            return Selection switch
-            {
-                0 => PauseAction.Resume,
-                1 => PauseAction.RestartSong,
-                2 => PauseAction.OpenSettings,
-                3 => PauseAction.ExitToMenu,
-                _ => PauseAction.None
-            };
-#else
-            return Selection switch
-            {
-                0 => PauseAction.Resume,
-                1 => PauseAction.RestartSong,
-                2 => PauseAction.OpenHudEditor,
-                3 => PauseAction.OpenSettings,
-                4 => PauseAction.ExitToMenu,
-                _ => PauseAction.None
-            };
-#endif
-        }
-        
+            return ActionFor(Selection);
+
         return PauseAction.None;
     }
     
+    private PauseAction ActionFor(int item)
+    {
+        if (_isMultiplayer)
+        {
+            return item switch
+            {
+                0 => PauseAction.Resume,
+                1 => PauseAction.OpenSettings,
+                2 => PauseAction.ExitToMenu,
+                _ => PauseAction.None
+            };
+        }
+#if ANDROID
+        return item switch
+        {
+            0 => PauseAction.Resume,
+            1 => PauseAction.RestartSong,
+            2 => PauseAction.OpenSettings,
+            3 => PauseAction.ExitToMenu,
+            _ => PauseAction.None
+        };
+#else
+        return item switch
+        {
+            0 => PauseAction.Resume,
+            1 => PauseAction.RestartSong,
+            2 => PauseAction.OpenHudEditor,
+            3 => PauseAction.OpenSettings,
+            4 => PauseAction.ExitToMenu,
+            _ => PauseAction.None
+        };
+#endif
+    }
+
     /// <summary>
     /// Draw pause menu adjusted to letterbox window coordinates.
     /// </summary>
@@ -234,6 +262,9 @@ public class PauseMenu
             bool isSelected = (i == Selection);
             
             float itemY = menuY + i * itemH;
+            if (i < _itemRects.Length)
+                _itemRects[i] = new Rectangle((int)(menuX - TransformSize(30)), (int)(itemY - TransformSize(8)),
+                    (int)(itemW + TransformSize(50)), (int)itemH);
             
             // Selection background with animation
             if (isSelected)
@@ -293,7 +324,9 @@ public class PauseMenu
 
         // Bottom instructions (aligned cleanly on the left)
         float bottomY = TransformY(sh - 42f);
-        string instructions = "UP/DOWN: Navigate   |   ENTER: Select   |   ESC: Resume";
+        string instructions = UI.PointerInput.IsTouch
+            ? "Tap an option   |   Back: resume"
+            : "UP/DOWN: Navigate   |   ENTER / Click: Select   |   ESC: Resume";
         int instrFontSize = (int)(displayH * 0.025f);
         instrFontSize = Math.Clamp(instrFontSize, 14, 30);
         

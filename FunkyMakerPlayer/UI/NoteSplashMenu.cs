@@ -19,6 +19,7 @@ public class NoteSplashMenu : IScreenOverlay
     public bool IsActive { get; set; } = false;
     public int Selection { get; set; } = 0;
     public bool SelectionConfirmed { get; private set; } = false;
+    private readonly PickerTouch _touch = new(); // taps / clicks (fork)
     
     private List<string> _styles = new();
     private NoteSplashStyle? _previewStyle = null;
@@ -45,6 +46,7 @@ public class NoteSplashMenu : IScreenOverlay
         LoadPreview(_styles[Selection], graphicsDevice);
         _animTimer = 0f;
         SelectionConfirmed = false;
+        _touch.Sync();
         IsActive = true;
     }
     
@@ -115,6 +117,15 @@ public class NoteSplashMenu : IScreenOverlay
             _previewParticles.Update(new GameTime(TimeSpan.Zero, TimeSpan.FromSeconds(deltaTime)));
         }
         
+
+        // Taps / clicks (fork): a row previews it, the previewed row again or APPLY applies, BACK cancels.
+        var tap = _touch.Poll(Selection);
+        if (tap.Select is int pick && pick >= 0 && pick < _styles.Count && pick != Selection)
+        {
+            Selection = pick;
+            LoadPreview(_styles[Selection], graphicsDevice);
+            _animTimer = 0f;
+        }
         // Navigation
         if (kb.IsKeyDown(Keys.Up) && !prevKb.IsKeyDown(Keys.Up))
         {
@@ -131,7 +142,8 @@ public class NoteSplashMenu : IScreenOverlay
         }
         
         // Confirm selection
-        if ((kb.IsKeyDown(Keys.Enter) && !prevKb.IsKeyDown(Keys.Enter)) ||
+        if (tap.Confirm ||
+            (kb.IsKeyDown(Keys.Enter) && !prevKb.IsKeyDown(Keys.Enter)) ||
             (kb.IsKeyDown(Keys.Space) && !prevKb.IsKeyDown(Keys.Space)))
         {
             Game1.NoteSplashStyleName = _styles[Selection];
@@ -140,7 +152,7 @@ public class NoteSplashMenu : IScreenOverlay
         }
         
         // Cancel
-        if (kb.IsKeyDown(Keys.Escape) && !prevKb.IsKeyDown(Keys.Escape))
+        if (tap.Cancel || (kb.IsKeyDown(Keys.Escape) && !prevKb.IsKeyDown(Keys.Escape)))
         {
             Close();
         }
@@ -159,28 +171,34 @@ public class NoteSplashMenu : IScreenOverlay
         DrawRect(spriteBatch, 0, 0, sw, sh, Color.Black * 0.92f);
         
         // Header
-        DrawRect(spriteBatch, 0, 0, sw, 54, new Color(15, 15, 28));
-        DrawRect(spriteBatch, 0, 52, sw, 2, accentColor * 0.7f);
-        DrawRect(spriteBatch, 0, 0, 4, 54, accentColor);
+        // (fork) Layout scales with the screen (it was fixed pixels: tiny rows on phones).
+        float u = PickerTouch.Scale(sh);
+        int hh = PickerTouch.HeaderHeight(sh);
+        _touch.BeginRows();
+        DrawRect(spriteBatch, 0, 0, sw, hh, new Color(15, 15, 28));
+        DrawRect(spriteBatch, 0, hh - 2, sw, 2, accentColor * 0.7f);
+        DrawRect(spriteBatch, 0, 0, 4, hh, accentColor);
         
         if (_fontRenderer != null)
         {
             int titleSize = (int)(sh * 0.055f);
             titleSize = Math.Clamp(titleSize, 32, 64);
             _fontRenderer.DrawString(spriteBatch, "NOTE SPLASH",
-                new Vector2(20, 10), accentColor, titleSize);
+                new Vector2(20 * u, 6 * u), accentColor, titleSize);
         }
         else
         {
             spriteBatch.DrawString(_font, "NOTE SPLASH",
-                new Vector2(20, 10), accentColor, 0f, Vector2.Zero, 1.3f, SpriteEffects.None, 0f);
+                new Vector2(20 * u, 6 * u), accentColor, 0f, Vector2.Zero, 1.3f, SpriteEffects.None, 0f);
         }
         
+        _touch.DrawHeaderButtons(spriteBatch, _pixel, _font, _fontRenderer, sw, sh, accentColor);
+
         // ── Left panel: splash style list ─────────────────────────────────────
-        float listX = 16f;
+        float listX = 16f * u;
         float listW = sw * 0.38f;
-        float listY = 64f;
-        float itemH = 38f;
+        float listY = hh + 10f * u;
+        float itemH = 38f * u;
         
         if (_fontRenderer != null)
         {
@@ -195,7 +213,7 @@ public class NoteSplashMenu : IScreenOverlay
                 new Vector2(listX + 8, listY),
                 accentColor * 0.6f, 0f, Vector2.Zero, 0.65f, SpriteEffects.None, 0f);
         }
-        listY += 22f;
+        listY += 22f * u;
         
         for (int i = 0; i < _styles.Count; i++)
         {
@@ -203,6 +221,7 @@ public class NoteSplashMenu : IScreenOverlay
             bool sel = i == Selection;
             bool cur = _styles[i] == Game1.NoteSplashStyleName;
             
+            _touch.AddRow(i, new Rectangle((int)listX, (int)(iy - 2), (int)listW, (int)(itemH - 2)));
             if (sel)
             {
                 DrawRect(spriteBatch, (int)listX, (int)(iy - 2), (int)listW, (int)(itemH - 2),
@@ -219,12 +238,12 @@ public class NoteSplashMenu : IScreenOverlay
                 int itemSize = (int)(sh * 0.032f);
                 itemSize = Math.Clamp(itemSize, 18, 32);
                 _fontRenderer.DrawString(spriteBatch, label,
-                    new Vector2(listX + 12, iy + 8), textColor, itemSize);
+                    new Vector2(listX + 12 * u, iy + 8 * u), textColor, itemSize);
             }
             else
             {
                 spriteBatch.DrawString(_font, label,
-                    new Vector2(listX + 12, iy + 8),
+                    new Vector2(listX + 12 * u, iy + 8 * u),
                     textColor, 0f, Vector2.Zero, 0.82f, SpriteEffects.None, 0f);
             }
         }
@@ -364,15 +383,15 @@ public class NoteSplashMenu : IScreenOverlay
         }
         
         // Footer hint
-        string hint = "UP/DOWN  Select    ENTER  Apply    ESC  Back";
+        string hint = PickerTouch.HintText;
         if (_fontRenderer != null)
         {
             int hintSize = (int)(sh * 0.023f);
             hintSize = Math.Clamp(hintSize, 12, 22);
             Vector2 hintMeasure = _fontRenderer.MeasureString(hint, hintSize);
             _fontRenderer.DrawString(spriteBatch, hint,
-                new Vector2(sw / 2f - hintMeasure.X / 2f, sh - 22),
-                Color.White * 0.2f, hintSize);
+                new Vector2(sw / 2f - hintMeasure.X / 2f, sh - hintMeasure.Y - 8 * u),
+                Color.White * 0.4f, hintSize);
         }
         else
         {

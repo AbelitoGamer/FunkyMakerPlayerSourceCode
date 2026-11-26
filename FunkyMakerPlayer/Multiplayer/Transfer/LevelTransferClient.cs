@@ -16,7 +16,7 @@ namespace FunkyMakerPlayer.Multiplayer.Transfer
     /// to download it (<see cref="TransferDownloadPacket"/>).
     /// Supports resilient chunked uploads (<c>PUT /api/transfers/{id}/chunks?offset=N</c> +
     /// <c>POST /api/transfers/{id}/complete</c>) with per-chunk retries so large uploads never hit
-    /// reverse-proxy ~100 s request timeouts (Render/Cloudflare), with automatic fallback to single-PUT
+    /// reverse-proxy ~100 s request timeouts (Cloudflare), with automatic fallback to single-PUT
     /// (<c>PUT /api/transfers/{id}/file</c>) against older servers.
     /// </summary>
     public static class LevelTransferClient
@@ -48,14 +48,25 @@ namespace FunkyMakerPlayer.Multiplayer.Transfer
             if (packedVariant ? (t.MaxSize > 0 && fileLength > t.MaxSize) : (fileLength != t.Size))
                 throw new IOException(packedVariant ? "The packed level is larger than the server allows." : "The level file changed since it was listed.");
 
+            // Packed files are made by us, so only we know their hash; the server (Workers) can't
+            // hash big files itself and passes it on to the downloaders, who check it.
+            string? fileHash = packedVariant ? await HashFileAsync(path, ct) : null;
+
             if (NetworkManager.Instance.SupportsChunkedUpload)
             {
-                bool fellBack = await TryUploadChunkedAsync(t, path, fileLength, progress, ct);
+                bool fellBack = await TryUploadChunkedAsync(t, path, fileLength, fileHash, progress, ct);
                 if (!fellBack)
                     return;
             }
 
-            await UploadSinglePutAsync(t, path, progress, ct);
+            await UploadSinglePutAsync(t, path, fileHash, progress, ct);
+        }
+
+        private static async Task<string> HashFileAsync(string path, CancellationToken ct)
+        {
+            await using var file = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read, BufferSize, useAsync: true);
+            using var sha = SHA256.Create();
+            return Convert.ToHexStringLower(await sha.ComputeHashAsync(file, ct));
         }
 
         /// <summary>
@@ -64,10 +75,12 @@ namespace FunkyMakerPlayer.Multiplayer.Transfer
         /// signalling the caller to fall back to the legacy single PUT endpoint.
         /// </summary>
         private static async Task<bool> TryUploadChunkedAsync(
-            TransferUploadPacket t, string path, long fileLength, IProgress<long>? progress, CancellationToken ct)
+            TransferUploadPacket t, string path, long fileLength, string? fileHash, IProgress<long>? progress, CancellationToken ct)
         {
+            // Use exactly the server's chunk size: every chunk but the last must have it (R2 multipart
+            // parts are all the same size), and offsets must be multiples of it.
             int chunkSize = NetworkManager.Instance.UploadChunkBytes;
-            if (chunkSize < 256 * 1024 || chunkSize > 16 * 1024 * 1024)
+            if (chunkSize < 256 * 1024 || chunkSize > 64 * 1024 * 1024)
                 chunkSize = DefaultChunkBytes;
 
             await using var file = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read, BufferSize, useAsync: true);
@@ -173,6 +186,7 @@ namespace FunkyMakerPlayer.Multiplayer.Transfer
 
                     using var request = new HttpRequestMessage(HttpMethod.Post, $"{ServerUrl}/api/transfers/{t.TransferId}/complete");
                     request.Headers.Add(Protocol.TokenHeader, t.Token);
+                    if (fileHash != null) request.Headers.Add(Protocol.FileHashHeader, fileHash);
                     using var response = await Http.SendAsync(request, doneCts.Token);
                     if (response.IsSuccessStatusCode)
                         return false;
@@ -202,11 +216,12 @@ namespace FunkyMakerPlayer.Multiplayer.Transfer
             throw new IOException($"Upload finalize failed: {completeError?.Message}");
         }
 
-        private static async Task UploadSinglePutAsync(TransferUploadPacket t, string path, IProgress<long>? progress, CancellationToken ct)
+        private static async Task UploadSinglePutAsync(TransferUploadPacket t, string path, string? fileHash, IProgress<long>? progress, CancellationToken ct)
         {
             await using var file = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read, BufferSize, useAsync: true);
             using var request = new HttpRequestMessage(HttpMethod.Put, $"{ServerUrl}/api/transfers/{t.TransferId}/file");
             request.Headers.Add(Protocol.TokenHeader, t.Token);
+            if (fileHash != null) request.Headers.Add(Protocol.FileHashHeader, fileHash);
             request.Content = new ProgressStreamContent(file, BufferSize, progress);
             request.Content.Headers.ContentLength = file.Length;
             request.Content.Headers.ContentType = new MediaTypeHeaderValue("application/octet-stream");

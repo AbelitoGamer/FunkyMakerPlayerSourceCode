@@ -369,7 +369,7 @@ public partial class FreeplayMenu
         var psz = MeasureText(info, pf);
         DrawText(sb, info, new Vector2(r.Right - lp - psz.X, r.Y + UiScale.Px(6, s)), Color.White * (0.5f * alpha), pf);
 
-        string open = $"[{Controls.Hint(HotkeyAction.FreeplayAttempts)}] ALL ATTEMPTS  >";
+        string open = $"{Controls.Tag(HotkeyAction.FreeplayAttempts)}ALL ATTEMPTS  >";
         var osz = MeasureText(open, pf);
         DrawText(sb, open, new Vector2(r.Right - lp - osz.X, r.Bottom - UiScale.Px(8, s) - osz.Y),
             (_bestCardHover ? new Color(255, 215, 0) : Color.White * 0.45f) * alpha, pf);
@@ -408,7 +408,7 @@ public partial class FreeplayMenu
         DrawCardLabel(sb, "MODIFIERS", r.X + lp, r.Y + UiScale.Px(6, s), alpha, s);
 
         int pf = UiScale.FontPx(12, s);
-        string open = $"[{Controls.Hint(HotkeyAction.FreeplayModifiers)}] CHANGE  >";
+        string open = $"{Controls.Tag(HotkeyAction.FreeplayModifiers)}CHANGE  >";
         var osz = MeasureText(open, pf);
         DrawText(sb, open, new Vector2(r.Right - lp - osz.X, r.Y + UiScale.Px(6, s)), (_modBarHover ? acc : Color.White * 0.45f) * alpha, pf);
 

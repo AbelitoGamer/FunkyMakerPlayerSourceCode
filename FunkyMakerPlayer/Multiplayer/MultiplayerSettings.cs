@@ -150,8 +150,8 @@ namespace FunkyMakerPlayer.Multiplayer
         /// <summary>Old name of <see cref="ServerUrl"/> (separate transfer server); used when ServerUrl is empty.</summary>
         public string TransferServerUrl { get; set; } = "";
 
-        /// <summary>The fork's online server (room system). The old game server only speaks the 1v1 protocol.</summary>
-        public const string DefaultServerUrl = "https://funkymaker-transfer.onrender.com";
+        /// <summary>The online server (Cloudflare Workers + R2, protocol 4). Repo: FunkyMakerTransferServer/worker.</summary>
+        public const string DefaultServerUrl = "https://funkymaker-online.abelitogameryt.workers.dev";
         public const string ServerUrlEnvironmentVariable = "FUNKYMAKER_SERVER_URL";
 
         /// <summary>Server to connect to: env var, then settings, then the default.</summary>
@@ -162,12 +162,19 @@ namespace FunkyMakerPlayer.Multiplayer
             {
                 string? env = Environment.GetEnvironmentVariable(ServerUrlEnvironmentVariable);
                 string url = !string.IsNullOrWhiteSpace(env) ? env
-                    : !string.IsNullOrWhiteSpace(ServerUrl) ? ServerUrl
-                    : !string.IsNullOrWhiteSpace(TransferServerUrl) ? TransferServerUrl
+                    : IsUsableSavedUrl(ServerUrl) ? ServerUrl
+                    : IsUsableSavedUrl(TransferServerUrl) ? TransferServerUrl
                     : DefaultServerUrl;
                 return url.Trim().TrimEnd('/');
             }
         }
+
+        /// <summary>
+        /// Saved URLs of the retired Render servers (protocol 3 and older) are ignored, so players who
+        /// had one in their settings file move to the new server instead of getting "update the game".
+        /// </summary>
+        private static bool IsUsableSavedUrl(string? url) =>
+            !string.IsNullOrWhiteSpace(url) && !url.Contains(".onrender.com", StringComparison.OrdinalIgnoreCase);
 
         /// <summary>What the strumline of the other side shows in Teams matches.</summary>
         public enum RivalStrumlineMode

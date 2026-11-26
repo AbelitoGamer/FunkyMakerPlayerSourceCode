@@ -55,9 +55,6 @@ public class SettingsManager
     private const int AudioVideoTab = 3;
     private const int ControlsTab = 4;
 
-    // Available countdown packs (cached)
-    private List<string> _availableCountdowns = new() { "default" };
-
     // Scroll & mouse hit-test state (updated during Draw)
     private bool _followSelectionScroll = true;
     private int _lastItemCount = 8;
@@ -68,6 +65,7 @@ public class SettingsManager
     private int _hoveredRow = -1;
     private int _hoveredArrow = 0; // -1 = '<', +1 = '>'
     private Point _lastMousePos = new(-9999, -9999);
+    private long _arrowHoldStart, _arrowNextRepeat; // touch hold-to-repeat on < > (fork)
     private readonly List<RowHitbox> _rowHitboxes = new();
 
     // ── Initialization ───────────────────────────────────────────────────────
@@ -75,7 +73,6 @@ public class SettingsManager
     public SettingsManager()
     {
         Console.WriteLine("[SettingsManager] Initialized with tabs");
-        ScanAvailableCountdowns();
     }
 
     public void Reset()
@@ -102,54 +99,6 @@ public class SettingsManager
         _followSelectionScroll = true;
     }
 
-    /// <summary>
-    /// Scans mods/countdowns/ folder for available countdown packs.
-    /// </summary>
-    private DateTime _lastCountdownScan = DateTime.UtcNow;
-    private string? _lastCountdownSummary;
-
-    private void ScanAvailableCountdowns()
-    {
-        _availableCountdowns.Clear();
-        _availableCountdowns.Add("default");
-
-        try
-        {
-            string countdownsDir = PlatformPaths.GetCountdownsPath();
-            if (System.IO.Directory.Exists(countdownsDir))
-            {
-                foreach (var dir in System.IO.Directory.GetDirectories(countdownsDir))
-                {
-                    string name = System.IO.Path.GetFileName(dir);
-                    if (!string.IsNullOrEmpty(name) && !DefaultMods.IsDefaultCountdown(name))
-                    {
-                        string readyPath = CaseInsensitivePaths.Find(dir, "ready.png");
-                        string setPath = CaseInsensitivePaths.Find(dir, "set.png");
-                        string goPath = CaseInsensitivePaths.Find(dir, "go.png");
-
-                        if (System.IO.File.Exists(readyPath) &&
-                            System.IO.File.Exists(setPath) &&
-                            System.IO.File.Exists(goPath))
-                        {
-                            _availableCountdowns.Add(name);
-                        }
-                    }
-                }
-            }
-
-            // Rescanned every 2 s while the Notes tab is open: log only when the list changed.
-            string summary = string.Join(", ", _availableCountdowns);
-            if (summary != _lastCountdownSummary)
-            {
-                _lastCountdownSummary = summary;
-                Console.WriteLine($"[SettingsManager] Found {_availableCountdowns.Count} countdown packs: {summary}");
-            }
-        }
-        catch (Exception ex)
-        {
-            Console.WriteLine($"[SettingsManager] Error scanning countdowns: {ex.Message}");
-        }
-    }
 
     // ── Tab Navigation ───────────────────────────────────────────────────────
 
@@ -505,13 +454,6 @@ public class SettingsManager
 
     private void BuildNotesEntries(List<SettingItem> entries)
     {
-        // Countdown packs added since the game started show up too (fork: scanned once before).
-        // The entries are rebuilt every frame, so the folder is rescanned at most every 2 s.
-        if ((DateTime.UtcNow - _lastCountdownScan).TotalSeconds > 2)
-        {
-            _lastCountdownScan = DateTime.UtcNow;
-            ScanAvailableCountdowns();
-        }
         entries.Add(new SettingItem
         {
             Label = "Note Style",
@@ -542,20 +484,12 @@ public class SettingsManager
         {
             Label = "Countdown Style",
             Value = Game1.SelectedCountdown,
-            Kind = SettingKind.Adjustable,
-            Description = "Visual 3-2-1-GO countdown pack before the song starts (ENTER opens preview menu, LEFT/RIGHT cycles).",
+            Kind = SettingKind.Action,
+            Description = "Visual 3-2-1-GO countdown pack before the song starts (mods/countdowns/).",
             OnSelect = () =>
             {
                 IsActive = false;
                 return new SettingsActionResult { OpenCountdownMenu = true, NeedsSave = false };
-            },
-            OnAdjust = (isLeft, _) =>
-            {
-                int currentIndex = _availableCountdowns.IndexOf(Game1.SelectedCountdown);
-                if (currentIndex == -1) currentIndex = 0;
-                int newIndex = (currentIndex + (isLeft ? -1 : 1) + _availableCountdowns.Count) % _availableCountdowns.Count;
-                Game1.SelectedCountdown = _availableCountdowns[newIndex];
-                return new SettingsActionResult { NeedsSave = true };
             }
         });
 
@@ -1102,6 +1036,18 @@ public class SettingsManager
                 return new SettingsActionResult { NeedsSave = true };
             }
         });
+        entries.Add(new SettingItem
+        {
+            Label = "Menu Buttons",
+            Value = Game1.MenuButtonsMode switch { 1 => "ON", 2 => "OFF", _ => "AUTO" },
+            Kind = SettingKind.Adjustable,
+            Description = "On-screen D-pad and A / B in menus. AUTO: hidden where tapping works (back gesture = B). ON: always. OFF: never.",
+            OnAdjust = (_, delta) =>
+            {
+                Game1.MenuButtonsMode = ((Game1.MenuButtonsMode + (delta > 0 ? 1 : -1)) % 3 + 3) % 3;
+                return new SettingsActionResult { NeedsSave = true };
+            }
+        });
         #endif
 
         string? group = null;
@@ -1391,21 +1337,7 @@ public class SettingsManager
         var item = entries[Selection];
         if (item.Kind == SettingKind.Adjustable)
         {
-            // Countdown Style keeps Enter-to-open-menu? Wait: if focused, Enter unfocuses;
-            // if it's a pure adjustable value (Scroll Speed, Volume, etc.), Enter focuses/unfocuses!
-            if (item.OnSelect != null && IsFocused)
-            {
-                IsFocused = false;
-                return new SettingsActionResult();
-            }
-            if (item.OnSelect != null && !IsFocused && item.Label == "Countdown Style")
-            {
-                // Still allow clicking '<' '>' or focusing? Better: Enter toggles focus cleanly on ALL adjustable items,
-                // OR for Countdown Style opens the Countdown menu! Let's check: Countdown Style has < default > visual preview,
-                // so Left/Right focuses/cycles OR Enter opens visual preview! Calling OnSelect opens the visual picker menu cleanly.
-                return item.OnSelect();
-            }
-
+            // Enter focuses / unfocuses an adjustable value (Scroll Speed, Volume, ...).
             IsFocused = !IsFocused;
             return new SettingsActionResult();
         }
@@ -1462,7 +1394,17 @@ public class SettingsManager
         if (moved) _lastMousePos = pos;
 
         int wheelDelta = mouse.ScrollWheelValue - prevMouse.ScrollWheelValue;
-        if (wheelDelta != 0)
+        if (UI.PointerInput.IsTouch)
+        {
+            // Touch (fork): the list follows the finger 1:1 instead of in wheel notches.
+            float drag = UI.PointerInput.DragDeltaY;
+            if (drag != 0f)
+            {
+                _followSelectionScroll = false;
+                ScrollOffset = Math.Max(0f, ScrollOffset - drag);
+            }
+        }
+        else if (wheelDelta != 0)
         {
             _followSelectionScroll = false;
             ScrollOffset = Math.Max(0f, ScrollOffset - (wheelDelta / 120f) * 56f);
@@ -1492,13 +1434,41 @@ public class SettingsManager
                 else if (hb.RightArrowRect.HasValue && hb.RightArrowRect.Value.Contains(pos))
                     _hoveredArrow = 1;
 
-                if (moved && !IsFocused)
+                // Hover-select follows the mouse; a finger only selects by tapping (it would select
+                // every row it crosses while scrolling). Pointer selections never re-centre the list.
+                if (moved && !IsFocused && !UI.PointerInput.IsTouch && Selection != hb.Index)
+                {
                     Selection = hb.Index;
+                    _followSelectionScroll = false;
+                }
                 break;
             }
         }
 
         bool clicked = mouse.LeftButton == ButtonState.Pressed && prevMouse.LeftButton == ButtonState.Released;
+
+        // Touch (fork): holding a finger on < or > repeats it (a tap is one step). PointerInput
+        // turns a hold into a long press, so the lift that ends it is not also a click.
+        if (UI.PointerInput.IsTouch && _modsMoveTarget == null)
+        {
+            bool holding = UI.PointerInput.IsDown && !UI.PointerInput.IsDragging && _hoveredRow >= 0 && _hoveredArrow != 0;
+            long now = Environment.TickCount64;
+            if (!holding) _arrowHoldStart = 0;
+            else if (_arrowHoldStart == 0) { _arrowHoldStart = now; _arrowNextRepeat = now + 500; }
+            else if (now >= _arrowNextRepeat)
+            {
+                _arrowNextRepeat = now + 90;
+                var holdEntries = BuildTabEntries(game);
+                if (_hoveredRow < holdEntries.Count && holdEntries[_hoveredRow] is { Kind: SettingKind.Adjustable, OnAdjust: not null } held)
+                {
+                    Selection = _hoveredRow;
+                    _followSelectionScroll = false;
+                    IsFocused = true;
+                    adjustmentResult = RunAdjust(game, held, _hoveredArrow < 0);
+                    return null;
+                }
+            }
+        }
 
         // The confirmation window swallows every click (outside its buttons does nothing)
         if (_modsMoveTarget != null)
@@ -1536,6 +1506,7 @@ public class SettingsManager
                     Selection = _hoveredRow;
                     IsFocused = false;
                 }
+                _followSelectionScroll = false;
 
                 var item = entries[Selection];
                 if (_hoveredArrow != 0 && item.Kind == SettingKind.Adjustable && item.OnAdjust != null)
@@ -1544,6 +1515,10 @@ public class SettingsManager
                     adjustmentResult = RunAdjust(game, item, _hoveredArrow < 0);
                     return null;
                 }
+                // Touch: "focus" only means something with the D-pad; tapping the row selects it
+                // (shows its description) and the < > buttons change it.
+                if (UI.PointerInput.IsTouch && item.Kind == SettingKind.Adjustable)
+                    return null;
 
                 return HandleSelectAction(game);
             }
@@ -1605,8 +1580,9 @@ public class SettingsManager
         }
 
         // Top-right subtle clickable [ESC Back] button
-        int backBtnW = (int)(110 * scaleFactor);
-        int backBtnH = (int)(26 * scaleFactor);
+        // Touch: a bigger "< BACK" (the button read "ESC: Back" and was 26 px tall at 720p).
+        int backBtnW = (int)((UI.PointerInput.IsTouch ? 140 : 110) * scaleFactor);
+        int backBtnH = (int)((UI.PointerInput.IsTouch ? 36 : 26) * scaleFactor);
         int backBtnX = screenWidth - backBtnW - (int)(18 * scaleFactor);
         int backBtnY = Math.Max(4, (tabY - backBtnH) / 2);
         _backBtnRect = new Rectangle(backBtnX, backBtnY, backBtnW, backBtnH);
@@ -1614,7 +1590,7 @@ public class SettingsManager
             _backBtnHovered ? new Color(0xFF, 0x44, 0x88) * 0.35f : new Color(25, 22, 38) * 0.85f);
         DrawRect(spriteBatch, pixel, backBtnX, backBtnY + backBtnH - 1, backBtnW, 1,
             _backBtnHovered ? new Color(0xFF, 0x44, 0x88) : new Color(0xFF, 0x44, 0x88) * 0.45f);
-        string backLabel = "ESC: Back";
+        string backLabel = UI.PointerInput.IsTouch ? "<  BACK" : "ESC: Back";
         if (fontRenderer != null)
         {
             int backSzPx = Math.Max(12, (int)(15 * scaleFactor));
@@ -1785,7 +1761,9 @@ public class SettingsManager
         }
 
         // ── Navigation hint bar (ASCII keys guaranteed to render cleanly) ─────
-        string hint = IsFocused
+        string hint = UI.PointerInput.IsTouch
+            ? "Tap a tab or option   |   Tap  <  >  to change values (hold to repeat)   |   Drag to scroll   |   Back: return"
+            : IsFocused
             ? "LEFT/RIGHT: Adjust Value   |   ENTER / UP / DOWN / ESC: Confirm & Unfocus   |   -/+: Volume"
             : "UP/DOWN: Navigate   |   LEFT/RIGHT or Q/E: Switch Tab   |   ENTER: Select / Focus   |   -/+: Volume   |   ESC: Back";
 
@@ -1920,7 +1898,10 @@ public class SettingsManager
                 Vector2 arrowSz = fr != null ? fr.MeasureString("<", textSize) : font.MeasureString("<") * scale;
 
                 float padX = 10f;
-                float arrowW = Math.Max(24f * scaleFactor, arrowSz.X + 12f);
+                // Touch: finger-sized < > buttons (they were ~36 px wide on a phone).
+                float arrowW = UI.PointerInput.IsTouch
+                    ? Math.Max(rowH * 1.1f, arrowSz.X + 24f)
+                    : Math.Max(24f * scaleFactor, arrowSz.X + 12f);
                 float rightEdge = panelX + panelW - padX;
                 float rightArrowX = rightEdge - arrowW;
                 float valX = rightArrowX - 8f - valSz.X;
@@ -1928,6 +1909,13 @@ public class SettingsManager
 
                 var leftRect = new Rectangle((int)leftArrowX, rowY, (int)arrowW, rowH);
                 var rightRect = new Rectangle((int)rightArrowX, rowY, (int)arrowW, rowH);
+
+                if (UI.PointerInput.IsTouch)
+                {
+                    var bg = Color.White * (sel ? 0.10f : 0.05f);
+                    DrawRect(sb, pixel, leftRect.X + 3, leftRect.Y + 4, leftRect.Width - 6, leftRect.Height - 8, bg);
+                    DrawRect(sb, pixel, rightRect.X + 3, rightRect.Y + 4, rightRect.Width - 6, rightRect.Height - 8, bg);
+                }
 
                 bool lHover = hovered && _hoveredArrow == -1;
                 bool rHover = hovered && _hoveredArrow == 1;

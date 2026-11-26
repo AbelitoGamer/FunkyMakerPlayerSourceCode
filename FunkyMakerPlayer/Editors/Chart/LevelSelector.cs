@@ -488,7 +488,7 @@ public class LevelSelector : FunkyMakerPlayer.UI.IDirectScreen
         int backW = UiScale.Px(112, s);
         int backH = UiScale.Px(36, s);
         _backBtnRect = new Rectangle(sw - backW - pad, topY, backW, backH);
-        DrawPillButton(sb, _backBtnRect, "ESC  Back", new Color(34, 30, 48), Color.White * 0.85f, ACCENT_PINK, UiScale.FontPx(15, s), _prevMs.Position);
+        DrawPillButton(sb, _backBtnRect, UI.PointerInput.BackLabel, new Color(34, 30, 48), Color.White * 0.85f, ACCENT_PINK, UiScale.FontPx(15, s), _prevMs.Position);
 
         int newBtnW = UiScale.Px(166, s);
         int refreshW = UiScale.Px(110, s);
