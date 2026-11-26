@@ -170,6 +170,10 @@ namespace FunkyMakerPlayer.Multiplayer
                     RegisterKnownUser(match.Player1.PlayerId, match.Player1.Username, match.Player1.ColorHue, match.Timestamp);
                 if (match.Player2 != null)
                     RegisterKnownUser(match.Player2.PlayerId, match.Player2.Username, match.Player2.ColorHue, match.Timestamp);
+                if (match.Players != null)
+                    foreach (var p in match.Players)
+                        if (p != null)
+                            RegisterKnownUser(p.PlayerId, p.Username, p.ColorHue, match.Timestamp);
             }
         }
 
@@ -351,6 +355,10 @@ namespace FunkyMakerPlayer.Multiplayer
                             updates += IngestUserObjectSilent(p1, ts);
                         if (TryGetPropertyIgnoreCase(m, "Player2", out var p2) && p2.ValueKind == JsonValueKind.Object)
                             updates += IngestUserObjectSilent(p2, ts);
+                        if (TryGetPropertyIgnoreCase(m, "Players", out var all) && all.ValueKind == JsonValueKind.Array)
+                            foreach (var p in all.EnumerateArray())
+                                if (p.ValueKind == JsonValueKind.Object)
+                                    updates += IngestUserObjectSilent(p, ts);
                     }
                 }
             }

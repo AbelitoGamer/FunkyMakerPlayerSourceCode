@@ -100,12 +100,7 @@ namespace FunkyMakerPlayer.Multiplayer
         public List<MatchHistoryEntry> GetPlayerMatchHistory(string playerId, int count = 10, string? username = null)
         {
             return _matchHistory
-                .Where(m =>
-                    (!string.IsNullOrWhiteSpace(playerId) &&
-                     (m.Player1.PlayerId == playerId || m.Player2.PlayerId == playerId)) ||
-                    (!string.IsNullOrWhiteSpace(username) &&
-                     (string.Equals(m.Player1.Username, username, StringComparison.OrdinalIgnoreCase) ||
-                      string.Equals(m.Player2.Username, username, StringComparison.OrdinalIgnoreCase))))
+                .Where(m => m.Involves(playerId, username))
                 .OrderByDescending(m => m.Timestamp)
                 .Take(count)
                 .ToList();
@@ -292,8 +287,21 @@ namespace FunkyMakerPlayer.Multiplayer
             bool changed = false;
             foreach (var pkt in serverMatches)
             {
-                if (!string.IsNullOrEmpty(pkt.MatchId) && _matchHistory.Any(m => m.MatchId == pkt.MatchId))
+                if (pkt == null) continue;
+                var players = (pkt.Players ?? new List<PlayerMatchData>()).Select(ToInfo).ToList();
+                var existing = string.IsNullOrEmpty(pkt.MatchId) ? null : _matchHistory.FirstOrDefault(m => m.MatchId == pkt.MatchId);
+                if (existing != null)
+                {
+                    // Older builds cached room matches as plain 1v1 duels: fill in the full participant list.
+                    if (existing.Players.Count == 0 && players.Count > 0)
+                    {
+                        existing.Players = players;
+                        existing.Mode = pkt.Mode ?? "";
+                        existing.WinningTeam = pkt.WinningTeam;
+                        changed = true;
+                    }
                     continue;
+                }
 
                 _matchHistory.Add(new MatchHistoryEntry
                 {
@@ -302,30 +310,11 @@ namespace FunkyMakerPlayer.Multiplayer
                     Winner = pkt.Winner,
                     DurationSeconds = pkt.DurationSeconds,
                     Timestamp = pkt.Timestamp,
-                    Player1 = new PlayerMatchInfo
-                    {
-                        PlayerId = pkt.Player1.PlayerId,
-                        Username = pkt.Player1.Username,
-                        AvatarIndex = pkt.Player1.AvatarIndex,
-                        ColorHue = pkt.Player1.ColorHue,
-                        Score = pkt.Player1.Score,
-                        Accuracy = pkt.Player1.Accuracy,
-                        MaxCombo = pkt.Player1.MaxCombo,
-                        Misses = pkt.Player1.Misses,
-                        Disconnected = pkt.Player1.Disconnected
-                    },
-                    Player2 = new PlayerMatchInfo
-                    {
-                        PlayerId = pkt.Player2.PlayerId,
-                        Username = pkt.Player2.Username,
-                        AvatarIndex = pkt.Player2.AvatarIndex,
-                        ColorHue = pkt.Player2.ColorHue,
-                        Score = pkt.Player2.Score,
-                        Accuracy = pkt.Player2.Accuracy,
-                        MaxCombo = pkt.Player2.MaxCombo,
-                        Misses = pkt.Player2.Misses,
-                        Disconnected = pkt.Player2.Disconnected
-                    }
+                    Mode = pkt.Mode ?? "",
+                    WinningTeam = pkt.WinningTeam,
+                    Player1 = ToInfo(pkt.Player1),
+                    Player2 = ToInfo(pkt.Player2),
+                    Players = players,
                 });
                 changed = true;
             }
@@ -333,6 +322,23 @@ namespace FunkyMakerPlayer.Multiplayer
             if (changed)
                 Save();
         }
+
+        private static PlayerMatchInfo ToInfo(PlayerMatchData? p) => p == null ? new PlayerMatchInfo() : new PlayerMatchInfo
+        {
+            PlayerId = p.PlayerId,
+            Username = p.Username,
+            AvatarIndex = p.AvatarIndex,
+            ColorHue = p.ColorHue,
+            Score = p.Score,
+            Accuracy = p.Accuracy,
+            MaxCombo = p.MaxCombo,
+            Misses = p.Misses,
+            Disconnected = p.Disconnected,
+            Place = p.Place,
+            Team = p.Team,
+            Side = p.Side,
+            EloChange = p.EloChange,
+        };
         
         /// <summary>
         /// Recalculate rankings based on total score.
