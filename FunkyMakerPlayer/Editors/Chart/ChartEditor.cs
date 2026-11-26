@@ -284,6 +284,7 @@ namespace FunkyMakerPlayer.Editors.Chart
         {
             _audioManager.Dispose();
             DisposePreviewResources();
+            DisposeCharacterModalIcons();
             _hitSoundFx?.Dispose();
             _metroBeatFx?.Dispose();
             _metroSubFx?.Dispose();

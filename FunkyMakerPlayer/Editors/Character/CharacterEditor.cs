@@ -550,11 +550,20 @@ public sealed class CharacterEditor : IEditor, IDisposable
 
         if (_project != null)
         {
-            sb.Draw(_pixel, nameRect, _editingName ? new Color(48, 42, 74) : new Color(18, 18, 28));
-            DrawBorder(sb, nameRect, _editingName ? ACCENT_GOLD : Color.White * 0.18f);
-            string shown = _editingName ? (_nameBuffer + "_") : $"{_project.Name}  [rename]";
+            bool hovName = nameRect.Contains(_prevMouse.Position);
+            sb.Draw(_pixel, nameRect, _editingName ? new Color(48, 42, 74) : (hovName ? new Color(28, 26, 42) : new Color(18, 18, 28)));
+            DrawBorder(sb, nameRect, _editingName ? ACCENT_GOLD : (hovName ? ACCENT_PURPLE : Color.White * 0.18f));
+
+            var editIcon = GetIcon("edit");
+            int editSz = Math.Clamp((int)(nameRect.Height * 0.56f), 12, 24);
+            string shown = _editingName ? (_nameBuffer + "_") : _project.Name;
             DrawText(sb, shown, new Vector2(nameRect.X + UiScale.Px(10, s), nameRect.Y + (nameRect.Height - MeasureText(shown, UiScale.FontPx(14, s)).Y) / 2f),
                 _editingName ? ACCENT_GOLD : Color.White, UiScale.FontPx(14, s));
+            if (editIcon != null && !_editingName)
+            {
+                var editRect = new Rectangle(nameRect.Right - editSz - UiScale.Px(8, s), nameRect.Y + (nameRect.Height - editSz) / 2, editSz, editSz);
+                sb.Draw(editIcon, editRect, hovName ? ACCENT_GOLD : Color.White * 0.65f);
+            }
 
             _clickTargets.Add((nameRect, BeginRenameCharacter));
 
@@ -1456,10 +1465,17 @@ public sealed class CharacterEditor : IEditor, IDisposable
     private Texture2D? GetIcon(string name)
     {
         if (_icons.TryGetValue(name, out var cached)) return cached;
+        var tex = LoadUiIcon(_gd, name);
+        _icons[name] = tex;
+        return tex;
+    }
+
+    public static Texture2D? LoadUiIcon(GraphicsDevice gd, string name)
+    {
         try
         {
             using var s = TitleContainer.OpenStream($"Assets/images/ui/character_editor/{name}.png");
-            var tex = Texture2D.FromStream(_gd, s);
+            var tex = Texture2D.FromStream(gd, s);
             var px = new Color[tex.Width * tex.Height];
             tex.GetData(px);
             for (int i = 0; i < px.Length; i++)
@@ -1468,12 +1484,10 @@ public sealed class CharacterEditor : IEditor, IDisposable
                 px[i] = new Color(c.R * c.A / 255, c.G * c.A / 255, c.B * c.A / 255, c.A);
             }
             tex.SetData(px);
-            _icons[name] = tex;
             return tex;
         }
         catch
         {
-            _icons[name] = null;
             return null;
         }
     }

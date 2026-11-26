@@ -19,7 +19,43 @@ namespace FunkyMakerPlayer.Editors.Chart
         private bool _charModalAutoScale = false;
         private List<CharacterSummary> _charModalLibrary = new();
         private readonly List<(Rectangle Rect, Action OnClick)> _charModalClicks = new();
+        private readonly Dictionary<string, Texture2D?> _charModalIcons = new(StringComparer.OrdinalIgnoreCase);
         private Rectangle _charsBtnRect;
+
+        private void DisposeCharacterModalIcons()
+        {
+            foreach (var t in _charModalIcons.Values)
+                try { if (t != null && !t.IsDisposed) t.Dispose(); } catch { }
+            _charModalIcons.Clear();
+        }
+
+        private Texture2D? GetCharModalIcon(GraphicsDevice gd, string name)
+        {
+            if (_charModalIcons.TryGetValue(name, out var cached)) return cached;
+            var tex = CharacterEditor.LoadUiIcon(gd, name);
+            _charModalIcons[name] = tex;
+            return tex;
+        }
+
+        private static (string? Icon, string Label) ResolveModalBtnIcon(string text)
+        {
+            switch (text)
+            {
+                case "CLOSE": return ("close", "CLOSE");
+                case "+ CHARACTER EDITOR": return ("character", "CHARACTER EDITOR");
+                case "PLAYER (BF - SL0)": return ("character", "PLAYER (BF)");
+                case "OPPONENT (FOE - SL1)": return ("opponent", "OPPONENT (FOE)");
+                case "+ NEW SL": return ("add", "NEW SL");
+                case "APPLY CHARACTER TO TRACK": return ("save", "APPLY CHARACTER");
+                case "FLIP": return ("flip", "FLIP");
+                case "-": return ("remove", "");
+                case "+": return ("add", "");
+            }
+            if (text.StartsWith("EXTRA") || text == "NO EXTRA SL") return ("extra_track", text);
+            if (text.StartsWith("[X] ")) return ("check_on", text.Substring(4));
+            if (text.StartsWith("[ ] ")) return ("check_off", text.Substring(4));
+            return (null, text);
+        }
 
         public bool OpenCharacterEditorRequested { get; private set; }
         private string? _requestedCharEditorSlug;
@@ -418,7 +454,37 @@ namespace FunkyMakerPlayer.Editors.Chart
             bool hov = r.Contains(_prevMouse.Position);
             sb.Draw(_pixel, r, hov ? Color.Lerp(bg, Color.White, 0.12f) : bg);
             DrawBorder(sb, r, hov ? Color.White * 0.65f : border);
-            if (leftAlign)
+
+            var (iconName, shortLabel) = leftAlign ? ("character", text) : ResolveModalBtnIcon(text);
+            Texture2D? icon = iconName != null ? GetCharModalIcon(sb.GraphicsDevice, iconName) : null;
+            string label = icon != null ? shortLabel : text;
+
+            if (icon != null && leftAlign)
+            {
+                int isz = Math.Clamp((int)(r.Height * 0.58f), 12, 28);
+                int padX = UiScale.Px(8, _uiScale, 4);
+                var iconRect = new Rectangle(r.X + padX, r.Y + (r.Height - isz) / 2, isz, isz);
+                sb.Draw(icon, iconRect, fg);
+                var sz = MeasureText(label, fontSize);
+                DrawText(sb, label, new Vector2(iconRect.Right + UiScale.Px(6, _uiScale, 4), r.Y + (r.Height - sz.Y) / 2f), fg, fontSize);
+            }
+            else if (icon != null)
+            {
+                int isz = Math.Clamp((int)(r.Height * 0.60f), 12, 32);
+                int gap = label.Length > 0 ? UiScale.Px(5, _uiScale, 3) : 0;
+                float textW = label.Length > 0 ? MeasureText(label, fontSize).X : 0f;
+                float total = isz + gap + textW;
+                if (total > r.Width - 4 && label.Length > 0) { label = ""; gap = 0; textW = 0; total = isz; }
+                float sx = r.X + (r.Width - total) / 2f;
+                var iconRect = new Rectangle((int)sx, r.Y + (r.Height - isz) / 2, isz, isz);
+                sb.Draw(icon, iconRect, fg);
+                if (label.Length > 0)
+                {
+                    var sz = MeasureText(label, fontSize);
+                    DrawText(sb, label, new Vector2(sx + isz + gap, r.Y + (r.Height - sz.Y) / 2f), fg, fontSize);
+                }
+            }
+            else if (leftAlign)
             {
                 var sz = MeasureText(text, fontSize);
                 DrawText(sb, text, new Vector2(r.X + UiScale.Px(8, _uiScale), r.Y + (r.Height - sz.Y) / 2f), fg, fontSize);
