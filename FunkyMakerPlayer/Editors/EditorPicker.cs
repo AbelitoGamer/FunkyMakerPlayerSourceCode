@@ -67,11 +67,19 @@ public class EditorPicker : FunkyMakerPlayer.UI.IDirectScreen
             AccentColor = new Color(0, 200, 255),
             Type = EditorType.Hud
         },
+        new()
+        {
+            Name = "CHARACTER EDITOR",
+            Description = "Import Sparrow XML+PNG or Animate Spritemaps, align poses & icons for Charts/Online",
+            Badge = "CHAR",
+            AccentColor = new Color(178, 102, 255),
+            Type = EditorType.Character
+        },
     };
 
     private static readonly string[] UPCOMING_TOOLS =
     {
-        "Stage Editor", "Character Editor", "Events Editor", "Sprite Editor"
+        "Stage Editor", "Events Editor", "Sprite Editor"
     };
 
     public EditorPicker(Texture2D pixel, SpriteFont? font, FontRenderer? fontRenderer)
@@ -230,9 +238,9 @@ public class EditorPicker : FunkyMakerPlayer.UI.IDirectScreen
         DrawText(sb, subtitle, new Vector2(sw / 2f - subSz.X / 2f, subY), Color.White * 0.55f, subSize);
 
         // Main active editor cards (centered responsive list)
-        int cardW = Math.Clamp((int)(sw * 0.50f), UiScale.Px(460, s), UiScale.Px(740, s));
-        int cardH = Math.Clamp((int)(sh * 0.132f), UiScale.Px(78, s), UiScale.Px(110, s));
-        int cardGap = UiScale.Px(16, s);
+        int cardW = Math.Clamp((int)(sw * 0.52f), UiScale.Px(460, s), UiScale.Px(760, s));
+        int cardH = Math.Clamp((int)(sh * 0.115f), UiScale.Px(70, s), UiScale.Px(100, s));
+        int cardGap = UiScale.Px(12, s);
         int totalH = _cards.Length * cardH + (_cards.Length - 1) * cardGap;
 
         float topBound = subY + subSz.Y + UiScale.Px(24, s);

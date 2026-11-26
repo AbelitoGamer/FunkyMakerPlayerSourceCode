@@ -324,6 +324,39 @@ public partial class Game1
         int sw = rtW;
         int sh = rtH;
 
+        // ── Optional Online Local Custom Character Equip (client-side only) ──
+        bool? customEquippedPlayerIconFlip = null;
+        if (_isMultiplayerMatch && !_onlineSpectating && !_level.IsOsu)
+        {
+            var mpSettings = Multiplayer.MultiplayerSettings.Instance;
+            if (!mpSettings.ChartOnlyMode && !string.IsNullOrWhiteSpace(mpSettings.EquippedCharacter))
+            {
+                var eqPkg = Editors.Character.CharacterLibrary.LoadPackage(mpSettings.EquippedCharacter);
+                if (eqPkg != null)
+                {
+                    int myLocalCharStrum = (_level.Data.Strumlines.Count >= 2 && _multiplayerPlayerRole == 2) ? 1 : 0;
+                    _level = FnmmSceneRenderer.CloneForGameplay(_level);
+                    var applied = Editors.Character.CharacterLibrary.ApplyCharacterToLevel(
+                        _level,
+                        mpSettings.EquippedCharacter,
+                        myLocalCharStrum,
+                        updateIcon: true,
+                        autoScaleToReplaced: true,
+                        spriteKeyOverride: "__mp_local_char");
+                    if (applied != null)
+                    {
+                        if (eqPkg.IconSprite != null)
+                        {
+                            // Player icon sits on the RIGHT side of the health bar, so it should face LEFT (inward).
+                            var iconNativeFacing = Editors.Character.CharacterLibrary.ParseFacing(eqPkg.Metadata.NativeFacing);
+                            customEquippedPlayerIconFlip = iconNativeFacing == Editors.Character.CharacterFacing.Right;
+                        }
+                        Console.WriteLine($"[Multiplayer] Equipped local custom character '{eqPkg.Metadata.Name}' on strumLine {myLocalCharStrum}");
+                    }
+                }
+            }
+        }
+
         // ── Pre-load all sprite textures via shared scene renderer ────────────
         int maxTexSize = GetGpuMaxTextureSize();
         Console.WriteLine($"[GPU] Max texture size: {maxTexSize}px (device limit)");
@@ -422,7 +455,7 @@ public partial class Game1
             texCache);
 
         ApplyHealthBarIcon(isPlayerSlot: false, opponentIcon, flipIconsForEnemyRole);
-        ApplyHealthBarIcon(isPlayerSlot: true, playerIcon, flipIconsForEnemyRole);
+        ApplyHealthBarIcon(isPlayerSlot: true, playerIcon, customEquippedPlayerIconFlip ?? flipIconsForEnemyRole);
         if (_healthBar != null)
             _healthBar.IconMode = IconMode;
 

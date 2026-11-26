@@ -75,9 +75,10 @@ public class CountdownMenu : IScreenOverlay
                     if (!string.IsNullOrEmpty(name) && !DefaultMods.IsDefaultCountdown(name))
                     {
                         // Check if it has the required files
-                        string readyPath = Path.Combine(dir, "ready.png");
-                        string setPath = Path.Combine(dir, "set.png");
-                        string goPath = Path.Combine(dir, "go.png");
+                        // Case-insensitive: Android file names are case-sensitive (Ready.png etc.).
+                        string readyPath = CaseInsensitivePaths.Find(dir, "ready.png");
+                        string setPath = CaseInsensitivePaths.Find(dir, "set.png");
+                        string goPath = CaseInsensitivePaths.Find(dir, "go.png");
                         
                         if (File.Exists(readyPath) && File.Exists(setPath) && File.Exists(goPath))
                         {

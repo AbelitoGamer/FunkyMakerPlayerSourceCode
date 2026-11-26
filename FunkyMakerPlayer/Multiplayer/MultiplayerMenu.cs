@@ -220,6 +220,7 @@ namespace FunkyMakerPlayer.Multiplayer
             _leaderboardSelection = 0;
             _leaderboardScrollOffset = 0;
             _leaderboardSyncedOnline = false;
+            _matchDetail = null;
             RequestLeaderboardRefresh();
         }
 
@@ -246,7 +247,7 @@ namespace FunkyMakerPlayer.Multiplayer
             {
                 string baseUrl = NetworkManager.Instance.ServerUrl;
                 if (string.IsNullOrWhiteSpace(baseUrl))
-                    baseUrl = "https://funkymakerserver.onrender.com";
+                    baseUrl = MultiplayerSettings.DefaultServerUrl;
 
                 string url = $"{baseUrl.TrimEnd('/')}/api/leaderboard?take=50&matchesTake=50";
                 string response = await _leaderboardHttpClient.GetStringAsync(url);
@@ -1040,11 +1041,35 @@ namespace FunkyMakerPlayer.Multiplayer
         {
             return category switch
             {
-                0 => 2,  // User: Username, Player Color
+                0 => 3,  // User: Username, Player Color, My Character (Local)
                 1 => 6,  // Gameplay: ShowOpponentNotes, Scores list, Scores list side, ShowConnectionQuality, Opponent Notes Opacity, Teams rival strumline
                 2 => 4,  // Performance: UpdateRate, EnableInterpolation, osu! videos, Chart Only (No Sprites)
                 _ => 3,  // Visual: HudOpacity, ConnectionIndicatorPosition, InterfaceMode
             };
+        }
+
+        private void CycleEquippedCharacter(int direction)
+        {
+            var settings = MultiplayerSettings.Instance;
+            var chars = Editors.Character.CharacterLibrary.ScanCharacters(bakedOnly: false);
+            var options = new List<string>(chars.Count + 1) { "" };
+            foreach (var c in chars)
+                options.Add(c.Slug);
+
+            int curIdx = options.FindIndex(s => string.Equals(s, settings.EquippedCharacter ?? "", StringComparison.OrdinalIgnoreCase));
+            if (curIdx < 0) curIdx = 0;
+            int nextIdx = (curIdx + direction + options.Count) % options.Count;
+            settings.EquippedCharacter = options[nextIdx];
+            settings.Save();
+        }
+
+        private static string GetEquippedCharacterLabel(string? slug)
+        {
+            if (string.IsNullOrWhiteSpace(slug))
+                return "Level Default";
+            var chars = Editors.Character.CharacterLibrary.ScanCharacters(bakedOnly: false);
+            var match = chars.Find(c => string.Equals(c.Slug, slug, StringComparison.OrdinalIgnoreCase));
+            return match != null ? match.Name : $"{slug} (missing)";
         }
         
         private void ModifySettingValue(int category, int selection, int direction)
@@ -1056,6 +1081,11 @@ namespace FunkyMakerPlayer.Multiplayer
                 case 0: // User
                     if (selection == 1) // Player Color
                         settings.PlayerColorHue = (settings.PlayerColorHue + direction * 10 + 360) % 360;
+                    else if (selection == 2) // My Character (Local)
+                    {
+                        CycleEquippedCharacter(direction);
+                        return;
+                    }
                     break;
                     
                 case 1: // Gameplay
@@ -1148,6 +1178,8 @@ namespace FunkyMakerPlayer.Multiplayer
                 case 0: // User
                     if (selection == 0) // Username - start text editing
                         BeginUsernameEdit();
+                    else if (selection == 2)
+                        CycleEquippedCharacter(1);
                     break;
                     
                 case 1: // Gameplay
@@ -1295,7 +1327,7 @@ namespace FunkyMakerPlayer.Multiplayer
                 client.Timeout = TimeSpan.FromSeconds(5);
 
                 string serverUrl = string.IsNullOrWhiteSpace(NetworkManager.Instance.ServerUrl)
-                    ? "https://funkymakerserver.onrender.com"
+                    ? MultiplayerSettings.DefaultServerUrl
                     : NetworkManager.Instance.ServerUrl.TrimEnd('/');
                 string response = await client.GetStringAsync($"{serverUrl}/api/server/info");
 
@@ -2414,6 +2446,14 @@ namespace FunkyMakerPlayer.Multiplayer
                         IsAdjustable = true,
                         Description = "Color hue (0-350 deg) used to tint your player name in the multiplayer HUD, results screen, and leaderboard."
                     });
+                    list.Add(new SettingInfo
+                    {
+                        Label = "My Character (Local)",
+                        Value = GetEquippedCharacterLabel(settings.EquippedCharacter),
+                        IsToggle = false,
+                        IsAdjustable = true,
+                        Description = "Equip a custom character from mods/characters/ on your side during online matches (local visual skin & health icon; skipped in Chart-Only mode)."
+                    });
                     break;
                     
                 case 1: // Gameplay
@@ -2701,6 +2741,9 @@ namespace FunkyMakerPlayer.Multiplayer
         {
             if (_inputCooldown > 0f) return;
 
+            // RECENT MATCHES: ENTER / click opens a match's full standings; while open it takes all input.
+            if (UpdateMatchDetail(kb, mouse)) return;
+
             // Back via ESC button or key
             if (IsKeyPressed(kb, Keys.Escape) || IsRectClicked(mouse, _backButtonRect))
             {
@@ -2873,7 +2916,9 @@ namespace FunkyMakerPlayer.Multiplayer
             }
 
             int footerY = DrawFooterBar(sb, font, pixel, screenWidth, screenHeight, uiScale,
-                "Q/E or LEFT/RIGHT: Switch Tab  |  UP/DOWN or WHEEL: Scroll  |  F5: Sync Online  |  ESC: Back");
+                _leaderboardTab == 1
+                    ? "Q/E or LEFT/RIGHT: Switch Tab  |  UP/DOWN or WHEEL: Scroll  |  ENTER / CLICK: Details  |  F5: Sync Online  |  ESC: Back"
+                    : "Q/E or LEFT/RIGHT: Switch Tab  |  UP/DOWN or WHEEL: Scroll  |  F5: Sync Online  |  ESC: Back");
 
             int panelW = ClampUi(Px(960, uiScale), 360, screenWidth - Px(60, uiScale));
             int panelY = tabY + tabH + Px(14, uiScale, 8);
@@ -2894,6 +2939,9 @@ namespace FunkyMakerPlayer.Multiplayer
                     DrawMyStatsTab(sb, font, pixel, uiScale, panelX, panelY, panelW, panelH);
                     break;
             }
+
+            if (_matchDetail != null)
+                DrawMatchDetail(sb, font, pixel, uiScale, screenWidth, screenHeight, _matchDetail);
         }
 
         private void DrawTopPlayersTab(SpriteBatch sb, SpriteFont font, Texture2D pixel, float uiScale, int panelX, int panelY, int panelW, int panelH)
@@ -2992,96 +3040,6 @@ namespace FunkyMakerPlayer.Multiplayer
             if (hasScroll)
             {
                 DrawScrollBar(sb, pixel, panelX + padX + usableW + Px(10, uiScale), listTop, availH, topPlayers.Count, MAX_LEADERBOARD_VISIBLE, _leaderboardScrollOffset, ACCENT_PRIMARY);
-            }
-        }
-
-        private void DrawRecentMatchesTab(SpriteBatch sb, SpriteFont font, Texture2D pixel, float uiScale, int panelX, int panelY, int panelW, int panelH)
-        {
-            var recentMatches = LeaderboardManager.Instance.GetRecentMatches(50);
-
-            if (recentMatches.Count == 0)
-            {
-                DrawCenteredTextInPanel(sb, font, "No match history yet", panelX, panelY + panelH / 2 - Px(20, uiScale), panelW, TEXT_SECONDARY, FontPx(19, uiScale, 14, 28));
-                DrawCenteredTextInPanel(sb, font, "Play your first multiplayer match!", panelX, panelY + panelH / 2 + Px(12, uiScale), panelW, TEXT_DISABLED, FontPx(14, uiScale, 11, 20));
-                return;
-            }
-
-            bool hasScroll = recentMatches.Count > MAX_LEADERBOARD_VISIBLE;
-            int padX = Px(22, uiScale, 12);
-            int cardW = panelW - padX * 2 - (hasScroll ? Px(18, uiScale, 12) : 0);
-            int listTop = panelY + Px(16, uiScale);
-            int availH = Math.Max(160, panelY + panelH - Px(16, uiScale) - listTop);
-            int cardGap = Px(8, uiScale, 5);
-            int cardH = ClampUi((availH - cardGap * (MAX_LEADERBOARD_VISIBLE - 1)) / MAX_LEADERBOARD_VISIBLE, 46, Px(68, uiScale));
-
-            int startIdx = _leaderboardScrollOffset;
-            int endIdx = Math.Min(startIdx + MAX_LEADERBOARD_VISIBLE, recentMatches.Count);
-
-            int levelFont = FontPx(15, uiScale, 12, 21);
-            int timeFont = FontPx(12, uiScale, 10, 17);
-            int rowFont = FontPx(14, uiScale, 11, 20);
-            int badgeFont = FontPx(11, uiScale, 9, 15);
-
-            for (int i = startIdx; i < endIdx; i++)
-            {
-                var match = recentMatches[i];
-                bool selected = i == _leaderboardSelection;
-                int displayIdx = i - startIdx;
-                int currentY = listTop + displayIdx * (cardH + cardGap);
-
-                if (currentY + cardH > panelY + panelH - Px(10, uiScale))
-                    break;
-
-                var cardRect = new Rectangle(panelX + padX, currentY, cardW, cardH);
-                _clickableAreas.Add(cardRect);
-
-                Color winAccent = match.Winner > 0 ? ACCENT_SUCCESS : ACCENT_WARNING;
-                DrawPanel(sb, pixel, cardRect.X, cardRect.Y, cardRect.Width, cardRect.Height,
-                    selected ? BG_LIGHT : BG_DARK, selected ? ACCENT_PRIMARY : BORDER_SUBTLE, selected ? 2 : 1,
-                    selected ? ACCENT_PRIMARY : winAccent * 0.7f);
-
-                int infoX = cardRect.X + Px(16, uiScale);
-                string levelName = string.IsNullOrWhiteSpace(match.LevelName) ? "Match" : match.LevelName;
-                DrawText(sb, font, levelName, new Vector2(infoX, currentY + Px(6, uiScale)), ACCENT_PRIMARY * _fadeAlpha, levelFont, shadow: selected);
-
-                Vector2 timeSize = MeasureText(font, match.TimeAgo, timeFont);
-                DrawText(sb, font, match.TimeAgo, new Vector2(cardRect.Right - Px(16, uiScale) - timeSize.X, currentY + Px(8, uiScale)), TEXT_DISABLED * _fadeAlpha, timeFont);
-
-                int vsY = currentY + cardH - Px(26, uiScale);
-                string player1Text = $"{match.Player1.Username} ({match.Player1.Score:N0})";
-                string vsText = "  VS  ";
-                string player2Text = $"{match.Player2.Username} ({match.Player2.Score:N0})";
-                string winBadge = match.Winner == 1 ? "WIN P1" : (match.Winner == 2 ? "WIN P2" : "DRAW");
-
-                Color p1Color = match.Winner == 1 ? ACCENT_SUCCESS : TEXT_SECONDARY;
-                Color p2Color = match.Winner == 2 ? ACCENT_SUCCESS : TEXT_SECONDARY;
-                Color badgeColor = match.Winner > 0 ? ACCENT_SUCCESS : ACCENT_WARNING;
-
-                int pillH = Px(20, uiScale, 16);
-                Vector2 bSz = MeasureText(font, winBadge, badgeFont);
-                int pillW = (int)MathF.Ceiling(bSz.X) + Px(16, uiScale);
-                int pillX = cardRect.Right - Px(16, uiScale) - pillW;
-                DrawPillBadge(sb, font, pixel, pillX, vsY - Px(2, uiScale), pillH, winBadge, badgeColor, badgeFont, Px(8, uiScale), filledStrong: true);
-
-                float vsWidth = MeasureText(font, vsText, rowFont).X;
-                float availVsRow = Math.Max(120f, pillX - Px(14, uiScale) - infoX - vsWidth);
-                float maxPlayerW = availVsRow / 2f;
-                string fitP1 = TruncateToWidth(font, player1Text, maxPlayerW, rowFont);
-                string fitP2 = TruncateToWidth(font, player2Text, maxPlayerW, rowFont);
-
-                float drawX = infoX;
-                DrawText(sb, font, fitP1, new Vector2(drawX, vsY), p1Color * _fadeAlpha, rowFont);
-                drawX += MeasureText(font, fitP1, rowFont).X;
-
-                DrawText(sb, font, vsText, new Vector2(drawX, vsY), TEXT_DISABLED * _fadeAlpha, rowFont);
-                drawX += vsWidth;
-
-                DrawText(sb, font, fitP2, new Vector2(drawX, vsY), p2Color * _fadeAlpha, rowFont);
-            }
-
-            if (hasScroll)
-            {
-                DrawScrollBar(sb, pixel, panelX + padX + cardW + Px(10, uiScale), listTop, availH, recentMatches.Count, MAX_LEADERBOARD_VISIBLE, _leaderboardScrollOffset, ACCENT_PRIMARY);
             }
         }
 

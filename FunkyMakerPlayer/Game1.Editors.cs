@@ -75,6 +75,19 @@ public partial class Game1
             RefreshActiveDiscordPresence(immediate: true);
             Console.WriteLine("[Game1] Opened HUD Editor from Editor Hub");
         }
+        else if (type == Editors.EditorType.Character)
+        {
+            _inEditorPicker = false;
+            _inEditor = true;
+            _chartEditorReturnTarget = ChartEditorReturnTarget.EditorPicker;
+            var charEd = new Editors.Character.CharacterEditor(GraphicsDevice, _pixel!, _font, _fontRenderer);
+            charEd.ResetInputCooldown();
+            _activeEditor = charEd;
+            _editorSessionStartUtc = DateTimeOffset.UtcNow;
+            Window.Title = "Funky Maker Character Editor";
+            RefreshActiveDiscordPresence(immediate: true);
+            Console.WriteLine("[Game1] Opened Character Editor from Editor Hub");
+        }
         else
         {
             // WIP editors
@@ -99,6 +112,22 @@ public partial class Game1
                 && _spriteTextureCache != null
                 && string.Equals(FnmmPath, editedPath, StringComparison.OrdinalIgnoreCase);
             ce.DisposeAudio();
+        }
+        else if (_activeEditor is Editors.Character.CharacterEditor charEd)
+        {
+            string? savedSlug = charEd.LastSavedSlug;
+            charEd.Dispose();
+            if (_suspendedChartEditor is Editors.Chart.ChartEditor resumedCe)
+            {
+                _suspendedChartEditor = null;
+                resumedCe.OnReturnedFromCharacterEditor(savedSlug);
+                resumedCe.ResetInputCooldown();
+                _activeEditor = resumedCe;
+                _inEditor = true;
+                Window.Title = $"Funky Maker Chart Editor — {Path.GetFileName(resumedCe.LevelPath)}";
+                RefreshActiveDiscordPresence(immediate: true);
+                return;
+            }
         }
 
         var target = _chartEditorReturnTarget;

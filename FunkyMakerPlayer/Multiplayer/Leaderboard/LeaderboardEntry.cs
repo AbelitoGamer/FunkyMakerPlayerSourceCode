@@ -1,4 +1,7 @@
 using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.Text.Json.Serialization;
 
 namespace FunkyMakerPlayer.Multiplayer
 {
@@ -143,7 +146,52 @@ namespace FunkyMakerPlayer.Multiplayer
         /// When the match was played
         /// </summary>
         public long Timestamp { get; set; }
-        
+
+        /// <summary>"versus" / "teams" / "mirror"; empty for old 1v1 duels.</summary>
+        public string Mode { get; set; } = "";
+
+        /// <summary>Teams mode: 0 = Team Player, 1 = Team Enemy, -1 = draw / not a team match.</summary>
+        public int WinningTeam { get; set; } = -1;
+
+        /// <summary>Every participant (room matches). Empty for old 1v1 duels: use <see cref="Participants"/>.</summary>
+        public List<PlayerMatchInfo> Players { get; set; } = new();
+
+        /// <summary>True for matches played in rooms (2+ players, any mode).</summary>
+        [JsonIgnore]
+        public bool IsRoomMatch => Players.Count > 0;
+
+        /// <summary>
+        /// All participants ordered by place (disconnected players last). Old 1v1 duels are turned into
+        /// a two-player list whose places come from <see cref="Winner"/>.
+        /// </summary>
+        [JsonIgnore]
+        public List<PlayerMatchInfo> Participants
+        {
+            get
+            {
+                if (Players.Count > 0)
+                    return Players
+                        .OrderBy(p => p.Disconnected ? 1 : 0)
+                        .ThenBy(p => p.Place <= 0 ? int.MaxValue : p.Place)
+                        .ThenByDescending(p => p.Score)
+                        .ToList();
+                Player1.Place = Winner == 2 ? 2 : 1;
+                Player2.Place = Winner == 1 ? 2 : 1;
+                return Winner == 2 ? new List<PlayerMatchInfo> { Player2, Player1 } : new List<PlayerMatchInfo> { Player1, Player2 };
+            }
+        }
+
+        /// <summary>Did this player take part (by id, or by name for old entries without ids)?</summary>
+        public bool Involves(string? playerId, string? username)
+        {
+            foreach (var p in Participants)
+            {
+                if (!string.IsNullOrWhiteSpace(playerId) && p.PlayerId == playerId) return true;
+                if (!string.IsNullOrWhiteSpace(username) && string.Equals(p.Username, username, StringComparison.OrdinalIgnoreCase)) return true;
+            }
+            return false;
+        }
+
         /// <summary>
         /// Is this match from today?
         /// </summary>
@@ -221,5 +269,17 @@ namespace FunkyMakerPlayer.Multiplayer
         /// Did this player disconnect/quit?
         /// </summary>
         public bool Disconnected { get; set; } = false;
+
+        /// <summary>1-based place (0 = unknown).</summary>
+        public int Place { get; set; } = 0;
+
+        /// <summary>Teams mode: 0 = Player, 1 = Enemy; -1 otherwise.</summary>
+        public int Team { get; set; } = -1;
+
+        /// <summary>Side played: 0 = Player, 1 = Enemy.</summary>
+        public int Side { get; set; } = 0;
+
+        /// <summary>ELO gained / lost in this match.</summary>
+        public int EloChange { get; set; } = 0;
     }
 }
