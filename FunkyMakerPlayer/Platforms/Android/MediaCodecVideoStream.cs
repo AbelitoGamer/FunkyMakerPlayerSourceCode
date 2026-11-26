@@ -1,6 +1,8 @@
 #if ANDROID
 using System;
+using System.Collections.Generic;
 using System.Runtime.InteropServices;
+using System.Threading.Tasks;
 using Android.Media;
 using Android.Runtime;
 using FunkyMakerPlayer.Osu;
@@ -14,7 +16,8 @@ namespace FunkyMakerPlayer.Platforms.Android;
 /// (nearest-neighbour, BT.601) at the run's <see cref="VideoFormat"/> (640×360, or the video's own size
 /// at full quality) on the CPU; only the source rows that are sampled are copied out of
 /// the codec's buffers. Frames closer than one output frame to the previous one are dropped, like ffmpeg's -r.
-/// Containers are whatever MediaExtractor reads (mp4/mov, mkv/webm, 3gp, ts…; not avi/flv/wmv).
+/// Containers are whatever MediaExtractor reads (mp4/mov, mkv/webm, 3gp, ts…), plus AVI through
+/// <see cref="AviDemuxer"/> (H.264, MPEG-4/Xvid); not flv/wmv.
 /// </summary>
 internal sealed class MediaCodecVideoStream : IOsuVideoStream
 {
@@ -32,9 +35,23 @@ internal sealed class MediaCodecVideoStream : IOsuVideoStream
     private int _srcW = -1, _srcH = -1, _srcX, _srcY;
     private int _dstX, _dstY, _dstW, _dstH;
     private int[] _mapX = Array.Empty<int>(), _mapY = Array.Empty<int>();
-    private byte[] _rowY = Array.Empty<byte>(), _rowU = Array.Empty<byte>(), _rowV = Array.Empty<byte>();
+    // Per output column: byte offset of its sample in a source row (Y, U, V); per band: row buffers.
+    private int[] _colY = Array.Empty<int>(), _colU = Array.Empty<int>(), _colV = Array.Empty<int>();
+    private int _psY = -1, _psU = -1, _psV = -1;
+    private byte[][][] _bandRows = Array.Empty<byte[][]>();
+
+    /// <summary>The game's current video time (set by <see cref="OsuVideo"/>), or null.</summary>
+    private Func<double>? _clock;
+    public void SetClock(Func<double> videoNow) => _clock = videoNow;
 
     private readonly VideoFormat _format;
+
+    // AVI (MediaExtractor can't read it): our own demuxer feeds the codec. Its frames come in decode
+    // order with slot times, so with B-frames an output frame's time is the smallest time still
+    // pending, not the one MediaCodec attaches (that of the input that completed it).
+    private readonly AviDemuxer? _avi;
+    private byte[] _aviBuf = new byte[1 << 16];
+    private readonly PriorityQueue<long, long>? _pending;
 
     /// <summary>
     /// The video track's size and frame rate (0 when the container doesn't say), or null when
@@ -42,6 +59,11 @@ internal sealed class MediaCodecVideoStream : IOsuVideoStream
     /// </summary>
     public static (int Width, int Height, double Fps)? Probe(string file)
     {
+        if (AviDemuxer.IsAvi(file))
+        {
+            using var avi = AviDemuxer.Open(file);
+            return avi == null ? null : (avi.Width, avi.Height, avi.Fps);
+        }
         MediaExtractor? ex = null;
         try
         {
@@ -74,6 +96,23 @@ internal sealed class MediaCodecVideoStream : IOsuVideoStream
         _startUs = (long)(Math.Max(0, startSec) * 1_000_000);
         try
         {
+            if (AviDemuxer.IsAvi(file))
+            {
+                _avi = AviDemuxer.Open(file);
+                if (_avi == null) return;
+                var avi = MediaFormat.CreateVideoFormat(_avi.Mime!, _avi.Width, _avi.Height);
+                for (int i = 0; i < _avi.CodecConfig.Count; i++)
+                    avi.SetByteBuffer($"csd-{i}", Java.Nio.ByteBuffer.Wrap(_avi.CodecConfig[i]));
+                avi.SetInteger(MediaFormat.KeyMaxInputSize, Math.Max(_avi.MaxFrameSize * 2 + 1024, 1 << 16));
+                avi.SetInteger(MediaFormat.KeyColorFormat, (int)MediaCodecCapabilities.Formatyuv420flexible);
+                _pending = new PriorityQueue<long, long>();
+                _codec = MediaCodec.CreateDecoderByType(_avi.Mime!);
+                _codec.Configure(avi, null, null, MediaCodecConfigFlags.None);
+                _codec.Start();
+                _avi.SeekTo(startSec);
+                Console.WriteLine($"[OsuVideo] AVI {_avi.FourCC.Trim()} {_avi.Width}x{_avi.Height} {_avi.Fps:0.##} fps, {_avi.FrameCount} frames, {_avi.CodecConfig.Count} config");
+                return;
+            }
             _extractor = new MediaExtractor();
             _extractor.SetDataSource(file);
             MediaFormat? format = null;
@@ -111,7 +150,7 @@ internal sealed class MediaCodecVideoStream : IOsuVideoStream
 
     public double? ReadFrame(byte[] rgba)
     {
-        if (_codec == null || _extractor == null) return null;
+        if (_codec == null || (_extractor == null && _avi == null)) return null;
         while (!_cancelled && !_outputDone)
         {
             if (!_inputDone) FeedInput();
@@ -120,10 +159,17 @@ internal sealed class MediaCodecVideoStream : IOsuVideoStream
             if (index < 0) continue; // try again later / format or buffers changed
             if ((_info.Flags & MediaCodecBufferFlags.EndOfStream) != 0) _outputDone = true;
 
-            double time = _info.PresentationTimeUs / 1_000_000.0;
+            long ptsUs = _info.PresentationTimeUs;
+            if (_pending != null && _info.Size > 0 && _pending.TryDequeue(out long slotUs, out _))
+                ptsUs = slotUs;
+            double time = ptsUs / 1_000_000.0;
             bool keep = _info.Size > 0
-                        && _info.PresentationTimeUs >= _startUs - 1_000           // before the seek target: decode only
-                        && time >= _lastTime + 1.0 / _format.Fps - 0.002;      // cap at the output frame rate
+                        && ptsUs >= _startUs - 1_000                               // before the seek target: decode only
+                        && time >= _lastTime + 1.0 / _format.Fps - 0.002       // cap at the output frame rate
+                        // Already late for the game (the conversion fell behind): decode only, so the
+                        // decoder catches up instead of the video drifting back and restarting.
+                        // Never two in a row skipped for longer than 0.25 s, so something is shown.
+                        && !(_clock != null && time < _clock() - 1.5 / _format.Fps && time < _lastTime + 0.25);
             bool converted = false;
             if (keep)
             {
@@ -149,6 +195,21 @@ internal sealed class MediaCodecVideoStream : IOsuVideoStream
         int index = _codec!.DequeueInputBuffer(TimeoutUs);
         if (index < 0) return;
         var buffer = _codec.GetInputBuffer(index);
+        if (_avi != null)
+        {
+            if (buffer == null || !_avi.Read(ref _aviBuf, out int n, out double t, out bool key))
+            {
+                _codec.QueueInputBuffer(index, 0, 0, 0, MediaCodecBufferFlags.EndOfStream);
+                _inputDone = true;
+                return;
+            }
+            n = Math.Min(n, buffer.Capacity());
+            Marshal.Copy(_aviBuf, 0, JNIEnv.GetDirectBufferAddress(buffer.Handle), n);
+            long us = (long)Math.Round(t * 1_000_000);
+            _pending!.Enqueue(us, us);
+            _codec.QueueInputBuffer(index, 0, n, us, key ? MediaCodecBufferFlags.KeyFrame : MediaCodecBufferFlags.None);
+            return;
+        }
         int size = buffer == null ? -1 : _extractor!.ReadSampleData(buffer, 0);
         if (size < 0)
         {
@@ -169,9 +230,9 @@ internal sealed class MediaCodecVideoStream : IOsuVideoStream
         int cw = crop is { } c1 && c1.Width() > 0 ? c1.Width() : image.Width;
         int ch = crop is { } c2 && c2.Height() > 0 ? c2.Height() : image.Height;
         if (cw != _srcW || ch != _srcH || cx != _srcX || cy != _srcY) BuildMap(cx, cy, cw, ch);
-        // Each frame buffer is new (all zero): make the letterbox bars opaque black like ffmpeg's pad.
-        if (_dstW < _format.Width || _dstH < _format.Height)
-            for (int i = 3; i < rgba.Length; i += 4) rgba[i] = 255;
+        // Frame buffers are reused (OsuVideo's pool): paint the letterbox bars opaque black every
+        // frame, like ffmpeg's pad.
+        if (_dstW < _format.Width || _dstH < _format.Height) PaintBars(rgba);
 
         var planes = image.GetPlanes()!;
         var pY = planes[0]; var pU = planes[1]; var pV = planes[2];
@@ -180,35 +241,79 @@ internal sealed class MediaCodecVideoStream : IOsuVideoStream
         IntPtr aV = Address(pV.Buffer!, out int lenV);
         int rsY = pY.RowStride, rsU = pU.RowStride, rsV = pV.RowStride;
         int psY = pY.PixelStride, psU = pU.PixelStride, psV = pV.PixelStride;
-        if (_rowY.Length < rsY) _rowY = new byte[rsY];
-        if (_rowU.Length < rsU) _rowU = new byte[rsU];
-        if (_rowV.Length < rsV) _rowV = new byte[rsV];
-
-        int lastUvRow = -1;
-        for (int dy = 0; dy < _dstH; dy++)
+        if (psY != _psY || psU != _psU || psV != _psV || _colY.Length != _dstW)
         {
-            int sy = _mapY[dy];
-            CopyRow(aY, lenY, sy * rsY, _rowY, rsY);
-            int uvRow = sy >> 1;
-            if (uvRow != lastUvRow)
-            {
-                CopyRow(aU, lenU, uvRow * rsU, _rowU, rsU);
-                CopyRow(aV, lenV, uvRow * rsV, _rowV, rsV);
-                lastUvRow = uvRow;
-            }
-            int o = ((_dstY + dy) * _format.Width + _dstX) * 4;
-            for (int dx = 0; dx < _dstW; dx++, o += 4)
+            _psY = psY; _psU = psU; _psV = psV;
+            _colY = new int[_dstW]; _colU = new int[_dstW]; _colV = new int[_dstW];
+            for (int dx = 0; dx < _dstW; dx++)
             {
                 int sx = _mapX[dx];
-                int yv = _rowY[sx * psY] - 16;
-                int u = _rowU[(sx >> 1) * psU] - 128;
-                int v = _rowV[(sx >> 1) * psV] - 128;
-                int c = 298 * (yv < 0 ? 0 : yv) + 128;
-                rgba[o] = Clamp((c + 409 * v) >> 8);
-                rgba[o + 1] = Clamp((c - 100 * u - 208 * v) >> 8);
-                rgba[o + 2] = Clamp((c + 516 * u) >> 8);
-                rgba[o + 3] = 255;
+                _colY[dx] = sx * psY;
+                _colU[dx] = (sx >> 1) * psU;
+                _colV[dx] = (sx >> 1) * psV;
             }
+        }
+
+        // Rows in parallel bands (one core can't keep up with 1080p at 30 fps), each with its own
+        // row buffers: only the sampled source rows are copied out of the codec's buffers.
+        int bands = Math.Clamp(Math.Min(Environment.ProcessorCount, 4), 1, Math.Max(1, _dstH / 16));
+        if (_bandRows.Length != bands) _bandRows = new byte[bands][][];
+        int[] colY = _colY, colU = _colU, colV = _colV, mapY = _mapY;
+        int dstX = _dstX, dstY = _dstY, dstW = _dstW, dstH = _dstH, outW = _format.Width;
+        var bandRows = _bandRows;
+        Parallel.For(0, bands, band =>
+        {
+            var rows = bandRows[band];
+            if (rows == null || rows[0].Length < rsY || rows[1].Length < rsU || rows[2].Length < rsV)
+                rows = bandRows[band] = new[] { new byte[rsY], new byte[rsU], new byte[rsV] };
+            byte[] rowY = rows[0], rowU = rows[1], rowV = rows[2];
+            int from = dstH * band / bands, to = dstH * (band + 1) / bands;
+            int lastUvRow = -1;
+            for (int dy = from; dy < to; dy++)
+            {
+                int sy = mapY[dy];
+                CopyRow(aY, lenY, sy * rsY, rowY, rsY);
+                int uvRow = sy >> 1;
+                if (uvRow != lastUvRow)
+                {
+                    CopyRow(aU, lenU, uvRow * rsU, rowU, rsU);
+                    CopyRow(aV, lenV, uvRow * rsV, rowV, rsV);
+                    lastUvRow = uvRow;
+                }
+                int o = ((dstY + dy) * outW + dstX) * 4;
+                for (int dx = 0; dx < dstW; dx++, o += 4)
+                {
+                    int yv = rowY[colY[dx]] - 16;
+                    int u = rowU[colU[dx]] - 128;
+                    int v = rowV[colV[dx]] - 128;
+                    int c = 298 * (yv < 0 ? 0 : yv) + 128;
+                    rgba[o] = Clamp((c + 409 * v) >> 8);
+                    rgba[o + 1] = Clamp((c - 100 * u - 208 * v) >> 8);
+                    rgba[o + 2] = Clamp((c + 516 * u) >> 8);
+                    rgba[o + 3] = 255;
+                }
+            }
+        });
+    }
+
+    /// <summary>Opaque black outside the picture rect.</summary>
+    private void PaintBars(byte[] rgba)
+    {
+        int w = _format.Width, h = _format.Height;
+        for (int y = 0; y < h; y++)
+        {
+            bool inside = y >= _dstY && y < _dstY + _dstH;
+            if (!inside) { Black(rgba, y * w, w); continue; }
+            Black(rgba, y * w, _dstX);
+            Black(rgba, y * w + _dstX + _dstW, w - _dstX - _dstW);
+        }
+    }
+
+    private static void Black(byte[] rgba, int pixel, int count)
+    {
+        for (int i = pixel * 4, end = (pixel + count) * 4; i < end; i += 4)
+        {
+            rgba[i] = 0; rgba[i + 1] = 0; rgba[i + 2] = 0; rgba[i + 3] = 255;
         }
     }
 
@@ -248,6 +353,7 @@ internal sealed class MediaCodecVideoStream : IOsuVideoStream
         try { _codec?.Stop(); } catch { }
         try { _codec?.Release(); } catch { }
         try { _extractor?.Release(); } catch { }
+        _avi?.Dispose();
     }
 
     public void Dispose()
