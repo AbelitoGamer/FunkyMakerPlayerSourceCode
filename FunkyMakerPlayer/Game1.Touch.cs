@@ -63,7 +63,8 @@ public partial class Game1
     private void UpdateTouchPointer(GameTime gameTime)
     {
         if (_touchControls == null) return;
-        bool touchReady = !_inEditor && !_inHudEditor && !_inLevelSelector && !_keyBindOverlay.IsActive;
+        bool isNonTouchEditor = _inEditor && _activeEditor is not Editors.Character.CharacterEditor;
+        bool touchReady = !isNonTouchEditor && !_inHudEditor && !_inLevelSelector && !_keyBindOverlay.IsActive;
         _touchControls.ScreenIsTouchReady = touchReady;
         UI.PointerInput.Update(_touchControls.LastTouches,
             p => _touchControls.IsPointOnMenuControl(p),

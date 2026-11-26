@@ -242,12 +242,14 @@ Notes:
 │   │   ├── UiSfx.cs             UI sound effects: UiSound enum, queue, loading (§10.6)
 │   │   └── Multiplayer/UI/...   (under Multiplayer)
 │   ├── Multiplayer/
-│   │   ├── NetworkManager.cs    SignalR client singleton (reconnect/backoff, events on game thread, §12.1)
-│   │   ├── Rooms/RoomProtocol.cs room protocol wire types (copy of the server's Protocol.cs)
+│   │   ├── NetworkManager.cs    WebSocket hub client singleton (reconnect/backoff, events on game thread, §12.1)
+│   │   ├── WsHubConnection.cs   (fork, Protocol 4) plain WebSocket JSON hub replacing SignalR (invoke/result/event, 64 KB fragmentation, watchdog)
+│   │   ├── Rooms/RoomProtocol.cs room protocol wire types (Protocol 4; copy of server Protocol)
 │   │   ├── Rooms/RoomClient.cs  room state, chat, round level, match events (§12.1)
 │   │   ├── UserDirectoryClient.cs PlayerId → username cache (REST + packets)
 │   │   ├── NetworkPackets.cs    ping, official level list, leaderboard / history DTOs
 │   │   ├── MultiplayerMenu.cs   online menu core + settings + leaderboard (partial, §12.2)
+│   │   ├── MultiplayerMenu.MatchHistory.cs  RECENT MATCHES room standings & detail popup (§12.z)
 │   │   ├── MultiplayerMenu.Rooms.cs / .RoomBrowser.cs / .RoomSettings.cs / .WaitingRoom.cs /
 │   │   │   .SongSelect.cs      room screens (§12.2)
 │   │   ├── MultiplayerMenu.LevelFiles.cs    LOCAL list auto-refresh / import / delete
@@ -263,12 +265,14 @@ Notes:
 │   │   └── Transfer/            LevelTransferClient.cs (HTTP level up/download, replay
 │   │                            tracks), LocalLevelIndex.cs (hash cache) (§12.1)
 │   ├── Editors/
-│   │   ├── EditorPicker.cs      "Editor Hub": New Chart / Chart Editor / HUD Editor
-│   │   ├── EditorType.cs        NewChart, Chart, Hud (+ unused placeholders:
-│   │   │                        Character/Stage/Alphabet/Sprite/Event/Week/Dialogue)
+│   │   ├── EditorPicker.cs      "Editor Hub": New Chart / Chart Editor / HUD Editor / Character Editor
+│   │   ├── EditorType.cs        NewChart, Chart, Hud, Character (+ upcoming placeholders:
+│   │   │                        Stage/Alphabet/Sprite/Event/Week/Dialogue)
 │   │   ├── IEditor.cs           IDirectScreen + Update/BackPressed/IsModified
+│   │   ├── Character/           CharacterEditor.cs, CharacterLibrary.cs, CharacterModels.cs,
+│   │   │                        SparrowCharacterImporter.cs, SpritemapCharacterImporter.cs (§11)
 │   │   ├── Chart/
-│   │   │   ├── ChartEditor.cs   redesigned chart editor (§11)
+│   │   │   ├── ChartEditor.cs   redesigned chart editor + ChartEditor.Characters.cs modal (§11)
 │   │   │   ├── ChartTimeline.cs
 │   │   │   ├── NoteGrid.cs
 │   │   │   ├── EditorAudioManager.cs
@@ -290,6 +294,7 @@ Notes:
 │   │                            NOTE_hold_FMM.png (hold fallback for skins without one)
 │   │   └── ui/multiplayer/      multiplayer menu icons (back, connect, create,
 │   │                            join, leaderboard, lock, quickplay, settings)
+│   │   └── ui/character_editor/ Material Design PNG icons for Character Editor & Chart char modal (40 files)
 │   ├── LoadingScreen/           AnkushCat.png
 │   ├── sounds/ui/               UI sound effects (*.wav, §10.6)
 │   ├── music/online/            online menu music (*.mp3, §10.7)
@@ -331,7 +336,7 @@ Read `FunkyMakerPlayer/FunkyMakerPlayer.csproj` before changing build behavior.
 | `OutputType` | `Exe` (`WinExe` for Windows Release) |
 | `TargetFrameworks` | `net10.0;net10.0-android` |
 | `RollForward` | `Major` |
-| `Version` / `AssemblyVersion` | `0.4.8` |
+| `Version` / `AssemblyVersion` | `0.5.0` |
 | `Nullable` | `enable` |
 | `ImplicitUsings` | `disable` |
 | `PublishReadyToRun` / `TieredCompilation` | `false` |
@@ -340,7 +345,6 @@ Read `FunkyMakerPlayer/FunkyMakerPlayer.csproj` before changing build behavior.
 
 | Package | Version | Platform |
 |---|---|---|
-| `Microsoft.AspNetCore.SignalR.Client` | 10.0.15 (fork: 10.0.8 had CVE-2026-70159, DoS, fixed in 10.0.13) | all |
 | `MonoGame.Extended` | 6.1.1 | all |
 | `MonoGame.Framework.DesktopGL` | 3.8.* | non-Android |
 | `MonoGame.Framework.Android` | 3.8.* | Android |
@@ -1851,6 +1855,7 @@ playback), hitsounds and metronome, toasts, UI scaled with `UiScale`.
 - **Interactive stage & baking (`CharacterEditor.cs`, `CharacterLibrary.cs`):**
   - **Icon buttons:** the editor's buttons use white Material Design PNG icons (Apache 2.0) from `Assets/images/ui/character_editor/*.png` (40 files; loaded via `TitleContainer`, premultiplied, tinted by the button colour). `CharacterEditor.ResolveIcon` maps button labels to icon names; if an icon file is missing the button falls back to plain text.
   - Live stage viewport anchored at ground foot pivot `(0, 0)` with **Onion Skin (`G`)** ghosting `IDLE` frame 0 behind active poses, mouse/touch drag alignment, arrow-key/touch nudge buttons, live `D/F/J/K` (`1`–`5`) sing testing, `Flip X` baking, 1-click `Swap Left <-> Right`, `NativeFacing` (`Left` BF vs `Right` Opponent), `Smooth`/`Pixel` filter toggle, and automatic 2-frame FNF health icon strip splitting (`300x150` → `icon/0.png` normal + `icon/1.png` losing).
+  - **Android touch support (`Game1.Touch.cs`, `CharacterEditor.cs`):** `UpdateTouchPointer` sets `ScreenIsTouchReady = true` for `CharacterEditor` (auto-hiding the on-screen D-pad/A/B buttons); UI buttons and scrollable lists use `PointerInput.GetState()`, while dragging open canvas inside `_stageRect` uses `PointerInput.GetRawState()` so poses can be aligned by touch without interfering with button taps.
   - Saves FunkyMaker-native packages into `mods/characters/<slug>/` (`sprite.json`, `0.png..N.png`, `character.json`, optional `icon/`), also imported on Android SAF via `PlatformPaths.GetCharactersPath()`.
 - **Local Online Custom Character Equip (client-side only):**
   - Persisted as `MultiplayerSettings.EquippedCharacter` (`""` = Level Default); selectable in **Multiplayer → Settings → User → `My Character (Local)`** and **Waiting Room** (`B` hotkey / `B  CHAR:` button).
@@ -2021,23 +2026,34 @@ start, relay, results, history, turn).
       - When enabled during online FNF matches (`Game1.LevelLoad.cs`), `FnmmLoader.Load(..., chartOnly: true)` skips loading sprites, stage layers, icons, and visual events — loading only chart + audio for minimal RAM/VRAM usage on low-RAM / 32-bit phones.
       - Over the network (`Protocol.VariantChartOnly = "chartonly"`, announced via `HelloRequest.FnfChartOnly`), holders pack a minimal `.fnmm` ZIP via `FnmmLoader.PackChartOnlyFnmm` containing only `data.json`, `meta.json`, minimal `scene.json` (`landscape`), and `music.ogg` (~3–12 MB instead of 100–250 MB). Receivers cache it in app storage (`chartonly_cache/<hash>.fnmm`, outside `mods/levels/` so Freeplay / `LocalLevelIndex` never scan it) and are never registered as full-level holders (`Member.ChartOnlyHashes`). Toggling the option in a room immediately re-syncs `Hello`, cancels any in-flight download of the old variant, and requests the new variant if needed. Verified with **43/43** passing server tests.
 
+### 12.z Cloudflare Workers + R2 migration & Room Match History (fork, protocol 4, 2026-11-25..26)
+
+- **Protocol 4 (`RoomProtocol.cs`, `WsHubConnection.cs`, `NetworkManager.cs`):**
+  - Replaced `Microsoft.AspNetCore.SignalR.Client` (removed from `.csproj`) with `WsHubConnection.cs`, a plain WebSocket JSON hub (`invoke` / `result` / `event` / `ping` / `frag`) with 64 KB outgoing fragmentation for large level lists, automatic reconnect, and a 60 s server-silence watchdog (atomic `_lastReceivedUtcTicks` via `Interlocked` for 32-bit ARM safety).
+  - `MultiplayerSettings.DefaultServerUrl` now points to `https://funkymaker-online.abelitogameryt.workers.dev` (Cloudflare Workers + R2, `FunkyMakerTransferServer/worker`). All online HTTP calls (`MultiplayerMenu`, `UserDirectoryClient`) use `DefaultServerUrl` rather than hardcoded Render URLs, and `IsUsableSavedUrl` ignores retired `*.onrender.com` values in `multiplayer_settings.json` so existing installs migrate automatically. Connect timeout reduced `90 s → 30 s` (Workers don't cold-sleep like Render free tier).
+  - **Packed uploads & R2 multipart (`LevelTransferClient.cs`):** packed uploads (osu! `.osz`, FNF `chartonly`) send `X-File-Hash` (client SHA-256 hex, since Workers cannot hash huge bodies in memory), and chunked uploads use the server's exact `UploadChunkBytes` (allowed up to 64 MB for R2 equal-size multipart parts).
+- **Leaderboard → `RECENT MATCHES` (`MultiplayerMenu.MatchHistory.cs`, `LeaderboardEntry.cs`, `LeaderboardManager.cs`):**
+  - Displays room matches with mode badge (`FFA` / `Teams` / `Mirror` / legacy `Duel`), player count, real winner / winning team / draw, and ranked participants; pressing `Enter` or clicking opens a full standings overlay (score, accuracy, combo, misses, ELO change). Existing cached 1v1 entries are backfilled when server history supplies `Players[]`.
+- **Settings (`SettingsManager.cs`, `9581a8c`):** `Countdown Style` reverted from inline `LEFT/RIGHT` adjustable + 2 s rescan back to `SettingKind.Action` opening `CountdownMenu` (now touch-friendly via `PickerTouch`).
+
 ### 12.0 Server URL, testing two windows
 
 - `MultiplayerSettings.EffectiveServerUrl`: env `FUNKYMAKER_SERVER_URL`, else `ServerUrl` in
-  `multiplayer_settings.json` (JSON only), else `TransferServerUrl` (old name), else
-  `DefaultServerUrl` = `https://funkymaker-transfer.onrender.com`. SignalR hub `/multiplayer`.
+  `multiplayer_settings.json` (JSON only, ignoring retired `*.onrender.com` URLs), else
+  `TransferServerUrl` (old name, same filter), else `DefaultServerUrl` =
+  `https://funkymaker-online.abelitogameryt.workers.dev`. WebSocket hub `/multiplayer` (Protocol 4).
 - `FUNKYMAKER_MP_PROFILE=<name>` uses `multiplayer_settings.<name>.json` (own PlayerId / name / colour),
   for two windows on one PC. The same PlayerId joining a room again **takes over** the old place (the
   other window gets `Kicked`: "joined from another window").
 
 ### 12.1 Client code
 
-- `Multiplayer/Rooms/RoomProtocol.cs`: copy of the server's `Protocol.cs` (keep in sync).
-- `NetworkManager`: connection, reconnect (backoff + SignalR auto reconnect; `Hello` again, then
+- `Multiplayer/Rooms/RoomProtocol.cs`: copy of the server's Protocol definitions (Protocol 4; keep in sync).
+- `NetworkManager`: connection, reconnect (backoff + `WsHubConnection` auto reconnect; `Hello` again, then
   `RoomClient` re-joins the room), ping / `TimeSyncManager`, leaderboard, official level list (HTTP).
   **All server messages except Pong are queued and raised on the game thread** by `Update` (Game1 calls
   it every frame); `Call<T>` / `Send` invoke hub methods (results also on the game thread).
-  Connect timeout 90 s (sleeping free Render instance).
+  Connect timeout 30 s.
 - `Rooms/RoomClient` (singleton): room list, current `RoomStatePacket` (Levels / History merged, they are
   null when unchanged), chat, the round's level (official: `LevelDownloader` / `LevelCache`; local: your
   file, or the server's `TransferDownload` into `mods/levels/Received/`, hash-checked; `TransferUpload`
@@ -2303,8 +2319,8 @@ States: `MainMenu` → `Connecting` → `RoomBrowser` → `RoomSettings` (create
     (`Game1.MenuButtonsMode`, settings.json `MenuButtonsMode`, default AUTO). In AUTO the D-pad,
     A / B and Q / E are hidden (not drawn, no input, `IsPointOnMenuControl` false) where
     `TouchControls.ScreenIsTouchReady` is set: Game1 sets it every frame except in the chart
-    editor, HUD editor, Level Selector and key-binding overlay; the online menu's own instance
-    always sets it. Gameplay (hitboxes + pause button) is unaffected.
+    editor, HUD editor, Level Selector and key-binding overlay (`CharacterEditor` sets it true);
+    the online menu's own instance always sets it. Gameplay (hitboxes + pause button) is unaffected.
   - **D-pad geometry**: a real cross fully on screen (Down used to be below the screen edge and
     Left/Right off-centre); A bigger, B lower-left of A; Q / E moved above B / A (they covered
     the Settings title and tab bar).
