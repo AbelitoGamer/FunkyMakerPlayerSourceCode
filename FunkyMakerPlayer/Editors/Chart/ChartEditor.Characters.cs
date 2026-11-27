@@ -181,12 +181,17 @@ namespace FunkyMakerPlayer.Editors.Chart
             }
 
             bool leftJustPressed = ms.LeftButton == ButtonState.Pressed && _prevMouse.LeftButton == ButtonState.Released;
-            if (!leftJustPressed) return;
             if (_charModalSuppressRelease)
             {
-                _charModalSuppressRelease = false;
-                return;
+                if (leftJustPressed)
+                {
+                    _charModalSuppressRelease = false;
+                    return;
+                }
+                if (!rawLeftDown)
+                    _charModalSuppressRelease = false;
             }
+            if (!leftJustPressed) return;
 
             for (int i = _charModalClicks.Count - 1; i >= 0; i--)
             {
@@ -246,7 +251,19 @@ namespace FunkyMakerPlayer.Editors.Chart
             var pos = obj.GetPosition();
             var sc = obj.GetScale();
             float signX = sc.X < 0 ? -1f : 1f;
-            if (flipX) signX = -signX;
+            if (flipX)
+            {
+                signX = -signX;
+                // Keep Sing Left (1) <-> Sing Right (4) visually consistent when mirroring horizontally!
+                if (!string.IsNullOrEmpty(obj.Spr) &&
+                    _level.Sprites.TryGetValue(obj.Spr, out var sprPair) &&
+                    sprPair.Def.Data.Count >= 5 && sprPair.Frames.Count >= 5)
+                {
+                    (sprPair.Def.Data[1], sprPair.Def.Data[4]) = (sprPair.Def.Data[4], sprPair.Def.Data[1]);
+                    (sprPair.Frames[1], sprPair.Frames[4]) = (sprPair.Frames[4], sprPair.Frames[1]);
+                    InvalidateSpritePreviewCache(obj.Spr);
+                }
+            }
 
             float absX = Math.Clamp(MathF.Round(MathF.Abs(sc.X) + dScale, 2), 0.10f, 8.0f);
             float absY = Math.Clamp(MathF.Round(MathF.Abs(sc.Y) + dScale, 2), 0.10f, 8.0f);

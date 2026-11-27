@@ -148,8 +148,14 @@ public static class LevelFiles
             psi.ArgumentList.Add(path);
             using var p = Process.Start(psi);
             if (p == null) return false;
-            p.WaitForExit(5000);
-            return p.HasExited && p.ExitCode == 0 && !File.Exists(path) && !Directory.Exists(path);
+            p.ErrorDataReceived += (_, _) => { };
+            p.BeginErrorReadLine();
+            if (!p.WaitForExit(5000))
+            {
+                try { p.Kill(); } catch { }
+                return false;
+            }
+            return p.ExitCode == 0 && !File.Exists(path) && !Directory.Exists(path);
         }
         catch
         {

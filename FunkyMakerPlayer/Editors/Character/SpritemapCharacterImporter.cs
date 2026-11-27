@@ -100,7 +100,7 @@ public static class SpritemapCharacterImporter
     }
 
     private static string? FindAnimationJson(string dirPath) =>
-        Directory.EnumerateFiles(dirPath, "*.json", SearchOption.TopDirectoryOnly)
+        Directory.EnumerateFiles(dirPath, "*", SearchOption.TopDirectoryOnly)
             .FirstOrDefault(f =>
             {
                 string n = Path.GetFileName(f);
@@ -109,7 +109,7 @@ public static class SpritemapCharacterImporter
             });
 
     private static string? FindMetadataJson(string dirPath) =>
-        Directory.EnumerateFiles(dirPath, "*.json", SearchOption.TopDirectoryOnly)
+        Directory.EnumerateFiles(dirPath, "*", SearchOption.TopDirectoryOnly)
             .FirstOrDefault(f => string.Equals(Path.GetFileName(f), "metadata.json", StringComparison.OrdinalIgnoreCase));
 
     private static string? FindLibraryDirectory(string dirPath) =>
@@ -117,8 +117,10 @@ public static class SpritemapCharacterImporter
             .FirstOrDefault(d => string.Equals(Path.GetFileName(d), "library", StringComparison.OrdinalIgnoreCase));
 
     private static List<string> FindSpritemapJsons(string dirPath) =>
-        Directory.EnumerateFiles(dirPath, "*.json", SearchOption.TopDirectoryOnly)
-            .Where(f => Path.GetFileName(f).StartsWith("spritemap", StringComparison.OrdinalIgnoreCase))
+        Directory.EnumerateFiles(dirPath, "*", SearchOption.TopDirectoryOnly)
+            .Where(f =>
+                string.Equals(Path.GetExtension(f), ".json", StringComparison.OrdinalIgnoreCase) &&
+                Path.GetFileName(f).StartsWith("spritemap", StringComparison.OrdinalIgnoreCase))
             .OrderBy(p => p, StringComparer.OrdinalIgnoreCase)
             .ToList();
 
@@ -411,29 +413,37 @@ public static class SpritemapCharacterImporter
                 project.Scale = MathF.Round(project.Scale / globalRasterScale, 3);
             }
 
-            foreach (var spec in clipSpecs)
+            try
             {
-                var clip = RasterizeClip(spec.ClipName, spec.Timeline, spec.Frames, symbols, limbs, spec.RootMatrix, globalRasterScale, project.Bilinear);
-                if (clip != null && clip.Frames.Count > 0)
+                foreach (var spec in clipSpecs)
                 {
-                    clip.SuggestedFps = spec.Fps;
-                    clip.SuggestedLoop = spec.Loop;
-                    clip.ImportedOffset = new Vec2
+                    var clip = RasterizeClip(spec.ClipName, spec.Timeline, spec.Frames, symbols, limbs, spec.RootMatrix, globalRasterScale, project.Bilinear);
+                    if (clip != null && clip.Frames.Count > 0)
                     {
-                        X = spec.Offset.X * globalRasterScale,
-                        Y = spec.Offset.Y * globalRasterScale,
-                    };
-                    clip.HasImportedOffset = spec.HasOff;
-                    project.AvailableClips.Add(clip);
+                        clip.SuggestedFps = spec.Fps;
+                        clip.SuggestedLoop = spec.Loop;
+                        clip.ImportedOffset = new Vec2
+                        {
+                            X = spec.Offset.X * globalRasterScale,
+                            Y = spec.Offset.Y * globalRasterScale,
+                        };
+                        clip.HasImportedOffset = spec.HasOff;
+                        project.AvailableClips.Add(clip);
+                    }
                 }
+
+                if (project.AvailableClips.Count == 0)
+                    throw new InvalidOperationException("Spritemap timelines contained no renderable limb frames.");
+
+                SparrowCharacterImporter.AutoMapCharacterSlots(project);
+                SparrowCharacterImporter.TryAutoLoadNearbyIcon(project, dir, extCharJson?.HealthIcon, project.Slug);
+                return project;
             }
-
-            if (project.AvailableClips.Count == 0)
-                throw new InvalidOperationException("Spritemap timelines contained no renderable limb frames.");
-
-            SparrowCharacterImporter.AutoMapCharacterSlots(project);
-            SparrowCharacterImporter.TryAutoLoadNearbyIcon(project, dir, extCharJson?.HealthIcon, project.Slug);
-            return project;
+            catch
+            {
+                project.Dispose();
+                throw;
+            }
         }
         finally
         {
@@ -448,8 +458,10 @@ public static class SpritemapCharacterImporter
     /// </summary>
     private static void LoadLibraryFolderSymbols(string libraryDir, Dictionary<string, AnimateTimeline> symbols)
     {
-        foreach (var file in Directory.EnumerateFiles(libraryDir, "*.json", SearchOption.AllDirectories))
+        foreach (var file in Directory.EnumerateFiles(libraryDir, "*", SearchOption.AllDirectories))
         {
+            if (!string.Equals(Path.GetExtension(file), ".json", StringComparison.OrdinalIgnoreCase))
+                continue;
             try
             {
                 string rel = Path.GetRelativePath(libraryDir, file);
@@ -572,22 +584,34 @@ public static class SpritemapCharacterImporter
         int canvasH = Math.Clamp((int)MathF.Ceiling(clipMaxY) - originY + 1, 1, 2048);
 
         var renderedFrames = new Image<Rgba32>[perFrameCmds.Count];
-        int maxDop = OperatingSystem.IsAndroid() ? 2 : Math.Clamp(Environment.ProcessorCount, 1, 4);
+        // On 32-bit Android keep rasterization single-threaded to avoid concurrent multi-MB LOH canvas spikes
+        int maxDop = OperatingSystem.IsAndroid()
+            ? (Environment.Is64BitProcess ? 2 : 1)
+            : Math.Clamp(Environment.ProcessorCount, 1, 4);
 
-        Parallel.For(0, perFrameCmds.Count, new ParallelOptions { MaxDegreeOfParallelism = maxDop }, idx =>
+        try
         {
-            var canvas = new Image<Rgba32>(canvasW, canvasH);
-            var cmds = perFrameCmds[idx];
-            var shift = Matrix3x2.CreateTranslation(-originX, -originY);
-
-            for (int c = 0; c < cmds.Count; c++)
+            Parallel.For(0, perFrameCmds.Count, new ParallelOptions { MaxDegreeOfParallelism = maxDop }, idx =>
             {
-                var cmd = cmds[c];
-                var m = cmd.WorldMatrix * shift;
-                RasterizeLimb(canvas, cmd.Limb.Image, m, cmd.ColorMult, cmd.ColorOffset, bilinear);
-            }
-            renderedFrames[idx] = canvas;
-        });
+                var canvas = new Image<Rgba32>(canvasW, canvasH);
+                var cmds = perFrameCmds[idx];
+                var shift = Matrix3x2.CreateTranslation(-originX, -originY);
+
+                for (int c = 0; c < cmds.Count; c++)
+                {
+                    var cmd = cmds[c];
+                    var m = cmd.WorldMatrix * shift;
+                    RasterizeLimb(canvas, cmd.Limb.Image, m, cmd.ColorMult, cmd.ColorOffset, bilinear);
+                }
+                renderedFrames[idx] = canvas;
+            });
+        }
+        catch
+        {
+            for (int i = 0; i < renderedFrames.Length; i++)
+                try { renderedFrames[i]?.Dispose(); } catch { }
+            throw;
+        }
 
         return new ImportedAnimClip
         {
@@ -627,7 +651,7 @@ public static class SpritemapCharacterImporter
                 var el = kf.Elements[ei];
                 var worldMtx = el.Matrix * parentMatrix;
                 var colMult = parentColorMult * el.ColorMult;
-                var colOff = parentColorOff + el.ColorOffset;
+                var colOff = parentColorMult * el.ColorOffset + parentColorOff;
 
                 if (colMult.W <= 0.002f) continue;
 
@@ -714,6 +738,9 @@ public static class SpritemapCharacterImporter
             Vector2 p1 = Vector2.Transform(new Vector2(w, 0), m);
             Vector2 p2 = Vector2.Transform(new Vector2(0, h), m);
             Vector2 p3 = Vector2.Transform(new Vector2(w, h), m);
+            if (!float.IsFinite(p0.X) || !float.IsFinite(p0.Y) || !float.IsFinite(p1.X) || !float.IsFinite(p1.Y) ||
+                !float.IsFinite(p2.X) || !float.IsFinite(p2.Y) || !float.IsFinite(p3.X) || !float.IsFinite(p3.Y))
+                continue;
 
             minX = MathF.Min(minX, MathF.Min(MathF.Min(p0.X, p1.X), MathF.Min(p2.X, p3.X)));
             minY = MathF.Min(minY, MathF.Min(MathF.Min(p0.Y, p1.Y), MathF.Min(p2.Y, p3.Y)));
@@ -732,7 +759,13 @@ public static class SpritemapCharacterImporter
         Vector4 colOff,
         bool bilinear)
     {
-        if (!Matrix3x2.Invert(worldMatrix, out var inv))
+        if (!float.IsFinite(worldMatrix.M11) || !float.IsFinite(worldMatrix.M12) ||
+            !float.IsFinite(worldMatrix.M21) || !float.IsFinite(worldMatrix.M22) ||
+            !float.IsFinite(worldMatrix.M31) || !float.IsFinite(worldMatrix.M32) ||
+            !Matrix3x2.Invert(worldMatrix, out var inv) ||
+            !float.IsFinite(inv.M11) || !float.IsFinite(inv.M12) ||
+            !float.IsFinite(inv.M21) || !float.IsFinite(inv.M22) ||
+            !float.IsFinite(inv.M31) || !float.IsFinite(inv.M32))
             return;
 
         float sw = src.Width;
@@ -742,10 +775,17 @@ public static class SpritemapCharacterImporter
         Vector2 p2 = Vector2.Transform(new Vector2(0, sh), worldMatrix);
         Vector2 p3 = Vector2.Transform(new Vector2(sw, sh), worldMatrix);
 
-        int x0 = Math.Max(0, (int)MathF.Floor(MathF.Min(MathF.Min(p0.X, p1.X), MathF.Min(p2.X, p3.X))) - 1);
-        int y0 = Math.Max(0, (int)MathF.Floor(MathF.Min(MathF.Min(p0.Y, p1.Y), MathF.Min(p2.Y, p3.Y))) - 1);
-        int x1 = Math.Min(dst.Width - 1, (int)MathF.Ceiling(MathF.Max(MathF.Max(p0.X, p1.X), MathF.Max(p2.X, p3.X))) + 1);
-        int y1 = Math.Min(dst.Height - 1, (int)MathF.Ceiling(MathF.Max(MathF.Max(p0.Y, p1.Y), MathF.Max(p2.Y, p3.Y))) + 1);
+        float fMinX = MathF.Min(MathF.Min(p0.X, p1.X), MathF.Min(p2.X, p3.X));
+        float fMinY = MathF.Min(MathF.Min(p0.Y, p1.Y), MathF.Min(p2.Y, p3.Y));
+        float fMaxX = MathF.Max(MathF.Max(p0.X, p1.X), MathF.Max(p2.X, p3.X));
+        float fMaxY = MathF.Max(MathF.Max(p0.Y, p1.Y), MathF.Max(p2.Y, p3.Y));
+        if (!float.IsFinite(fMinX) || !float.IsFinite(fMinY) || !float.IsFinite(fMaxX) || !float.IsFinite(fMaxY))
+            return;
+
+        int x0 = (int)Math.Clamp(MathF.Floor(fMinX) - 1f, 0f, dst.Width);
+        int y0 = (int)Math.Clamp(MathF.Floor(fMinY) - 1f, 0f, dst.Height);
+        int x1 = (int)Math.Clamp(MathF.Ceiling(fMaxX) + 1f, -1f, dst.Width - 1);
+        int y1 = (int)Math.Clamp(MathF.Ceiling(fMaxY) + 1f, -1f, dst.Height - 1);
         if (x1 < x0 || y1 < y0) return;
 
         bool hasColorTransform = colMult != Vector4.One || colOff != Vector4.Zero;
@@ -866,11 +906,19 @@ public static class SpritemapCharacterImporter
         }
 
         string stem = Path.GetFileNameWithoutExtension(smJsonPath);
-        string? pngPath = (!string.IsNullOrWhiteSpace(imgName) && File.Exists(Path.Combine(dir, imgName!)))
-            ? Path.Combine(dir, imgName!)
-            : Path.Combine(dir, stem + ".png");
+        static string? ResolveFileIgnoreCase(string baseDir, string fileName)
+        {
+            string direct = Path.Combine(baseDir, fileName);
+            if (File.Exists(direct)) return direct;
+            if (!Directory.Exists(baseDir)) return null;
+            return Directory.EnumerateFiles(baseDir, "*", SearchOption.TopDirectoryOnly)
+                .FirstOrDefault(f => string.Equals(Path.GetFileName(f), fileName, StringComparison.OrdinalIgnoreCase));
+        }
 
-        if (!File.Exists(pngPath)) return;
+        string? pngPath = (!string.IsNullOrWhiteSpace(imgName) ? ResolveFileIgnoreCase(dir, Path.GetFileName(imgName!.Replace('\\', '/'))) : null)
+            ?? ResolveFileIgnoreCase(dir, stem + ".png");
+
+        if (string.IsNullOrEmpty(pngPath) || !File.Exists(pngPath)) return;
 
         using var sheet = Image.Load<Rgba32>(pngPath);
 
@@ -1194,20 +1242,26 @@ public static class SpritemapCharacterImporter
         if (!(TryGetProp(inst, "C", out var c) || TryGetProp(inst, "color", out c)) || c.ValueKind != JsonValueKind.Object)
             return;
 
+        static float NormMult(float v, float maxVal = 1f)
+        {
+            if (MathF.Abs(v) > 1.01f) v /= 100f;
+            return Math.Clamp(v, 0f, maxVal);
+        }
+
         string mode = GetStringProp(c, "M") ?? GetStringProp(c, "mode") ?? "";
         if (string.Equals(mode, "CA", StringComparison.OrdinalIgnoreCase) ||
             string.Equals(mode, "Alpha", StringComparison.OrdinalIgnoreCase))
         {
-            mult.W = Math.Clamp(GetFloatProp(c, "AM", GetFloatProp(c, "alphaMultiplier", 1f)), 0f, 1f);
+            mult.W = NormMult(GetFloatProp(c, "AM", GetFloatProp(c, "alphaMultiplier", 1f)), 1f);
         }
         else if (string.Equals(mode, "AD", StringComparison.OrdinalIgnoreCase) ||
                  string.Equals(mode, "Advanced", StringComparison.OrdinalIgnoreCase))
         {
             mult = new Vector4(
-                Math.Clamp(GetFloatProp(c, "RM", GetFloatProp(c, "RedMultiplier", 1f)), 0f, 2f),
-                Math.Clamp(GetFloatProp(c, "GM", GetFloatProp(c, "GreenMultiplier", 1f)), 0f, 2f),
-                Math.Clamp(GetFloatProp(c, "BM", GetFloatProp(c, "BlueMultiplier", 1f)), 0f, 2f),
-                Math.Clamp(GetFloatProp(c, "AM", GetFloatProp(c, "alphaMultiplier", 1f)), 0f, 1f));
+                NormMult(GetFloatProp(c, "RM", GetFloatProp(c, "RedMultiplier", 1f)), 2f),
+                NormMult(GetFloatProp(c, "GM", GetFloatProp(c, "GreenMultiplier", 1f)), 2f),
+                NormMult(GetFloatProp(c, "BM", GetFloatProp(c, "BlueMultiplier", 1f)), 2f),
+                NormMult(GetFloatProp(c, "AM", GetFloatProp(c, "alphaMultiplier", 1f)), 1f));
             offset = new Vector4(
                 GetFloatProp(c, "RO", GetFloatProp(c, "redOffset", 0f)),
                 GetFloatProp(c, "GO", GetFloatProp(c, "greenOffset", 0f)),
@@ -1217,7 +1271,7 @@ public static class SpritemapCharacterImporter
         else if (string.Equals(mode, "T", StringComparison.OrdinalIgnoreCase) ||
                  string.Equals(mode, "Tint", StringComparison.OrdinalIgnoreCase))
         {
-            float tm = Math.Clamp(GetFloatProp(c, "TM", GetFloatProp(c, "tintMultiplier", 0f)), 0f, 1f);
+            float tm = NormMult(GetFloatProp(c, "TM", GetFloatProp(c, "tintMultiplier", 0f)), 1f);
             string? hex = GetStringProp(c, "TC") ?? GetStringProp(c, "tintColor");
             if (!string.IsNullOrEmpty(hex) && TryParseHexColor(hex!, out float tr, out float tg, out float tb))
             {
@@ -1378,8 +1432,9 @@ public static class SpritemapCharacterImporter
         {
             if (indices != null && indices.Count > 0)
             {
-                // V-Slice frameIndices on a main timeline can be absolute timeline frame numbers OR relative to label start!
-                bool looksAbsolute = indices.Min() >= lbl.Start && indices.Max() <= mainTl.TotalFrames;
+                // V-Slice frameIndices on a main timeline can be absolute timeline frame numbers OR relative to label start.
+                int labelLen = Math.Max(1, lbl.End - lbl.Start + 1);
+                bool looksAbsolute = lbl.Start > 0 && indices.Min() >= lbl.Start && indices.Max() < mainTl.TotalFrames && indices.Max() >= labelLen;
                 foreach (int idx in indices)
                 {
                     int f = looksAbsolute ? idx : (lbl.Start + idx);
@@ -1448,9 +1503,11 @@ public static class SpritemapCharacterImporter
 
     private static CompanionCharJson? FindAndParseCompanionJson(string dir)
     {
-        var candidates = Directory.EnumerateFiles(dir, "*.json", SearchOption.TopDirectoryOnly)
+        var candidates = Directory.EnumerateFiles(dir, "*", SearchOption.TopDirectoryOnly)
             .Where(p =>
             {
+                if (!string.Equals(Path.GetExtension(p), ".json", StringComparison.OrdinalIgnoreCase))
+                    return false;
                 string fn = Path.GetFileName(p);
                 return !fn.StartsWith("spritemap", StringComparison.OrdinalIgnoreCase)
                     && !string.Equals(fn, "Animation.json", StringComparison.OrdinalIgnoreCase)
@@ -1461,13 +1518,14 @@ public static class SpritemapCharacterImporter
             })
             .ToList();
 
-        // Also check parent directory for a matching <folderName>.json (common in zipped V-Slice / Psych packs)
+        // Also check parent directory for a matching <folderName>.json (case-insensitive on Linux/Android)
         var parentDir = Directory.GetParent(dir);
         if (parentDir != null && parentDir.Exists)
         {
-            string folderStem = new DirectoryInfo(dir).Name;
-            string parentMatch = Path.Combine(parentDir.FullName, folderStem + ".json");
-            if (File.Exists(parentMatch))
+            string folderStem = new DirectoryInfo(dir).Name + ".json";
+            string? parentMatch = Directory.EnumerateFiles(parentDir.FullName, "*", SearchOption.TopDirectoryOnly)
+                .FirstOrDefault(f => string.Equals(Path.GetFileName(f), folderStem, StringComparison.OrdinalIgnoreCase));
+            if (parentMatch != null)
                 candidates.Add(parentMatch);
         }
 

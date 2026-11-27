@@ -43,18 +43,23 @@ namespace FunkyMakerPlayer.Multiplayer
         private readonly TimeSpan[] _reconnectDelays;
         private readonly Dictionary<string, (Type Type, Action<object?> Handler)> _handlers = new(StringComparer.Ordinal);
         private readonly ConcurrentDictionary<long, TaskCompletionSource<JsonElement>> _pending = new();
-        private readonly Dictionary<string, (string?[] Parts, int Received)> _fragments = new(StringComparer.Ordinal);
+        private readonly Dictionary<string, (string?[] Parts, int Received, long TotalChars)> _fragments = new(StringComparer.Ordinal);
         private readonly SemaphoreSlim _sendLock = new(1, 1);
         private readonly CancellationTokenSource _lifetime = new();
-        private ClientWebSocket? _socket;
+        private volatile ClientWebSocket? _socket;
         private long _nextId;
         private int _stopped;
+        private int _state = (int)HubConnectionState.Disconnected;
         private long _lastReceivedUtcTicks = DateTime.UtcNow.Ticks;
 
         private void TouchLastReceived() => Interlocked.Exchange(ref _lastReceivedUtcTicks, DateTime.UtcNow.Ticks);
         private DateTime LastReceivedUtc => new(Interlocked.Read(ref _lastReceivedUtcTicks), DateTimeKind.Utc);
 
-        public HubConnectionState State { get; private set; } = HubConnectionState.Disconnected;
+        public HubConnectionState State
+        {
+            get => (HubConnectionState)Volatile.Read(ref _state);
+            private set => Volatile.Write(ref _state, (int)value);
+        }
         /// <summary>The connection counts as dropped after this long without any message (the server pings every 10 s).</summary>
         public TimeSpan ServerTimeout { get; set; } = TimeSpan.FromSeconds(60);
 
@@ -175,13 +180,16 @@ namespace FunkyMakerPlayer.Multiplayer
 
         private async Task SendTextAsync(string text, CancellationToken ct)
         {
-            var socket = _socket;
-            if (socket == null || State != HubConnectionState.Connected || socket.State != WebSocketState.Open)
+            if (Volatile.Read(ref _stopped) != 0)
                 throw new InvalidOperationException("Not connected to the server.");
 
             await _sendLock.WaitAsync(ct).ConfigureAwait(false);
             try
             {
+                var socket = _socket;
+                if (socket == null || State != HubConnectionState.Connected || socket.State != WebSocketState.Open)
+                    throw new InvalidOperationException("Not connected to the server.");
+
                 if (text.Length <= FragmentChars)
                 {
                     await SendFrameAsync(socket, text, ct).ConfigureAwait(false);
@@ -242,14 +250,15 @@ namespace FunkyMakerPlayer.Multiplayer
                     catch (Exception ex) { Console.WriteLine($"[Multiplayer] Bad server message: {ex.Message}"); }
                 }
             }
-            catch (OperationCanceledException) when (_lifetime.IsCancellationRequested) { }
+            catch (OperationCanceledException) when (Volatile.Read(ref _stopped) != 0) { }
+            catch (ObjectDisposedException) when (Volatile.Read(ref _stopped) != 0) { }
             catch (Exception ex) { error = ex; }
 
             if (!ReferenceEquals(socket, _socket)) return; // superseded
             await OnSocketLostAsync(socket, error ?? new WebSocketException("Connection closed.")).ConfigureAwait(false);
         }
 
-        private void HandleText(string text)
+        private void HandleText(string text, int depth = 0)
         {
             using var doc = JsonDocument.Parse(text);
             var root = doc.RootElement;
@@ -281,6 +290,7 @@ namespace FunkyMakerPlayer.Multiplayer
                 }
                 case "frag":
                 {
+                    if (depth > 0) return; // disallow nested fragments
                     string fid = root.GetProperty("fid").GetString() ?? "";
                     int i = root.GetProperty("i").GetInt32();
                     int n = root.GetProperty("n").GetInt32();
@@ -292,9 +302,22 @@ namespace FunkyMakerPlayer.Multiplayer
                         if (!_fragments.TryGetValue(fid, out var entry) || entry.Parts.Length != n)
                         {
                             if (_fragments.Count >= 8) _fragments.Clear(); // abandoned partial messages
-                            entry = (new string?[n], 0);
+                            entry = (new string?[n], 0, 0L);
                         }
-                        if (entry.Parts[i] == null) entry.Received++;
+                        if (entry.Parts[i] == null)
+                        {
+                            entry.Received++;
+                            entry.TotalChars += data.Length;
+                        }
+                        else
+                        {
+                            entry.TotalChars += data.Length - entry.Parts[i]!.Length;
+                        }
+                        if (entry.TotalChars > MaxIncomingBytes)
+                        {
+                            _fragments.Remove(fid);
+                            return;
+                        }
                         entry.Parts[i] = data;
                         if (entry.Received == n)
                         {
@@ -303,7 +326,7 @@ namespace FunkyMakerPlayer.Multiplayer
                         }
                         else _fragments[fid] = entry;
                     }
-                    if (whole != null) HandleText(whole);
+                    if (whole != null) HandleText(whole, depth + 1);
                     break;
                 }
                 // "ping" and anything unknown: receiving it already refreshed _lastReceivedUtc.
@@ -314,7 +337,7 @@ namespace FunkyMakerPlayer.Multiplayer
         {
             try
             {
-                while (ReferenceEquals(socket, _socket) && socket.State == WebSocketState.Open)
+                while (Volatile.Read(ref _stopped) == 0 && ReferenceEquals(socket, _socket) && socket.State == WebSocketState.Open)
                 {
                     await Task.Delay(2000, _lifetime.Token).ConfigureAwait(false);
                     if (DateTime.UtcNow - LastReceivedUtc > ServerTimeout)
@@ -326,6 +349,8 @@ namespace FunkyMakerPlayer.Multiplayer
                 }
             }
             catch (OperationCanceledException) { }
+            catch (ObjectDisposedException) { }
+            catch (WebSocketException) { }
         }
 
         // ── Drops and reconnects ─────────────────────────────────────────────
@@ -395,15 +420,27 @@ namespace FunkyMakerPlayer.Multiplayer
             FailPending(new OperationCanceledException("The connection was stopped."));
             if (socket != null)
             {
+                // Coordinate with in-flight SendTextAsync so CloseOutputAsync/Dispose never race a live SendAsync
+                bool locked = false;
                 try
                 {
-                    if (socket.State == WebSocketState.Open)
+                    locked = await _sendLock.WaitAsync(TimeSpan.FromSeconds(2)).ConfigureAwait(false);
+                    if (locked && socket.State == WebSocketState.Open)
                     {
                         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(2));
                         await socket.CloseOutputAsync(WebSocketCloseStatus.NormalClosure, "bye", cts.Token).ConfigureAwait(false);
                     }
+                    else
+                    {
+                        try { socket.Abort(); } catch { }
+                    }
                 }
                 catch { }
+                finally
+                {
+                    if (locked)
+                        try { _sendLock.Release(); } catch { }
+                }
                 try { socket.Dispose(); } catch { }
             }
             await RaiseAsync(Closed, null).ConfigureAwait(false);

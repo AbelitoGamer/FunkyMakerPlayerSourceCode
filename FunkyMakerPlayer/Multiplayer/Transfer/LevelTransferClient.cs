@@ -79,8 +79,9 @@ namespace FunkyMakerPlayer.Multiplayer.Transfer
         {
             // Use exactly the server's chunk size: every chunk but the last must have it (R2 multipart
             // parts are all the same size), and offsets must be multiples of it.
+            int maxAllowedChunk = Environment.Is64BitProcess ? 64 * 1024 * 1024 : 8 * 1024 * 1024;
             int chunkSize = NetworkManager.Instance.UploadChunkBytes;
-            if (chunkSize < 256 * 1024 || chunkSize > 64 * 1024 * 1024)
+            if (chunkSize < 256 * 1024 || chunkSize > maxAllowedChunk)
                 chunkSize = DefaultChunkBytes;
 
             await using var file = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read, BufferSize, useAsync: true);
@@ -226,7 +227,9 @@ namespace FunkyMakerPlayer.Multiplayer.Transfer
             request.Content.Headers.ContentLength = file.Length;
             request.Content.Headers.ContentType = new MediaTypeHeaderValue("application/octet-stream");
 
-            using var response = await Http.SendAsync(request, ct);
+            using var putCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            putCts.CancelAfter(TimeSpan.FromMinutes(5));
+            using var response = await Http.SendAsync(request, putCts.Token);
             if (!response.IsSuccessStatusCode)
                 throw new IOException($"Upload refused ({(int)response.StatusCode}).");
         }
@@ -245,7 +248,9 @@ namespace FunkyMakerPlayer.Multiplayer.Transfer
 
                     using var request = new HttpRequestMessage(HttpMethod.Get, $"{ServerUrl}/api/transfers/{t.TransferId}/file");
                     request.Headers.Add(Protocol.TokenHeader, t.Token);
-                    using var response = await Http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, ct);
+                    using var hdrCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                    hdrCts.CancelAfter(TimeSpan.FromSeconds(60));
+                    using var response = await Http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, hdrCts.Token);
                     if (!response.IsSuccessStatusCode)
                     {
                         int code = (int)response.StatusCode;
@@ -261,8 +266,12 @@ namespace FunkyMakerPlayer.Multiplayer.Transfer
                     long total = 0;
                     long lastReport = 0;
                     int n;
-                    while ((n = await source.ReadAsync(buffer.AsMemory(0, buffer.Length), ct)) > 0)
+                    while (true)
                     {
+                        using var readCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                        readCts.CancelAfter(TimeSpan.FromSeconds(45));
+                        n = await source.ReadAsync(buffer.AsMemory(0, buffer.Length), readCts.Token);
+                        if (n <= 0) break;
                         total += n;
                         if (total > t.Size)
                             throw new IOException("The server sent more data than the level size.");

@@ -126,12 +126,15 @@ public partial class Game1
         {
             try
             {
-                // Pass progress callback to loading screen
+                // Pass progress callback to loading screen (capture local ref so main-thread nulling can't NRE)
                 _pendingLevel = FnmmLoader.Load(path, (progress, step) =>
                 {
-                    // Update main window loading screen
-                    _loadingScreen.LoadingProgress = progress;
-                    _loadingScreen.CurrentStep = step;
+                    var ls = _loadingScreen;
+                    if (ls != null)
+                    {
+                        ls.LoadingProgress = progress;
+                        ls.CurrentStep = step;
+                    }
                 }, chartOnly: chartOnly);
                 
                 _loadingComplete = true;
@@ -344,7 +347,8 @@ public partial class Game1
                         myLocalCharStrum,
                         updateIcon: true,
                         autoScaleToReplaced: true,
-                        spriteKeyOverride: "__mp_local_char");
+                        spriteKeyOverride: "__mp_local_char",
+                        preloadedPackage: eqPkg);
                     if (applied != null)
                     {
                         Console.WriteLine($"[Multiplayer] Equipped local custom character '{eqPkg.Metadata.Name}' on strumLine {myLocalCharStrum}");
@@ -916,12 +920,13 @@ public partial class Game1
                 ? (float)_music.Duration.TotalSeconds
                 : float.MaxValue;
 
+            _audioRecoveryFailed = false;
             // Compressed audio bytes are never needed again after decoding (except editor playtest).
-            // In online matches, active players cannot timeskip/seek so _musicPcm can be freed on Android / 32-bit.
+            // Retain _musicPcm on 64-bit so Android audio recovery works in multiplayer; only drop on 32-bit MP to save LOH.
 #if ANDROID
             if (!_playtestingFromEditor)
                 _level.MusicData = null;
-            if (_isMultiplayerMatch && !_onlineSpectating)
+            if (_isMultiplayerMatch && !_onlineSpectating && !Environment.Is64BitProcess)
                 _musicPcm = null;
 #else
             if (_isMultiplayerMatch)
@@ -955,13 +960,14 @@ public partial class Game1
             _musicDurationSeconds = _music.Duration.TotalSeconds > 0.1
                 ? (float)_music.Duration.TotalSeconds
                 : float.MaxValue;
+            _audioRecoveryFailed = false;
 
             // Compressed audio bytes are never needed again after decoding (except editor playtest).
-            // In online matches, active players cannot timeskip/seek so _musicPcm can be freed on Android / 32-bit.
+            // Retain _musicPcm on 64-bit so Android audio recovery works in multiplayer; only drop on 32-bit MP to save LOH.
 #if ANDROID
             if (!_playtestingFromEditor)
                 _level.MusicData = null;
-            if (_isMultiplayerMatch && !_onlineSpectating)
+            if (_isMultiplayerMatch && !_onlineSpectating && !Environment.Is64BitProcess)
                 _musicPcm = null;
 #else
             if (_isMultiplayerMatch)

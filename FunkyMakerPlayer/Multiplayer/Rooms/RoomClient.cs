@@ -189,8 +189,8 @@ namespace FunkyMakerPlayer.Multiplayer.Rooms
             _transferCts?.Cancel();
             foreach (var uCts in _uploadCtsByKey.Values)
             {
+                // Only cancel here; the background upload task's own finally block owns Dispose()
                 try { uCts.Cancel(); } catch { }
-                try { uCts.Dispose(); } catch { }
             }
             _uploadCtsByKey.Clear();
             _uploadId = "";
@@ -613,14 +613,15 @@ namespace FunkyMakerPlayer.Multiplayer.Rooms
             string uploadKey = $"{t.Hash}:{t.Variant}";
             if (_uploadCtsByKey.TryGetValue(uploadKey, out var prevCts))
             {
+                // Only cancel superseded upload; its own finally block disposes prevCts safely
                 try { prevCts.Cancel(); } catch { }
-                try { prevCts.Dispose(); } catch { }
             }
             var cts = new CancellationTokenSource();
             _uploadCtsByKey[uploadKey] = cts;
 
             bool osu = t.Kind == Protocol.KindOsu;
             bool chartOnly = !osu && t.Variant == Protocol.VariantChartOnly;
+            string safeTid = SafeFileName(string.IsNullOrWhiteSpace(t.TransferId) ? Guid.NewGuid().ToString("N") : t.TransferId);
             _uploadId = t.TransferId;
             UploadProgress = 0f;
             Console.WriteLine($"[Rooms] Uploading {local.FileName}{(osu || chartOnly ? $" ({t.Variant})" : "")} for the room");
@@ -634,7 +635,7 @@ namespace FunkyMakerPlayer.Multiplayer.Rooms
                     {
                         // osu!: the whole set, packed now (without the video for the novideo variant).
                         var set = Osu.OsuLibrary.SetOf(local.FullPath) ?? throw new IOException("The osu! set is no longer there.");
-                        packed = Path.Combine(Path.GetTempPath(), $"fmp-{t.TransferId}.osz");
+                        packed = Path.Combine(Path.GetTempPath(), $"fmp-{safeTid}.osz");
                         long size = Osu.OsuLibrary.PackSet(set, withVideo: t.Variant != Protocol.VariantNoVideo, packed);
                         if (t.MaxSize > 0 && size > t.MaxSize)
                             throw new IOException($"The set is {size / (1024 * 1024)} MB, more than the server allows ({t.MaxSize / (1024 * 1024)} MB).");
@@ -643,7 +644,7 @@ namespace FunkyMakerPlayer.Multiplayer.Rooms
                     else if (chartOnly)
                     {
                         // FNF chart-only variant: strip all sprite PNGs and send only chart + audio (~3-12 MB).
-                        packed = Path.Combine(Path.GetTempPath(), $"fmp-{t.TransferId}-chartonly.fnmm");
+                        packed = Path.Combine(Path.GetTempPath(), $"fmp-{safeTid}-chartonly.fnmm");
                         long size = FnmmLoader.PackChartOnlyFnmm(local.FullPath, packed);
                         if (t.MaxSize > 0 && size > t.MaxSize)
                             throw new IOException($"The chart-only file is {size / (1024 * 1024)} MB, more than the server allows ({t.MaxSize / (1024 * 1024)} MB).");
@@ -703,7 +704,8 @@ namespace FunkyMakerPlayer.Multiplayer.Rooms
             {
                 if (osu) folder = Path.GetTempPath();
                 Directory.CreateDirectory(folder);
-                string part = Path.Combine(folder, osu ? $"fmp-{t.TransferId}.part" : $".{t.TransferId}.part");
+                string safeTid = SafeFileName(string.IsNullOrWhiteSpace(t.TransferId) ? Guid.NewGuid().ToString("N") : t.TransferId);
+                string part = Path.Combine(folder, osu ? $"fmp-{safeTid}.part" : $".{safeTid}.part");
                 try
                 {
                     string got = await LevelTransferClient.DownloadAsync(t, part, progress, cts.Token);
@@ -737,7 +739,7 @@ namespace FunkyMakerPlayer.Multiplayer.Rooms
                     {
                         // osu!: a packed set. Import it into mods/osu like a dropped .osz, then
                         // find the picked difficulty in it.
-                        string osz = Path.Combine(folder, string.IsNullOrWhiteSpace(t.FileName) ? $"fmp-{t.TransferId}.osz" : SafeFileName(t.FileName));
+                        string osz = Path.Combine(folder, string.IsNullOrWhiteSpace(t.FileName) ? $"fmp-{safeTid}.osz" : SafeFileName(t.FileName));
                         if (File.Exists(osz)) File.Delete(osz);
                         File.Move(part, osz);
                         try
@@ -763,7 +765,8 @@ namespace FunkyMakerPlayer.Multiplayer.Rooms
                     }
                     else
                     {
-                        final = UniquePath(folder, string.IsNullOrWhiteSpace(t.FileName) ? t.Name + ".fnmm" : t.FileName);
+                        string safeFnfName = SafeFileName(string.IsNullOrWhiteSpace(t.FileName) ? t.Name + ".fnmm" : t.FileName);
+                        final = UniquePath(folder, safeFnfName);
                         File.Move(part, final);
                         LocalLevelIndex.Instance.Remember(final, got);
                         string rel = Path.GetRelativePath(FreeplayMenu.GetDefaultLevelsFolder(), final);

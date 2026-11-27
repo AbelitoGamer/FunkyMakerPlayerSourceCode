@@ -14,6 +14,7 @@ namespace FunkyMakerPlayer.Multiplayer
         // ══════════════════════════════════════════════════════════════════════
         // Singleton Pattern
         // ══════════════════════════════════════════════════════════════════════
+        private static readonly object _instanceLock = new();
         private static MultiplayerSettings? _instance;
         public static MultiplayerSettings Instance
         {
@@ -21,7 +22,10 @@ namespace FunkyMakerPlayer.Multiplayer
             {
                 if (_instance == null)
                 {
-                    _instance = Load();
+                    lock (_instanceLock)
+                    {
+                        _instance ??= Load();
+                    }
                 }
                 return _instance;
             }
@@ -207,7 +211,9 @@ namespace FunkyMakerPlayer.Multiplayer
                 });
 
                 string path = GetSettingsPath();
-                File.WriteAllText(path, json);
+                string tmp = path + ".tmp";
+                File.WriteAllText(tmp, json);
+                File.Move(tmp, path, overwrite: true);
 
                 Console.WriteLine($"[Multiplayer Settings] Saved to {path}");
             }
@@ -343,7 +349,8 @@ namespace FunkyMakerPlayer.Multiplayer
         {
             // Using ASCII-safe characters that all fonts support
             string[] avatars = { "@", "#", "$", "%", "&", "*", "+", "=", "~", "^" };
-            return avatars[AvatarIndex % avatars.Length];
+            int idx = ((AvatarIndex % avatars.Length) + avatars.Length) % avatars.Length;
+            return avatars[idx];
         }
 
         /// <summary>

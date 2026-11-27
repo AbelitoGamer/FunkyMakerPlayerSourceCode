@@ -3,6 +3,7 @@ using Android.Content;
 using Android.Database;
 using Android.OS;
 using Android.Provider;
+using Android.Runtime;
 using Android.Webkit;
 using System;
 using System.IO;
@@ -11,15 +12,10 @@ using System.Linq;
 namespace FunkyMakerPlayer.Platforms.Android
 {
     /// <summary>
-    /// Custom DocumentsProvider to expose the mods folder in Android file picker
-    /// Similar to FNF v-slice's "OPEN DATA FOLDER" functionality
-    /// Note: The intent-filter for DOCUMENTS_PROVIDER is automatically added by the Android SDK
+    /// Custom DocumentsProvider to expose the mods folder in Android's system Files app.
+    /// Registered in Platforms/Android/AndroidManifest.xml with the required DOCUMENTS_PROVIDER intent-filter.
     /// </summary>
-    [ContentProvider(
-        new[] { "com.funkymakergame.player.documents" },
-        Exported = true,
-        GrantUriPermissions = true,
-        Permission = "android.permission.MANAGE_DOCUMENTS")]
+    [Register("com.funkymakergame.player.ModsDocumentProvider")]
     public class ModsDocumentProvider : DocumentsProvider
     {
         private const string ROOT_ID = "funkymaker_mods";
@@ -169,13 +165,8 @@ namespace FunkyMakerPlayer.Platforms.Android
                 var file = GetFileForDocId(documentId);
                 if (file == null || !file.Exists()) return null;
                 
-                var accessMode = (int)ParcelFileMode.ReadOnly;
-                if (mode.Contains("w"))
-                {
-                    accessMode = (int)(ParcelFileMode.ReadWrite | ParcelFileMode.Truncate);
-                }
-                
-                return ParcelFileDescriptor.Open(file, (ParcelFileMode)accessMode);
+                var accessMode = ParcelFileDescriptor.ParseMode(mode);
+                return ParcelFileDescriptor.Open(file, accessMode);
             }
             catch (Exception ex)
             {
@@ -188,13 +179,19 @@ namespace FunkyMakerPlayer.Platforms.Android
         {
             try
             {
-                if (string.IsNullOrEmpty(parentDocumentId) || string.IsNullOrEmpty(displayName))
+                if (string.IsNullOrEmpty(parentDocumentId) || string.IsNullOrWhiteSpace(displayName))
+                    return null;
+                if (displayName.Contains('/') || displayName.Contains('\\') || displayName == "." || displayName == "..")
                     return null;
                 
                 var parent = GetFileForDocId(parentDocumentId);
-                if (parent == null || !parent.Exists() || !parent.IsDirectory) return null;
+                if (parent == null || !parent.Exists() || !parent.IsDirectory || _modsDirectory == null) return null;
                 
                 var file = new Java.IO.File(parent, displayName);
+                string rootCanon = _modsDirectory.CanonicalPath.TrimEnd('/') + "/";
+                string fileCanon = file.CanonicalPath;
+                if (!fileCanon.StartsWith(rootCanon, StringComparison.Ordinal))
+                    return null;
                 
                 if (mimeType == DocumentsContract.Document.MimeTypeDir)
                 {

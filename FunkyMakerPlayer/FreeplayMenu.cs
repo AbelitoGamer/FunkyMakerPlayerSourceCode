@@ -2139,9 +2139,6 @@ public partial class FreeplayMenu
     private void OpenFolderBrowser()
     {
         #if !BLAZORGL && !ANDROID
-        if (!OperatingSystem.IsWindows())
-            return;
-
         try
         {
             var selectedFiles = PlatformPaths.PickDesktopFiles(

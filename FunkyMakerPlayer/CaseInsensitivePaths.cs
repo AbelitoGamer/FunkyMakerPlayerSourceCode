@@ -29,4 +29,37 @@ public static class CaseInsensitivePaths
         }
         catch { return exact; }
     }
+
+    /// <summary>
+    /// Walks <paramref name="segments"/> case-insensitively under <paramref name="baseDir"/> and returns
+    /// the resolved existing file path, or <c>null</c> if any segment or the final file does not exist.
+    /// </summary>
+    public static string? ResolveFile(string baseDir, params string[] segments)
+    {
+        if (string.IsNullOrEmpty(baseDir) || segments == null || segments.Length == 0 || !Directory.Exists(baseDir))
+            return null;
+
+        string current = baseDir;
+        for (int i = 0; i < segments.Length - 1; i++)
+        {
+            string seg = segments[i];
+            string exactDir = Path.Combine(current, seg);
+            if (Directory.Exists(exactDir))
+            {
+                current = exactDir;
+                continue;
+            }
+            try
+            {
+                string? matched = Directory.EnumerateDirectories(current)
+                    .FirstOrDefault(d => string.Equals(Path.GetFileName(d), seg, StringComparison.OrdinalIgnoreCase));
+                if (matched == null) return null;
+                current = matched;
+            }
+            catch { return null; }
+        }
+
+        string found = Find(current, segments[^1]);
+        return File.Exists(found) ? found : null;
+    }
 }

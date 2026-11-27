@@ -10,6 +10,7 @@ namespace FunkyMakerPlayer;
 /// </summary>
 public static class CrashLogger
 {
+    private static readonly object _lock = new();
     private static readonly StringBuilder _crashLog = new StringBuilder();
     private static Action<string>? _onCrashCallback;
     #pragma warning disable CS0414 // Field assigned but never used
@@ -21,9 +22,13 @@ public static class CrashLogger
     /// </summary>
     public static void Initialize(Action<string>? onCrashCallback = null)
     {
-        _onCrashCallback = onCrashCallback;
+        lock (_lock)
+        {
+            _onCrashCallback = onCrashCallback;
+        }
         
-        // Hook unhandled exceptions
+        // Hook unhandled exceptions (unsubscribe first so Activity recreation never duplicates handlers)
+        AppDomain.CurrentDomain.UnhandledException -= OnUnhandledException;
         AppDomain.CurrentDomain.UnhandledException += OnUnhandledException;
         
         Console.WriteLine("[CrashLogger] Initialized");
@@ -37,17 +42,28 @@ public static class CrashLogger
         var timestamp = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss");
         var crashReport = BuildCrashReport(ex, context, timestamp);
         
-        _crashLog.AppendLine(crashReport);
+#if ANDROID
+        Action<string>? cbToInvoke = null;
+#endif
+        lock (_lock)
+        {
+            _crashLog.AppendLine(crashReport);
+#if ANDROID
+            if (!_crashDialogShown)
+            {
+                _crashDialogShown = true;
+                cbToInvoke = _onCrashCallback;
+            }
+#endif
+        }
         
         Console.WriteLine($"[CrashLogger] Exception logged: {ex.Message}");
         
 #if ANDROID
-        // On Android, show crash dialog only ONCE (prevent multiple dialogs)
-        if (!_crashDialogShown)
+        if (cbToInvoke != null)
         {
-            _crashDialogShown = true;
             Console.WriteLine("[CrashLogger] Showing crash dialog (first crash only)");
-            _onCrashCallback?.Invoke(crashReport);
+            cbToInvoke(crashReport);
         }
         else
         {
@@ -116,7 +132,7 @@ public static class CrashLogger
         try
         {
             var crashFile = System.IO.Path.Combine(
-                AppDomain.CurrentDomain.BaseDirectory, 
+                PlatformPaths.GetAppBaseDirectory(), 
                 "crash.log"
             );
             
@@ -134,7 +150,7 @@ public static class CrashLogger
     /// </summary>
     public static string GetCrashLog()
     {
-        return _crashLog.ToString();
+        lock (_lock) return _crashLog.ToString();
     }
     
     /// <summary>
@@ -142,7 +158,10 @@ public static class CrashLogger
     /// </summary>
     public static void Clear()
     {
-        _crashLog.Clear();
-        _crashDialogShown = false;  // Reset dialog flag
+        lock (_lock)
+        {
+            _crashLog.Clear();
+            _crashDialogShown = false;  // Reset dialog flag
+        }
     }
 }

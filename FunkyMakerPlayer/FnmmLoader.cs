@@ -601,20 +601,30 @@ public static class FnmmLoader
     private static void ExtractRar(string rarPath, string outDir)
     {
         // Use SharpCompress — no external tools needed
+        string rootFull = Path.GetFullPath(outDir).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)
+                          + Path.DirectorySeparatorChar;
         using var archive = ArchiveFactory.OpenArchive(rarPath);
         foreach (var entry in archive.Entries)
         {
-            if (entry.IsDirectory) continue;
-            string destPath = Path.Combine(outDir, entry.Key!.Replace('/', Path.DirectorySeparatorChar));
-            Directory.CreateDirectory(Path.GetDirectoryName(destPath)!);
+            if (entry.IsDirectory || string.IsNullOrWhiteSpace(entry.Key)) continue;
+            string rel = entry.Key.Replace('\\', '/').TrimStart('/');
+            string destPath = Path.GetFullPath(Path.Combine(outDir, rel.Replace('/', Path.DirectorySeparatorChar)));
+            if (!destPath.StartsWith(rootFull, StringComparison.OrdinalIgnoreCase))
+            {
+                Console.WriteLine($"[FnmmLoader] Skipping unsafe RAR entry: {entry.Key}");
+                continue;
+            }
+            string? dir = Path.GetDirectoryName(destPath);
+            if (!string.IsNullOrEmpty(dir)) Directory.CreateDirectory(dir);
             entry.WriteToFile(destPath, new ExtractionOptions { Overwrite = true });
         }
     }
 
     private static string? FindLevelDir(string root)
     {
-        foreach (var f in Directory.EnumerateFiles(root, "data.json", SearchOption.AllDirectories))
-            return Path.GetDirectoryName(f);
+        foreach (var f in Directory.EnumerateFiles(root, "*", SearchOption.AllDirectories))
+            if (string.Equals(Path.GetFileName(f), "data.json", StringComparison.OrdinalIgnoreCase))
+                return Path.GetDirectoryName(f);
         return null;
     }
 
@@ -631,9 +641,26 @@ public static class FnmmLoader
 
     private static byte[] ReadZipEntryBytes(ZipArchiveEntry entry)
     {
-        int cap = entry.Length > 0 && entry.Length <= int.MaxValue ? (int)entry.Length : 0;
-        using var ms = cap > 0 ? new MemoryStream(cap) : new MemoryStream();
         using var s = entry.Open();
+        if (entry.Length > 0 && entry.Length <= int.MaxValue)
+        {
+            // Read directly into an exact-sized buffer to avoid 2x LOH peak (MemoryStream + ToArray) on 32-bit Android
+            int expected = (int)entry.Length;
+            var exact = new byte[expected];
+            int total = 0;
+            while (total < expected)
+            {
+                int n = s.Read(exact, total, expected - total);
+                if (n <= 0) break;
+                total += n;
+            }
+            if (total == expected)
+                return exact;
+            var trimmed = new byte[total];
+            Buffer.BlockCopy(exact, 0, trimmed, 0, total);
+            return trimmed;
+        }
+        using var ms = new MemoryStream();
         s.CopyTo(ms);
         return ms.ToArray();
     }

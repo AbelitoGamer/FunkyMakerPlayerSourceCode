@@ -89,10 +89,11 @@ public static class OggLoader
     {
         // PCM is 16-bit (2 bytes per sample), interleaved channels
         int bytesPerSample = 2 * channels;
-        long byteOffset    = (long)(seekSeconds * sampleRate) * bytesPerSample;
+        long byteOffset    = (long)(Math.Max(0f, seekSeconds) * sampleRate) * bytesPerSample;
         // Align to sample boundary
         byteOffset = (byteOffset / bytesPerSample) * bytesPerSample;
 
+        if (byteOffset < 0) byteOffset = 0;
         if (byteOffset >= pcmData.Length) return null;
 
         int remaining = (int)(pcmData.Length - byteOffset);
@@ -483,6 +484,7 @@ public static class OggLoader
     {
         // Simple linear interpolation resampling
         int originalSamples = pcmData.Length / (2 * channels); // 16-bit = 2 bytes
+        if (originalSamples < 2) return pcmData;
         double ratio = (double)targetRate / originalRate;
         int targetSamples = (int)(originalSamples * ratio);
         byte[] resampled = new byte[targetSamples * 2 * channels];

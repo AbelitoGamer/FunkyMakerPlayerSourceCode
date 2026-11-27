@@ -8,6 +8,10 @@ namespace FunkyMakerPlayer.Editors.Chart;
 /// </summary>
 public class EditorAudioManager : IDisposable
 {
+    private readonly object _lock = new();
+    private bool _disposed = false;
+    private bool _pendingAudioSeek = false;
+    private long _lastSeekTicks = 0;
     private SoundEffect? _music;
     private SoundEffect? _seekMusic;
     private SoundEffectInstance? _musicInst;
@@ -63,129 +67,210 @@ public class EditorAudioManager : IDisposable
 
     public void LoadFromLevel(FnmmLevel level)
     {
+        SoundEffect? decodedMusic = null;
         try
         {
-            StopAndDisposeInstances();
-            _playbackStartTime = 0f;
-            _playbackTimer.Reset();
-            _isPlaying = false;
+            lock (_lock)
+            {
+                if (_disposed) return;
+                StopAndDisposeInstancesLocked();
+                _playbackStartTime = 0f;
+                _playbackTimer.Reset();
+                _isPlaying = false;
+                _pendingAudioSeek = false;
+            }
 
             if (level.MusicData == null || level.MusicData.Length == 0)
             {
-                _hasRealAudio = false;
-                _virtualDurationMs = 180_000f; // 3-minute virtual timeline for silent/template charts
+                lock (_lock)
+                {
+                    if (_disposed) return;
+                    _hasRealAudio = false;
+                    _virtualDurationMs = 180_000f; // 3-minute virtual timeline for silent/template charts
+                }
                 Console.WriteLine("[EditorAudio] No music track in level — using virtual timeline (180s)");
                 return;
             }
 
             Console.WriteLine("[EditorAudio] Loading music...");
-            _music = OggLoader.LoadWithPcm(level.MusicData,
+            decodedMusic = AudioDecoder.LoadWithPcm(level.MusicData,
                 out byte[] pcm, out int sampleRate, out int channels);
 
-            _musicPcm = pcm;
-            _sampleRate = sampleRate;
-            _channels = channels;
-            _hasRealAudio = true;
-            _virtualDurationMs = 0f;
+            lock (_lock)
+            {
+                if (_disposed)
+                {
+                    decodedMusic.Dispose();
+                    return;
+                }
+                _music = decodedMusic;
+                decodedMusic = null;
+                _musicPcm = pcm;
+                _sampleRate = sampleRate;
+                _channels = channels;
+                _hasRealAudio = true;
+                _virtualDurationMs = 0f;
 
-            CreateInstanceFromOffset(0f);
+                CreateInstanceFromOffsetLocked(0f);
+            }
 
-            Console.WriteLine($"[EditorAudio] Music loaded ({_musicPcm.Length} bytes, {sampleRate}Hz, {channels}ch, {Duration / 1000f:F2}s)");
+            Console.WriteLine($"[EditorAudio] Music loaded ({pcm.Length} bytes, {sampleRate}Hz, {channels}ch, {Duration / 1000f:F2}s)");
         }
         catch (Exception ex)
         {
-            _hasRealAudio = false;
-            _virtualDurationMs = 180_000f;
+            try { decodedMusic?.Dispose(); } catch { }
+            lock (_lock)
+            {
+                if (_disposed) return;
+                _hasRealAudio = false;
+                _virtualDurationMs = 180_000f;
+            }
             Console.WriteLine($"[EditorAudio] Failed to load music: {ex.Message}");
         }
     }
 
     public void Update()
     {
-        if (!_isPlaying) return;
-
-        float dur = Duration;
-        if (dur > 0f && CurrentTime >= dur - 20f)
+        lock (_lock)
         {
-            _playbackStartTime = dur;
-            _playbackTimer.Reset();
-            _isPlaying = false;
-            _musicInst?.Stop();
+            if (_disposed || !_isPlaying) return;
+
+            if (_pendingAudioSeek && _hasRealAudio)
+            {
+                double elapsedMs = (System.Diagnostics.Stopwatch.GetTimestamp() - _lastSeekTicks) * 1000.0
+                    / System.Diagnostics.Stopwatch.Frequency;
+                if (elapsedMs >= 110.0)
+                {
+                    _pendingAudioSeek = false;
+                    float cur = CurrentTime;
+                    _playbackStartTime = cur;
+                    CreateInstanceFromOffsetLocked(_playbackStartTime);
+                    if (_musicInst != null)
+                    {
+                        _musicInst.Volume = Math.Clamp(Volume * Game1.MasterVolume, 0f, 1f);
+                        _musicInst.Play();
+                    }
+                    _playbackTimer.Restart();
+                }
+            }
+
+            float dur = Duration;
+            if (dur > 0f && CurrentTime >= dur - 20f)
+            {
+                _playbackStartTime = dur;
+                _playbackTimer.Reset();
+                _isPlaying = false;
+                _pendingAudioSeek = false;
+                _musicInst?.Stop();
+            }
         }
     }
 
     public void SetVolume(float volume)
     {
         Volume = Math.Clamp(volume, 0f, 1f);
-        if (_musicInst != null)
-            _musicInst.Volume = Math.Clamp(Volume * Game1.MasterVolume, 0f, 1f);
+        lock (_lock)
+        {
+            if (_musicInst != null)
+                _musicInst.Volume = Math.Clamp(Volume * Game1.MasterVolume, 0f, 1f);
+        }
     }
 
     public void Play()
     {
-        if (!IsLoaded) return;
-
-        if (_playbackStartTime >= Duration - 25f && Duration > 0f)
-            _playbackStartTime = 0f;
-
-        if (_hasRealAudio)
+        lock (_lock)
         {
-            CreateInstanceFromOffset(_playbackStartTime);
-            if (_musicInst != null)
-            {
-                _musicInst.Volume = Math.Clamp(Volume * Game1.MasterVolume, 0f, 1f);
-                _musicInst.Play();
-            }
-        }
+            if (_disposed || !IsLoaded) return;
 
-        _playbackTimer.Restart();
-        _isPlaying = true;
-        Console.WriteLine($"[EditorAudio] Playing from {_playbackStartTime / 1000f:F2}s");
-    }
+            if (_playbackStartTime >= Duration - 25f && Duration > 0f)
+                _playbackStartTime = 0f;
 
-    public void Pause()
-    {
-        if (!_isPlaying) return;
-        _playbackStartTime = CurrentTime;
-        _playbackTimer.Reset();
-        _isPlaying = false;
-        _musicInst?.Stop();
-        Console.WriteLine($"[EditorAudio] Paused at {_playbackStartTime / 1000f:F2}s");
-    }
-
-    public void Stop()
-    {
-        _musicInst?.Stop();
-        _playbackTimer.Reset();
-        _playbackStartTime = 0f;
-        _isPlaying = false;
-        Console.WriteLine("[EditorAudio] Stopped");
-    }
-
-    public void Seek(float timeMs)
-    {
-        bool wasPlaying = _isPlaying;
-        _musicInst?.Stop();
-        _playbackTimer.Reset();
-
-        _playbackStartTime = Math.Clamp(timeMs, 0f, Math.Max(0f, Duration));
-
-        if (wasPlaying)
-        {
+            _pendingAudioSeek = false;
             if (_hasRealAudio)
             {
-                CreateInstanceFromOffset(_playbackStartTime);
+                CreateInstanceFromOffsetLocked(_playbackStartTime);
                 if (_musicInst != null)
                 {
                     _musicInst.Volume = Math.Clamp(Volume * Game1.MasterVolume, 0f, 1f);
                     _musicInst.Play();
                 }
             }
+
             _playbackTimer.Restart();
+            _isPlaying = true;
+        }
+        Console.WriteLine($"[EditorAudio] Playing from {_playbackStartTime / 1000f:F2}s");
+    }
+
+    public void Pause()
+    {
+        lock (_lock)
+        {
+            if (!_isPlaying) return;
+            _playbackStartTime = CurrentTime;
+            _playbackTimer.Reset();
+            _isPlaying = false;
+            _pendingAudioSeek = false;
+            _musicInst?.Stop();
+        }
+        Console.WriteLine($"[EditorAudio] Paused at {_playbackStartTime / 1000f:F2}s");
+    }
+
+    public void Stop()
+    {
+        lock (_lock)
+        {
+            _musicInst?.Stop();
+            _playbackTimer.Reset();
+            _playbackStartTime = 0f;
+            _isPlaying = false;
+            _pendingAudioSeek = false;
+        }
+        Console.WriteLine("[EditorAudio] Stopped");
+    }
+
+    public void Seek(float timeMs)
+    {
+        lock (_lock)
+        {
+            if (_disposed) return;
+            bool wasPlaying = _isPlaying;
+            _musicInst?.Stop();
+            _playbackTimer.Reset();
+
+            _playbackStartTime = Math.Clamp(timeMs, 0f, Math.Max(0f, Duration));
+
+            if (wasPlaying)
+            {
+                long now = System.Diagnostics.Stopwatch.GetTimestamp();
+                double sinceLastMs = _lastSeekTicks == 0 ? 1000.0
+                    : (now - _lastSeekTicks) * 1000.0 / System.Diagnostics.Stopwatch.Frequency;
+                _lastSeekTicks = now;
+
+                if (_hasRealAudio)
+                {
+                    // Debounce full-PCM SoundEffect rebuilds while dragging the timeline scrubber
+                    if (sinceLastMs < 110.0)
+                    {
+                        _pendingAudioSeek = true;
+                    }
+                    else
+                    {
+                        _pendingAudioSeek = false;
+                        CreateInstanceFromOffsetLocked(_playbackStartTime);
+                        if (_musicInst != null)
+                        {
+                            _musicInst.Volume = Math.Clamp(Volume * Game1.MasterVolume, 0f, 1f);
+                            _musicInst.Play();
+                        }
+                    }
+                }
+                _playbackTimer.Restart();
+            }
         }
     }
 
-    private void CreateInstanceFromOffset(float offsetMs)
+    private void CreateInstanceFromOffsetLocked(float offsetMs)
     {
         _musicInst?.Stop();
         _musicInst?.Dispose();
@@ -209,7 +294,7 @@ public class EditorAudioManager : IDisposable
         _musicInst.IsLooped = false;
     }
 
-    private void StopAndDisposeInstances()
+    private void StopAndDisposeInstancesLocked()
     {
         _musicInst?.Stop();
         _musicInst?.Dispose();
@@ -225,6 +310,12 @@ public class EditorAudioManager : IDisposable
 
     public void Dispose()
     {
-        StopAndDisposeInstances();
+        lock (_lock)
+        {
+            _disposed = true;
+            _isPlaying = false;
+            _pendingAudioSeek = false;
+            StopAndDisposeInstancesLocked();
+        }
     }
 }

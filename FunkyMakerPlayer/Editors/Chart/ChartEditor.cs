@@ -153,7 +153,7 @@ namespace FunkyMakerPlayer.Editors.Chart
             PlaytestRequested = false;
             _dragMode = DragMode.None;
             _prevKeyboard = LayoutKeyboard.GetState();
-            _prevMouse = Mouse.GetState();
+            _prevMouse = UI.PointerInput.GetState();
         }
 
         public void SyncInputState()
@@ -161,7 +161,7 @@ namespace FunkyMakerPlayer.Editors.Chart
             _inputCooldown = Math.Max(_inputCooldown, 0.08f);
             _dragMode = DragMode.None;
             _prevKeyboard = LayoutKeyboard.GetState();
-            _prevMouse = Mouse.GetState();
+            _prevMouse = UI.PointerInput.GetState();
         }
 
         public void PausePlaybackFromFocusLoss()
@@ -275,7 +275,7 @@ namespace FunkyMakerPlayer.Editors.Chart
                 ?? new Dictionary<string, Dictionary<int, SpriteTextureCacheEntry>>(StringComparer.OrdinalIgnoreCase);
             _ownsPreviewTextures = sharedSpriteTextureCache == null;
             _prevKeyboard = LayoutKeyboard.GetState();
-            _prevMouse = Mouse.GetState();
+            _prevMouse = UI.PointerInput.GetState();
 
             LoadLevel();
         }
@@ -285,6 +285,8 @@ namespace FunkyMakerPlayer.Editors.Chart
             _audioManager.Dispose();
             DisposePreviewResources();
             DisposeCharacterModalIcons();
+            try { _scissorRasterizer?.Dispose(); } catch { }
+            _scissorRasterizer = null;
             _hitSoundFx?.Dispose();
             _metroBeatFx?.Dispose();
             _metroSubFx?.Dispose();
@@ -377,7 +379,7 @@ namespace FunkyMakerPlayer.Editors.Chart
                 UpdateLayout(_screenWidth, _screenHeight);
             }
 
-            var ms = Mouse.GetState();
+            var ms = UI.PointerInput.GetState();
 
             if (_toastTimer > 0f)
             {
@@ -698,7 +700,7 @@ namespace FunkyMakerPlayer.Editors.Chart
                 return;
             }
 
-            if (JustPressed(kb, Keys.V))
+            if (!ctrl && JustPressed(kb, Keys.V))
             {
                 _showPreview = !_showPreview;
                 UI.UiSfx.Play(UI.UiSound.Toggle);
@@ -1855,19 +1857,18 @@ namespace FunkyMakerPlayer.Editors.Chart
                 if (Directory.Exists(savePath))
                 {
                     savePath = savePath.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar) + ".fnmm";
-                    _levelPath = savePath;
                 }
                 else if (!savePath.EndsWith(".fnmm", StringComparison.OrdinalIgnoreCase) &&
                          !savePath.EndsWith(".zip", StringComparison.OrdinalIgnoreCase))
                 {
                     savePath = Path.ChangeExtension(savePath, ".fnmm");
-                    _levelPath = savePath;
                 }
 
                 if (File.Exists(savePath))
                     Common.BackupManager.CreateBackupIfNeeded(savePath);
 
                 FnmmSaver.Save(_level, savePath);
+                _levelPath = savePath;
                 _undoManager.MarkAsSaved();
                 _manualModified = false;
                 SavedInSession = true;
@@ -3231,7 +3232,19 @@ namespace FunkyMakerPlayer.Editors.Chart
                 _previewEvents = new EventProcessor(_previewLevel, _previewAnimators, _previewTexCache);
 
                 if (_previewLevel.Scene.Objects.Count > 0)
-                    _previewTarget = new RenderTarget2D(gd, _previewTargetW, _previewTargetH);
+                {
+                    if (_previewTarget == null || _previewTarget.IsDisposed ||
+                        _previewTarget.Width != _previewTargetW || _previewTarget.Height != _previewTargetH)
+                    {
+                        try { _previewTarget?.Dispose(); } catch { }
+                        _previewTarget = new RenderTarget2D(gd, _previewTargetW, _previewTargetH);
+                    }
+                }
+                else if (_previewTarget != null)
+                {
+                    try { _previewTarget.Dispose(); } catch { }
+                    _previewTarget = null;
+                }
 
                 SyncPreviewToTime(TimeUnitsToSeconds(_scrollY));
             }

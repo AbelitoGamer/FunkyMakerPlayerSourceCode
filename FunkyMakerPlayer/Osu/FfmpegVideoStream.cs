@@ -19,6 +19,7 @@ internal sealed class FfmpegVideoStream : IOsuVideoStream
 {
     private static string? _ffmpegPath;
     private static bool _ffmpegSearched;
+    private static bool _useLegacyVsync; // true for FFmpeg < 5.1 (e.g. Ubuntu 22.04 LTS FFmpeg 4.4)
 
     public static string? FindFfmpeg()
     {
@@ -34,7 +35,15 @@ internal sealed class FfmpegVideoStream : IOsuVideoStream
             try
             {
                 string p = Path.Combine(d.Trim().Trim('"'), exe);
-                if (File.Exists(p)) return _ffmpegPath = p;
+                if (!File.Exists(p)) continue;
+                if (!OperatingSystem.IsWindows())
+                {
+                    // Skip non-executable local copies (e.g. after zip extract) so PATH fallback works
+                    var mode = File.GetUnixFileMode(p);
+                    if ((mode & (UnixFileMode.UserExecute | UnixFileMode.GroupExecute | UnixFileMode.OtherExecute)) == 0)
+                        continue;
+                }
+                return _ffmpegPath = p;
             }
             catch { }
         }
@@ -57,13 +66,21 @@ internal sealed class FfmpegVideoStream : IOsuVideoStream
                 RedirectStandardOutput = true,
                 CreateNoWindow = true,
             };
-            foreach (var a in new[] { "-hide_banner", "-nostdin", "-i", file }) psi.ArgumentList.Add(a);
+            foreach (var a in new[] { "-nostdin", "-i", file }) psi.ArgumentList.Add(a);
             using var p = Process.Start(psi);
             if (p == null) return null;
             var stderr = p.StandardError.ReadToEndAsync();
             p.StandardOutput.ReadToEnd();
             if (!p.WaitForExit(5000)) { try { p.Kill(); } catch { } return null; }
-            foreach (var line in stderr.Result.Split('\n'))
+            string errText = stderr.Result;
+            var ver = System.Text.RegularExpressions.Regex.Match(errText, @"ffmpeg version\s+n?(\d+)\.(\d+)");
+            if (ver.Success &&
+                int.TryParse(ver.Groups[1].Value, out int maj) &&
+                int.TryParse(ver.Groups[2].Value, out int min))
+            {
+                _useLegacyVsync = maj < 5 || (maj == 5 && min < 1);
+            }
+            foreach (var line in errText.Split('\n'))
             {
                 if (!line.Contains("Video:", StringComparison.Ordinal)) continue;
                 var size = System.Text.RegularExpressions.Regex.Match(line, @"\b(\d{2,5})x(\d{2,5})\b");
@@ -108,7 +125,7 @@ internal sealed class FfmpegVideoStream : IOsuVideoStream
                      // frames). Without it the rawvideo muxer passes frames through, so gaps (AVI null
                      // frames, a stream whose first frame is late, e.g. Mesmerizer's ~2.5 s) were
                      // dropped and the whole video ran early.
-                     "-fps_mode", "cfr",
+                     _useLegacyVsync ? "-vsync" : "-fps_mode", "cfr",
                      "-f", "rawvideo", "-pix_fmt", "rgba", "-",
                  })
             psi.ArgumentList.Add(a);

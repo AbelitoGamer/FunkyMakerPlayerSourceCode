@@ -71,11 +71,12 @@ public static class FnmmSceneRenderer
             {
 #if ANDROID
                 glGetIntegerv_Android(GL_MAX_TEXTURE_SIZE, out gpuMaxSize);
-#elif WINDOWS
-                glGetIntegerv_Windows(GL_MAX_TEXTURE_SIZE, out gpuMaxSize);
 #else
-                try { glGetIntegerv_Linux(GL_MAX_TEXTURE_SIZE, out gpuMaxSize); }
-                catch { glGetIntegerv_Windows(GL_MAX_TEXTURE_SIZE, out gpuMaxSize); }
+                if (OperatingSystem.IsWindows())
+                    glGetIntegerv_Windows(GL_MAX_TEXTURE_SIZE, out gpuMaxSize);
+                else
+                    try { glGetIntegerv_Linux(GL_MAX_TEXTURE_SIZE, out gpuMaxSize); }
+                    catch { glGetIntegerv_Windows(GL_MAX_TEXTURE_SIZE, out gpuMaxSize); }
 #endif
             }
             catch (Exception ex)
@@ -2004,39 +2005,38 @@ public static class FnmmSceneRenderer
         int srcH = img.Height;
         if (srcW <= 0 || srcH <= 0 || srcW > 16384 || srcH > 16384) return null;
 
-        int texW = (srcW + 3) & ~3;
-        int texH = srcH;
-
-        SixLabors.ImageSharp.Image<SixLabors.ImageSharp.PixelFormats.Rgba32> source = img;
-        SixLabors.ImageSharp.Image<SixLabors.ImageSharp.PixelFormats.Rgba32>? padded = null;
-
-        if (texW != srcW)
+        int maxTexSize = GetGpuMaxTextureSize();
+        if (srcW > maxTexSize || srcH > maxTexSize)
         {
-            padded = new SixLabors.ImageSharp.Image<SixLabors.ImageSharp.PixelFormats.Rgba32>(texW, texH);
-            img.ProcessPixelRows(padded, (srcAcc, dstAcc) =>
-            {
-                for (int y = 0; y < srcH; y++)
-                    srcAcc.GetRowSpan(y).CopyTo(dstAcc.GetRowSpan(y));
-            });
-            source = padded;
+            float scale = Math.Min((float)maxTexSize / srcW, (float)maxTexSize / srcH);
+            int nw = Math.Max(1, (int)MathF.Round(srcW * scale));
+            int nh = Math.Max(1, (int)MathF.Round(srcH * scale));
+            SixLabors.ImageSharp.Processing.ProcessingExtensions.Mutate(img, ctx =>
+                SixLabors.ImageSharp.Processing.ResizeExtensions.Resize(ctx, nw, nh));
+            srcW = img.Width;
+            srcH = img.Height;
         }
 
+        int texW = Math.Min(maxTexSize, (srcW + 3) & ~3);
+        int texH = srcH;
+        int copyW = Math.Min(srcW, texW);
+
+        // Zero-initialized Color[] already provides transparent padding for columns [copyW..texW),
+        // avoiding a duplicate full-size padded Image<Rgba32> allocation (critical on 32-bit Android).
         var pixels = new Color[texW * texH];
-        source.ProcessPixelRows(accessor =>
+        img.ProcessPixelRows(accessor =>
         {
             for (int y = 0; y < texH; y++)
             {
                 var row = accessor.GetRowSpan(y);
                 int rowBase = y * texW;
-                for (int x = 0; x < texW; x++)
+                for (int x = 0; x < copyW; x++)
                 {
                     var p = row[x];
                     pixels[rowBase + x] = Color.FromNonPremultiplied(p.R, p.G, p.B, p.A);
                 }
             }
         });
-
-        padded?.Dispose();
 
         var tex = new Texture2D(gd, texW, texH, false, SurfaceFormat.Color);
         try

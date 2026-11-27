@@ -388,10 +388,11 @@ dotnet publish FunkyMakerPlayer\FunkyMakerPlayer.csproj -c Release -r linux-x64 
 - Output: `FunkyMakerPlayer/bin/Release/net10.0/<rid>/publish/`.
 - `PublishSingleFile=true`, `SelfContained=true`, `PublishTrimmed=false`.
 - `IncludeNativeLibrariesForSelfExtract=true`, `IncludeAllContentForSelfExtract=true`.
-- A custom `IncludeNativeLibraries` target copies `runtimes/**/*.dll` into the
-  publish folder after publish.
+- A custom `IncludeNativeLibraries` target copies RID-matched native libs (`*.dll` / `*.so*` / `*.dylib`) from
+  `runtimes/<rid>/native/` into the publish folder after publish, and bundled `ffmpeg.exe` / `ffmpeg` items are
+  OS/RID-filtered so cross-publishing Linux from Windows never bundles `ffmpeg.exe`.
 - Windows Release uses `WinExe` (no console), `app.manifest`, and `Icon.ico`, both for
-  `publish -r win-x64` and for a plain `build -c Release` on Windows (no RID; fork fix,
+  `publish -r win-*` and for a plain `build -c Release` on Windows (no RID; fork fix,
   it used to stay a console app). Linux keeps `Exe`.
 - **The `publish\` folder contains only `FunkyMakerPlayer.exe` (+ `.pdb`)** on a
   verified win-x64 publish. `Assets/`, `mods/` (from `DefaultMods/`),
@@ -425,13 +426,15 @@ dotnet publish FunkyMakerPlayer\FunkyMakerPlayer.csproj -f net10.0-android -c Re
 - `SupportedOSPlatformVersion=29`; Release ABIs `arm64-v8a;x86_64`. A 64-bit APK will not
   install on a 32-bit-only phone (`INSTALL_FAILED_NO_MATCHING_ABIS`); 32-bit needs the separate
   Mono build in §1 (CoreCLR has no android-arm runtime). minSdk 29 = Android 10+ only.
-- AOT disabled (`RunAOTCompilation=false`), Mono IL interpreter disabled (`UseInterpreter=false`; in `.NET 10`
-  Android `Debug` builds with `UseMonoRuntime=true`, the SDK defaults `UseInterpreter=true`, and `mono_ee_interp`
-  crashes with `SIGSEGV (SI_KERNEL)` on 32-bit worker threads when running ImageSharp / chart analysis),
-  `EmbedAssembliesIntoApk=true`, `AndroidUseSharedRuntime=false`. `AndroidKeyStore` and `AndroidSupportedAbis` in
-  the Release PropertyGroups now respect explicit `-p:AndroidKeyStore=false` / `-p:RuntimeIdentifiers=...`
-  overrides.
-- `Platforms/Android/AndroidManifest.xml` + `Platforms/Android/Resources/**`.
+- AOT disabled (`RunAOTCompilation=false`), trimming disabled by default on Android (`PublishTrimmed=false`),
+  `UseMonoRuntime` auto-enabled for `android-arm` and `false` (CoreCLR) otherwise, Mono IL interpreter disabled
+  (`UseInterpreter=false`; in `.NET 10` Android `Debug` builds with `UseMonoRuntime=true`, the SDK defaults
+  `UseInterpreter=true`, and `mono_ee_interp` crashes with `SIGSEGV (SI_KERNEL)` on 32-bit worker threads when
+  running ImageSharp / chart analysis), `EmbedAssembliesIntoApk=true`, `AndroidUseSharedRuntime=false`.
+  `AndroidKeyStore` and `AndroidSupportedAbis` in the Release PropertyGroups now respect explicit
+  `-p:AndroidKeyStore=false` / `-p:RuntimeIdentifiers=...` overrides.
+- `Platforms/Android/AndroidManifest.xml` (`android:largeHeap="true"`, explicit `ModsDocumentProvider` `<provider>`
+  with `DOCUMENTS_PROVIDER` `<intent-filter>`) + `Platforms/Android/Resources/**`.
 
 ### Test builds (fork, 2026-11-20)
 
@@ -1862,6 +1865,10 @@ playback), hitsounds and metronome, toasts, UI scaled with `UiScale`.
   - Live stage viewport clipped via `ScissorRectangle` and honoring `SamplerState.LinearClamp` vs `PointClamp` (`_project.Bilinear`), with **3 stage backdrops (`B`)** (`Dark / Checker / Light`), docked top & bottom bars, live zoom `%`, quick clickable/tappable **`IDLE / L / D / U / R` pose test pills**, configurable **Onion Skin (`G`)** reference slot, mouse/touch drag alignment, **hold-to-repeat** steppers (Scale, FPS, Zoom, Frame, Nudge arrows, plus Chart Editor modal Pos X/Y & Scale), `D/F/J/K` (`1`–`5`) sing testing, `Scale` (`1x` reset, Shift=`±0.25x`), `Flip X`, 1-click `Swap Left <-> Right`, `NativeFacing`, `FPS` (`±1`, Shift=`±4`), independent **`FLIP ICON`** (`CharacterProject.IconFlipX`) with labeled `NORMAL` / `LOSING` previews (`300x150` → `icon/0.png` + `icon/1.png`), and automatic health-icon horizontal mirroring in `CharacterLibrary.ApplyCharacterToLevel` (`SL0` Player faces Left inward, `SL1` Opponent faces Right inward, consistent across solo, Enemy mode, and Online Role 1/2).
   - **Android touch support (`Game1.Touch.cs`, `CharacterEditor.cs`):** `UpdateTouchPointer` sets `ScreenIsTouchReady = true` for `CharacterEditor` (auto-hiding the on-screen D-pad/A/B buttons); UI buttons and scrollable lists use `PointerInput.GetState()`, while dragging open canvas inside `_stageRect` uses `PointerInput.GetRawState()` so poses can be aligned by touch without interfering with button taps.
   - Saves FunkyMaker-native packages into `mods/characters/<slug>/` (`sprite.json`, `0.png..N.png`, `character.json`, optional `icon/`), also imported on Android SAF via `PlatformPaths.GetCharactersPath()`.
+- **Multi-platform stability hardening (2026-11-27):**
+  - `CharacterEditor`: APK icon loading probes `images/ui/character_editor/<name>.png` first; clip frame textures upload lazily on demand with an LRU VRAM eviction cap (`6` clips on Android, `32` on desktop); Android file/rename pickers marshal UI state back through `_pendingUiActions`, copy off the UI thread, and sanitize filenames; modal click-through, stuck Android release suppression, discard-modal flow, and in-flight `_importTask` disposal fixed.
+  - `CharacterLibrary` & importers: `BakeAndSave` bakes in memory before deleting old strips, guards strip pixel limits (24M px on 32-bit Android / 128M on 64-bit), preserves Idle offset / `Loop` / `ClipName` / `UserOffsetX/Y` on reload, and skips double disk loads in `Game1.LevelLoad`; Sparrow and Spritemap importers use case-insensitive asset discovery, read `<TextureAtlas imagePath>`, guard non-finite matrices/bounds, fix nested color offsets + `0..100` color multipliers, and cap Spritemap rasterization to 1 thread on 32-bit Android.
+  - `ChartEditor`, `LevelSelector`, `EditorAudioManager`, `FnmmSaver`: switched pointer polling to `PointerInput.GetState()` (Android touch), fixed `Ctrl+V` conflict, reused `_previewTarget` to stop VRAM leaks during hold-to-repeat, added MP3 playback via `AudioDecoder.LoadWithPcm` + thread locking + debounced scrubber seeks, swapped anim slots `1 <-> 4` when flipping scene characters, and made `FnmmSaver.Save` atomic via `.tmp` + `File.Move`.
 - **Local Online Custom Character Equip (client-side only):**
   - Persisted as `MultiplayerSettings.EquippedCharacter` (`""` = Level Default); selectable in **Multiplayer → Settings → User → `My Character (Local)`** and **Waiting Room** (`B` hotkey / `B  CHAR:` button).
   - In `Game1.SetupLevel` (`Game1.LevelLoad.cs`), during online FNF matches (when not spectating and `ChartOnlyMode` is off), clones `_level` in memory and applies the equipped character + health icon onto `myLocalCharStrum` (`0` for Role 1 / BF, `1` for Role 2 / Enemy), auto-aligning feet & visual height to the replaced character and auto-mirroring + swapping `Sing Left ↔ Sing Right` when placed on the opposite stage side without any server protocol changes.
@@ -2131,6 +2138,12 @@ goal is $0. Workers and R2 don't charge for bandwidth. Playerbase is tiny (≤ 2
   Chunked uploads use exactly the server's chunk size (6 MiB; R2 multipart); packed variants
   (osu! `.osz`, FNF `chartonly`) are hashed locally (`HashFileAsync`) and the hash is sent as
   `X-File-Hash` on `POST /complete` or the single `PUT /file`.
+- **Multi-platform hardening (2026-11-27):** `WsHubConnection` coordinates socket teardown with `_sendLock`
+  and bounds fragment depth/length; `NetworkManager` rejects reconnects on `Hello` failure, disposes timed-out
+  sockets, and reuses a static `HttpClient`; `RoomClient` avoids disposing active upload CTSs prematurely and
+  sanitizes FNF download names (`SafeFileName`); `LevelTransferClient` caps chunk buffers to 8 MB on 32-bit and
+  enforces per-request/read timeouts; `MultiplayerSettings` uses a lock around singleton init, atomic `.tmp`
+  saves, and positive modulo for avatar icons.
 - `UI/TextEntry`: free text (desktop `Window.TextInput`; Android `KeyboardInput.Show` dialog).
 
 ### 12.2 Menus (`MultiplayerMenu*.cs`)
@@ -2365,15 +2378,25 @@ States: `MainMenu` → `Connecting` → `RoomBrowser` → `RoomSettings` (create
 - Discord RPC is compiled out on Android.
 
 - **Files app access (fork):** `ModsDocumentProvider` (system Files app → side menu
-  "FunkyMaker Mods") now exposes the folder the game really uses,
-  `GetExternalFilesDir(null)/mods`. It used to expose
-  `Documents/FunkyMakerPlayerPublicMods/mods`, a different folder, so the game's own
-  levels weren't reachable from the phone. Also added: `DeleteDocument`,
-  `RenameDocument` (they were advertised but missing), a canonical-path
-  `IsChildDocument` (the old prefix check never matched the "root" id), a path-escape
-  guard in `GetFileForDocId`, and correct root flags (`SUPPORTS_CREATE | SUPPORTS_IS_CHILD`;
-  the old `8 | 2` meant search + local-only). **Not compiled or tested** (no Android
-  workload on the dev machine). No desktop-style "move to AppData" option on Android.
+  "FunkyMaker Mods") exposes the folder the game really uses, `GetExternalFilesDir(null)/mods`.
+  (2026-11-27) Registered via `[Register("com.funkymakergame.player.ModsDocumentProvider")]` plus an
+  explicit `<provider>` with `<action android:name="android.content.action.DOCUMENTS_PROVIDER" />` in
+  `Platforms/Android/AndroidManifest.xml` (required by Android's SAF; `[ContentProvider]` alone never
+  emitted it), uses `ParcelFileDescriptor.ParseMode(mode)` in `OpenDocument`, and blocks path traversal
+  in `CreateDocument`. Also hardened on 2026-11-27: `MainActivity` adds `SmallestScreenSize | UiMode |
+  Density | FontScale` to `ConfigurationChanges`, guards API 33+ back registration with
+  `OperatingSystem.IsAndroidVersionAtLeast(33)`, adds cancel listeners, and moves SAF folder imports
+  off the UI thread; `MediaCodecVideoStream` disposes per-frame JNI wrappers, respects `ByteBuffer`
+  `Position`/`Limit`, forwards `MediaExtractorSampleFlags.Sync` → `KeyFrame`, and caps EOS spin;
+  `OsuVideo` joins the previous `ReaderThread` before reopening `MediaCodec`; `OsuStoryboard` and
+  `FnmmSceneRenderer` clamp/resize oversized textures to GPU max size (2048 on 32-bit Android) without
+  padded ImageSharp copies; `PlatformPaths.GetCrashLogsPath()` uses app-private external storage;
+  desktop/Linux hardening covers `NativeLibrary.TryLoad` SDL2 min-window-size, zero-initialized Win32
+  `PickDesktopFiles` buffer + Linux Freeplay picker, single-file `Updater` (`GetAppBaseDirectory()`,
+  UTF-8/quoted `.bat`, POSIX `.sh` with `chmod +x`, safe `UpdateLogWindow`), Linux `ModsStorage`
+  cross-device move fallback, `FfmpegVideoStream` FFmpeg `< 5.1` `-vsync cfr` compatibility, full
+  72-byte `DarkModeHelper` `SDL_SysWMinfo`, case-insensitive osu!/audio/note-style lookups, and atomic
+  `Settings`/`HudSettings` saves. No desktop-style "move to AppData" option on Android.
 
 - **Touch UI (fork, 2026-11-23).** Reviewed on a phone (Galaxy A36, 2340x1080):
   - **Back gesture / button** (`Game1.Touch.cs`): it used to *leave the app* from every screen

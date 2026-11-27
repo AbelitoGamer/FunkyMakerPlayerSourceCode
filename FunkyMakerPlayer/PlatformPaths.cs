@@ -263,7 +263,7 @@ public static class PlatformPaths
             {
                 if (item.IsFile)
                 {
-                    var fileName = item.Name ?? "unknown";
+                    var fileName = SanitizeSafName(item.Name, "unknown");
                     var destFile = Path.Combine(destPath, fileName);
                     
                     // Check if already exists
@@ -292,7 +292,7 @@ public static class PlatformPaths
                 else if (item.IsDirectory)
                 {
                     // Create subdirectory and import recursively
-                    var subfolderName = item.Name ?? "unknown";
+                    var subfolderName = SanitizeSafName(item.Name, "unknown");
                     var destSubfolder = Path.Combine(destPath, subfolderName);
                     
                     if (!Directory.Exists(destSubfolder))
@@ -329,7 +329,7 @@ public static class PlatformPaths
             {
                 if (file.IsFile && IsLevelFile(file.Name))
                 {
-                    var fileName = file.Name ?? "unknown.fnmm";
+                    var fileName = SanitizeSafName(file.Name, "unknown.fnmm");
                     var destFile = Path.Combine(destPath, fileName);
                     
                     // Check if already exists
@@ -370,6 +370,15 @@ public static class PlatformPaths
         return count;
     }
     
+    private static string SanitizeSafName(string? raw, string fallback)
+    {
+        string leaf = string.IsNullOrWhiteSpace(raw) ? fallback : Path.GetFileName(raw.Replace('\\', '/'));
+        if (string.IsNullOrWhiteSpace(leaf) || leaf == "." || leaf == "..") leaf = fallback;
+        foreach (char c in Path.GetInvalidFileNameChars())
+            leaf = leaf.Replace(c, '_');
+        return string.IsNullOrWhiteSpace(leaf) ? fallback : leaf;
+    }
+
     /// <summary>
     /// Check if a filename is a level file
     /// </summary>
@@ -483,7 +492,9 @@ public static class PlatformPaths
         return "Assets"; // Will be accessed via ContentManager/AssetManager
 #else
         string exeAssets = Path.Combine(GetAppBaseDirectory(), "Assets");
-        if (Directory.Exists(exeAssets))
+        // Verify bundled assets (e.g. images/) actually exist here so creating Assets/data/hud_settings.json
+        // beside a single-file binary never shadows the extracted bundle's Assets/ folder!
+        if (Directory.Exists(Path.Combine(exeAssets, "images")))
             return exeAssets;
         return Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "Assets");
 #endif
@@ -679,70 +690,71 @@ public static class PlatformPaths
                 if (uri == null || stream == null)
                 {
                     Console.WriteLine("[PlatformPaths] File picker cancelled or failed");
-                    tcs.SetResult(null);
+                    tcs.TrySetResult(null);
                     return;
                 }
-                
-                try
+
+                // Copy on a background thread so large .fnmm/.osz files never trigger Android 5s ANR on UI thread
+                System.Threading.Tasks.Task.Run(() =>
                 {
-                    // Save to levels directory
-                    var levelsPath = GetLevelsPath();
-                    var destPath = Path.Combine(levelsPath, fileName ?? "imported.fnmm");
-                    
-                    // Ensure unique filename
-                    int counter = 1;
-                    while (File.Exists(destPath))
+                    try
                     {
-                        var nameWithoutExt = Path.GetFileNameWithoutExtension(fileName ?? "imported");
-                        var ext = Path.GetExtension(fileName ?? ".fnmm");
-                        destPath = Path.Combine(levelsPath, $"{nameWithoutExt}_{counter}{ext}");
-                        counter++;
+                        using (stream)
+                        {
+                            // Save to levels directory with sanitized filename
+                            var levelsPath = GetLevelsPath();
+                            string safeName = SanitizeSafName(fileName, "imported.fnmm");
+                            var destPath = Path.Combine(levelsPath, safeName);
+
+                            // Ensure unique filename
+                            int counter = 1;
+                            while (File.Exists(destPath))
+                            {
+                                var nameWithoutExt = Path.GetFileNameWithoutExtension(safeName);
+                                var ext = Path.GetExtension(safeName);
+                                destPath = Path.Combine(levelsPath, $"{nameWithoutExt}_{counter}{ext}");
+                                counter++;
+                            }
+
+                            using (var fileStream = File.Create(destPath))
+                                stream.CopyTo(fileStream);
+
+                            Console.WriteLine($"[PlatformPaths] File imported to: {destPath}");
+                            tcs.TrySetResult(destPath);
+                        }
                     }
-                    
-                    // Copy file from stream to destination
-                    using (var fileStream = File.Create(destPath))
+                    catch (Exception ex)
                     {
-                        stream.CopyTo(fileStream);
+                        Console.WriteLine($"[PlatformPaths] Failed to import file: {ex.Message}");
+                        tcs.TrySetResult(null);
                     }
-                    
-                    Console.WriteLine($"[PlatformPaths] File imported to: {destPath}");
-                    tcs.SetResult(destPath);
-                }
-                catch (Exception ex)
-                {
-                    Console.WriteLine($"[PlatformPaths] Failed to import file: {ex.Message}");
-                    tcs.SetResult(null);
-                }
+                });
             });
         }
         catch (Exception ex)
         {
             Console.WriteLine($"[PlatformPaths] Failed to open file picker: {ex.Message}");
-            tcs.SetResult(null);
+            tcs.TrySetResult(null);
         }
         
         return tcs.Task;
     }
     
     /// <summary>
-    /// Get the crash logs directory path
+    /// Get the crash logs directory path (app-private external storage — Scoped Storage safe on Android 10-16)
     /// </summary>
     public static string GetCrashLogsPath()
     {
-        var externalStorage = Android.OS.Environment.ExternalStorageDirectory?.AbsolutePath;
-        if (string.IsNullOrEmpty(externalStorage))
-        {
-            externalStorage = Android.App.Application.Context.GetExternalFilesDir(null)?.AbsolutePath ?? "";
-        }
-        
-        var crashPath = Path.Combine(externalStorage, APP_FOLDER, "crashes");
-        
+        var context = Android.App.Application.Context;
+        var appStorage = context.GetExternalFilesDir(null)?.AbsolutePath ?? context.FilesDir?.AbsolutePath ?? "";
+        var crashPath = Path.Combine(appStorage, "crashes");
+
         if (!Directory.Exists(crashPath))
         {
             Directory.CreateDirectory(crashPath);
             Console.WriteLine($"[PlatformPaths] Created crash logs directory: {crashPath}");
         }
-        
+
         return crashPath;
     }
 #endif
@@ -798,7 +810,11 @@ public static class PlatformPaths
         IntPtr fileBuffer = Marshal.AllocHGlobal(MAX_BUFFER_CHARS * 2);
         try
         {
-            Marshal.WriteInt16(fileBuffer, 0);
+            // Zero the entire buffer so single-file picks (which only write ONE trailing NUL) never
+            // cause multi-string parsing to read uninitialized heap garbage past the first NUL!
+            var zeros = new byte[MAX_BUFFER_CHARS * 2];
+            Marshal.Copy(zeros, 0, fileBuffer, zeros.Length);
+
             int flags = OFN_EXPLORER | OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR;
             if (allowMultiSelect) flags |= OFN_ALLOWMULTISELECT;
 
@@ -816,26 +832,35 @@ public static class PlatformPaths
 
             if (GetOpenFileNameW(ref ofn))
             {
-                var parts = new List<string>();
-                int offsetBytes = 0;
-                while (offsetBytes < MAX_BUFFER_CHARS * 2)
+                if (!allowMultiSelect)
                 {
-                    string? s = Marshal.PtrToStringUni(IntPtr.Add(fileBuffer, offsetBytes));
-                    if (string.IsNullOrEmpty(s))
-                        break;
-                    parts.Add(s);
-                    offsetBytes += (s.Length + 1) * 2;
+                    string? single = Marshal.PtrToStringUni(fileBuffer);
+                    if (!string.IsNullOrEmpty(single))
+                        results.Add(single);
                 }
+                else
+                {
+                    var parts = new List<string>();
+                    int offsetBytes = 0;
+                    while (offsetBytes < MAX_BUFFER_CHARS * 2)
+                    {
+                        string? s = Marshal.PtrToStringUni(IntPtr.Add(fileBuffer, offsetBytes));
+                        if (string.IsNullOrEmpty(s))
+                            break;
+                        parts.Add(s);
+                        offsetBytes += (s.Length + 1) * 2;
+                    }
 
-                if (parts.Count == 1)
-                {
-                    results.Add(parts[0]);
-                }
-                else if (parts.Count > 1)
-                {
-                    string directory = parts[0];
-                    for (int i = 1; i < parts.Count; i++)
-                        results.Add(Path.Combine(directory, parts[i]));
+                    if (parts.Count == 1)
+                    {
+                        results.Add(parts[0]);
+                    }
+                    else if (parts.Count > 1)
+                    {
+                        string directory = parts[0];
+                        for (int i = 1; i < parts.Count; i++)
+                            results.Add(Path.Combine(directory, parts[i]));
+                    }
                 }
             }
         }
@@ -863,8 +888,20 @@ public static class PlatformPaths
         for (int i = 0; i + 1 < parts.Length; i += 2)
         {
             if (string.IsNullOrEmpty(parts[i]) || string.IsNullOrEmpty(parts[i + 1])) break;
-            var patterns = parts[i + 1].Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
-            filters.Add((parts[i], patterns));
+            var rawPatterns = parts[i + 1].Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+            // Expand wildcard patterns for case-sensitive Linux GTK/Qt filters (e.g. *.fnmm -> *.fnmm *.FNMM; *.* -> *)
+            var expanded = new List<string>(rawPatterns.Length * 2);
+            var seen = new HashSet<string>(StringComparer.Ordinal);
+            foreach (var pat in rawPatterns)
+            {
+                string norm = pat == "*.*" ? "*" : pat;
+                if (seen.Add(norm)) expanded.Add(norm);
+                string upper = norm.ToUpperInvariant();
+                if (seen.Add(upper)) expanded.Add(upper);
+                string lower = norm.ToLowerInvariant();
+                if (seen.Add(lower)) expanded.Add(lower);
+            }
+            filters.Add((parts[i], expanded.ToArray()));
         }
 
         // zenity: --file-filter="Desc | *.a *.b"
@@ -892,7 +929,7 @@ public static class PlatformPaths
 
     /// <summary>
     /// Runs a dialog tool and returns the selected paths (one per line), an empty list on cancel,
-    /// or null when the tool is not installed / cannot be started.
+    /// or null when the tool is not installed / cannot be started / failed abnormally.
     /// </summary>
     private static List<string>? RunDialogTool(string tool, List<string> args)
     {
@@ -910,13 +947,18 @@ public static class PlatformPaths
 
             using var proc = System.Diagnostics.Process.Start(psi);
             if (proc == null) return null;
+            // Drain stderr asynchronously so noisy GTK/Qt warnings never deadlock the stdout pipe
+            proc.ErrorDataReceived += (_, _) => { };
+            proc.BeginErrorReadLine();
             string output = proc.StandardOutput.ReadToEnd();
             proc.WaitForExit();
 
             var results = new List<string>();
-            if (proc.ExitCode != 0) return results; // cancelled
-            foreach (var line in output.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+            if (proc.ExitCode == 1 || proc.ExitCode == 5) return results; // user cancelled or timed out
+            if (proc.ExitCode != 0) return null; // abnormal tool failure — allow fallback to next dialog tool
+            foreach (var rawLine in output.Split('\n', StringSplitOptions.RemoveEmptyEntries))
             {
+                string line = rawLine.TrimEnd('\r');
                 if (File.Exists(line)) results.Add(line);
             }
             return results;

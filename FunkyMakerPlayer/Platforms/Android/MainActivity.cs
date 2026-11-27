@@ -22,10 +22,14 @@ namespace FunkyMakerPlayer.Platforms.Android
                                ConfigChanges.Keyboard | 
                                ConfigChanges.KeyboardHidden | 
                                ConfigChanges.ScreenSize |
-                               ConfigChanges.ScreenLayout)]
+                               ConfigChanges.ScreenLayout |
+                               ConfigChanges.SmallestScreenSize |
+                               ConfigChanges.UiMode |
+                               ConfigChanges.Density |
+                               ConfigChanges.FontScale)]
     public class MainActivity : AndroidGameActivity
     {
-        private Game1 _game;
+        private Game1? _game;
         private Action<global::Android.Net.Uri?, string?, Stream?>? _filePickerCallback;
         private Action<global::Android.Net.Uri?>? _folderPickerCallback;
         
@@ -55,7 +59,7 @@ namespace FunkyMakerPlayer.Platforms.Android
             // Back button / gesture goes back one screen in the game instead of leaving it (fork).
             // Android 13+ (and always with targetSdk 36 on Android 16+, predictive back) only
             // delivers it through OnBackInvokedDispatcher; older versions call OnBackPressed.
-            if (Build.VERSION.SdkInt >= BuildVersionCodes.Tiramisu)
+            if (OperatingSystem.IsAndroidVersionAtLeast(33))
             {
                 _backCallback = new GameBackCallback();
                 OnBackInvokedDispatcher.RegisterOnBackInvokedCallback(
@@ -122,7 +126,7 @@ namespace FunkyMakerPlayer.Platforms.Android
                         permissions.Add(global::Android.Manifest.Permission.WriteExternalStorage);
                 }
                 // For Android 13+
-                else if (Build.VERSION.SdkInt >= BuildVersionCodes.Tiramisu)
+                else if (OperatingSystem.IsAndroidVersionAtLeast(33))
                 {
                     if (CheckSelfPermission(global::Android.Manifest.Permission.ReadMediaAudio) != global::Android.Content.PM.Permission.Granted)
                         permissions.Add(global::Android.Manifest.Permission.ReadMediaAudio);
@@ -140,32 +144,46 @@ namespace FunkyMakerPlayer.Platforms.Android
         /// </summary>
         public void PickFile(Action<global::Android.Net.Uri?, string?, Stream?> callback)
         {
+            // Complete any superseded pending callback cleanly so awaiting tasks never hang forever
+            var prev = _filePickerCallback;
             _filePickerCallback = callback;
-            
-            var intent = new Intent(Intent.ActionGetContent);
-            intent.AddCategory(Intent.CategoryOpenable);
-            
-            // Accept .FNMM, .ZIP, and .RAR files
-            intent.SetType("*/*");
-            var mimeTypes = new[] { "application/octet-stream", "application/zip", "application/x-zip-compressed", "application/x-rar-compressed", "application/x-rar", "application/vnd.rar", "*/*" };
-            intent.PutExtra(Intent.ExtraMimeTypes, mimeTypes);
-            
-            // Allow browsing all storage locations
-            intent.PutExtra(Intent.ExtraLocalOnly, false);
-            intent.PutExtra(Intent.ExtraAllowMultiple, false);
-            
-            // Try to start from external storage
-            try
+            if (prev != null)
+                try { prev(null, null, null); } catch { }
+
+            RunOnUiThread(() =>
             {
-                var externalStorageUri = global::Android.Net.Uri.Parse("content://com.android.externalstorage.documents/document/primary");
-                intent.PutExtra("android.provider.extra.INITIAL_URI", externalStorageUri);
-            }
-            catch
-            {
-                // Fallback if initial URI fails
-            }
-            
-            StartActivityForResult(Intent.CreateChooser(intent, "Seleccionar archivo de nivel"), FILE_PICKER_REQUEST_CODE);
+                try
+                {
+                    var intent = new Intent(Intent.ActionGetContent);
+                    intent.AddCategory(Intent.CategoryOpenable);
+
+                    // Accept .FNMM, .ZIP, .RAR, .PNG, .JSON, .XML, .OSZ, .OSK
+                    intent.SetType("*/*");
+                    var mimeTypes = new[] { "application/octet-stream", "application/zip", "application/x-zip-compressed", "application/x-rar-compressed", "application/x-rar", "application/vnd.rar", "*/*" };
+                    intent.PutExtra(Intent.ExtraMimeTypes, mimeTypes);
+
+                    // Allow browsing all storage locations
+                    intent.PutExtra(Intent.ExtraLocalOnly, false);
+                    intent.PutExtra(Intent.ExtraAllowMultiple, false);
+
+                    // Try to start from external storage
+                    try
+                    {
+                        var externalStorageUri = global::Android.Net.Uri.Parse("content://com.android.externalstorage.documents/document/primary");
+                        intent.PutExtra("android.provider.extra.INITIAL_URI", externalStorageUri);
+                    }
+                    catch { }
+
+                    StartActivityForResult(Intent.CreateChooser(intent, "Seleccionar archivo"), FILE_PICKER_REQUEST_CODE);
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"[MainActivity] Failed to launch file picker: {ex.Message}");
+                    var cb = _filePickerCallback;
+                    _filePickerCallback = null;
+                    try { cb?.Invoke(null, null, null); } catch { }
+                }
+            });
         }
         
         /// <summary>
@@ -223,9 +241,15 @@ namespace FunkyMakerPlayer.Platforms.Android
                     _folderPickerCallback?.Invoke(null);
                     _folderPickerCallback = null;
                 });
+                builder.SetOnCancelListener(new DialogCancelListener(() =>
+                {
+                    _folderPickerCallback?.Invoke(null);
+                    _folderPickerCallback = null;
+                }));
                 
                 // Create and show dialog with larger text
                 var dialog = builder.Create();
+                if (dialog == null) return;
                 dialog.Show();
                 
                 // INCREASE TEXT SIZE for better readability on Android
@@ -443,60 +467,57 @@ namespace FunkyMakerPlayer.Platforms.Android
             
             if (requestCode == FILE_PICKER_REQUEST_CODE)
             {
+                var cb = _filePickerCallback;
+                _filePickerCallback = null;
+
                 if (resultCode == Result.Ok && data?.Data != null)
                 {
+                    Stream? stream = null;
+                    bool handedOff = false;
                     try
                     {
                         var uri = data.Data;
-                        var stream = ContentResolver?.OpenInputStream(uri);
+                        stream = ContentResolver?.OpenInputStream(uri);
                         
                         // Get filename from URI
                         string? fileName = null;
-                        var cursor = ContentResolver?.Query(uri, null, null, null, null);
-                        if (cursor != null)
+                        using (var cursor = ContentResolver?.Query(uri, null, null, null, null))
                         {
-                            try
+                            if (cursor != null && cursor.MoveToFirst())
                             {
-                                if (cursor.MoveToFirst())
-                                {
-                                    var nameIndex = cursor.GetColumnIndex(global::Android.Provider.OpenableColumns.DisplayName);
-                                    if (nameIndex >= 0)
-                                    {
-                                        fileName = cursor.GetString(nameIndex);
-                                    }
-                                }
-                            }
-                            finally
-                            {
-                                cursor.Close();
+                                var nameIndex = cursor.GetColumnIndex(global::Android.Provider.OpenableColumns.DisplayName);
+                                if (nameIndex >= 0)
+                                    fileName = cursor.GetString(nameIndex);
                             }
                         }
                         
-                        // Fallback filename
+                        // Fallback filename if content provider omits DISPLAY_NAME
                         if (string.IsNullOrEmpty(fileName))
-                        {
-                            fileName = $"level_{DateTime.Now:yyyyMMdd_HHmmss}.fnmm";
-                        }
+                            fileName = $"imported_{DateTime.Now:yyyyMMdd_HHmmss}";
                         
-                        _filePickerCallback?.Invoke(uri, fileName, stream);
+                        handedOff = true;
+                        cb?.Invoke(uri, fileName, stream);
                     }
                     catch (Exception ex)
                     {
                         Console.WriteLine($"[MainActivity] Error opening file: {ex.Message}");
-                        _filePickerCallback?.Invoke(null, null, null);
+                        if (!handedOff)
+                            try { stream?.Dispose(); } catch { }
+                        cb?.Invoke(null, null, null);
                     }
                 }
                 else
                 {
                     // Cancelled or failed
-                    _filePickerCallback?.Invoke(null, null, null);
+                    cb?.Invoke(null, null, null);
                 }
-                
-                _filePickerCallback = null;
             }
             else if (requestCode == FOLDER_PICKER_REQUEST_CODE)
             {
                 // User selected a folder with ACTION_OPEN_DOCUMENT_TREE
+                var folderCb = _folderPickerCallback;
+                _folderPickerCallback = null;
+
                 if (resultCode == Result.Ok && data?.Data != null)
                 {
                     var folderUri = data.Data;
@@ -515,26 +536,26 @@ namespace FunkyMakerPlayer.Platforms.Android
                         editor?.PutString("mods_folder_uri", folderUri.ToString());
                         editor?.Apply();
                         Console.WriteLine($"[MainActivity] Saved mods folder URI to preferences");
-                        
-                        // IMPORTANT: Import files from selected folder to app storage
-                        Console.WriteLine($"[MainActivity] Starting import from selected folder...");
-                        PlatformPaths.ImportFromCustomFolder(folderUri);
                     }
                     catch (Exception ex)
                     {
                         Console.WriteLine($"[MainActivity] Error taking persistent permission: {ex.Message}");
                     }
-                    
-                    _folderPickerCallback?.Invoke(folderUri);
+
+                    // Run SAF tree copy on a background thread to avoid Android 5s UI-thread ANRs
+                    System.Threading.Tasks.Task.Run(() =>
+                    {
+                        Console.WriteLine($"[MainActivity] Starting background import from selected folder...");
+                        PlatformPaths.ImportFromCustomFolder(folderUri);
+                        folderCb?.Invoke(folderUri);
+                    });
                 }
                 else
                 {
                     // Cancelled
                     Console.WriteLine($"[MainActivity] Folder picker cancelled");
-                    _folderPickerCallback?.Invoke(null);
+                    folderCb?.Invoke(null);
                 }
-                
-                _folderPickerCallback = null;
             }
             else if (requestCode == OPEN_MODS_FOLDER_REQUEST_CODE)
             {
@@ -554,13 +575,20 @@ namespace FunkyMakerPlayer.Platforms.Android
             public void OnBackInvoked() => Game1.RequestAndroidBack();
         }
 
+        private sealed class DialogCancelListener : Java.Lang.Object, IDialogInterfaceOnCancelListener
+        {
+            private readonly Action _onCancel;
+            public DialogCancelListener(Action onCancel) => _onCancel = onCancel;
+            public void OnCancel(IDialogInterface? dialog) => _onCancel();
+        }
+
 #pragma warning disable CS0672, CA1422 // OnBackPressed is obsolete, but it is what Android < 13 calls
         public override void OnBackPressed() => Game1.RequestAndroidBack();
 #pragma warning restore CS0672, CA1422
 
         protected override void OnDestroy()
         {
-            if (_backCallback != null && Build.VERSION.SdkInt >= BuildVersionCodes.Tiramisu)
+            if (_backCallback != null && OperatingSystem.IsAndroidVersionAtLeast(33))
                 OnBackInvokedDispatcher.UnregisterOnBackInvokedCallback(_backCallback);
             _game?.Dispose();
             base.OnDestroy();

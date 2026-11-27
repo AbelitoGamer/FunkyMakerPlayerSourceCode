@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
@@ -81,6 +82,7 @@ public sealed class CharacterEditor : IEditor, IDisposable
 
     private Task<CharacterProject>? _importTask;
     private string _importStatus = "Importing character...";
+    private readonly ConcurrentQueue<Action> _pendingUiActions = new();
     private string? _toastText;
     private Color _toastColor = new(65, 225, 145);
     private float _toastTimer;
@@ -215,6 +217,13 @@ public sealed class CharacterEditor : IEditor, IDisposable
         {
             _toastTimer -= dt;
             if (_toastTimer <= 0f) _toastText = null;
+        }
+
+        // Drain actions marshaled from Android UI / background picker threads safely on the game thread
+        while (_pendingUiActions.TryDequeue(out var pendingAction))
+        {
+            try { pendingAction(); }
+            catch (Exception ex) { Console.WriteLine($"[CharacterEditor] Pending UI action error: {ex.Message}"); }
         }
 
         var ms = PointerInput.GetState();
@@ -408,9 +417,21 @@ public sealed class CharacterEditor : IEditor, IDisposable
                 _importModalOpen = false;
                 UiSfx.Play(UiSound.Back);
             }
-            else if (JustPressed(kb, Keys.D1)) { _importModalOpen = false; PromptImportSparrow(); }
-            else if (JustPressed(kb, Keys.D2)) { _importModalOpen = false; PromptImportSpritemapOrZip(); }
-            else if (JustPressed(kb, Keys.D3)) { _importModalOpen = false; PromptImportFnmm(); }
+            else if (JustPressed(kb, Keys.D1))
+            {
+                _importModalOpen = false;
+                RequestDiscardAware("Import a new Sparrow character? Unsaved changes will be lost.", PromptImportSparrow);
+            }
+            else if (JustPressed(kb, Keys.D2))
+            {
+                _importModalOpen = false;
+                RequestDiscardAware("Import a Spritemap / ZIP character? Unsaved changes will be lost.", PromptImportSpritemapOrZip);
+            }
+            else if (JustPressed(kb, Keys.D3))
+            {
+                _importModalOpen = false;
+                RequestDiscardAware("Extract character from .FNMM? Unsaved changes will be lost.", PromptImportFnmm);
+            }
             return;
         }
 
@@ -545,21 +566,26 @@ public sealed class CharacterEditor : IEditor, IDisposable
             }
         }
 
-        // Hold-to-repeat for +/-/arrow stepper buttons (works smoothly on both desktop mouse and Android touch)
+        // Hold-to-repeat for +/-/arrow stepper buttons (respects topmost z-order so open modals block clicks underneath)
         if (rawLeftPressed)
         {
             for (int i = _clickTargets.Count - 1; i >= 0; i--)
             {
-                if (_clickTargets[i].Repeatable && _clickTargets[i].Rect.Contains(rawMs.Position))
+                if (_clickTargets[i].Rect.Contains(rawMs.Position))
                 {
-                    _draggingOffset = false;
-                    _panningStage = false;
-                    _heldRepeatRect = _clickTargets[i].Rect;
-                    _heldRepeatAction = _clickTargets[i].OnClick;
-                    _heldRepeatTimer = RepeatInitialDelay;
-                    _suppressNextReleaseClick = PointerInput.IsTouch;
-                    _heldRepeatAction();
-                    return;
+                    if (_clickTargets[i].Repeatable)
+                    {
+                        _draggingOffset = false;
+                        _panningStage = false;
+                        _heldRepeatRect = _clickTargets[i].Rect;
+                        _heldRepeatAction = _clickTargets[i].OnClick;
+                        _heldRepeatTimer = RepeatInitialDelay;
+                        _suppressNextReleaseClick = PointerInput.IsTouch;
+                        _heldRepeatAction();
+                        return;
+                    }
+                    // Topmost hit target is non-repeatable (e.g. modal backdrop or regular button) — stop searching
+                    break;
                 }
             }
         }
@@ -584,10 +610,18 @@ public sealed class CharacterEditor : IEditor, IDisposable
             _heldRepeatAction = null;
         }
 
-        if (leftClick && _suppressNextReleaseClick)
+        if (_suppressNextReleaseClick)
         {
-            _suppressNextReleaseClick = false;
-            return;
+            if (leftClick)
+            {
+                _suppressNextReleaseClick = false;
+                return;
+            }
+            if (!rawLeftDown)
+            {
+                // Touch was lifted after a hold/drag where PointerInput did not emit a tap click — clear flag so the next tap works!
+                _suppressNextReleaseClick = false;
+            }
         }
 
         // Check registered UI buttons (highest z-order wins)
@@ -986,7 +1020,8 @@ public sealed class CharacterEditor : IEditor, IDisposable
             () =>
             {
                 _project.BakeFlipX = !_project.BakeFlipX;
-                _project.IconFlipX = !_project.IconFlipX;
+                if (_project.IconNormal != null)
+                    _project.IconFlipX = !_project.IconFlipX;
                 _project.NativeFacing = _project.NativeFacing == CharacterFacing.Left ? CharacterFacing.Right : CharacterFacing.Left;
                 _texturesDirty = true;
                 _modified = true;
@@ -1423,7 +1458,9 @@ public sealed class CharacterEditor : IEditor, IDisposable
     {
         if (_project == null) return;
         var clip = _project.FindClip(slot.ClipName);
-        if (clip == null || !_clipTextures.TryGetValue(clip.Name, out var texList) || texList.Count == 0)
+        if (clip == null) return;
+        var texList = GetOrUploadClipTextures(clip);
+        if (texList == null || texList.Count == 0)
             return;
 
         int clamped = Math.Clamp(frameIndex, 0, texList.Count - 1);
@@ -1864,7 +1901,6 @@ public sealed class CharacterEditor : IEditor, IDisposable
             {
                 var act = _pendingDiscardAction;
                 CloseConfirmDiscard();
-                _modified = false;
                 act?.Invoke();
             });
 
@@ -2100,27 +2136,40 @@ public sealed class CharacterEditor : IEditor, IDisposable
         if (_project == null) return;
 #if ANDROID
         var activity = Microsoft.Xna.Framework.Game.Activity;
-        if (activity != null)
+        if (activity != null && !activity.IsFinishing && !activity.IsDestroyed)
         {
+            string currentName = _project.Name;
             activity.RunOnUiThread(() =>
             {
-                var input = new global::Android.Widget.EditText(activity) { Text = _project.Name };
-                input.SetSingleLine(true);
-                new global::Android.App.AlertDialog.Builder(activity)
-                    .SetTitle("Character Name")
-                    .SetView(input)
-                    .SetPositiveButton("OK", (_, _) =>
+                if (activity.IsFinishing || activity.IsDestroyed) return;
+                try
+                {
+                    var input = new global::Android.Widget.EditText(activity) { Text = currentName };
+                    input.SetSingleLine(true);
+                    var builder = new global::Android.App.AlertDialog.Builder(activity);
+                    builder.SetTitle("Character Name");
+                    builder.SetView(input);
+                    builder.SetPositiveButton("OK", (_, _) =>
                     {
                         string val = input.Text?.Trim() ?? "";
-                        if (!string.IsNullOrEmpty(val) && _project != null)
+                        if (!string.IsNullOrEmpty(val))
                         {
-                            _project.Name = val;
-                            _project.Slug = CharacterLibrary.SanitizeSlug(val);
-                            _modified = true;
+                            _pendingUiActions.Enqueue(() =>
+                            {
+                                if (_project == null) return;
+                                _project.Name = val;
+                                _project.Slug = CharacterLibrary.SanitizeSlug(val);
+                                _modified = true;
+                            });
                         }
-                    })
-                    .SetNegativeButton("Cancel", (_, _) => { })
-                    .Show();
+                    });
+                    builder.SetNegativeButton("Cancel", (_, _) => { });
+                    builder.Show();
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"[CharacterEditor] Rename dialog error: {ex.Message}");
+                }
             });
             return;
         }
@@ -2194,27 +2243,58 @@ public sealed class CharacterEditor : IEditor, IDisposable
         var activity = Microsoft.Xna.Framework.Game.Activity as Platforms.Android.MainActivity;
         activity?.PickFile((uri, fileName, stream) =>
         {
-            if (stream == null || _project == null) return;
-            try
+            if (stream == null) return;
+            Task.Run(() =>
             {
-                string tmp = Path.Combine(Path.GetTempPath(), "fmp_ico_" + (fileName ?? "icon.png"));
-                using (var fs = File.Create(tmp)) stream.CopyTo(fs);
-                CharacterLibrary.LoadIconFromPng(_project, tmp);
-                _project.IconFlipX = false;
-                try { File.Delete(tmp); } catch { }
-                _texturesDirty = true;
-                _modified = true;
-                ShowToast("Health icon loaded!", ACCENT_GREEN);
-            }
-            catch (Exception ex)
-            {
-                ShowToast($"Icon error: {ex.Message}", ACCENT_PINK);
-            }
+                string tmp = Path.Combine(Path.GetTempPath(), "fmp_ico_" + Guid.NewGuid().ToString("N") + "_" + SanitizeTempFileName(fileName, "icon.png"));
+                try
+                {
+                    using (stream)
+                    using (var fs = File.Create(tmp))
+                        stream.CopyTo(fs);
+
+                    _pendingUiActions.Enqueue(() =>
+                    {
+                        try
+                        {
+                            if (_project == null) return;
+                            CharacterLibrary.LoadIconFromPng(_project, tmp);
+                            _project.IconFlipX = false;
+                            _texturesDirty = true;
+                            _modified = true;
+                            ShowToast("Health icon loaded!", ACCENT_GREEN);
+                        }
+                        catch (Exception ex)
+                        {
+                            ShowToast($"Icon error: {ex.Message}", ACCENT_PINK);
+                        }
+                        finally
+                        {
+                            try { File.Delete(tmp); } catch { }
+                        }
+                    });
+                }
+                catch (Exception ex)
+                {
+                    try { File.Delete(tmp); } catch { }
+                    _pendingUiActions.Enqueue(() => ShowToast($"Icon error: {ex.Message}", ACCENT_PINK));
+                }
+            });
         });
 #endif
     }
 
 #if ANDROID
+    private static string SanitizeTempFileName(string? raw, string fallback)
+    {
+        string leaf = string.IsNullOrWhiteSpace(raw) ? fallback : Path.GetFileName(raw.Replace('\\', '/'));
+        if (string.IsNullOrWhiteSpace(leaf)) leaf = fallback;
+        foreach (char c in Path.GetInvalidFileNameChars())
+            leaf = leaf.Replace(c, '_');
+        leaf = leaf.Trim().Trim('.');
+        return string.IsNullOrWhiteSpace(leaf) ? fallback : leaf;
+    }
+
     private void PickAndroidFileAndImport(string statusMsg)
     {
         var activity = Microsoft.Xna.Framework.Game.Activity as Platforms.Android.MainActivity;
@@ -2222,16 +2302,26 @@ public sealed class CharacterEditor : IEditor, IDisposable
         activity.PickFile((uri, fileName, stream) =>
         {
             if (stream == null) return;
-            string safeName = string.IsNullOrWhiteSpace(fileName) ? "character.zip" : fileName!;
+            string safeName = SanitizeTempFileName(fileName, "character.zip");
             string tmpPath = Path.Combine(Path.GetTempPath(), "fmp_char_imp_" + Guid.NewGuid().ToString("N") + "_" + safeName);
-            using (var fs = File.Create(tmpPath))
-                stream.CopyTo(fs);
 
-            _importStatus = statusMsg;
-            _importTask = Task.Run(() =>
+            _pendingUiActions.Enqueue(() =>
             {
-                try { return CharacterLibrary.ImportAny(tmpPath); }
-                finally { try { File.Delete(tmpPath); } catch { } }
+                _importStatus = statusMsg;
+                _importTask = Task.Run(() =>
+                {
+                    try
+                    {
+                        using (stream)
+                        using (var fs = File.Create(tmpPath))
+                            stream.CopyTo(fs);
+                        return CharacterLibrary.ImportAny(tmpPath);
+                    }
+                    finally
+                    {
+                        try { File.Delete(tmpPath); } catch { }
+                    }
+                });
             });
         });
     }
@@ -2285,20 +2375,55 @@ public sealed class CharacterEditor : IEditor, IDisposable
         DisposeProjectTextures();
         if (_project == null) return;
 
-        foreach (var clip in _project.AvailableClips)
-        {
-            var list = new List<Texture2D>(clip.Frames.Count);
-            foreach (var img in clip.Frames)
-            {
-                list.Add(CreateTextureFromImage(img, _project.BakeFlipX));
-            }
-            _clipTextures[clip.Name] = list;
-        }
-
+        // Upload only the tiny health icons up front; animation clips upload lazily on demand
+        // via GetOrUploadClipTextures() to avoid VRAM/LOH spikes on 32-bit Android multi-clip rigs!
         if (_project.IconNormal != null)
             _iconNormalTex = CreateTextureFromImage(_project.IconNormal, _project.IconFlipX);
         if (_project.IconLosing != null)
             _iconLosingTex = CreateTextureFromImage(_project.IconLosing, _project.IconFlipX);
+    }
+
+    private List<Texture2D>? GetOrUploadClipTextures(ImportedAnimClip clip)
+    {
+        if (_project == null) return null;
+        if (_clipTextures.TryGetValue(clip.Name, out var existing))
+            return existing;
+
+        // On Android, keep at most 6 cached clips in VRAM by evicting clips not used by active/onion slots
+        int maxCachedClips = OperatingSystem.IsAndroid() ? 6 : 32;
+        if (_clipTextures.Count >= maxCachedClips)
+        {
+            var activeName = GetActiveSlot()?.ClipName;
+            string? onionName = (_onionRefSlot >= 0 && _onionRefSlot < _project.Slots.Count)
+                ? _project.Slots[_onionRefSlot].ClipName : null;
+
+            foreach (var key in _clipTextures.Keys.ToList())
+            {
+                if (string.Equals(key, activeName, StringComparison.OrdinalIgnoreCase) ||
+                    string.Equals(key, onionName, StringComparison.OrdinalIgnoreCase))
+                    continue;
+                foreach (var t in _clipTextures[key])
+                    try { if (!t.IsDisposed) t.Dispose(); } catch { }
+                _clipTextures.Remove(key);
+                if (_clipTextures.Count < maxCachedClips) break;
+            }
+        }
+
+        var list = new List<Texture2D>(clip.Frames.Count);
+        try
+        {
+            foreach (var img in clip.Frames)
+                list.Add(CreateTextureFromImage(img, _project.BakeFlipX));
+            _clipTextures[clip.Name] = list;
+            return list;
+        }
+        catch (Exception ex)
+        {
+            foreach (var t in list)
+                try { if (!t.IsDisposed) t.Dispose(); } catch { }
+            Console.WriteLine($"[CharacterEditor] Failed to upload clip '{clip.Name}': {ex.Message}");
+            return null;
+        }
     }
 
     private Texture2D CreateTextureFromImage(Image<Rgba32> img, bool flipH)
@@ -2349,6 +2474,18 @@ public sealed class CharacterEditor : IEditor, IDisposable
 
     public void Dispose()
     {
+        // If an import is still running in the background when closing the editor, dispose its result once it completes
+        var inFlight = _importTask;
+        _importTask = null;
+        if (inFlight != null)
+        {
+            _ = inFlight.ContinueWith(t =>
+            {
+                if (t.IsCompletedSuccessfully)
+                    try { t.Result?.Dispose(); } catch { }
+            }, TaskScheduler.Default);
+        }
+
         foreach (var t in _icons.Values)
             try { if (t != null && !t.IsDisposed) t.Dispose(); } catch { }
         _icons.Clear();
@@ -2386,24 +2523,33 @@ public sealed class CharacterEditor : IEditor, IDisposable
 
     public static Texture2D? LoadUiIcon(GraphicsDevice gd, string name)
     {
-        try
+        // Android APK strips the leading "Assets/" prefix from <AndroidAsset Link="Assets\...">;
+        // desktop keeps "Assets/..." next to the executable. Probe both!
+        string[] paths = OperatingSystem.IsAndroid()
+            ? new[] { $"images/ui/character_editor/{name}.png", $"Assets/images/ui/character_editor/{name}.png" }
+            : new[] { $"Assets/images/ui/character_editor/{name}.png", $"images/ui/character_editor/{name}.png" };
+
+        foreach (var path in paths)
         {
-            using var s = TitleContainer.OpenStream($"Assets/images/ui/character_editor/{name}.png");
-            var tex = Texture2D.FromStream(gd, s);
-            var px = new Color[tex.Width * tex.Height];
-            tex.GetData(px);
-            for (int i = 0; i < px.Length; i++)
+            try
             {
-                var c = px[i];
-                px[i] = new Color(c.R * c.A / 255, c.G * c.A / 255, c.B * c.A / 255, c.A);
+                using var s = TitleContainer.OpenStream(path);
+                var tex = Texture2D.FromStream(gd, s);
+                var px = new Color[tex.Width * tex.Height];
+                tex.GetData(px);
+                for (int i = 0; i < px.Length; i++)
+                {
+                    var c = px[i];
+                    px[i] = new Color(c.R * c.A / 255, c.G * c.A / 255, c.B * c.A / 255, c.A);
+                }
+                tex.SetData(px);
+                return tex;
             }
-            tex.SetData(px);
-            return tex;
+            catch
+            {
+            }
         }
-        catch
-        {
-            return null;
-        }
+        return null;
     }
 
     /// <summary>Maps a button token/label to its Material Design PNG icon and clean display text.</summary>

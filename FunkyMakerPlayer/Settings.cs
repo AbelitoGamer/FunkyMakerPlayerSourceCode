@@ -284,8 +284,10 @@ public static class Settings
                 Hotkeys = Controls.Export(),
                 FpsCap = Game1.FpsCap,
             };
-            File.WriteAllText(_path, JsonSerializer.Serialize(d,
+            string tmp = _path + ".tmp";
+            File.WriteAllText(tmp, JsonSerializer.Serialize(d,
                 new JsonSerializerOptions { WriteIndented = true }));
+            File.Move(tmp, _path, overwrite: true);
         }
         catch (Exception ex)
         {

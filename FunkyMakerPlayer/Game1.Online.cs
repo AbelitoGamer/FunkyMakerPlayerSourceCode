@@ -124,7 +124,12 @@ public partial class Game1
         }
         else
         {
-            var focus = info.Players.OrderBy(p => p.Side).First();
+            var focus = info.Players.OrderBy(p => p.Side).FirstOrDefault();
+            if (focus == null)
+            {
+                Console.WriteLine("[Online] Cannot start spectator view: match has no players.");
+                return;
+            }
             pov = focus.PlayerId;
             side = focus.Side;
             _focusPlayerId = focus.PlayerId;

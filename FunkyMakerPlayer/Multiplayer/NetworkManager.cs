@@ -318,14 +318,35 @@ namespace FunkyMakerPlayer.Multiplayer
                         if (!IsActiveAttemptLocked(hub, generation)) return;
                     }
                     HelloResult? reconnectHello = null;
+                    string? helloError = null;
                     try
                     {
                         reconnectHello = await hub.InvokeAsync<HelloResult>("Hello", BuildHello());
-                        if (!reconnectHello.Ok) throw new InvalidOperationException(reconnectHello.Error);
+                        if (!reconnectHello.Ok)
+                            helloError = string.IsNullOrWhiteSpace(reconnectHello.Error) ? "Server rejected reconnect Hello." : reconnectHello.Error;
                     }
                     catch (Exception ex)
                     {
+                        helloError = ex.Message;
                         Console.WriteLine($"[Multiplayer] Hello after reconnect failed: {ex.Message}");
+                    }
+                    if (helloError != null || reconnectHello is not { Ok: true })
+                    {
+                        WsHubConnection? rejectedHub = null;
+                        CancellationTokenSource? rejectedCts = null;
+                        lock (_connectionStateLock)
+                        {
+                            if (!IsActiveAttemptLocked(hub, generation)) return;
+                            DetachConnectionLocked(out rejectedHub, out rejectedCts);
+                        }
+                        CancelAndDisposeCts(rejectedCts);
+                        _ = DisposeHubQuietlyAsync(rejectedHub);
+                        Post(() =>
+                        {
+                            OnConnectionError?.Invoke($"Reconnect failed: {helloError ?? "Hello rejected"}");
+                            OnDisconnected?.Invoke(helloError ?? "Reconnect rejected by server");
+                        });
+                        return;
                     }
                     lock (_connectionStateLock)
                     {
@@ -336,14 +357,11 @@ namespace FunkyMakerPlayer.Multiplayer
                         _currentReconnectDelay = MIN_RECONNECT_DELAY;
                         _lastPacketReceivedTime = 0f;
                         _pingTimer = 0f;
-                        if (reconnectHello is { Ok: true })
-                        {
-                            MaxUploadBytes = reconnectHello.MaxUploadBytes > 0 ? reconnectHello.MaxUploadBytes : MaxUploadBytes;
-                            MaxRoomPlayers = reconnectHello.MaxRoomPlayers >= Protocol.MinPlayers ? reconnectHello.MaxRoomPlayers : Protocol.MaxPlayers;
-                            SupportsChunkedUpload = reconnectHello.SupportsChunkedUpload;
-                            SupportsFnfChartOnly = reconnectHello.SupportsFnfChartOnly;
-                            UploadChunkBytes = reconnectHello.UploadChunkBytes > 0 ? reconnectHello.UploadChunkBytes : 4 * 1024 * 1024;
-                        }
+                        MaxUploadBytes = reconnectHello.MaxUploadBytes > 0 ? reconnectHello.MaxUploadBytes : MaxUploadBytes;
+                        MaxRoomPlayers = reconnectHello.MaxRoomPlayers >= Protocol.MinPlayers ? reconnectHello.MaxRoomPlayers : Protocol.MaxPlayers;
+                        SupportsChunkedUpload = reconnectHello.SupportsChunkedUpload;
+                        SupportsFnfChartOnly = reconnectHello.SupportsFnfChartOnly;
+                        UploadChunkBytes = reconnectHello.UploadChunkBytes > 0 ? reconnectHello.UploadChunkBytes : 4 * 1024 * 1024;
                     }
                     Console.WriteLine($"[Multiplayer] Reconnected ({connectionId})");
                     SendPing();
@@ -563,13 +581,14 @@ namespace FunkyMakerPlayer.Multiplayer
 
         // ── Official levels (HTTP) ───────────────────────────────────────────
 
+        private static readonly System.Net.Http.HttpClient _officialLevelsHttp = new() { Timeout = TimeSpan.FromSeconds(100) };
+
         /// <summary>Fetches /api/verified_levels; raises <see cref="OnLevelListReceived"/> on the game thread.</summary>
         public async void RequestOfficialLevels()
         {
             try
             {
-                using var httpClient = new System.Net.Http.HttpClient { Timeout = TimeSpan.FromSeconds(100) };
-                var response = await httpClient.GetStringAsync($"{ServerUrl}/api/verified_levels");
+                var response = await _officialLevelsHttp.GetStringAsync($"{ServerUrl}/api/verified_levels");
                 var options = new System.Text.Json.JsonSerializerOptions { PropertyNameCaseInsensitive = true };
                 var packet = System.Text.Json.JsonSerializer.Deserialize<LevelListPacket>(response, options);
                 if (packet?.Levels != null)
@@ -654,20 +673,29 @@ namespace FunkyMakerPlayer.Multiplayer
                 if (_lastPacketReceivedTime >= CONNECTION_TIMEOUT)
                 {
                     Console.WriteLine("[Multiplayer] Connection lost - no packets received");
-                    IsConnected = false;
+                    WsHubConnection? staleHub = null;
+                    CancellationTokenSource? staleCts = null;
+                    lock (_connectionStateLock)
+                    {
+                        DetachConnectionLocked(out staleHub, out staleCts);
+                    }
+                    CancelAndDisposeCts(staleCts);
+                    _ = DisposeHubQuietlyAsync(staleHub);
                     OnConnectionError?.Invoke("Connection lost");
                     OnDisconnected?.Invoke("Connection lost - no response from server");
                     if (_shouldReconnect) _reconnectTimer = _currentReconnectDelay;
                 }
-
-                float pingInterval = TimeSyncManager.Instance.IsSynced ? PING_INTERVAL : PING_BOOTSTRAP_INTERVAL;
-                _pingTimer += dt;
-                if (_pingTimer >= pingInterval)
+                else
                 {
-                    _pingTimer = 0f;
-                    SendPing();
+                    float pingInterval = TimeSyncManager.Instance.IsSynced ? PING_INTERVAL : PING_BOOTSTRAP_INTERVAL;
+                    _pingTimer += dt;
+                    if (_pingTimer >= pingInterval)
+                    {
+                        _pingTimer = 0f;
+                        SendPing();
+                    }
+                    UpdateConnectionQuality();
                 }
-                UpdateConnectionQuality();
             }
 
             if (_shouldReconnect && !IsConnected && !IsConnecting)

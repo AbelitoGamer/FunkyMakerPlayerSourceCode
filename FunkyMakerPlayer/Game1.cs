@@ -460,22 +460,16 @@ public partial class Game1 : Game
             
 #if ANDROID
             _errorMsg ??= $"Gameplay error in {context}: {ex.Message}";
-            // Android: Show crash dialog that allows copying the error
-            var activity = (Android.App.Activity)Microsoft.Xna.Framework.Game.Activity;
-            if (activity != null)
+            // CrashLogger.LogException above already invokes CrashDialog.Show once via _onCrashCallback.
+            if (Microsoft.Xna.Framework.Game.Activity == null)
             {
-                Platforms.Android.CrashDialog.Show(activity, crashReport);
-            }
-            else
-            {
-                // Fallback if activity is null
                 Exit();
             }
 #else
-            // Desktop: Write to crash.log file
+            // Desktop: Write to crash.log next to the real executable (not single-file temp dir)
             try
             {
-                string crashPath = Path.Combine(AppContext.BaseDirectory, "crash.log");
+                string crashPath = Path.Combine(PlatformPaths.GetAppBaseDirectory(), "crash.log");
                 File.WriteAllText(crashPath, crashReport);
             }
             catch { /* Ignore if file write fails */ }
@@ -706,8 +700,7 @@ public partial class Game1 : Game
         // The menus are laid out for ≥ 800×450: smaller windows hit Math.Clamp(min > max) in their layout
         // (e.g. the waiting room below 720 px wide), the Draw error handler then closed the game. Players
         // shrinking / dragging the window fast got there easily.
-        try { SDL_SetWindowMinimumSize(Window.Handle, MinWindowWidth, MinWindowHeight); } catch { }
-        try { SDL_EventState(0x1000 /*SDL_DROPFILE*/, 1 /*SDL_ENABLE*/); } catch { }
+        TryConfigureDesktopSdlWindow(Window.Handle, MinWindowWidth, MinWindowHeight);
         Window.FileDrop += OnFileDrop;
         
         // Initialize crash logger (desktop writes to file)
@@ -717,18 +710,22 @@ public partial class Game1 : Game
         // Hook audio device change
         GraphicsDevice.DeviceReset += (_, _) => _audioDeviceReset = true;
 
-        // Discord Rich Presence
+        // Discord Rich Presence & exit cleanup (also terminates any active ffmpeg video process)
         DiscordRpc.Initialize();
-        Exiting += (_, _) => DiscordRpc.Shutdown();
+        Exiting += (_, _) =>
+        {
+            try { DisposeOsuExtras(); } catch { }
+            try { DisposeLevelTextures(); } catch { }
+            try { (_suspendedChartEditor as Editors.Chart.ChartEditor)?.DisposeAudio(); } catch { }
+            try { (_activeEditor as IDisposable)?.Dispose(); } catch { }
+            DiscordRpc.Shutdown();
+        };
 
         // Initialize managers
         _cameraManager = new CameraManager();
         _settingsManager = new SettingsManager();
         
         // NOTE: UI menus initialized in LoadContent() after _pixel and _font are created
-        
-        // Hook audio device reset
-        GraphicsDevice.DeviceReset += (_, _) => _audioDeviceReset = true;
         
         // AudioManager disabled - causing bugs (music not stopping, etc.)
         // _stateManager = new GameStateManager();  // TODO: Implementar cuando esté listo
@@ -782,15 +779,52 @@ public partial class Game1 : Game
 #endif
     }
 
-    // SDL2 P/Invoke — MonoGame DesktopGL ships SDL2.dll
-    [DllImport("SDL2", CallingConvention = CallingConvention.Cdecl)]
-    private static extern byte SDL_EventState(uint type, int state);
+    // Cross-platform SDL2 loader — works on Windows (SDL2.dll) and Linux (libSDL2-2.0.so.0 bundled by MonoGame)
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    private delegate byte SdlEventStateDelegate(uint type, int state);
 
-    [DllImport("SDL2", CallingConvention = CallingConvention.Cdecl)]
-    private static extern void SDL_SetWindowMinimumSize(IntPtr window, int minW, int minH);
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    private delegate void SdlSetWindowMinSizeDelegate(IntPtr window, int minW, int minH);
+
+    private static void TryConfigureDesktopSdlWindow(IntPtr windowHandle, int minW, int minH)
+    {
+        if (windowHandle == IntPtr.Zero) return;
+        IntPtr sdl = IntPtr.Zero;
+        string[] candidates = OperatingSystem.IsWindows()
+            ? new[] { "SDL2.dll", "SDL2" }
+            : OperatingSystem.IsMacOS()
+                ? new[] { "libSDL2-2.0.0.dylib", "libSDL2.dylib", "SDL2" }
+                : new[] { "libSDL2-2.0.so.0", "libSDL2.so", "SDL2" };
+
+        var mgAsm = typeof(Microsoft.Xna.Framework.Game).Assembly;
+        foreach (var lib in candidates)
+        {
+            if (NativeLibrary.TryLoad(lib, mgAsm, null, out sdl) || NativeLibrary.TryLoad(lib, out sdl))
+                break;
+        }
+        if (sdl == IntPtr.Zero) return;
+
+        try
+        {
+            if (NativeLibrary.TryGetExport(sdl, "SDL_SetWindowMinimumSize", out var minPtr))
+                Marshal.GetDelegateForFunctionPointer<SdlSetWindowMinSizeDelegate>(minPtr)(windowHandle, minW, minH);
+        }
+        catch { }
+
+        try
+        {
+            if (NativeLibrary.TryGetExport(sdl, "SDL_EventState", out var evtPtr))
+                Marshal.GetDelegateForFunctionPointer<SdlEventStateDelegate>(evtPtr)(0x1000 /*SDL_DROPFILE*/, 1 /*SDL_ENABLE*/);
+        }
+        catch { }
+    }
 
     private const int MinWindowWidth = 800;
     private const int MinWindowHeight = 450;
+    private bool _audioRecoveryFailed;
+#if ANDROID
+    private static int _androidAssetsExtracting;
+#endif
 
 
     // ── Android "not responding" guard (fork) ───────────────────────────────
@@ -944,9 +978,9 @@ public partial class Game1 : Game
         // Blazor only: Wire file picker callback
         #if BLAZORGL
         _freeplay.OnFilePickerRequested = () => RequestFilePicker();
-#if ANDROID
+        #endif
+        #if ANDROID
         _freeplay.IsPointOverOverlayControl = p => _touchControls?.IsPointOnMenuControl(p) ?? false;
-#endif
         #endif
 
         // Init multiplayer menu (for accessing multiplayer lobby)
@@ -2469,6 +2503,8 @@ public partial class Game1 : Game
 
         if (_activeEditor is Editors.Chart.ChartEditor ce)
             ce.SyncInputState();
+        else if (_activeEditor is Editors.Character.CharacterEditor charEd)
+            charEd.SyncInputState();
         _editorPicker?.SyncInputState();
         _levelSelector?.SyncInputState();
         _mainSettingsMenu?.SyncInputState();
@@ -2715,7 +2751,7 @@ public partial class Game1 : Game
             // BUT NOT if the song or audio buffer has naturally ended
             bool audioFileEnded = _music != null && _songTime >= _musicDurationSeconds - 0.1f;
             bool songHasEnded = _songTime >= _songEndTime || audioFileEnded;
-            if (_musicInst?.State == SoundState.Stopped && _songTime > 0.5f && !songHasEnded)
+            if (_musicInst?.State == SoundState.Stopped && _songTime > 0.5f && !songHasEnded && !_audioRecoveryFailed)
             {
                 Console.WriteLine($"[Audio Recovery] Music stopped unexpectedly at {_songTime:F2}s, restarting...");
                 if (_audioDeviceReset)
@@ -2741,7 +2777,12 @@ public partial class Game1 : Game
                     }
                     _audioDeviceReset = false;
                 }
-                RecreateMusicAt(_songTime);
+                if (!RecreateMusicAt(_songTime))
+                {
+                    // Avoid spamming recovery logs every single frame when PCM/MusicData was freed (e.g. 32-bit MP)
+                    _audioRecoveryFailed = true;
+                    Console.WriteLine("[Audio Recovery] Unable to recreate music instance (no PCM/source bytes retained); suppressing further retries for this song.");
+                }
             }
             else if (songHasEnded && _musicInst?.State == SoundState.Stopped)
             {
@@ -3488,26 +3529,33 @@ public partial class Game1 : Game
                     }
                     else
                     {
-                        // Extract in background thread to avoid ANR (Application Not Responding)
-                        Console.WriteLine("[FindAssetsRoot] Starting background extraction...");
-                        System.Threading.Tasks.Task.Run(() => {
-                            try
-                            {
-                                ExtractAssetsFromAPK();
-                                // Create marker file to indicate extraction is complete
-                                File.WriteAllText(markerFile, DateTime.Now.ToString());
-                                Console.WriteLine("[FindAssetsRoot] Background extraction completed");
-                            }
-                            catch (Exception ex)
-                            {
-                                Console.WriteLine($"[FindAssetsRoot] Background extraction failed: {ex.Message}");
-                            }
-                        });
-                        
-                        // Wait a bit for extraction to start (non-blocking)
-                        for (int i = 0; i < 50 && !Directory.Exists(assetsPath); i++)
+                        if (System.Threading.Interlocked.CompareExchange(ref _androidAssetsExtracting, 1, 0) == 0)
                         {
-                            System.Threading.Thread.Sleep(100); // 100ms * 50 = 5 seconds max
+                            // Extract in background thread to avoid ANR (Application Not Responding)
+                            Console.WriteLine("[FindAssetsRoot] Starting background extraction...");
+                            System.Threading.Tasks.Task.Run(() =>
+                            {
+                                try
+                                {
+                                    ExtractAssetsFromAPK();
+                                    File.WriteAllText(markerFile, DateTime.Now.ToString());
+                                    Console.WriteLine("[FindAssetsRoot] Background extraction completed");
+                                }
+                                catch (Exception ex)
+                                {
+                                    Console.WriteLine($"[FindAssetsRoot] Background extraction failed: {ex.Message}");
+                                }
+                                finally
+                                {
+                                    System.Threading.Interlocked.Exchange(ref _androidAssetsExtracting, 0);
+                                }
+                            });
+                        }
+
+                        // Wait briefly for extraction to complete (up to 4s) so initial UI textures exist
+                        for (int i = 0; i < 40 && !File.Exists(markerFile); i++)
+                        {
+                            System.Threading.Thread.Sleep(100);
                         }
                     }
                 }

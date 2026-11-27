@@ -22,8 +22,8 @@ public static class SoundFiles
         foreach (string name in baseNames)
             foreach (string ext in Extensions)
             {
-                string path = Path.Combine(dir, name + ext);
-                if (File.Exists(path)) return path;
+                string? path = CaseInsensitivePaths.ResolveFile(dir, name + ext);
+                if (path != null) return path;
             }
         return null;
     }
@@ -36,12 +36,14 @@ public static class SoundFiles
         {
             byte[] data = File.ReadAllBytes(path);
             string ext = Path.GetExtension(path).ToLowerInvariant();
-            return ext switch
+            if (ext == ".wav")
             {
-                ".wav" => SoundEffect.FromStream(new MemoryStream(data)),
-                ".mp3" => LoadMp3(data),
-                _ => OggLoader.Load(data),
-            };
+                using var ms = new MemoryStream(data, writable: false);
+                return SoundEffect.FromStream(ms);
+            }
+            if (ext == ".mp3")
+                return AudioDecoder.LoadWithPcm(data, out _, out _, out _);
+            return OggLoader.Load(data);
         }
         catch (Exception ex)
         {
@@ -58,24 +60,5 @@ public static class SoundFiles
         if (volume <= 0f) return;
         try { sound.Play(volume, 0f, 0f); }
         catch (Exception ex) { Console.WriteLine($"[SoundFiles] Play failed: {ex.Message}"); }
-    }
-
-    private static SoundEffect LoadMp3(byte[] data)
-    {
-        using var mp3 = new MpegFile(new MemoryStream(data));
-        var samples = new List<float>();
-        var buffer = new float[4096];
-        int read;
-        while ((read = mp3.ReadSamples(buffer, 0, buffer.Length)) > 0)
-            for (int i = 0; i < read; i++) samples.Add(buffer[i]);
-
-        var pcm = new byte[samples.Count * 2];
-        for (int i = 0; i < samples.Count; i++)
-        {
-            short v = (short)Math.Clamp((int)(samples[i] * 32767f), short.MinValue, short.MaxValue);
-            pcm[i * 2] = (byte)(v & 0xFF);
-            pcm[i * 2 + 1] = (byte)((v >> 8) & 0xFF);
-        }
-        return OggLoader.CreateFromPcm(pcm, mp3.SampleRate, mp3.Channels);
     }
 }

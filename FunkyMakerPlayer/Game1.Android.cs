@@ -99,7 +99,7 @@ public partial class Game1
             Console.WriteLine($"[ExtractAssets] Starting extraction to: {targetAssetsPath}");
             
             // List what's at the root of the APK assets
-            string[]? rootItems = assetManager.List("");
+            string[]? rootItems = assetManager?.List("");
             Console.WriteLine($"[ExtractAssets] Root APK assets count: {rootItems?.Length ?? 0}");
             if (rootItems != null)
             {
@@ -418,9 +418,14 @@ public partial class Game1
                 Directory.CreateDirectory(levelsFolder);
             }
             
-            // Save the file to the mods folder
-            string destPath = Path.Combine(levelsFolder, fileName);
-            
+            // Sanitize provider display name and avoid silently overwriting existing files
+            string cleanFileName = Path.GetFileName((fileName ?? "imported.fnmm").Replace('\\', '/'));
+            if (string.IsNullOrWhiteSpace(cleanFileName)) cleanFileName = "imported.fnmm";
+            foreach (char c in Path.GetInvalidFileNameChars())
+                cleanFileName = cleanFileName.Replace(c, '_');
+            string destPath = Path.Combine(levelsFolder, cleanFileName);
+
+            using (stream)
             using (var fileStream = File.Create(destPath))
             {
                 stream.CopyTo(fileStream);
@@ -429,7 +434,7 @@ public partial class Game1
             Console.WriteLine($"[Game1] Level saved to: {destPath}");
             
             // Refresh the freeplay menu, select the imported level, and show toast notification
-            _freeplay.OnLevelsImported(new[] { destPath });
+            _freeplay?.OnLevelsImported(new[] { destPath });
             
             // Show success message
             _errorMsg = null; // Clear any previous error

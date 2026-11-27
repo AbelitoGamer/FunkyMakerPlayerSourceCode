@@ -72,6 +72,7 @@ public sealed class OsuVideo : IDisposable
         public Session(int capacity) { Frames = new(boundedCapacity: capacity); }
         public readonly CancellationTokenSource Cts = new();
         public volatile IOsuVideoStream? Stream;
+        public Thread? ReaderThread;
         public volatile bool Ended;
         public double Start;                // video time this run decodes from
         public double Requested;            // video time when it was started (Start minus the lead)
@@ -248,13 +249,23 @@ public sealed class OsuVideo : IDisposable
 
     private void Start(double videoTime, double requested)
     {
-        Stop();
+        var prevThread = Stop();
         _ended = false;
         var session = new Session(QueueCapacity) { Start = videoTime, Requested = requested };
         _session = session;
         var token = session.Cts.Token;
         var thread = new Thread(() =>
         {
+            // Wait briefly for any previous reader thread to release its hardware MediaCodec slot
+            // before opening a new one (critical on Android SoCs with strict decoder instance caps).
+            try { prevThread?.Join(500); } catch { }
+            if (token.IsCancellationRequested)
+            {
+                try { session.Cts.Dispose(); } catch { }
+                try { session.Frames.Dispose(); } catch { }
+                return;
+            }
+
             IOsuVideoStream? stream = null;
             try
             {
@@ -276,30 +287,34 @@ public sealed class OsuVideo : IDisposable
             {
                 if (!token.IsCancellationRequested) session.Ended = true;
                 try { stream?.Dispose(); } catch { }
+                while (session.Frames.TryTake(out var leftover)) Recycle(leftover.Pixels);
+                try { session.Cts.Dispose(); } catch { }
+                try { session.Frames.Dispose(); } catch { }
             }
         }) { IsBackground = true, Name = "osu video" };
+        session.ReaderThread = thread;
         thread.Start();
         Console.WriteLine($"[OsuVideo] Playing {Path.GetFileName(_file)} from {videoTime:0.00}s");
     }
 
-    private void Stop()
+    private Thread? Stop()
     {
         var s = _session;
         _session = null;
         if (_pending is { } pend) Recycle(pend.Pixels);
         _pending = null;
-        if (s == null) return;
+        if (s == null) return null;
         try { s.Cts.Cancel(); } catch { }
         try { s.Stream?.Cancel(); } catch { }
         // Return already-queued buffers to the pool so restarts don't stack extra 8 MB LOH frames.
-        while (s.Frames.TryTake(out var dropped)) Recycle(dropped.Pixels);
-        // The reader thread disposes the stream; the token source is left to the GC (the thread
-        // may still be checking it).
+        try { while (s.Frames.TryTake(out var dropped)) Recycle(dropped.Pixels); } catch { }
+        return s.ReaderThread;
     }
 
     public void Dispose()
     {
-        Stop();
+        var t = Stop();
+        try { t?.Join(300); } catch { }
         while (_freeBuffers.TryDequeue(out _)) { }
         _texture?.Dispose();
         _texture = null;

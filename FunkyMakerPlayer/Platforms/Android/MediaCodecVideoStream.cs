@@ -23,12 +23,13 @@ internal sealed class MediaCodecVideoStream : IOsuVideoStream
 {
     private const long TimeoutUs = 10_000;
 
-    private readonly MediaExtractor? _extractor;
-    private readonly MediaCodec? _codec;
+    private MediaExtractor? _extractor;
+    private MediaCodec? _codec;
     private readonly MediaCodec.BufferInfo _info = new();
     private readonly long _startUs;
     private volatile bool _cancelled;
     private bool _inputDone, _outputDone;
+    private int _eosWaitAttempts;
     private double _lastTime = double.NegativeInfinity;
 
     // Letterbox mapping, rebuilt when the decoded size changes.
@@ -49,7 +50,7 @@ internal sealed class MediaCodecVideoStream : IOsuVideoStream
     // AVI (MediaExtractor can't read it): our own demuxer feeds the codec. Its frames come in decode
     // order with slot times, so with B-frames an output frame's time is the smallest time still
     // pending, not the one MediaCodec attaches (that of the input that completed it).
-    private readonly AviDemuxer? _avi;
+    private AviDemuxer? _avi;
     private byte[] _aviBuf = new byte[1 << 16];
     private readonly PriorityQueue<long, long>? _pending;
 
@@ -71,7 +72,7 @@ internal sealed class MediaCodecVideoStream : IOsuVideoStream
             ex.SetDataSource(file);
             for (int i = 0; i < ex.TrackCount; i++)
             {
-                var f = ex.GetTrackFormat(i);
+                using var f = ex.GetTrackFormat(i);
                 string? mime = f.GetString(MediaFormat.KeyMime);
                 if (mime == null || !mime.StartsWith("video/", StringComparison.Ordinal)) continue;
                 int w = f.ContainsKey(MediaFormat.KeyWidth) ? f.GetInteger(MediaFormat.KeyWidth) : 0;
@@ -100,9 +101,12 @@ internal sealed class MediaCodecVideoStream : IOsuVideoStream
             {
                 _avi = AviDemuxer.Open(file);
                 if (_avi == null) return;
-                var avi = MediaFormat.CreateVideoFormat(_avi.Mime!, _avi.Width, _avi.Height);
+                using var avi = MediaFormat.CreateVideoFormat(_avi.Mime!, _avi.Width, _avi.Height);
                 for (int i = 0; i < _avi.CodecConfig.Count; i++)
-                    avi.SetByteBuffer($"csd-{i}", Java.Nio.ByteBuffer.Wrap(_avi.CodecConfig[i]));
+                {
+                    using var csd = Java.Nio.ByteBuffer.Wrap(_avi.CodecConfig[i]);
+                    avi.SetByteBuffer($"csd-{i}", csd);
+                }
                 avi.SetInteger(MediaFormat.KeyMaxInputSize, Math.Max(_avi.MaxFrameSize * 2 + 1024, 1 << 16));
                 avi.SetInteger(MediaFormat.KeyColorFormat, (int)MediaCodecCapabilities.Formatyuv420flexible);
                 _pending = new PriorityQueue<long, long>();
@@ -117,29 +121,37 @@ internal sealed class MediaCodecVideoStream : IOsuVideoStream
             _extractor.SetDataSource(file);
             MediaFormat? format = null;
             string? mime = null;
-            for (int i = 0; i < _extractor.TrackCount; i++)
+            try
             {
-                var f = _extractor.GetTrackFormat(i);
-                string? m = f.GetString(MediaFormat.KeyMime);
-                if (m != null && m.StartsWith("video/", StringComparison.Ordinal))
+                for (int i = 0; i < _extractor.TrackCount; i++)
                 {
-                    _extractor.SelectTrack(i);
-                    format = f;
-                    mime = m;
-                    break;
+                    var f = _extractor.GetTrackFormat(i);
+                    string? m = f.GetString(MediaFormat.KeyMime);
+                    if (m != null && m.StartsWith("video/", StringComparison.Ordinal))
+                    {
+                        _extractor.SelectTrack(i);
+                        format = f;
+                        mime = m;
+                        break;
+                    }
+                    f.Dispose();
                 }
+                if (format == null || mime == null)
+                {
+                    Console.WriteLine("[OsuVideo] No video track MediaExtractor can read");
+                    Release();
+                    return;
+                }
+                format.SetInteger(MediaFormat.KeyColorFormat, (int)MediaCodecCapabilities.Formatyuv420flexible);
+                _codec = MediaCodec.CreateDecoderByType(mime);
+                _codec.Configure(format, null, null, MediaCodecConfigFlags.None);
+                _codec.Start();
+                _extractor.SeekTo(_startUs, MediaExtractorSeekTo.PreviousSync);
             }
-            if (format == null || mime == null)
+            finally
             {
-                Console.WriteLine("[OsuVideo] No video track MediaExtractor can read");
-                Release();
-                return;
+                format?.Dispose();
             }
-            format.SetInteger(MediaFormat.KeyColorFormat, (int)MediaCodecCapabilities.Formatyuv420flexible);
-            _codec = MediaCodec.CreateDecoderByType(mime);
-            _codec.Configure(format, null, null, MediaCodecConfigFlags.None);
-            _codec.Start();
-            _extractor.SeekTo(_startUs, MediaExtractorSeekTo.PreviousSync);
         }
         catch (Exception ex)
         {
@@ -156,7 +168,17 @@ internal sealed class MediaCodecVideoStream : IOsuVideoStream
             if (!_inputDone) FeedInput();
 
             int index = _codec.DequeueOutputBuffer(_info, TimeoutUs);
-            if (index < 0) continue; // try again later / format or buffers changed
+            if (index < 0)
+            {
+                // Avoid spinning forever if a hardware decoder fails to emit EOS after input finished
+                if (_inputDone && ++_eosWaitAttempts > 200)
+                {
+                    _outputDone = true;
+                    break;
+                }
+                continue;
+            }
+            _eosWaitAttempts = 0;
             if ((_info.Flags & MediaCodecBufferFlags.EndOfStream) != 0) _outputDone = true;
 
             long ptsUs = _info.PresentationTimeUs;
@@ -171,13 +193,19 @@ internal sealed class MediaCodecVideoStream : IOsuVideoStream
                         // Never two in a row skipped for longer than 0.25 s, so something is shown.
                         && !(_clock != null && time < _clock() - 1.5 / _format.Fps && time < _lastTime + 0.25);
             bool converted = false;
-            if (keep)
+            try
             {
-                using var image = _codec.GetOutputImage(index);
-                if (image != null)
-                    converted = Convert(image, rgba);
+                if (keep)
+                {
+                    using var image = _codec.GetOutputImage(index);
+                    if (image != null)
+                        converted = Convert(image, rgba);
+                }
             }
-            _codec.ReleaseOutputBuffer(index, false);
+            finally
+            {
+                _codec.ReleaseOutputBuffer(index, false);
+            }
             if (converted)
             {
                 _lastTime = time;
@@ -191,7 +219,7 @@ internal sealed class MediaCodecVideoStream : IOsuVideoStream
     {
         int index = _codec!.DequeueInputBuffer(TimeoutUs);
         if (index < 0) return;
-        var buffer = _codec.GetInputBuffer(index);
+        using var buffer = _codec.GetInputBuffer(index);
         if (_avi != null)
         {
             if (buffer == null || !_avi.Read(ref _aviBuf, out int n, out double t, out bool key))
@@ -222,24 +250,40 @@ internal sealed class MediaCodecVideoStream : IOsuVideoStream
         }
         else
         {
-            _codec.QueueInputBuffer(index, 0, size, _extractor!.SampleTime, MediaCodecBufferFlags.None);
+            var sampleFlags = (_extractor!.SampleFlags & MediaExtractorSampleFlags.Sync) != 0
+                ? MediaCodecBufferFlags.KeyFrame
+                : MediaCodecBufferFlags.None;
+            _codec.QueueInputBuffer(index, 0, size, _extractor.SampleTime, sampleFlags);
             _extractor.Advance();
         }
     }
 
     private bool Convert(Image image, byte[] rgba)
     {
-        var crop = image.CropRect;
+        using var crop = image.CropRect;
         int cx = crop?.Left ?? 0, cy = crop?.Top ?? 0;
         int cw = crop is { } c1 && c1.Width() > 0 ? c1.Width() : image.Width;
         int ch = crop is { } c2 && c2.Height() > 0 ? c2.Height() : image.Height;
+        if (cw <= 0 || ch <= 0) return false;
         if (cw != _srcW || ch != _srcH || cx != _srcX || cy != _srcY) BuildMap(cx, cy, cw, ch);
 
-        var planes = image.GetPlanes()!;
-        var pY = planes[0]; var pU = planes[1]; var pV = planes[2];
-        IntPtr aY = Address(pY.Buffer!, out int lenY);
-        IntPtr aU = Address(pU.Buffer!, out int lenU);
-        IntPtr aV = Address(pV.Buffer!, out int lenV);
+        var planes = image.GetPlanes();
+        if (planes == null || planes.Length < 3) return false;
+        using var pY = planes[0];
+        using var pU = planes[1];
+        using var pV = planes[2];
+        for (int i = 3; i < planes.Length; i++)
+            planes[i]?.Dispose();
+
+        if (pY == null || pU == null || pV == null) return false;
+        using var bY = pY.Buffer;
+        using var bU = pU.Buffer;
+        using var bV = pV.Buffer;
+        if (bY == null || bU == null || bV == null) return false;
+
+        IntPtr aY = Address(bY, out int lenY);
+        IntPtr aU = Address(bU, out int lenU);
+        IntPtr aV = Address(bV, out int lenV);
         if (aY == IntPtr.Zero || aU == IntPtr.Zero || aV == IntPtr.Zero) return false;
         // Frame buffers are reused (OsuVideo's pool): paint the letterbox bars opaque black every
         // frame, like ffmpeg's pad.
@@ -341,8 +385,16 @@ internal sealed class MediaCodecVideoStream : IOsuVideoStream
 
     private static IntPtr Address(Java.Nio.ByteBuffer buffer, out int length)
     {
-        length = buffer.Capacity();
-        return JNIEnv.GetDirectBufferAddress(buffer.Handle);
+        IntPtr basePtr = JNIEnv.GetDirectBufferAddress(buffer.Handle);
+        if (basePtr == IntPtr.Zero)
+        {
+            length = 0;
+            return IntPtr.Zero;
+        }
+        int pos = Math.Max(0, buffer.Position());
+        int lim = Math.Clamp(buffer.Limit(), pos, buffer.Capacity());
+        length = lim - pos;
+        return basePtr + pos;
     }
 
     private static void CopyRow(IntPtr plane, int planeLen, int offset, byte[] row, int stride)
@@ -360,15 +412,19 @@ internal sealed class MediaCodecVideoStream : IOsuVideoStream
     {
         try { _codec?.Stop(); } catch { }
         try { _codec?.Release(); } catch { }
+        try { _codec?.Dispose(); } catch { }
+        _codec = null;
         try { _extractor?.Release(); } catch { }
-        _avi?.Dispose();
+        try { _extractor?.Dispose(); } catch { }
+        _extractor = null;
+        try { _avi?.Dispose(); } catch { }
+        _avi = null;
+        _outputDone = true;
     }
 
     public void Dispose()
     {
         Release();
-        _codec?.Dispose();
-        _extractor?.Dispose();
         _info.Dispose();
     }
 }

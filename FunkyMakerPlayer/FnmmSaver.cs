@@ -43,66 +43,69 @@ public static class FnmmSaver
             
             // Create temp file, then replace atomically
             string tempPath = outputPath + ".tmp";
-            
-            using (var fs = File.Create(tempPath))
-            using (var zip = new ZipArchive(fs, ZipArchiveMode.Create, leaveOpen: false))
+            try
             {
-                // 1. meta.json (optional)
-                if (!string.IsNullOrEmpty(level.Meta.Name) ||
-                    !string.IsNullOrEmpty(level.Meta.UUID) ||
-                    !string.IsNullOrEmpty(level.Meta.Version))
+                using (var fs = File.Create(tempPath))
+                using (var zip = new ZipArchive(fs, ZipArchiveMode.Create, leaveOpen: false))
                 {
-                    WriteJsonEntry(zip, "meta.json", level.Meta);
-                }
-                
-                // 2. data.json (required)
-                WriteJsonEntry(zip, "data.json", SerializeData(level.Data));
-                
-                // 3. scene.json
-                WriteJsonEntry(zip, "scene.json", SerializeScene(level.Scene));
-                
-                // 4. events.json
-                WriteJsonEntry(zip, "events.json", level.Events);
-                
-                // 5. music.ogg
-                if (level.MusicData != null && level.MusicData.Length > 0)
-                {
-                    WriteBinaryEntry(zip, "music.ogg", level.MusicData);
-                }
-                
-                // 6. Loose root PNGs
-                foreach (var kvp in level.LooseImages)
-                {
-                    string filename = kvp.Key + ".png";
-                    WriteBinaryEntry(zip, filename, kvp.Value);
-                }
-                
-                // 7. sprites/
-                foreach (var spriteKvp in level.Sprites)
-                {
-                    string spriteName = spriteKvp.Key;
-                    var (def, frames) = spriteKvp.Value;
-                    
-                    // sprites/SpriteName/sprite.json
-                    WriteJsonEntry(zip, $"sprites/{spriteName}/sprite.json", def);
-                    
-                    // sprites/SpriteName/0.png, 1.png, 2.png, ...
-                    for (int i = 0; i < frames.Count; i++)
+                    // 1. meta.json (optional)
+                    if (!string.IsNullOrEmpty(level.Meta.Name) ||
+                        !string.IsNullOrEmpty(level.Meta.UUID) ||
+                        !string.IsNullOrEmpty(level.Meta.Version))
                     {
-                        if (frames[i] != null && frames[i].Length > 0)
+                        WriteJsonEntry(zip, "meta.json", level.Meta);
+                    }
+
+                    // 2. data.json (required)
+                    WriteJsonEntry(zip, "data.json", SerializeData(level.Data));
+
+                    // 3. scene.json
+                    WriteJsonEntry(zip, "scene.json", SerializeScene(level.Scene));
+
+                    // 4. events.json
+                    WriteJsonEntry(zip, "events.json", level.Events);
+
+                    // 5. music.ogg
+                    if (level.MusicData != null && level.MusicData.Length > 0)
+                    {
+                        WriteBinaryEntry(zip, "music.ogg", level.MusicData);
+                    }
+
+                    // 6. Loose root PNGs
+                    foreach (var kvp in level.LooseImages)
+                    {
+                        string filename = kvp.Key + ".png";
+                        WriteBinaryEntry(zip, filename, kvp.Value);
+                    }
+
+                    // 7. sprites/
+                    foreach (var spriteKvp in level.Sprites)
+                    {
+                        string spriteName = spriteKvp.Key;
+                        var (def, frames) = spriteKvp.Value;
+
+                        // sprites/SpriteName/sprite.json
+                        WriteJsonEntry(zip, $"sprites/{spriteName}/sprite.json", def);
+
+                        // sprites/SpriteName/0.png, 1.png, 2.png, ...
+                        for (int i = 0; i < frames.Count; i++)
                         {
-                            WriteBinaryEntry(zip, $"sprites/{spriteName}/{i}.png", frames[i]);
+                            if (frames[i] != null && frames[i].Length > 0)
+                            {
+                                WriteBinaryEntry(zip, $"sprites/{spriteName}/{i}.png", frames[i]);
+                            }
                         }
                     }
                 }
+
+                // Atomic replace — never delete outputPath before Move succeeds
+                File.Move(tempPath, outputPath, overwrite: true);
             }
-            
-            // Atomic replace
-            if (File.Exists(outputPath))
+            catch
             {
-                File.Delete(outputPath);
+                try { if (File.Exists(tempPath)) File.Delete(tempPath); } catch { }
+                throw;
             }
-            File.Move(tempPath, outputPath);
             
             Console.WriteLine($"[FnmmSaver] ✅ Saved successfully");
         }
