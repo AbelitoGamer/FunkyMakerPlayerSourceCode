@@ -2146,8 +2146,8 @@ public sealed class CharacterEditor : IEditor, IDisposable
     {
 #if !ANDROID && !BLAZORGL
         var files = PlatformPaths.PickDesktopFiles(
-            "Animate Spritemap or Character ZIP (Animation.json;spritemap*.json;*.zip)\0Animation.json;spritemap*.json;*.zip;*.json\0All Files (*.*)\0*.*\0\0",
-            "Select Animation.json (inside Spritemap folder) or Character .ZIP");
+            "Animate Spritemap or Character ZIP (Animation.json;animations.json;spritemap*.json;metadata.json;*.zip)\0Animation.json;animations.json;metadata.json;spritemap*.json;*.zip;*.json\0All Files (*.*)\0*.*\0\0",
+            "Select Animation.json / animations.json / spritemap*.json or Character .ZIP");
         if (files.Count > 0)
             StartLoadFromPath(files[0], "Rasterizing Adobe Animate Spritemap");
 #elif ANDROID

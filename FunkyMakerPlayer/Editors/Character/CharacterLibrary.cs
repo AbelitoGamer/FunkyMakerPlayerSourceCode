@@ -171,6 +171,8 @@ public static class CharacterLibrary
             return ImportFromZipArchive(path);
 
         if (string.Equals(fileName, "Animation.json", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(fileName, "animations.json", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(fileName, "metadata.json", StringComparison.OrdinalIgnoreCase) ||
             fileName.StartsWith("spritemap", StringComparison.OrdinalIgnoreCase))
         {
             return SpritemapCharacterImporter.ImportFromPath(path);
@@ -182,10 +184,13 @@ public static class CharacterLibrary
             return ImportFromBakedFolder(Path.GetDirectoryName(path)!);
         }
 
-        // Check if a .json in a Spritemap folder was picked (e.g., V-Slice character.json next to Animation.json)
-        string dir = Path.GetDirectoryName(path) ?? "";
-        if (ext == ".json" && SpritemapCharacterImporter.IsSpritemapFolder(dir))
-            return SpritemapCharacterImporter.ImportFromPath(dir);
+        // Check if any .json inside a Spritemap folder or its LIBRARY/ subfolder was picked
+        if (ext == ".json")
+        {
+            string? atlasRoot = SpritemapCharacterImporter.FindSpritemapRoot(path);
+            if (atlasRoot != null)
+                return SpritemapCharacterImporter.ImportFromPath(atlasRoot);
+        }
 
         return SparrowCharacterImporter.ImportFromFiles(path);
     }
