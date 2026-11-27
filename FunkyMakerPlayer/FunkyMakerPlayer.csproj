@@ -40,9 +40,9 @@
     <ApplicationDisplayVersion>0.5.0</ApplicationDisplayVersion>
     <AndroidVersionCode>8</AndroidVersionCode>
     <AndroidManifest>Platforms\Android\AndroidManifest.xml</AndroidManifest>
-    <!-- Disable AOT & trimming to keep System.Text.Json / SharpCompress / MonoGame reflection safe on 32 & 64-bit -->
+    <!-- Disable AOT; disable trimming by default on Mono (32-bit) to keep reflection safe while keeping CoreCLR 64-bit APKs compact (~40 MB) -->
     <RunAOTCompilation>false</RunAOTCompilation>
-    <PublishTrimmed Condition="'$(PublishTrimmed)' == ''">false</PublishTrimmed>
+    <PublishTrimmed Condition="'$(PublishTrimmed)' == '' And '$(UseMonoRuntime)' == 'true'">false</PublishTrimmed>
     <!-- Never use the Mono IL interpreter (fixes 32-bit Mono SIGSEGV SI_KERNEL in Debug builds) -->
     <UseInterpreter>false</UseInterpreter>
     <!-- Disable Fast Deployment to fix native library loading -->

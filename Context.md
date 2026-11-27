@@ -426,7 +426,7 @@ dotnet publish FunkyMakerPlayer\FunkyMakerPlayer.csproj -f net10.0-android -c Re
 - `SupportedOSPlatformVersion=29`; Release ABIs `arm64-v8a;x86_64`. A 64-bit APK will not
   install on a 32-bit-only phone (`INSTALL_FAILED_NO_MATCHING_ABIS`); 32-bit needs the separate
   Mono build in §1 (CoreCLR has no android-arm runtime). minSdk 29 = Android 10+ only.
-- AOT disabled (`RunAOTCompilation=false`), trimming disabled by default on Android (`PublishTrimmed=false`),
+- AOT disabled (`RunAOTCompilation=false`), trimming disabled by default on Android Mono 32-bit (`PublishTrimmed=false` when `UseMonoRuntime=true`; CoreCLR 64-bit uses SDK partial BCL trimming for ~40 MB APKs),
   `UseMonoRuntime` auto-enabled for `android-arm` and `false` (CoreCLR) otherwise, Mono IL interpreter disabled
   (`UseInterpreter=false`; in `.NET 10` Android `Debug` builds with `UseMonoRuntime=true`, the SDK defaults
   `UseInterpreter=true`, and `mono_ee_interp` crashes with `SIGSEGV (SI_KERNEL)` on 32-bit worker threads when
