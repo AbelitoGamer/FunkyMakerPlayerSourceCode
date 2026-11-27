@@ -576,9 +576,9 @@ public static class CharacterLibrary
             iconDef = new FnmmSprite { Type = 3f };
             iconBytes = new List<byte[]>(2);
 
-            byte[] normPng = EncodeIconFrame(project.IconNormal, project.BakeFlipX);
+            byte[] normPng = EncodeIconFrame(project.IconNormal, project.IconFlipX);
             byte[] losePng = project.IconLosing != null
-                ? EncodeIconFrame(project.IconLosing, project.BakeFlipX)
+                ? EncodeIconFrame(project.IconLosing, project.IconFlipX)
                 : normPng;
 
             iconBytes.Add(normPng);
@@ -893,11 +893,18 @@ public static class CharacterLibrary
             level.Scene.Objects.Add(targetObj);
         }
 
-        // Update health icon if available (icons[0] = opponent SL1, icons[1] = player SL0)
+        // Update health icon if available (icons[0] = opponent SL1 facing Right, icons[1] = player SL0 facing Left)
         if (updateIcon && pkg.IconSprite != null && pkg.IconFrames != null && pkg.IconFrames.Count > 0 && (targetStrumline == 0 || targetStrumline == 1))
         {
+            CharacterFacing desiredIconFacing = targetStrumline == 0 ? CharacterFacing.Left : CharacterFacing.Right;
+            bool needIconMirror = nativeFacing != desiredIconFacing;
+
+            var iconFrames = new List<byte[]>(pkg.IconFrames.Count);
+            foreach (var rawIcon in pkg.IconFrames)
+                iconFrames.Add(needIconMirror ? FlipPngBytesHorizontally(rawIcon) : rawIcon);
+
             string iconKey = $"{sprKey}_icon";
-            level.Sprites[iconKey] = (CloneSpriteDef(pkg.IconSprite), new List<byte[]>(pkg.IconFrames));
+            level.Sprites[iconKey] = (CloneSpriteDef(pkg.IconSprite), iconFrames);
             while (level.Scene.Icons.Count < 2)
                 level.Scene.Icons.Add("");
             int iconSlot = targetStrumline == 0 ? 1 : 0;
@@ -905,6 +912,23 @@ public static class CharacterLibrary
         }
 
         return targetObj;
+    }
+
+    private static byte[] FlipPngBytesHorizontally(byte[] pngBytes)
+    {
+        if (pngBytes == null || pngBytes.Length == 0) return pngBytes ?? Array.Empty<byte>();
+        try
+        {
+            using var img = Image.Load<Rgba32>(pngBytes);
+            img.Mutate(ctx => ctx.Flip(FlipMode.Horizontal));
+            using var ms = new MemoryStream();
+            img.Save(ms, _pngEncoder);
+            return ms.ToArray();
+        }
+        catch
+        {
+            return pngBytes;
+        }
     }
 
     public static bool TryComputeObjectWorldFootAndHeight(FnmmLevel level, SceneObject obj, out Vec2 worldFoot, out float worldHeight)

@@ -328,7 +328,6 @@ public partial class Game1
         int sh = rtH;
 
         // ── Optional Online Local Custom Character Equip (client-side only) ──
-        bool? customEquippedPlayerIconFlip = null;
         if (_isMultiplayerMatch && !_onlineSpectating && !_level.IsOsu)
         {
             var mpSettings = Multiplayer.MultiplayerSettings.Instance;
@@ -348,12 +347,6 @@ public partial class Game1
                         spriteKeyOverride: "__mp_local_char");
                     if (applied != null)
                     {
-                        if (eqPkg.IconSprite != null)
-                        {
-                            // Player icon sits on the RIGHT side of the health bar, so it should face LEFT (inward).
-                            var iconNativeFacing = Editors.Character.CharacterLibrary.ParseFacing(eqPkg.Metadata.NativeFacing);
-                            customEquippedPlayerIconFlip = iconNativeFacing == Editors.Character.CharacterFacing.Right;
-                        }
                         Console.WriteLine($"[Multiplayer] Equipped local custom character '{eqPkg.Metadata.Name}' on strumLine {myLocalCharStrum}");
                     }
                 }
@@ -458,7 +451,7 @@ public partial class Game1
             texCache);
 
         ApplyHealthBarIcon(isPlayerSlot: false, opponentIcon, flipIconsForEnemyRole);
-        ApplyHealthBarIcon(isPlayerSlot: true, playerIcon, customEquippedPlayerIconFlip ?? flipIconsForEnemyRole);
+        ApplyHealthBarIcon(isPlayerSlot: true, playerIcon, flipIconsForEnemyRole);
         if (_healthBar != null)
             _healthBar.IconMode = IconMode;
 
