@@ -278,7 +278,9 @@ public sealed class SoloResultsScreen
 
     private float U => _lastSh / 720f;
     private float MainW => Math.Min(380f * U, _lastSw - 40f * U);
-    private float MainH => 600f * U;
+    // Browsing from Freeplay there is no timing graph (only the run that just ended has one), so the
+    // capsule leaves its space out (78 px shorter).
+    private float MainH => (Browse ? 522f : 600f) * U;
     private float SideW => 170f * U;
     private float SideH => 304f * U;
     private float Gap => 14f * U;
@@ -542,10 +544,18 @@ public sealed class SoloResultsScreen
         }
         y += 56 * u;
 
-        // Timing distribution
+        // Timing distribution (browsing: only the average error / unstable rate line, no graph)
         float st3 = Math.Clamp((t - 0.8f) / 0.4f, 0f, 1f) * a;
-        DrawTiming(sb, font, at, current, x0, y, rowW, t, st3);
-        y += 98 * u;
+        if (Browse)
+        {
+            if (st3 > 0f) DrawErrorLine(sb, font, at, x0, y, rowW, st3);
+            y += 20 * u;
+        }
+        else
+        {
+            DrawTiming(sb, font, at, current, x0, y, rowW, t, st3);
+            y += 98 * u;
+        }
 
         // Footer: when it was played / why it wasn't saved, and what the +/- compare against
         string when;
@@ -615,7 +625,7 @@ public sealed class SoloResultsScreen
         else
         {
             string msg = at.HitErrorMs == null ? "No timing data for this attempt"
-                : Browse ? "The graph is only shown right after playing" : "Graph only for the run that just ended";
+                : "Graph only for the run that just ended";
             Centered(sb, font, msg, x + w / 2f, gy + (gh - LineUnit * 0.32f * u) / 2f, 0.32f * u, Muted * (0.8f * a));
         }
 
@@ -628,7 +638,13 @@ public sealed class SoloResultsScreen
         Text(sb, font, late, x + w - Measure(font, late) * 0.3f * u, ay, 0.3f * u, Muted * (0.8f * a));
 
         // Average error and unstable rate
-        float ly = ay + 14 * u;
+        DrawErrorLine(sb, font, at, x, ay + 14 * u, w, a);
+    }
+
+    /// <summary>"Avg. error" on the left and "Unstable rate" on the right of one line.</summary>
+    private void DrawErrorLine(SpriteBatch sb, SpriteFont font, FreeplayAttempt at, float x, float ly, float w, float a)
+    {
+        float u = U;
         string avg = at.HitErrorMs is float m
             ? Math.Abs(m) < 0.05f ? "Avg. error  0 ms" : $"Avg. error  {Math.Abs(m):0.00} ms {(m < 0 ? "early" : "late")}"
             : "Avg. error  -";
