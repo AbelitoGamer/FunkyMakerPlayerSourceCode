@@ -296,6 +296,12 @@ public class NoteRenderer
     /// </summary>
     public void SeekTo(float targetTime)
     {
+        // Seeking back (fork): give back the score / combo / judgements of the notes that come
+        // back into play, so a rewind can't be used to collect the same points twice.
+        RecordStatHistory();
+        if (targetTime < _statTime) RollBackStatsTo(targetTime - HIT_WINDOW);
+        _statTime = targetTime;
+
         for (int lane = 0; lane < LANE_COUNT; lane++)
         {
             // Restore all notes from backup, then remove those already past targetTime
@@ -536,6 +542,51 @@ public class NoteRenderer
     public int Bads  { get; private set; }
     public int Shits { get; private set; }
 
+    /// <summary>Highest combo of the run (rolled back with the rest on a backward timeskip).</summary>
+    public int MaxCombo { get; private set; }
+
+    // ── Stat history (fork): lets a backward timeskip undo what was earned after the new position ──
+    private struct StatSnapshot
+    {
+        public float Time;
+        public double Score;
+        public int Misses, Combo, MaxCombo, Sicks, Goods, Bads, Shits, HitErrorCount;
+    }
+    private readonly List<StatSnapshot> _statHistory = new();
+    private float _statTime = float.MinValue; // song time of the latest update
+
+    private StatSnapshot CurrentStats() => new()
+    {
+        Time = _statTime, Score = _scoreExact, Misses = Misses, Combo = Combo, MaxCombo = MaxCombo,
+        Sicks = Sicks, Goods = Goods, Bads = Bads, Shits = Shits, HitErrorCount = HitErrors.Count,
+    };
+
+    private static bool SameStats(in StatSnapshot a, in StatSnapshot b) =>
+        a.Score == b.Score && a.Misses == b.Misses && a.Combo == b.Combo && a.Sicks == b.Sicks &&
+        a.Goods == b.Goods && a.Bads == b.Bads && a.Shits == b.Shits && a.HitErrorCount == b.HitErrorCount;
+
+    /// <summary>Stores the stats if they changed since the last entry (stamped with the latest update's time).</summary>
+    private void RecordStatHistory()
+    {
+        if (Combo > MaxCombo) MaxCombo = Combo;
+        var now = CurrentStats();
+        if (_statHistory.Count > 0 && SameStats(_statHistory[^1], now)) return;
+        if (_statHistory.Count == 0 && SameStats(default, now)) return;
+        _statHistory.Add(now);
+    }
+
+    /// <summary>Puts the stats back to what they were at song time <paramref name="time"/> (zero before the first entry).</summary>
+    private void RollBackStatsTo(float time)
+    {
+        int keep = _statHistory.FindLastIndex(s => s.Time <= time);
+        var s = keep >= 0 ? _statHistory[keep] : default;
+        _statHistory.RemoveRange(keep + 1, _statHistory.Count - keep - 1);
+        _scoreExact = s.Score;
+        Misses = s.Misses; Combo = s.Combo; MaxCombo = s.MaxCombo;
+        Sicks = s.Sicks; Goods = s.Goods; Bads = s.Bads; Shits = s.Shits;
+        if (HitErrors.Count > s.HitErrorCount) HitErrors.RemoveRange(s.HitErrorCount, HitErrors.Count - s.HitErrorCount);
+    }
+
     public Action<int, float>? OnNoteHit;
     public Action?             OnNoteMiss;
     /// <summary>Lane of the miss being reported, valid while OnNoteMiss runs.</summary>
@@ -700,6 +751,10 @@ public class NoteRenderer
     // ── Update ───────────────────────────────────────────────────────────────
     public void Update(float songTime, float dt, KeyboardState kb, KeyboardState prevKb)
     {
+        // Stats changed by the previous update happened at its song time (fork: timeskip rollback)
+        RecordStatHistory();
+        _statTime = songTime;
+
         // Initialize song start time on first update with positive songTime
         if (_songStartTime < 0f && songTime > 0f)
             _songStartTime = songTime;

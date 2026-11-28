@@ -160,6 +160,8 @@ public partial class Game1
         // ── Seek note renderers (skip notes before targetTime) ───────────────
         foreach (var r in _noteRenderers)
             r.SeekTo(targetTime);
+        // A backward seek rolls the player's stats back (NoteRenderer.SeekTo); max combo follows
+        if (_noteRenderers.Count > 0) _playerMaxCombo = _noteRenderers[0].MaxCombo;
 
         // ── Seek events ──────────────────────────────────────────────────────
         _events?.SeekTo(targetTime);
