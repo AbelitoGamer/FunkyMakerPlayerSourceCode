@@ -290,7 +290,7 @@ Notes:
 │   │   ├── MultiplayerMenu.Rooms.cs / .RoomBrowser.cs / .RoomSettings.cs / .WaitingRoom.cs /
 │   │   │   .SongSelect.cs      room screens (§12.2)
 │   │   ├── MultiplayerMenu.LevelFiles.cs    LOCAL list auto-refresh / import / delete
-│   │   ├── MultiplayerMenu.LocalRows.cs     song select LOCAL rows: sections, holder squares
+│   │   ├── MultiplayerMenu.LocalRows.cs     song select LOCAL rows: sections, holders (OnlineHolder, pictures)
 │   │   ├── MultiplayerMenu.Avatars.cs       DrawAvatar / NameColor / BlockGuest (§12.w)
 │   │   ├── MultiplayerSettings.cs persisted MP settings (server URL, profiles, §12.0)
 │   │   ├── TimeSyncManager.cs
@@ -2147,7 +2147,13 @@ made up and the name was free text the server trusted).
   cache `avatars/` (7 days), ≤ 64 textures (unused for 5 s are dropped first), cut to a circle with
   premultiplied alpha; fallback = disc in the player's colour with the initial. `LeaderboardManager`:
   the server's top 50 / last 50 matches now **replace** the cached lists (merging kept the old
-  device-id players forever). Holder squares (who has a level) stay colour squares (too small).
+  device-id players forever).
+- **Who has a level** (owner's request): the colour squares on the song select rows are gone. The
+  details card IN THIS ROOM (left side) is taller and lists the holders as picture + name chips
+  (`FreeplayMenu.DrawHolderChips`, "+N more" when they don't fit; line 1 = "You and N more players have
+  it" / "N players have it"). The waiting room song slot shows small overlapping pictures instead of
+  squares (`DrawHolderAvatars`, max 6 + "+N", hover = name). Holders are `OnlineHolder(Color, Hue,
+  Name, Avatar, You)`. Dev harness: `FMP_OPEN=online:songs` (song select with other players' levels).
 - **Local testing:** `DEV_AUTH=true` in `worker/.dev.vars` (never in wrangler.toml): a Hello without a
   token logs in as `dev-<playerId>` with the Hello's name, so two windows (`FUNKYMAKER_MP_PROFILE`)
   work against `wrangler dev` without Discord; `scripts/e2e.mjs` needs it too (so it can't run against
@@ -2236,7 +2242,7 @@ goal is $0. Workers and R2 don't charge for bandwidth. Playerbase is tiny (≤ 2
   Tabs OFFICIAL / FNF / OSU!MANIA as the room allows (`FreeplayTab.Official`). Songs not on this
   device use `FreeplayMenu.OnlineKey(hash)` (a temp path where nothing exists) so file readers find
   nothing; cached official levels use `LevelCache.WriteTempFile`. osu! rows group difficulties by
-  SetId into synthetic `OsuSet`s. Rows show holder squares / OFFICIAL tag; the details show
+  SetId into synthetic `OsuSet`s. Rows show the OFFICIAL tag (holders moved to the details since protocol 5, §12.w); the details show
   "IN THIS ROOM" (who has it, size, sent or not) and "ROOM" instead of personal best / modifiers.
   Off online: modifiers, attempts, song rate, chart editor, new chart, main menu; ESC / the middle
   button = back; ENTER = `IOnlineSongSource.Pick`. Preview audio mutes the online menu music.
@@ -2264,7 +2270,7 @@ goal is $0. Workers and R2 don't charge for bandwidth. Playerbase is tiny (≤ 2
   `FreeplayMenu.DrawSongArt` / `SongBanner` (they set `_graphicsDevice` themselves: the picker may
   never have been drawn): osu! = background behind the whole slot (darkened), FNF = icon square
   (initials badge, "?" while not downloaded; path = `Room.LevelPath` when ready). Lines: kind tag +
-  picked by, title (osu!: set name), "[difficulty]  stars  size (without video)", holder squares,
+  picked by, title (osu!: set name), "[difficulty]  stars  size (without video)", holders' pictures,
   status / download bar. The in-match slot shows the same art.
 
 ### 12.y Online fixes (fork, 2026-11-22; server + client, protocol still 3)
@@ -2441,7 +2447,7 @@ States: `MainMenu` → `Connecting` → `RoomBrowser` → `RoomSettings` (create
 - **Song select** (`.SongSelect.cs`, was the lobby): OFFICIAL / LOCAL tabs. Wheel / drag scrolls the list itself
   (3 rows per notch on desktop, 1 on Android), the highlight stays in view (it used to only move the highlight). LOCAL (`.LocalRows.cs`)
   lists only levels you may pick (server `Pickable`): `YOUR LEVELS` + `FROM <player>` sections with
-  holder squares; I imports, DEL deletes your own. ENTER picks and returns to the waiting room.
+  holders in the details card; I imports, DEL deletes your own. ENTER picks and returns to the waiting room.
 - **Leaderboard** (`MultiplayerMenu.cs` `DrawLeaderboardModern`, tab 1 = RECENT MATCHES in
   `.MatchHistory.cs`, 2026-11-26): the server's match history (`GET /api/leaderboard` +
   `MatchHistoryResponsePacket`) carries every room round: `Mode` (versus / teams / mirror; empty =

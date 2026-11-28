@@ -237,6 +237,7 @@ public partial class FreeplayMenu
         // ── Remaining cards, dropped from the bottom up when the window is short ──
         int modsH = ModifierBarHeight(s);
         int bestH = UiScale.Px(84, s, 68);
+        if (_online != null) bestH += OnlineAvailabilityExtra(path, s); // room for who has it (pictures)
         int statsH = UiScale.Px(58, s, 48);
         int graphH = Math.Clamp((int)(sh * 0.12f), UiScale.Px(60, s, 48), UiScale.Px(110, s));
         int gap = UiScale.Px(12, s, 8);

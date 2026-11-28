@@ -635,12 +635,12 @@ namespace FunkyMakerPlayer.Multiplayer
                 var (title, sub) = SongLines(song);
                 DrawText(sb, font, TruncateToWidth(font, title, tw, titleF), new Vector2(tx, r.Y + pad + Px(28, uiScale)), TEXT_PRIMARY * _fadeAlpha, titleF, shadow: true);
 
-                // Second line: difficulty / stars / size, and who has it (squares, hover = names).
+                // Second line: difficulty / stars / size, and who has it (pictures, hover = names).
                 int subY = r.Y + pad + Px(58, uiScale);
                 var level = song.Source == Protocol.SourceLocal ? st.Levels?.FirstOrDefault(l => l.Hash == song.Hash) : null;
-                var holders = level != null ? HoldersFor(level) : new List<(Color Color, string Name)>();
-                int hw = HolderSquaresWidth(holders.Count, uiScale);
-                if (hw > 0) DrawHolderSquares(sb, pixel, uiScale, r.Right - pad, subY + Px(8, uiScale), holders);
+                var holders = level != null ? HoldersFor(level) : new List<OnlineHolder>();
+                int hw = HolderAvatarsWidth(holders.Count, uiScale);
+                if (hw > 0) DrawHolderAvatars(sb, font, uiScale, r.Right - pad, subY + Px(8, uiScale), holders);
                 if (sub.Length > 0)
                     DrawText(sb, font, TruncateToWidth(font, sub, Math.Max(20, tw - hw - Px(8, uiScale)), smallF), new Vector2(tx, subY), TEXT_SECONDARY * _fadeAlpha, smallF);
 

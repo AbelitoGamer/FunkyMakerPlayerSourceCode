@@ -10,6 +10,9 @@ using Microsoft.Xna.Framework.Graphics;
 
 namespace FunkyMakerPlayer;
 
+/// <summary>A player in the room who has a song (shown with their Discord picture in the details).</summary>
+public sealed record OnlineHolder(Color Color, int Hue, string Name, string Avatar, bool You);
+
 /// <summary>A song the online song select can pick (one row; osu!: one difficulty of a set).</summary>
 public sealed class OnlineSong
 {
@@ -32,8 +35,8 @@ public sealed class OnlineSong
     public bool OnDevice { get; init; }
     /// <summary>It's your own level file (can be deleted / shown in its folder).</summary>
     public bool Yours { get; init; }
-    /// <summary>Players in the room who have it (you first), as colour + name.</summary>
-    public IReadOnlyList<(Color Color, string Name)> Holders { get; init; } = Array.Empty<(Color, string)>();
+    /// <summary>Players in the room who have it (you first).</summary>
+    public IReadOnlyList<OnlineHolder> Holders { get; init; } = Array.Empty<OnlineHolder>();
     /// <summary>osu!: the set (groups difficulties into one row), its name and this difficulty's name.</summary>
     public string SetId { get; init; } = "";
     public string SetName { get; init; } = "";
@@ -359,25 +362,54 @@ public partial class FreeplayMenu
 
     // ── Drawing pieces used only online ──────────────────────────────────────
 
-    /// <summary>Squares of the players who have a song, ending at <paramref name="right"/> (returns their width).</summary>
-    private int DrawHolderSquares(SpriteBatch sb, IReadOnlyList<(Color Color, string Name)> holders, int right, int centerY, float s, float alpha)
+    /// <summary>Height of the holders' row in the IN THIS ROOM card (pictures + names).</summary>
+    private static int HolderChipsHeight(float s) => UiScale.Px(30, s, 24);
+
+    /// <summary>
+    /// Who has the song, as Discord picture + name (in their colour) chips left to right; "+N more" when
+    /// they don't fit. Protocol 5: replaced the colour squares on the rows.
+    /// </summary>
+    private void DrawHolderChips(SpriteBatch sb, IReadOnlyList<OnlineHolder> holders, int x, int y, int maxW, float s, float alpha)
     {
-        if (holders.Count == 0) return 0;
-        int size = UiScale.Px(11, s, 8);
-        int gap = UiScale.Px(3, s, 2);
-        int shown = Math.Min(holders.Count, 6);
-        int w = shown * size + (shown - 1) * gap;
-        int x = right - w;
-        for (int i = 0; i < shown; i++)
+        if (holders.Count == 0) return;
+        int h = HolderChipsHeight(s);
+        int av = h - UiScale.Px(6, s, 4);
+        int f = UiScale.FontPx(13, s);
+        int gap = UiScale.Px(8, s, 6);
+        int right = x + maxW;
+        int cx = x;
+        var gd = sb.GraphicsDevice;
+        for (int i = 0; i < holders.Count; i++)
         {
-            var r = new Rectangle(x + i * (size + gap), centerY - size / 2, size, size);
-            DrawRect(sb, r.X - 1, r.Y - 1, r.Width + 2, r.Height + 2, Color.Black * (0.55f * alpha));
-            DrawRect(sb, r.X, r.Y, r.Width, r.Height, holders[i].Color * alpha);
+            var hd = holders[i];
+            string name = Safe(hd.You ? "You" : hd.Name);
+            float nameW = MeasureText(name, f).X;
+            int chipW = UiScale.Px(4, s) + av + UiScale.Px(6, s) + (int)MathF.Ceiling(nameW) + UiScale.Px(10, s);
+            // Keep room for "+N more" unless this is the last one.
+            string more = $"+{holders.Count - i} more";
+            int moreW = i < holders.Count - 1 ? (int)MeasureText(more, f).X + gap : 0;
+            if (cx + chipW + moreW > right && i > 0)
+            {
+                DrawText(sb, more, new Vector2(cx, y + (h - MeasureText(more, f).Y) / 2f), Color.White * (0.6f * alpha), f);
+                return;
+            }
+            DrawRect(sb, cx, y, chipW, h, new Color(14, 14, 24) * (0.9f * alpha));
+            DrawRect(sb, cx, y + h - 2, chipW, 2, hd.Color * (0.8f * alpha));
+            var ar = new Rectangle(cx + UiScale.Px(4, s), y + (h - av) / 2, av, av);
+            Multiplayer.AvatarCache.Instance.Draw(sb, gd, hd.Avatar, ar, hd.Color, hd.Name, (t, c, col, px) =>
+            {
+                int size = Math.Max(9, (int)px);
+                var sz = MeasureText(t, size);
+                DrawText(sb, t, c - sz / 2f, col, size);
+            }, alpha);
+            Color nameCol = Color.Lerp(hd.Color, Color.White, 0.25f);
+            DrawText(sb, TruncateText(name, f, right - (ar.Right + UiScale.Px(6, s))), new Vector2(ar.Right + UiScale.Px(6, s), y + (h - MeasureText(name, f).Y) / 2f), nameCol * alpha, f);
+            cx += chipW + gap;
+            if (cx >= right) return;
         }
-        return w;
     }
 
-    /// <summary>Row extras online (right side, before the star pill): OFFICIAL tag or the holders' squares.</summary>
+    /// <summary>Row extras online (right side, before the star pill): the OFFICIAL / disabled tags.</summary>
     private int DrawOnlineRowTag(SpriteBatch sb, string path, int right, int rowY, int rowH, int pillH, int pillFont, float s, float alpha)
     {
         var song = OnlineSongOf(path);
@@ -404,13 +436,9 @@ public partial class FreeplayMenu
             DrawText(sb, tag, new Vector2(r.X + (w - sz.X) / 2f, r.Y + (pillH - sz.Y) / 2f), TabAccent(FreeplayTab.Official) * alpha, pillFont);
             return r.X - UiScale.Px(6, s);
         }
-        // Osu! rows show the set's holders (anybody with any difficulty of it).
-        var holders = song.Holders;
-        if (OsuSetOf(path) is { } set)
-            holders = set.Difficulties.Select(d => OnlineSongOf(d.Path)).Where(x => x != null)
-                .SelectMany(x => x!.Holders).GroupBy(h => h.Name).Select(g => g.First()).ToList();
-        int hw = DrawHolderSquares(sb, holders, right, rowY + rowH / 2, s, alpha);
-        return hw > 0 ? right - hw - UiScale.Px(8, s) : right;
+        // Who has it isn't on the rows any more (the list is split by holder already): the details
+        // card shows their pictures.
+        return right;
     }
 
     /// <summary>Details online, instead of the personal best / modifiers: who has it and what happens if you pick it.</summary>
@@ -440,10 +468,10 @@ public partial class FreeplayMenu
         else
         {
             bool you = song.OnDevice;
-            var others = song.Holders.Where(h => !h.Name.EndsWith("(you)", StringComparison.Ordinal)).Select(h => h.Name).ToList();
+            int others = song.Holders.Count(h => !h.You);
             line1 = you
-                ? (others.Count > 0 ? $"You and {string.Join(", ", others)} have it." : "Only you have it.")
-                : $"From {string.Join(", ", others)}.";
+                ? (others > 0 ? $"You and {others} more {(others == 1 ? "player have" : "players have")} it." : "Only you have it.")
+                : $"{others} {(others == 1 ? "player has" : "players have")} it: it will come from them.";
             long size = song.Size;
             string sizeText = song.SizeNoVideo > 0 && song.SizeNoVideo < song.Size
                 ? $"{MegaBytes(song.Size)} ({MegaBytes(song.SizeNoVideo)} without video)"
@@ -452,14 +480,18 @@ public partial class FreeplayMenu
                 ? $"Sent to whoever lacks it ({sizeText})."
                 : $"It will be sent to you when picked ({sizeText}).";
         }
-        // Holders' squares on the right of the first line
-        int hw = DrawHolderSquares(sb, song.Holders, r.Right - lp, (int)y + UiScale.Px(8, s), s, alpha);
-        float maxW = r.Width - lp * 2 - hw - UiScale.Px(10, s);
-        DrawText(sb, TruncateText(Safe(line1), f, maxW), new Vector2(r.X + lp, y), Color.White * alpha, f);
+        DrawText(sb, TruncateText(Safe(line1), f, r.Width - lp * 2), new Vector2(r.X + lp, y), Color.White * alpha, f);
         y += MeasureText("A", f).Y + UiScale.Px(4, s);
         int f2 = UiScale.FontPx(13, s);
         DrawText(sb, TruncateText(Safe(line2), f2, r.Width - lp * 2), new Vector2(r.X + lp, y), Color.White * (0.6f * alpha), f2);
+        // Who has it: picture + name chips along the bottom of the card.
+        if (!song.Official && song.Holders.Count > 0)
+            DrawHolderChips(sb, song.Holders, r.X + lp, r.Bottom - UiScale.Px(8, s) - HolderChipsHeight(s), r.Width - lp * 2, s, alpha);
     }
+
+    /// <summary>The IN THIS ROOM card is taller when it lists who has the song.</summary>
+    private int OnlineAvailabilityExtra(string path, float s) =>
+        OnlineSongOf(path) is { Official: false } song && song.Holders.Count > 0 ? HolderChipsHeight(s) + UiScale.Px(8, s) : 0;
 
     /// <summary>Room facts card online (where the Freeplay modifiers bar is).</summary>
     private void DrawOnlineRoomCard(SpriteBatch sb, Rectangle r, float s, float alpha)

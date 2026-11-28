@@ -228,7 +228,7 @@ namespace FunkyMakerPlayer.Multiplayer
                     Name = local.Name,
                     Hash = local.Hash, Stars = Room.StarsFor(local.Hash), Size = local.Size, SizeNoVideo = local.SizeNoVideo,
                     OnDevice = true, Yours = true,
-                    Holders = new List<(Color Color, string Name)> { (GetColorFromHue(MultiplayerSettings.Instance.PlayerColorHue), (Room.Me?.Username ?? "You") + " (you)") },
+                    Holders = new List<OnlineHolder> { MyHolder() },
                     SetId = local.SetId, SetName = local.SetName, Difficulty = local.Difficulty,
                     Group = "TOO BIG TO SEND", GroupOrder = 2000,
                     Duration = Room.DurationFor(local.Hash),

@@ -19,6 +19,7 @@ namespace FunkyMakerPlayer.Multiplayer
                 case "stats": _leaderboardTab = 2; TransitionToState(MenuState.Leaderboard); break;
                 case "rooms": Room.DevFill(); TransitionToState(MenuState.RoomBrowser); break;
                 case "room": Room.DevFill(); EnterWaitingRoom(); _awaitingRoomState = 0f; break;
+                case "songs": Room.DevFill(songSelect: true); EnterWaitingRoom(); _awaitingRoomState = 0f; OpenSongSelect(); break;
                 case "detail":
                     _leaderboardTab = 1;
                     TransitionToState(MenuState.Leaderboard);

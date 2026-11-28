@@ -10,7 +10,7 @@ namespace FunkyMakerPlayer.Multiplayer.Rooms
         /// Developer harness only (Game1.DevShot.cs, <c>FMP_OPEN=online:room / online:rooms</c>): a made-up
         /// room list and room, to check the online screens' layout without the server.
         /// </summary>
-        internal void DevFill()
+        internal void DevFill(bool songSelect = false)
         {
             var names = new[] { ("AnnaHolOl", 300), ("AbelitoGamer", 100), ("AntonioMA", 220), ("Just Fenix", 60) };
             // Discord's default avatars (protocol 5 pictures); the local player keeps the fallback disc.
@@ -50,6 +50,22 @@ namespace FunkyMakerPlayer.Multiplayer.Rooms
                 round.Players.Add(new PlayerResult { PlayerId = "p0", Username = "AnnaHolOl", ColorHue = 300, Avatar = Av(0), Score = 316242, Accuracy = 99.1f, MaxCombo = 700, Place = 1 });
                 round.Players.Add(new PlayerResult { PlayerId = me, Username = MultiplayerSettings.Instance.Username, ColorHue = 100, Score = 231452, Accuracy = 97.4f, MaxCombo = 412, Misses = 4, Place = 2 });
                 st.History.Add(round);
+            }
+            if (songSelect)
+            {
+                // Your turn, nothing picked yet, and other players' levels to pick from.
+                st.Song = null;
+                st.Phase = Protocol.PhaseLobby;
+                st.TurnPlayerId = me;
+                st.Settings.SongTypes = Protocol.SongTypesFnf;
+                var rnd = new Random(7);
+                string Hash() { var b = new byte[32]; rnd.NextBytes(b); return Convert.ToHexString(b).ToLowerInvariant(); }
+                st.Levels = new List<RoomLevel>
+                {
+                    new() { Hash = Hash(), Name = "Shared Song", FileName = "Shared Song.fnmm", Size = 18_000_000, Stars = 3.1f, Holders = new() { "p0", "p2", "p3" }, Pickable = true, Duration = 140 },
+                    new() { Hash = Hash(), Name = "Anna Only", FileName = "Anna Only.fnmm", Size = 9_500_000, Stars = 5.4f, Holders = new() { "p0" }, Pickable = true, Duration = 95 },
+                    new() { Hash = Hash(), Name = "Antonio and Fenix", FileName = "Antonio and Fenix.fnmm", Size = 41_000_000, Stars = 2.2f, Holders = new() { "p2", "p3" }, Pickable = true, Duration = 200 },
+                };
             }
             State = st;
             Chat.Clear();

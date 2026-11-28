@@ -133,42 +133,66 @@ namespace FunkyMakerPlayer.Multiplayer
             return _availableLevels.FindIndex(r => string.Equals(r, local.RelativePath, StringComparison.OrdinalIgnoreCase));
         }
 
-        /// <summary>Squares for the players who have a level (you first).</summary>
-        private List<(Color Color, string Name)> HoldersFor(RoomLevel level)
+        /// <summary>The players who have a level (you first), with their pictures.</summary>
+        private List<OnlineHolder> HoldersFor(RoomLevel level)
         {
-            var list = new List<(Color, string)>();
+            var list = new List<OnlineHolder>();
             var st = Room.State;
-            if (level.YouHave)
-            {
-                var me = MultiplayerSettings.Instance;
-                list.Add((GetColorFromHue(me.PlayerColorHue), $"{me.Username} (you)"));
-            }
+            if (level.YouHave) list.Add(MyHolder());
             foreach (var id in level.Holders)
             {
                 var m = st?.Members.FirstOrDefault(x => x.Id == id);
-                if (m != null) list.Add((GetColorFromHue(m.ColorHue), m.Username));
+                if (m != null) list.Add(new OnlineHolder(GetColorFromHue(m.ColorHue), m.ColorHue, m.Username, m.Avatar, false));
             }
             return list;
         }
 
-        private int HolderSquaresWidth(int count, float uiScale) =>
-            count == 0 ? 0 : count * Px(12, uiScale, 9) + (count - 1) * Px(4, uiScale, 3);
-
-        /// <summary>Draws holder squares ending at <paramref name="rightX"/>; records them for the tooltip.</summary>
-        private void DrawHolderSquares(SpriteBatch sb, Texture2D pixel, float uiScale, int rightX, int centerY, List<(Color Color, string Name)> holders)
+        private OnlineHolder MyHolder()
         {
-            int size = Px(12, uiScale, 9);
-            int gap = Px(4, uiScale, 3);
-            int x = rightX - HolderSquaresWidth(holders.Count, uiScale);
-            foreach (var (color, name) in holders)
+            var me = Room.Me;
+            int hue = me?.ColorHue ?? MultiplayerSettings.Instance.PlayerColorHue;
+            return new OnlineHolder(GetColorFromHue(hue), hue, me?.Username ?? MultiplayerSettings.Instance.Username,
+                me?.Avatar ?? MultiplayerSettings.Instance.AccountAvatar, true);
+        }
+
+        private const int MaxHolderAvatars = 6;
+
+        /// <summary>Width of the holders' pictures (slightly overlapping; at most 6, then "+N").</summary>
+        private int HolderAvatarsWidth(int count, float uiScale)
+        {
+            if (count == 0) return 0;
+            int size = Px(22, uiScale, 16), step = size - Px(5, uiScale, 3);
+            int shown = Math.Min(count, MaxHolderAvatars);
+            return size + (shown - 1) * step + (count > shown ? Px(30, uiScale, 22) : 0);
+        }
+
+        /// <summary>
+        /// The pictures of the players who have a level, ending at <paramref name="rightX"/> (protocol 5:
+        /// replaced the colour squares). Hover = name (recorded for the tooltip).
+        /// </summary>
+        private void DrawHolderAvatars(SpriteBatch sb, SpriteFont font, float uiScale, int rightX, int centerY, List<OnlineHolder> holders)
+        {
+            if (holders.Count == 0) return;
+            int size = Px(22, uiScale, 16), step = size - Px(5, uiScale, 3);
+            int shown = Math.Min(holders.Count, MaxHolderAvatars);
+            int x = rightX - HolderAvatarsWidth(holders.Count, uiScale);
+            var disc = AvatarCache.Circle(sb.GraphicsDevice);
+            for (int i = 0; i < shown; i++)
             {
-                var r = new Rectangle(x, centerY - size / 2, size, size);
-                if (r.Contains(_lastMousePos))
-                    sb.Draw(pixel, new Rectangle(r.X - 2, r.Y - 2, r.Width + 4, r.Height + 4), Color.White * (0.9f * _fadeAlpha));
-                sb.Draw(pixel, r, color * _fadeAlpha);
-                DrawBorder(sb, pixel, r.X, r.Y, r.Width, r.Height, Color.Black * (0.5f * _fadeAlpha), 1);
-                _holderSquares.Add((r, name));
-                x += size + gap;
+                var h = holders[i];
+                var r = new Rectangle(x + i * step, centerY - size / 2, size, size);
+                bool hovered = r.Contains(_lastMousePos);
+                // Dark ring so overlapping pictures stay apart; white when hovered.
+                sb.Draw(disc, new Rectangle(r.X - 2, r.Y - 2, r.Width + 4, r.Height + 4), (hovered ? Color.White : BG_DARK) * _fadeAlpha);
+                DrawAvatar(sb, font, h.Avatar, r, h.Hue, h.Name, _fadeAlpha);
+                _holderSquares.Add((r, h.You ? $"{h.Name} (you)" : h.Name));
+            }
+            if (holders.Count > shown)
+            {
+                int f = FontPx(12, uiScale, 10, 16);
+                string more = $"+{holders.Count - shown}";
+                var sz = MeasureText(font, more, f);
+                DrawText(sb, font, more, new Vector2(rightX - sz.X, centerY - sz.Y / 2f), TEXT_SECONDARY * _fadeAlpha, f);
             }
         }
 
