@@ -1143,7 +1143,7 @@ public class SettingsManager
         if (BeginIf(!Game1.HideTouchHitboxColors, NeedsOn("Touch Hitbox Colors", "CONTROLS"), out var sTouch))
         {
             Add(entries, PercentRow("  Hitbox Opacity", Game1.TouchHitboxOpacity,
-                "How strongly a touch area lights up while you press it (default 30%).",
+                "How strongly a touch area lights up while you press it (default 10%).",
                 v => Game1.TouchHitboxOpacity = v));
             EndIf(sTouch);
         }

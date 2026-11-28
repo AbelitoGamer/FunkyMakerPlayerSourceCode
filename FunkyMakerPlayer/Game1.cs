@@ -388,8 +388,8 @@ public partial class Game1 : Game
     // ── Android Touch Controls Settings ───────────────────────────────────────
     // Hide touch hitbox colors (android only)
     public static bool   HideTouchHitboxColors = false;
-    /// <summary>(fork) Opacity of a pressed touch hitbox (Settings → Touch Hitbox Opacity), default 30 %.</summary>
-    public static float  TouchHitboxOpacity = 0.3f;
+    /// <summary>(fork) Opacity of a pressed touch hitbox (Settings → Touch Hitbox Opacity), default 10 %.</summary>
+    public static float  TouchHitboxOpacity = 0.1f;
     /// <summary>(fork) On-screen menu buttons (Android): 0 = Auto (hidden on tap-ready screens), 1 = On, 2 = Off.</summary>
     public static int    MenuButtonsMode = 0;
     // Note style name — "Default" or a folder name in mods/notestyles/

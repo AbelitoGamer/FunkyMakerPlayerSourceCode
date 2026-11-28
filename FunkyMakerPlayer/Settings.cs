@@ -113,8 +113,8 @@ public static class Settings
         /// </summary>
         public bool  HideTouchHitboxColors   { get; set; } = false;
 
-        /// <summary>(fork) Opacity of a touch hitbox while it is pressed, 0-1 (android only). Default 30 %.</summary>
-        public float TouchHitboxOpacity      { get; set; } = 0.3f;
+        /// <summary>(fork) Opacity of a touch hitbox while it is pressed, 0-1 (android only). Default 10 %.</summary>
+        public float TouchHitboxOpacity      { get; set; } = 0.1f;
 
         /// <summary>(fork) On-screen menu buttons (android only): 0 = Auto, 1 = On, 2 = Off.</summary>
         public int   MenuButtonsMode         { get; set; } = 0;
