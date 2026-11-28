@@ -1,0 +1,14 @@
+{
+  "noteSystem": "fmm",
+  "noteScale": 0.3923,
+  "receptorScale": 0.3923,
+  "noteAlpha": 1.0,
+  "strumAlpha": 0.88,
+  "holdAlpha": 0.92,
+  "noteColors": ["#FFFFFF", "#FFFFFF", "#FFFFFF", "#FFFFFF"],
+  "pressedColors": ["#BAE6FD", "#93C5FD", "#C7D2FE", "#E9D5FF"],
+  "strumColor": "#98A4C4",
+  "dropShadow": true,
+  "tintNegative": [226, 90, 104],
+  "tintPositive": [72, 198, 255]
+}

@@ -328,6 +328,8 @@ public partial class Game1
         activity.OpenModsFolder();
     }
     
+    private volatile bool _pendingAndroidModsRefresh;
+
     /// <summary>
     /// Let user pick the mods folder using Storage Access Framework
     /// This grants persistent read/write access to the selected folder
@@ -347,13 +349,23 @@ public partial class Game1
             if (uri != null)
             {
                 Console.WriteLine($"[Game1] User selected mods folder: {uri}");
-                // TODO: Rescan mods from the selected folder
+                _pendingAndroidModsRefresh = true;
             }
             else
             {
                 Console.WriteLine("[Game1] User cancelled folder picker");
             }
         });
+    }
+
+    private void FlushPendingAndroidModsRefresh()
+    {
+        if (!_pendingAndroidModsRefresh) return;
+        _pendingAndroidModsRefresh = false;
+        _freeplay?.Refresh();
+        _freeplay?.ShowToast("Mods folder imported!");
+        _levelSelector?.RefreshLevels();
+        _multiplayerMenu?.RefreshLevelList();
     }
     
     /// <summary>

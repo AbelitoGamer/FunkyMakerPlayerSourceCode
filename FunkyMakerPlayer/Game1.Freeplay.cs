@@ -228,7 +228,10 @@ public partial class Game1
         {
             // Touches don't arrive as mouse input on Android: a finger down = the button held.
             down = false;
-            foreach (var t in Microsoft.Xna.Framework.Input.Touch.TouchPanel.GetState())
+            var touches = UI.PointerInput.HasRawTouches
+                ? UI.PointerInput.RawTouches
+                : Microsoft.Xna.Framework.Input.Touch.TouchPanel.GetState();
+            foreach (var t in touches)
             {
                 if (t.State is Microsoft.Xna.Framework.Input.Touch.TouchLocationState.Released
                     or Microsoft.Xna.Framework.Input.Touch.TouchLocationState.Invalid) continue;

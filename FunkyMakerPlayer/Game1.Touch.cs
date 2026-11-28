@@ -50,7 +50,10 @@ public partial class Game1
     private bool IsAtAndroidRootScreen() =>
         _inFreeplay && _freeplay != null && _freeplay.IsAtRoot && _level == null &&
         _loadingScreen == null && _errorMsg == null &&
+        !UI.NoticeWindow.IsOpen && !_inPauseMenu &&
         !(_settingsManager?.IsActive ?? false) && !_keyBindOverlay.IsActive &&
+        !(_arrowsMenu?.IsActive ?? false) && !(_splashMenu?.IsActive ?? false) &&
+        !(_countdownMenu?.IsActive ?? false) && !(_fontMenu?.IsActive ?? false) &&
         !(_modsHelpScreen?.IsVisible ?? false) &&
         !_inMultiplayer && !_inMainSettings && !_inHudEditor && !_inEditorPicker &&
         !_inLevelSelector && !_inEditor && !_inReplays;

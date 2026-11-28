@@ -643,7 +643,9 @@ public partial class FreeplayMenu
         _pointerDown = mouse.LeftButton == ButtonState.Pressed;
 
         #if ANDROID
-        var touches = Microsoft.Xna.Framework.Input.Touch.TouchPanel.GetState();
+        var touches = UI.PointerInput.HasRawTouches
+            ? UI.PointerInput.RawTouches
+            : Microsoft.Xna.Framework.Input.Touch.TouchPanel.GetState();
         bool touchDown = false;
         bool hasAnyTouch = touches.Count > 0;
         foreach (var t in touches)
@@ -674,7 +676,8 @@ public partial class FreeplayMenu
         }
         else if (touchDown)
         {
-            if (!_touchDragging && Math.Abs(rtMouse.Y - _touchStart.Y) > UiScale.Px(14, UiScale.FromScreen(screenWidth, screenHeight)))
+            int dragDist = Math.Max(Math.Abs(rtMouse.X - _touchStart.X), Math.Abs(rtMouse.Y - _touchStart.Y));
+            if (!_touchDragging && dragDist > UiScale.Px(14, UiScale.FromScreen(screenWidth, screenHeight)))
                 _touchDragging = true;
             if (!_touchDragging && !_touchLongPressed && (_touchHeld += dt) >= UI.PointerInput.LongPressSeconds)
             {

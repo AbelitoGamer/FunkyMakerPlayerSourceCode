@@ -1018,11 +1018,11 @@ public partial class Game1 : Game
             GraphicsDevice.PresentationParameters.BackBufferWidth,
             GraphicsDevice.PresentationParameters.BackBufferHeight);
         _touchControls.IsLaneHolding = lane => _noteRenderers.Count > 0 && _noteRenderers[0].IsHoldActive(lane);
+        _touchControls.IgnorePoint = p => _inMultiplayer && (_multiplayerMenu?.IsPointOverRoomControl(p) ?? false);
         Console.WriteLine("[TouchControls] Initialized for Android");
         
-        // Initialize touch controls for multiplayer menu
-        _multiplayerMenu.InitializeTouchControls(GraphicsDevice,
-            GraphicsDevice.PresentationParameters.BackBufferWidth,
+        // Share the single TouchControls instance so MultiplayerMenu doesn't poll TouchPanel twice or double-draw
+        _multiplayerMenu.SetSharedTouchControls(_touchControls,
             GraphicsDevice.PresentationParameters.BackBufferHeight);
 #endif
 
@@ -1212,6 +1212,7 @@ public partial class Game1 : Game
         // Update touch controls before merging virtual keys with physical keyboard state
         _touchControls?.Update();
         UpdateTouchPointer(gameTime); // taps / drags as a mouse for every menu (UI/PointerInput)
+        FlushPendingAndroidModsRefresh();
 
         // Merge touch input into keyboard state for seamless integration
         rawKb = MergeTouchWithKeyboard(rawKb);
@@ -2353,7 +2354,10 @@ public partial class Game1 : Game
                     // Fork: touches don't arrive as mouse input on Android. A finger lifted = a click
                     // where it last was (MonoGame turns Pressed into Moved on every read, so use down/up).
                     bool down = false;
-                    foreach (var t in Microsoft.Xna.Framework.Input.Touch.TouchPanel.GetState())
+                    var touches = UI.PointerInput.HasRawTouches
+                        ? UI.PointerInput.RawTouches
+                        : Microsoft.Xna.Framework.Input.Touch.TouchPanel.GetState();
+                    foreach (var t in touches)
                     {
                         if (t.State is Microsoft.Xna.Framework.Input.Touch.TouchLocationState.Released
                             or Microsoft.Xna.Framework.Input.Touch.TouchLocationState.Invalid) continue;

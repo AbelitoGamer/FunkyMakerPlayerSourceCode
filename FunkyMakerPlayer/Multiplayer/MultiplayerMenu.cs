@@ -63,6 +63,7 @@ namespace FunkyMakerPlayer.Multiplayer
         
 #if ANDROID
         private TouchControls? _touchControls;
+        private bool _ownsTouchControls = true;
 #endif
         
         // Mouse/Touch support
@@ -315,10 +316,21 @@ namespace FunkyMakerPlayer.Multiplayer
             // Every online screen works by tapping and the back gesture goes back (fork, 2026-11-23):
             // with Settings → Menu Buttons = AUTO the D-pad / A / B stay hidden here.
             _touchControls.ScreenIsTouchReady = true;
+            _ownsTouchControls = true;
             _touchScreenHeight = screenHeight;
             Console.WriteLine("[MultiplayerMenu] Touch controls initialized for Android (Menu mode)");
 #endif
         }
+
+#if ANDROID
+        /// <summary>Shares Game1's single TouchControls instance to avoid duplicate TouchPanel polling and drawing.</summary>
+        public void SetSharedTouchControls(TouchControls? touchControls, int screenHeight)
+        {
+            _touchControls = touchControls;
+            _ownsTouchControls = false;
+            _touchScreenHeight = screenHeight;
+        }
+#endif
 
         /// <summary>
         /// Refresh the list of available levels for multiplayer.
@@ -547,8 +559,8 @@ namespace FunkyMakerPlayer.Multiplayer
             _frameMouse = mouse;
             
 #if ANDROID
-            // Update touch controls
-            _touchControls?.Update();
+            // Update touch controls only if MultiplayerMenu owns a standalone instance
+            if (_ownsTouchControls) _touchControls?.Update();
             
             // Merge touch input with keyboard
             kb = MergeTouchWithKeyboard(kb);
@@ -611,7 +623,11 @@ namespace FunkyMakerPlayer.Multiplayer
         private bool IsKeyPressed(KeyboardState kb, HotkeyAction action) => Controls.Pressed(action, kb, _prevKb);
 
         private bool IsLeftClickReleased(MouseState mouse) =>
-            mouse.LeftButton == ButtonState.Released && _prevMouse.LeftButton == ButtonState.Pressed;
+            mouse.LeftButton == ButtonState.Released && _prevMouse.LeftButton == ButtonState.Pressed
+#if ANDROID
+            && !_justDraggedRelease
+#endif
+            ;
 
         private bool IsRectClicked(MouseState mouse, Rectangle rect) =>
             !rect.IsEmpty && IsLeftClickReleased(mouse) && rect.Contains(new Point(mouse.X, mouse.Y));
@@ -632,6 +648,12 @@ namespace FunkyMakerPlayer.Multiplayer
             if (TextFieldActive) EndTextField();
             _prevKb = LayoutKeyboard.GetState();
             _prevMouse = Mouse.GetState();
+#if ANDROID
+            _touchId = -1;
+            _touchDragged = false;
+            _prevTouchDown = false;
+            _justDraggedRelease = false;
+#endif
             _inputCooldown = INPUT_COOLDOWN_TIME;
         }
         
@@ -1532,6 +1554,9 @@ namespace FunkyMakerPlayer.Multiplayer
             _deleteYesRect = Rectangle.Empty;
             _deleteNoRect = Rectangle.Empty;
             _roomHit.Clear();
+#if ANDROID
+            _touchScreenHeight = screenHeight;
+#endif
 
             float uiScale = GetUiScale(screenWidth, screenHeight);
 
@@ -1599,8 +1624,8 @@ namespace FunkyMakerPlayer.Multiplayer
             }
             
 #if ANDROID
-            // Draw touch controls
-            _touchControls?.Draw(sb, font);
+            // Draw touch controls only if MultiplayerMenu owns a standalone instance (Game1 draws shared controls)
+            if (_ownsTouchControls) _touchControls?.Draw(sb, font);
 #endif
         }
 
@@ -3302,10 +3327,15 @@ namespace FunkyMakerPlayer.Multiplayer
         private Point _touchPos = new(-10000, -10000);
         private Vector2 _touchStart, _touchLast;
         private bool _touchDragged;
+        private bool _prevTouchDown;
+        private bool _justDraggedRelease;
         private int _touchWheel;
         private float _touchWheelAccum;
         private int _touchId = -1;
         private int _touchScreenHeight = 720;
+
+        /// <summary>True when a button / text box of the current room screen is under the point.</summary>
+        public bool IsPointOverRoomControl(Point p) => IsRoomHitAt(p);
 
         /// <summary>True when a button / text box of the current room screen is under the point.</summary>
         private bool IsRoomHitAt(Point p)
@@ -3319,18 +3349,17 @@ namespace FunkyMakerPlayer.Multiplayer
         /// The first touch that is not on the on-screen D-pad, as a mouse: finger down = left button
         /// held, lifting it = a click where it was. Dragging scrolls lists (as a mouse wheel) and then
         /// does not click. A button of the room screens under the finger wins over the D-pad.
-        /// <para>A new finger is recognised by its touch id, never by <see cref="TouchLocationState.Pressed"/>:
-        /// Game1 reads <see cref="TouchPanel.GetState"/> first every frame and MonoGame turns Pressed into
-        /// Moved (and drops Released) on every read, so this method never sees those states. Waiting for
-        /// Pressed left the drag start stale, every tap counted as a drag and no button could be tapped.</para>
+        /// Uses <see cref="FunkyMakerPlayer.UI.PointerInput.RawTouches"/> when captured by Game1 so TouchPanel isn't aged twice.
         /// </summary>
         private MouseState TouchAsMouse()
         {
             bool down = false;
             // Fingers wobble a few millimetres while tapping: scale with the screen (high-DPI phones).
             float dragThreshold = Math.Max(28f, _touchScreenHeight * 0.045f);
-            foreach (var t in TouchPanel.GetState())
+            var touches = FunkyMakerPlayer.UI.PointerInput.HasRawTouches ? FunkyMakerPlayer.UI.PointerInput.RawTouches : TouchPanel.GetState();
+            foreach (var t in touches)
             {
+                if (t.State is not (TouchLocationState.Pressed or TouchLocationState.Moved)) continue;
                 var p = t.Position;
                 var pt = new Point((int)p.X, (int)p.Y);
                 if (_touchControls != null && _touchControls.IsPointOnMenuControl(pt) && !IsRoomHitAt(pt)) continue;
@@ -3341,22 +3370,30 @@ namespace FunkyMakerPlayer.Multiplayer
                     _touchDragged = false;
                     _touchWheelAccum = 0f;
                 }
-                if (t.State is TouchLocationState.Pressed or TouchLocationState.Moved)
+                down = true;
+                if (Vector2.Distance(p, _touchStart) > dragThreshold) _touchDragged = true;
+                if (_touchDragged)
                 {
-                    down = true;
-                    if (Vector2.Distance(p, _touchStart) > dragThreshold) _touchDragged = true;
-                    if (_touchDragged)
-                    {
-                        // Finger down = content follows = like scrolling the wheel up.
-                        _touchWheelAccum += p.Y - _touchLast.Y;
-                        while (_touchWheelAccum > 40f) { _touchWheel += 120; _touchWheelAccum -= 40f; }
-                        while (_touchWheelAccum < -40f) { _touchWheel -= 120; _touchWheelAccum += 40f; }
-                    }
-                    _touchLast = p;
+                    // Finger down = content follows = like scrolling the wheel up.
+                    _touchWheelAccum += p.Y - _touchLast.Y;
+                    while (_touchWheelAccum > 40f) { _touchWheel += 120; _touchWheelAccum -= 40f; }
+                    while (_touchWheelAccum < -40f) { _touchWheel -= 120; _touchWheelAccum += 40f; }
                 }
+                _touchLast = p;
                 _touchPos = pt;
                 break;
             }
+            if (!down)
+            {
+                _justDraggedRelease = _prevTouchDown && _touchDragged;
+                _touchId = -1;
+            }
+            else
+            {
+                _justDraggedRelease = false;
+            }
+            _prevTouchDown = down;
+
             // A drag never ends in a click.
             Point pos = !down && _touchDragged ? new Point(-10000, -10000) : _touchPos;
             return new MouseState(pos.X, pos.Y, _touchWheel,
