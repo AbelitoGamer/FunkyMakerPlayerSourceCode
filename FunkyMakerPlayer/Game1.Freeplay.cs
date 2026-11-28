@@ -275,7 +275,7 @@ public partial class Game1
     {
         var run = BuildAttempt(failed: true);
         if (run == null) return;
-        run.Progress = _songEndTime > 0 ? Math.Clamp(_songTime / _songEndTime, 0f, 1f) : 0f;
+        run.Progress = _chartEndTime > 0 ? Math.Clamp(_songTime / _chartEndTime, 0f, 1f) : 0f; // progress through the chart
         FreeplayData.Instance.RecordAttempt(FnmmPath, run);
     }
 

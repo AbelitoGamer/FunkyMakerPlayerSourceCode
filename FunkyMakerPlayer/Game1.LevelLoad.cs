@@ -991,15 +991,18 @@ public partial class Game1
 
         Window.Title = $"Funky Maker Player — {_level.LevelName}";
 
-        // Calculate song end time (last note start + duration, already in seconds)
-        _songEndTime = 0f;
+        // Chart end (last note start + duration, already in seconds) and song length (the music
+        // when there is any: the timer and seeks follow the song, not the last note)
+        _chartEndTime = 0f;
         foreach (var sl in _level.Data.Strumlines)
             foreach (var lane in sl)
                 foreach (var note in lane)
-                    _songEndTime = Math.Max(_songEndTime,
+                    _chartEndTime = Math.Max(_chartEndTime,
                         _level.Data.ToSeconds(note.Start) + _level.Data.ToSeconds(note.Duration));
-        if (_songEndTime < 1f)
-            _songEndTime = _musicDurationSeconds < float.MaxValue ? _musicDurationSeconds : 30f;
+        bool hasMusicLength = _musicDurationSeconds < float.MaxValue && _musicDurationSeconds > 1f;
+        if (_chartEndTime < 1f)
+            _chartEndTime = hasMusicLength ? _musicDurationSeconds : 30f;
+        _songEndTime = hasMusicLength ? Math.Max(_chartEndTime, _musicDurationSeconds) : _chartEndTime;
 
         // Mark setup complete
         if (_loadingScreen != null)

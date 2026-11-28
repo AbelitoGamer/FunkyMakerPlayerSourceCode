@@ -308,7 +308,12 @@ public partial class Game1 : Game
     private double _pauseStarted  = 0.0;  // When the current pause started
 
     // Song end
+    // Song length shown by the timer and used to clamp seeks: the music length when known, else the
+    // end of the last note (fork: it used to always be the last note, so the timer hit 0 early and a
+    // seek past the last note jumped back).
     private float _songEndTime = float.MaxValue;
+    // End of the last note (start + hold), in song seconds.
+    private float _chartEndTime = float.MaxValue;
     private float _musicDurationSeconds = float.MaxValue;
     private float _songEndDelay = 0f;  // countdown after song ends before transition starts
 
