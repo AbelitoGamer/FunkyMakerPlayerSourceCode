@@ -79,8 +79,8 @@ public static class Controls
 #endif
         new(HotkeyAction.VolumeUp,         "Volume Up",         "Turns the master volume up by 5%. Works in menus and during songs (not while typing or in the editors).", new(Keys.OemPlus), GroupGlobal),
         new(HotkeyAction.VolumeDown,       "Volume Down",       "Turns the master volume down by 5%. Works in menus and during songs (not while typing or in the editors).", new(Keys.OemMinus), GroupGlobal),
-        new(HotkeyAction.ScrollSpeedDown,  "Slower Notes",      "Lowers the scroll speed by 0.10x without leaving the song (also while paused).", new(Keys.F3), GroupSong),
-        new(HotkeyAction.ScrollSpeedUp,    "Faster Notes",      "Raises the scroll speed by 0.10x without leaving the song (also while paused).", new(Keys.F4), GroupSong),
+        new(HotkeyAction.ScrollSpeedDown,  "Slower Notes",      "Lowers the scroll speed by 0.25x without leaving the song (also while paused).", new(Keys.F3), GroupSong),
+        new(HotkeyAction.ScrollSpeedUp,    "Faster Notes",      "Raises the scroll speed by 0.25x without leaving the song (also while paused).", new(Keys.F4), GroupSong),
         new(HotkeyAction.TimeskipForward,  "Skip Forward",      "Jumps ahead in the song by the Timeskip amount (GAMEPLAY tab). Hold it to keep skipping. Not in online matches.", new(Keys.T), GroupSong),
         new(HotkeyAction.TimeskipBackward, "Skip Backward",     "Jumps back in the song by the Timeskip amount (GAMEPLAY tab). Hold it to keep skipping. Not in online matches.", new(Keys.T, Shift: true), GroupSong),
         new(HotkeyAction.OpenChartEditor,  "Open Chart Editor", "Opens the song you are playing in the Chart Editor (or returns to it after a playtest). In the main menu it opens the editors.", new(Keys.D7), GroupSong),

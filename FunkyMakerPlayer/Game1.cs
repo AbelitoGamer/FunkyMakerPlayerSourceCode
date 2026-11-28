@@ -1366,9 +1366,9 @@ public partial class Game1 : Game
             if (slower || faster)
             {
                 float old = NoteRenderer.ScrollMultiplier;
-                // Same step and range as the Scroll Speed setting
+                // Same range as the Scroll Speed setting, in 0.25x steps (the setting row itself moves 0.10x)
                 NoteRenderer.ScrollMultiplier = MathF.Round(
-                    Math.Clamp(old + (faster ? 0.10f : -0.10f), 0.25f, 5.0f), 2);
+                    Math.Clamp(old + (faster ? 0.25f : -0.25f), 0.25f, 5.0f), 2);
                 UI.UiSfx.Play(NoteRenderer.ScrollMultiplier == old ? UI.UiSound.SliderEnd
                     : faster ? UI.UiSound.SliderUp : UI.UiSound.SliderDown);
                 _scrollToastTimer = VOLUME_TOAST_DURATION;
