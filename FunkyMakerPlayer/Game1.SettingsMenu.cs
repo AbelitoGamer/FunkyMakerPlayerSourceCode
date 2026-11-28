@@ -125,7 +125,15 @@ public partial class Game1
         if (result.ToggleVSync)
         {
             _graphics.SynchronizeWithVerticalRetrace = !_graphics.SynchronizeWithVerticalRetrace;
+            // ApplyChanges re-centres / re-borders the SDL window, which broke our borderless
+            // fullscreen: lay it out again (keeping the windowed position it returns to).
+            var windowedPos = _windowedPosition;
             _graphics.ApplyChanges();
+            if (_isFullscreen)
+            {
+                SetFullscreen(true);
+                _windowedPosition = windowedPos;
+            }
         }
 
         if (result.ToggleFullscreen)
