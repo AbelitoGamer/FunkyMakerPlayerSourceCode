@@ -84,7 +84,7 @@ namespace FunkyMakerPlayer.Multiplayer
         private static bool IsLocalPlayer(PlayerMatchInfo p)
         {
             var s = MultiplayerSettings.Instance;
-            if (!string.IsNullOrWhiteSpace(p.PlayerId) && p.PlayerId == s.PlayerId) return true;
+            if (!string.IsNullOrWhiteSpace(p.PlayerId) && p.PlayerId == s.OnlinePlayerId) return true;
             return string.IsNullOrWhiteSpace(p.PlayerId) && !string.IsNullOrWhiteSpace(s.Username)
                 && string.Equals(p.Username, s.Username, StringComparison.OrdinalIgnoreCase);
         }
@@ -327,8 +327,12 @@ namespace FunkyMakerPlayer.Multiplayer
                 DrawText(sb, font, p.Disconnected || p.Place <= 0 ? "-" : p.Place.ToString(), new Vector2(r.X + r.Width * Col("#") + 6, ty), placeCol * _fadeAlpha, f, shadow: true);
 
                 float nameEnd = room ? Col(teams ? "TEAM" : "SIDE") : Col("SCORE");
-                string name = TruncateToWidth(font, DisplayName(p) + (me ? " (you)" : "") + (p.Disconnected ? "  [left]" : ""), r.Width * (nameEnd - Col("PLAYER")) - 8, f);
-                DrawText(sb, font, name, new Vector2(r.X + r.Width * Col("PLAYER"), ty), Color.Lerp(c, Color.White, 0.4f) * _fadeAlpha, f);
+                int av = Math.Max(10, rowH - Px(10, uiScale, 6));
+                int nameX = (int)(r.X + r.Width * Col("PLAYER"));
+                DrawAvatar(sb, font, p.Avatar, new Rectangle(nameX, ry + (rowH - av) / 2, av, av), p.ColorHue, DisplayName(p), p.Disconnected ? 0.5f * _fadeAlpha : _fadeAlpha);
+                nameX += av + Px(8, uiScale, 5);
+                string name = TruncateToWidth(font, DisplayName(p) + (me ? " (you)" : "") + (p.Disconnected ? "  [left]" : ""), r.X + r.Width * nameEnd - nameX - 8, f);
+                DrawText(sb, font, name, new Vector2(nameX, ty), PlayerTextColor(p) * _fadeAlpha, f);
 
                 if (room)
                 {

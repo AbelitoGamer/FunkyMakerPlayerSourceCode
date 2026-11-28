@@ -81,6 +81,50 @@ namespace FunkyMakerPlayer.Multiplayer
         /// </summary>
         public string EquippedCharacter { get; set; } = "";
 
+        // ── Discord account (protocol 5) ─────────────────────────────────────
+        // Without an account the online menu is guest-only (room list, leaderboards). The server takes
+        // the PlayerId (Discord id), name and avatar from the session token; the fields below are a
+        // copy of the last known account so the menu can show it before / without connecting.
+        /// <summary>Server session token (renewed on every Hello, expires after 30 days without playing). Empty = logged out.</summary>
+        public string SessionToken { get; set; } = "";
+        public string AccountId { get; set; } = "";
+        public string AccountName { get; set; } = "";
+        public string AccountDiscordName { get; set; } = "";
+        public string AccountAvatar { get; set; } = "";
+
+        [System.Text.Json.Serialization.JsonIgnore]
+        public bool IsLoggedIn => !string.IsNullOrEmpty(SessionToken) && !string.IsNullOrEmpty(AccountId);
+
+        /// <summary>
+        /// The id the server knows this player by: the connection's account (also a local dev login), else
+        /// the saved Discord id, else the device id.
+        /// </summary>
+        [System.Text.Json.Serialization.JsonIgnore]
+        public string OnlinePlayerId => NetworkManager.Instance.Account?.PlayerId ?? (IsLoggedIn ? AccountId : PlayerId);
+
+        /// <summary>Remembers the account (login / every Hello). The shown name is the account's.</summary>
+        public void ApplyAccount(Rooms.AccountInfo account, string sessionToken)
+        {
+            if (!string.IsNullOrEmpty(sessionToken)) SessionToken = sessionToken;
+            AccountId = account.PlayerId;
+            AccountName = account.Username;
+            AccountDiscordName = account.DiscordUsername;
+            AccountAvatar = account.Avatar;
+            if (!string.IsNullOrWhiteSpace(account.Username)) Username = account.Username;
+            Save();
+        }
+
+        /// <summary>Log out (or the server refused the saved session).</summary>
+        public void ClearAccount()
+        {
+            SessionToken = "";
+            AccountId = "";
+            AccountName = "";
+            AccountDiscordName = "";
+            AccountAvatar = "";
+            Save();
+        }
+
         // ══════════════════════════════════════════════════════════════════════
         // Category 3: Gameplay Configuration
         // ══════════════════════════════════════════════════════════════════════
@@ -358,7 +402,8 @@ namespace FunkyMakerPlayer.Multiplayer
         /// </summary>
         public void ResetToDefaults()
         {
-            Username = "Player";
+            // The account (and its name) stays: resetting settings doesn't log out.
+            Username = IsLoggedIn && !string.IsNullOrWhiteSpace(AccountName) ? AccountName : "Player";
             AvatarIndex = 0;
             PlayerColorHue = 180;
             EquippedCharacter = "";

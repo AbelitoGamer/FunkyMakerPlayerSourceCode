@@ -101,7 +101,7 @@ namespace FunkyMakerPlayer.Multiplayer.Rooms
         public bool InRoom => State != null;
         public string RoomId => State?.RoomId ?? "";
         public bool IsHost => State != null && State.HostId == State.YouId;
-        public string YouId => State?.YouId ?? MultiplayerSettings.Instance.PlayerId;
+        public string YouId => State?.YouId ?? MultiplayerSettings.Instance.OnlinePlayerId;
         public RoomMember? Me => State?.Members.FirstOrDefault(m => m.Id == State.YouId);
         public bool IsMyTurn => State != null && State.TurnPlayerId == State.YouId;
         public List<ChatMessage> Chat { get; } = new();

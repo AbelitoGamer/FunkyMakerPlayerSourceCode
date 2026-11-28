@@ -485,8 +485,9 @@ namespace FunkyMakerPlayer.Multiplayer
                 DrawPanel(sb, pixel, r.X, r.Y, r.Width, r.Height, hovered ? BG_LIGHT : BG_DARK, turn ? ACCENT_WARNING : isMe ? c * 0.8f : BORDER_SUBTLE, turn ? 2 : 1, c);
 
                 int ip = Px(10, uiScale, 6);
-                int sq = Px(14, uiScale, 10);
-                DrawPlayerSquare(sb, pixel, new Rectangle(r.X + ip + 2, r.Y + ip + 2, sq, sq), m.ColorHue, m.Username);
+                // Discord picture over both lines of the row.
+                int sq = Math.Max(Px(14, uiScale, 10), r.Height - ip * 2);
+                DrawPlayerSquare(sb, font, new Rectangle(r.X + ip, r.Y + (r.Height - sq) / 2, sq, sq), m.ColorHue, m.Username, m.Avatar);
                 int nx = r.X + ip + sq + Px(10, uiScale);
 
                 // Right side of line 1: status pill.
@@ -497,7 +498,7 @@ namespace FunkyMakerPlayer.Multiplayer
 
                 string name = m.Username + (isMe ? " (you)" : "");
                 name = TruncateToWidth(font, name, Math.Max(30, nameRight - nx), nameF);
-                DrawText(sb, font, name, new Vector2(nx, r.Y + ip + (line1H - MeasureText(font, "Ag", nameF).Y) / 2f), Color.Lerp(c, Color.White, 0.45f) * _fadeAlpha, nameF, shadow: true);
+                DrawText(sb, font, name, new Vector2(nx, r.Y + ip + (line1H - MeasureText(font, "Ag", nameF).Y) / 2f), NameColor(m.ColorHue) * _fadeAlpha, nameF, shadow: true);
 
                 // Line 2: HOST / PICKING / vote / level state, and KICK for the host.
                 int lx = nx;
@@ -843,23 +844,26 @@ namespace FunkyMakerPlayer.Multiplayer
             int areaBottom = box.Y - Px(8, uiScale);
             float maxW = p.Width - pad * 2;
 
-            // Build wrapped lines (oldest → newest), then draw the last ones that fit.
-            var lines = new List<(string Text, Color Color, string? Name, Color NameColor)>();
+            // Build wrapped lines (oldest → newest), then draw the last ones that fit. Players' lines
+            // start with their picture (first line only) and their name in their colour.
+            int avatarSz = Math.Max(10, (int)lineH - Px(2, uiScale, 1));
+            int avatarW = avatarSz + Px(5, uiScale, 3);
+            var lines = new List<(string Text, Color Color, string? Name, Color NameColor, ChatMessage? From)>();
             foreach (var m in Room.Chat)
             {
                 if (m.System)
                 {
                     foreach (var l in WrapTextToWidth(font, m.Text, maxW, f).Split('\n'))
-                        lines.Add((l, TEXT_DISABLED, null, Color.White));
+                        lines.Add((l, TEXT_DISABLED, null, Color.White, null));
                 }
                 else
                 {
                     string name = m.Username + ": ";
                     float nameW = MeasureText(font, name, f).X;
-                    var wrapped = WrapTextToWidth(font, m.Text, Math.Max(40, maxW - nameW), f).Split('\n');
-                    Color nc = Color.Lerp(GetColorFromHue(m.ColorHue), Color.White, 0.3f);
+                    var wrapped = WrapTextToWidth(font, m.Text, Math.Max(40, maxW - nameW - avatarW), f).Split('\n');
+                    Color nc = NameColor(m.ColorHue);
                     for (int i = 0; i < wrapped.Length; i++)
-                        lines.Add((wrapped[i], TEXT_PRIMARY, i == 0 ? name : "", nc));
+                        lines.Add((wrapped[i], TEXT_PRIMARY, i == 0 ? name : "", nc, i == 0 ? m : null));
                 }
             }
             int fit = Math.Max(1, (int)((areaBottom - areaTop) / lineH));
@@ -869,10 +873,13 @@ namespace FunkyMakerPlayer.Multiplayer
             float y = areaBottom - (endIdx - start) * lineH;
             for (int i = start; i < endIdx; i++)
             {
-                var (text, color, name, nameColor) = lines[i];
+                var (text, color, name, nameColor, from) = lines[i];
                 float x = p.X + pad;
                 if (name != null)
                 {
+                    if (from != null)
+                        DrawAvatar(sb, font, from.Avatar, new Rectangle((int)x, (int)(y + (lineH - avatarSz) / 2f), avatarSz, avatarSz), from.ColorHue, from.Username, _fadeAlpha);
+                    x += avatarW;
                     if (name.Length > 0)
                     {
                         DrawText(sb, font, name, new Vector2(x, y), nameColor * _fadeAlpha, f);
@@ -934,8 +941,12 @@ namespace FunkyMakerPlayer.Multiplayer
                 float ty = y + (rowH - MeasureText(font, "A", f).Y) / 2f;
                 Color placeCol = p.Place switch { 1 => ACCENT_WARNING, 2 => new Color(200, 210, 225), 3 => new Color(215, 150, 90), _ => TEXT_SECONDARY };
                 DrawText(sb, font, p.Disconnected ? "-" : p.Place.ToString(), new Vector2(r.X + r.Width * cols[0] + 6, ty), placeCol * _fadeAlpha, f, shadow: true);
-                string name = TruncateToWidth(font, p.Username + (me ? " (you)" : "") + (p.Disconnected ? "  [left]" : ""), r.Width * (cols[2] - cols[1]) - 8, f);
-                DrawText(sb, font, name, new Vector2(r.X + r.Width * cols[1], ty), Color.Lerp(c, Color.White, 0.4f) * _fadeAlpha, f);
+                int av = Math.Max(10, rowH - Px(10, uiScale, 6));
+                int nameX = (int)(r.X + r.Width * cols[1]);
+                DrawAvatar(sb, font, p.Avatar, new Rectangle(nameX, y + (rowH - av) / 2, av, av), p.ColorHue, p.Username, _fadeAlpha);
+                nameX += av + Px(8, uiScale, 5);
+                string name = TruncateToWidth(font, p.Username + (me ? " (you)" : "") + (p.Disconnected ? "  [left]" : ""), r.X + r.Width * cols[2] - nameX - 8, f);
+                DrawText(sb, font, name, new Vector2(nameX, ty), NameColor(p.ColorHue) * _fadeAlpha, f);
                 string side = round.Mode == Protocol.ModeTeams ? (p.Team == 0 ? "Player" : "Enemy") : RoomClient.SideName(p.Side);
                 DrawText(sb, font, side, new Vector2(r.X + r.Width * cols[2], ty), TEXT_SECONDARY * _fadeAlpha, f);
                 DrawText(sb, font, p.Score.ToString("N0"), new Vector2(r.X + r.Width * cols[3], ty), TEXT_PRIMARY * _fadeAlpha, f);

@@ -219,8 +219,10 @@ public class MultiplayerResultsScreen
                     1 => new Color(255, 215, 80), 2 => new Color(200, 210, 225), 3 => new Color(215, 150, 90), _ => new Color(185, 190, 212),
                 };
                 Text(sb, font, p.Disconnected ? "-" : p.Place.ToString(), cx(0), ty, textScale, placeCol * a);
+                float av = rowH - 10;
+                Avatar(sb, font, p, cx(1), y + 5, av, a);
                 string name = p.Username + (me ? " (you)" : "") + (p.Disconnected ? " [left]" : "");
-                Text(sb, font, Fit(font, name, (colW - 16) * (cols[2] - cols[1]) - 8, textScale), cx(1), ty, textScale, Color.Lerp(c, Color.White, 0.4f) * a);
+                Text(sb, font, Fit(font, name, (colW - 16) * (cols[2] - cols[1]) - 16 - av, textScale), cx(1) + av + 8, ty, textScale, Color.Lerp(c, Color.White, 0.4f) * a);
                 Text(sb, font, p.Score.ToString("N0"), cx(2), ty, textScale, Color.White * a);
                 Text(sb, font, $"{p.Accuracy:F1}%", cx(3), ty, textScale, (PerfectAccuracy(p) ? Perfect : Color.White) * a);
                 Text(sb, font, p.Misses.ToString(), cx(4), ty, textScale, (NoMisses(p) ? Perfect : Color.White) * a);
@@ -262,7 +264,9 @@ public class MultiplayerResultsScreen
             Text(sb, font, _result == null ? "?" : p.Disconnected ? "-" : p.Place.ToString(), x0 + tableW * cols[0] + 4, ty, textScale, placeCol * a);
             string name = p.Username + (me ? " (you)" : "") + (p.Disconnected ? " [left]" : "")
                           + (stillPlaying.Contains(p.PlayerId) ? " [playing]" : "");
-            Text(sb, font, Fit(font, name, tableW * (cols[2] - cols[1]) - 10, textScale), x0 + tableW * cols[1], ty, textScale, Color.Lerp(c, Color.White, 0.4f) * a);
+            float av = rowH - 10;
+            Avatar(sb, font, p, x0 + tableW * cols[1], y + 5, av, a);
+            Text(sb, font, Fit(font, name, tableW * (cols[2] - cols[1]) - 18 - av, textScale), x0 + tableW * cols[1] + av + 8, ty, textScale, Color.Lerp(c, Color.White, 0.4f) * a);
             string side = _mode == Protocol.ModeTeams ? (p.Team == 0 ? "Player" : "Enemy") : RoomClient.SideName(p.Side);
             Text(sb, font, side, x0 + tableW * cols[2], ty, textScale, new Color(185, 190, 212) * a);
             Text(sb, font, p.Score.ToString("N0"), x0 + tableW * cols[3], ty, textScale, Color.White * a);
@@ -270,6 +274,19 @@ public class MultiplayerResultsScreen
             Text(sb, font, p.Misses.ToString(), x0 + tableW * cols[5], ty, textScale, (NoMisses(p) ? Perfect : Color.White) * a);
             y += rowH + 6;
         }
+    }
+
+    /// <summary>The player's Discord picture (protocol 5), or a disc in their colour with their initial.</summary>
+    private static void Avatar(SpriteBatch sb, SpriteFont font, PlayerResult p, float x, float y, float size, float a)
+    {
+        if (size < 8) return;
+        Multiplayer.AvatarCache.Instance.Draw(sb, sb.GraphicsDevice, p.Avatar, new Rectangle((int)x, (int)y, (int)size, (int)size),
+            Multiplayer.MultiplayerSettings.ColorFromHue(p.ColorHue), p.Username, (t, center, color, px) =>
+            {
+                float scale = px / Math.Max(1, font.LineSpacing);
+                Vector2 sz = font.MeasureUi(UI.ErrorOverlay.Safe(t)) * scale;
+                Text(sb, font, t, center.X - sz.X / 2f, center.Y - sz.Y / 2f, scale, color);
+            }, a);
     }
 
     /// <summary>Played at least one note (a perfect stat has to be earned, not given for not playing).</summary>

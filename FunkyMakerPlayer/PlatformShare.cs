@@ -31,6 +31,46 @@ public static class PlatformShare
 #endif
     }
 
+    /// <summary>Opens a web page in the system browser (Android: the default app for the link). False if it failed.</summary>
+    public static bool OpenUrl(string url)
+    {
+        if (!Uri.TryCreate(url, UriKind.Absolute, out var uri) || (uri.Scheme != Uri.UriSchemeHttps && uri.Scheme != Uri.UriSchemeHttp))
+            return false;
+        try
+        {
+#if ANDROID
+            var activity = Microsoft.Xna.Framework.Game.Activity;
+            if (activity == null) return false;
+            activity.RunOnUiThread(() =>
+            {
+                try
+                {
+                    var intent = new global::Android.Content.Intent(global::Android.Content.Intent.ActionView, global::Android.Net.Uri.Parse(uri.AbsoluteUri));
+                    intent.AddFlags(global::Android.Content.ActivityFlags.NewTask);
+                    activity.StartActivity(intent);
+                }
+                catch (Exception ex) { Console.WriteLine($"[PlatformShare] Open URL failed: {ex.Message}"); }
+            });
+            return true;
+#else
+            ProcessStartInfo psi;
+            if (OperatingSystem.IsWindows()) psi = new ProcessStartInfo(uri.AbsoluteUri) { UseShellExecute = true };
+            else
+            {
+                psi = new ProcessStartInfo(OperatingSystem.IsMacOS() ? "open" : "xdg-open") { UseShellExecute = false };
+                psi.ArgumentList.Add(uri.AbsoluteUri);
+            }
+            Process.Start(psi)?.Dispose();
+            return true;
+#endif
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[PlatformShare] Open URL failed: {ex.Message}");
+            return false;
+        }
+    }
+
 #if !ANDROID
     /// <summary>Shows a file or folder in the system file manager (fork: Freeplay "Show in folder").</summary>
     public static bool Reveal(string path)

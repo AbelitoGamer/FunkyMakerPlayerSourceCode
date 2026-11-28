@@ -85,7 +85,15 @@ namespace FunkyMakerPlayer.Multiplayer
             }
             if (clicked == "create")
             {
-                OpenRoomSettings(RoomSettingsMode.Create);
+                if (!BlockGuest()) OpenRoomSettings(RoomSettingsMode.Create);
+                return;
+            }
+            if (clicked == "login")
+            {
+                if (DiscordLogin.Instance.State == DiscordLogin.LoginState.Waiting && !string.IsNullOrEmpty(DiscordLogin.Instance.LoginUrl))
+                    PlatformShare.OpenUrl(DiscordLogin.Instance.LoginUrl);
+                else
+                    DiscordLogin.Instance.Start();
                 return;
             }
             if (clicked != null && clicked.StartsWith("room:") && int.TryParse(clicked[5..], out int ci) && ci < rooms.Count)
@@ -117,6 +125,7 @@ namespace FunkyMakerPlayer.Multiplayer
 
         private void TryJoinRoom(RoomSummary room)
         {
+            if (BlockGuest()) return;
             if (room.PlayerCount >= room.MaxPlayers)
             {
                 ShowError("This room is full.");
@@ -271,11 +280,11 @@ namespace FunkyMakerPlayer.Multiplayer
             Vector2 countSz = MeasureText(font, count, countF);
             int right = r.Right - pad;
             DrawText(sb, font, count, new Vector2(right - countSz.X, row1), (full ? ACCENT_ERROR : TEXT_PRIMARY) * _fadeAlpha, countF, shadow: true);
-            int sq = Px(14, uiScale, 10), sqGap = Px(5, uiScale, 3);
+            int sq = Px(22, uiScale, 16), sqGap = Px(5, uiScale, 3);
             int sqX = right - room.Players.Count * (sq + sqGap) + sqGap;
             foreach (var p in room.Players)
             {
-                DrawPlayerSquare(sb, pixel, new Rectangle(sqX, row2 + (pillH - sq) / 2, sq, sq), p.ColorHue, p.Username);
+                DrawPlayerSquare(sb, font, new Rectangle(sqX, row2 + (pillH - sq) / 2, sq, sq), p.ColorHue, p.Username, p.Avatar);
                 sqX += sq + sqGap;
             }
             int textRight = Math.Min(right - (int)countSz.X - Px(18, uiScale), right - room.Players.Count * (sq + sqGap) - Px(18, uiScale));

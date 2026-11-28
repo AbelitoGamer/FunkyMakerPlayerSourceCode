@@ -282,6 +282,8 @@ Notes:
 │   │   ├── Rooms/RoomProtocol.cs room protocol wire types (keep in sync with the server's worker/src/protocol.ts)
 │   │   ├── Rooms/RoomClient.cs  room state, chat, round level, match events (§12.1)
 │   │   ├── UserDirectoryClient.cs PlayerId → username cache (REST + packets)
+│   │   ├── DiscordLogin.cs      Discord login: start / browser / poll, saves the session (protocol 5, §12.w)
+│   │   ├── AvatarCache.cs       Discord pictures: download (CDN only), disk cache, round textures (§12.w)
 │   │   ├── NetworkPackets.cs    ping, official level list, leaderboard / history DTOs
 │   │   ├── MultiplayerMenu.cs   online menu core + settings + leaderboard (partial, §12.2)
 │   │   ├── MultiplayerMenu.MatchHistory.cs  leaderboard RECENT MATCHES cards + match detail popup (§12.2)
@@ -289,6 +291,7 @@ Notes:
 │   │   │   .SongSelect.cs      room screens (§12.2)
 │   │   ├── MultiplayerMenu.LevelFiles.cs    LOCAL list auto-refresh / import / delete
 │   │   ├── MultiplayerMenu.LocalRows.cs     song select LOCAL rows: sections, holder squares
+│   │   ├── MultiplayerMenu.Avatars.cs       DrawAvatar / NameColor / BlockGuest (§12.w)
 │   │   ├── MultiplayerSettings.cs persisted MP settings (server URL, profiles, §12.0)
 │   │   ├── TimeSyncManager.cs
 │   │   ├── LevelHasher.cs       SHA-256 level verification (file or bytes)
@@ -296,7 +299,7 @@ Notes:
 │   │   │                        official levels (`official_cache/*.fmc`)
 │   │   ├── LevelDownloader.cs   official level download (128 KB chunks,
 │   │   │                        restores from verified cache first)
-│   │   ├── Leaderboard/         leaderboard + match history (merged with server)
+│   │   ├── Leaderboard/         leaderboard + match history (the server's copy replaces the cache, §12.w)
 │   │   └── Transfer/            LevelTransferClient.cs (HTTP level up/download, replay
 │   │                            tracks), LocalLevelIndex.cs (hash cache) (§12.1)
 │   ├── Editors/
@@ -2082,7 +2085,7 @@ The removed keys were 1–4, Q, W, Tab, Z, X, [, ], T, B, V, C, H, N, +/-, O, P 
 
 ---
 
-## 12. Multiplayer (fork: room system; current protocol 4, 2026-11-25)
+## 12. Multiplayer (fork: room system; current protocol 5, 2026-11-28)
 
 The 1v1 matchmaking (QUICK PLAY / PRIVATE ROOM with a 6-char code, the official game server's
 `FindMatch` / `MatchFound` / `GameStart`) was replaced by **rooms** on the fork's own online server
@@ -2097,6 +2100,66 @@ ported from. **Old game builds can't use the new server and new builds can't use
 Sections 12.x / 12.y below describe protocol 3 work on the ASP.NET server; the room rules, limits
 and client behaviour still apply (the Worker is a port), but anything about Render, Kestrel,
 SignalR, `render.yaml` or `Transfer__*` env vars is history: see §12.z for the current equivalents.
+
+### 12.w Discord accounts (protocol 5, 2026-11-28)
+
+Goal: a player's online identity (name, ranking, history) belongs to their Discord account and follows
+them on every device; nobody can take somebody else's name or ELO (before, PlayerId was a GUID the game
+made up and the name was free text the server trusted).
+
+- **Rules (owner's choices):** an account is needed to **create or join rooms** (also to spectate);
+  without one the connection is a **guest**: room list, leaderboards, history and profiles only. The
+  name is the Discord display name (`global_name`, folded to ASCII because the game's fonts only draw
+  32-126; falls back to the unique `username`), it can't be edited in the game and updates when it
+  changes on Discord. The **colour stays** (Settings → User → Player Color) and now **tints the name**;
+  it is saved with the account. Pictures are shown in the room list, waiting room players, chat,
+  round tables, results screen, leaderboard, match detail, identity chip and My Stats; **not** in the
+  in-match score list / bar. The leaderboard **restarted from zero** with accounts. A session lasts
+  **30 days since the last time you played** (every Hello renews it).
+- **Login flow** (server `worker/src/auth.ts`, client `Multiplayer/DiscordLogin.cs`): the game can't
+  receive the OAuth redirect (desktop + Android), so the Worker does the OAuth2 code flow and the game
+  polls: `POST /api/auth/start` → `{loginId, pollKey, url}` → `PlatformShare.OpenUrl(url)` (new; Android
+  = ACTION_VIEW intent) → `GET /auth/discord` redirects to Discord (scope `identify` only,
+  `prompt=none`) → `GET /auth/discord/callback` exchanges the code, reads `/users/@me`, saves the
+  account → the game's `POST /api/auth/poll` (every 2 s, 10 min max) gets `{sessionToken, account}`.
+  `pollKey` is only known to the game (the login id is visible in the browser). The Discord client
+  secret never leaves the Worker.
+- **Session token** (`worker/src/accounts.ts`): `v1.<discord id>.<expiry s>.<HMAC-SHA256 b64url>` signed
+  with the `SESSION_SECRET` secret (changing it logs everybody out). `HelloRequest.SessionToken`;
+  `HelloResult` has `Guest`, `Account` (`PlayerId` = Discord id, `Username`, `DiscordUsername`, `Avatar`
+  URL, `ColorHue`), a renewed `SessionToken` (saved) and `AuthError` (`expired` / `invalid` → the client
+  clears the saved account and shows "Your Discord session expired"). The server ignores the Hello's
+  `PlayerId` / `Username` (guest id = `guest-<connection>`). Logging in / out on an open connection just
+  sends Hello again (`NetworkManager.ResendProfile`); logging out while in a room leaves it.
+- **Server storage:** Leaderboard Durable Object tables `accounts` (Discord id, username, global name,
+  avatar hash, colour, Discord OAuth tokens to refresh the name / picture **once a day** in the
+  background, timestamps) and `logins` (pending, 10 min). `avatar` (CDN URL, `safeAvatar` only lets
+  `https://cdn.discordapp.com/...` through) is on `RoomMember`, `RoomPlayerSummary`, `ChatMessage`,
+  `PlayerResult`, leaderboard entries, match players and the user directory.
+- **Client:** `MultiplayerSettings` keeps `SessionToken`, `AccountId`, `AccountName`, `AccountDiscordName`,
+  `AccountAvatar` (`IsLoggedIn`, `ApplyAccount`, `ClearAccount`; `OnlinePlayerId` = the connection's
+  account, else the saved Discord id, else the device `PlayerId`, used for "is this me" checks).
+  `NetworkManager.IsGuest` / `Account` / `SessionNotice` / `OnAccountChanged`. Settings → User row 0 is
+  **Discord** (was Username): click = log in; while waiting, opens the page again; logged in, the first
+  click shows "Click again to log out" (4 s). The identity chip shows the picture + name, or "Guest ·
+  LOG IN WITH DISCORD" (click = log in). CREATE ROOM / joining a room as a guest = toast + login
+  (`BlockGuest`). `AvatarCache`: 64 px PNGs from cdn.discordapp.com only, one download at a time, disk
+  cache `avatars/` (7 days), ≤ 64 textures (unused for 5 s are dropped first), cut to a circle with
+  premultiplied alpha; fallback = disc in the player's colour with the initial. `LeaderboardManager`:
+  the server's top 50 / last 50 matches now **replace** the cached lists (merging kept the old
+  device-id players forever). Holder squares (who has a level) stay colour squares (too small).
+- **Local testing:** `DEV_AUTH=true` in `worker/.dev.vars` (never in wrangler.toml): a Hello without a
+  token logs in as `dev-<playerId>` with the Hello's name, so two windows (`FUNKYMAKER_MP_PROFILE`)
+  work against `wrangler dev` without Discord; `scripts/e2e.mjs` needs it too (so it can't run against
+  production any more). Discord redirects registered: production `/auth/discord/callback` and
+  `http://127.0.0.1:8787/auth/discord/callback`.
+- **Setup:** Discord application id `1576195997246169191` (`DISCORD_CLIENT_ID` var in wrangler.toml);
+  secrets `DISCORD_CLIENT_SECRET` and `SESSION_SECRET` (`npx wrangler secret put ...`, and in
+  `.dev.vars` for local). Deploying protocol 5 locks out every older game build.
+- **Status (2026-11-28):** server 62 tests + e2e (dev login) pass locally; client builds desktop +
+  Android; screens checked with the dev harness (pictures load and render round). **Not yet
+  tested:** a real Discord login (needs the secrets), the deployed server, Android. Next possible
+  phase: local scores (`freeplay_data.json`) synced to the account, keyed by level hash.
 
 ### 12.z Cloudflare Workers server (protocol 4, 2026-11-25 / 26)
 
@@ -2314,13 +2377,13 @@ goal is $0. Workers and R2 don't charge for bandwidth. Playerbase is tiny (≤ 2
   with an old URL in their file reach the new server. WebSocket hub `/multiplayer` (§12.z).
 - Every online menu uses this one URL: leaderboard sync, server info and the user directory used to
   fall back to the old `funkymakerserver.onrender.com`; they now use `DefaultServerUrl` too.
-- `FUNKYMAKER_MP_PROFILE=<name>` uses `multiplayer_settings.<name>.json` (own PlayerId / name / colour),
-  for two windows on one PC. The same PlayerId joining a room again **takes over** the old place (the
+- `FUNKYMAKER_MP_PROFILE=<name>` uses `multiplayer_settings.<name>.json` (own PlayerId / name / colour /
+  Discord session), for two windows on one PC (with a local server: `DEV_AUTH`, §12.w). The same PlayerId joining a room again **takes over** the old place (the
   other window gets `Kicked`: "joined from another window").
 
 ### 12.1 Client code
 
-- `Multiplayer/Rooms/RoomProtocol.cs`: wire types, `Protocol.Version = 4`, `Protocol.FileHashHeader`
+- `Multiplayer/Rooms/RoomProtocol.cs`: wire types, `Protocol.Version = 5` (§12.w), `Protocol.FileHashHeader`
   (keep in sync with the server's `worker/src/protocol.ts`; it was a copy of the ASP.NET `Protocol.cs`).
 - `WsHubConnection` (protocol 4, replaces the SignalR `HubConnection` with the same shape:
   `InvokeAsync` / `SendAsync` / `On<T>` / `Closed` / `Reconnecting` / `Reconnected`): `ClientWebSocket`

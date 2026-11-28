@@ -151,6 +151,7 @@ namespace FunkyMakerPlayer.Multiplayer
         private UI.ConnectionIndicator _connectionIndicator;
         /// <summary>Where the identity chip was drawn this frame (empty = not drawn): the connection indicator keeps clear of it.</summary>
         private Rectangle _identityChipRect;
+        private DiscordLogin.LoginState _lastLoginState = DiscordLogin.LoginState.Idle;
         private FontRenderer? _fontRenderer;
         private Dictionary<string, Texture2D> _menuIcons = new();
         
@@ -480,6 +481,24 @@ namespace FunkyMakerPlayer.Multiplayer
                     _infoMessage = "";
             }
 
+            // Discord login (protocol 5): tell the player once when it fails / the saved session ended / it worked.
+            var loginState = DiscordLogin.Instance.State;
+            if (loginState != _lastLoginState)
+            {
+                if (loginState == DiscordLogin.LoginState.Failed) ShowError(DiscordLogin.Instance.Message);
+                else if (loginState == DiscordLogin.LoginState.Idle && _lastLoginState == DiscordLogin.LoginState.Waiting && MultiplayerSettings.Instance.IsLoggedIn)
+                {
+                    ShowInfo($"Logged in as {MultiplayerSettings.Instance.AccountName}.");
+                    _username = MultiplayerSettings.Instance.Username;
+                }
+                _lastLoginState = loginState;
+            }
+            if (!string.IsNullOrEmpty(NetworkManager.Instance.SessionNotice))
+            {
+                ShowError(NetworkManager.Instance.SessionNotice);
+                NetworkManager.Instance.SessionNotice = "";
+            }
+
             // Marshal SignalR connection lifecycle notifications onto the main update thread
             string? pendingDisconnect = Interlocked.Exchange(ref _pendingDisconnectReason, null);
             if (!string.IsNullOrEmpty(pendingDisconnect))
@@ -680,6 +699,17 @@ namespace FunkyMakerPlayer.Multiplayer
                 return;
             }
             
+            // The identity chip is the Discord login button for guests.
+            if (!MultiplayerSettings.Instance.IsLoggedIn && NetworkManager.Instance.Account == null && IsRectClicked(mouse, _identityChipRect))
+            {
+                if (DiscordLogin.Instance.State == DiscordLogin.LoginState.Waiting && !string.IsNullOrEmpty(DiscordLogin.Instance.LoginUrl))
+                    PlatformShare.OpenUrl(DiscordLogin.Instance.LoginUrl);
+                else
+                    DiscordLogin.Instance.Start();
+                _inputCooldown = INPUT_COOLDOWN_TIME;
+                return;
+            }
+
             // Select option with mouse click
             for (int i = 0; i < 4; i++)
             {
@@ -890,7 +920,7 @@ namespace FunkyMakerPlayer.Multiplayer
                     _settingsSelection = actualIndex;
                     if (_settingsCategory == 0 && actualIndex == 0)
                     {
-                        BeginUsernameEdit();
+                        ActivateAccountRow();
                         _isSettingFocused = false;
                     }
                     else if (categorySettings[actualIndex].IsToggle)
@@ -978,7 +1008,7 @@ namespace FunkyMakerPlayer.Multiplayer
                 {
                     if (_settingsCategory == 0 && _settingsSelection == 0)
                     {
-                        BeginUsernameEdit();
+                        ActivateAccountRow();
                         _isSettingFocused = false;
                     }
                     else if (_settingsSelection < categorySettings.Count && categorySettings[_settingsSelection].IsToggle)
@@ -1157,18 +1187,55 @@ namespace FunkyMakerPlayer.Multiplayer
             }
         }
         
-        private void BeginUsernameEdit()
+        /// <summary>Settings → User → Discord: log in; while waiting, open the login page again; logged in: log out (asks once).</summary>
+        private void ActivateAccountRow()
+        {
+            var login = DiscordLogin.Instance;
+            if (MultiplayerSettings.Instance.IsLoggedIn)
+            {
+                if (_logoutArmedUntil > DateTime.UtcNow)
+                {
+                    _logoutArmedUntil = DateTime.MinValue;
+                    login.Logout();
+                    _username = MultiplayerSettings.Instance.Username;
+                }
+                else _logoutArmedUntil = DateTime.UtcNow.AddSeconds(4);
+                return;
+            }
+            if (login.State == DiscordLogin.LoginState.Waiting && !string.IsNullOrEmpty(login.LoginUrl))
+                PlatformShare.OpenUrl(login.LoginUrl);
+            else
+                login.Start();
+        }
+
+        /// <summary>A first click on the Discord row while logged in arms "log out" until then.</summary>
+        private DateTime _logoutArmedUntil = DateTime.MinValue;
+
+        private string AccountRowValue()
         {
             var settings = MultiplayerSettings.Instance;
-            BeginTextField("username", settings.Username, 20, v =>
+            var login = DiscordLogin.Instance;
+            if (settings.IsLoggedIn)
+                return _logoutArmedUntil > DateTime.UtcNow ? "Click again to log out" : settings.AccountName;
+            return login.State switch
             {
-                string trimmed = v.Trim();
-                if (trimmed.Length == 0) return;
-                settings.Username = trimmed;
-                _username = trimmed;
-                settings.Save();
-                if (NetworkManager.Instance.IsConnected) ResendProfile();
-            }, title: "Username");
+                DiscordLogin.LoginState.Starting => "Opening Discord...",
+                DiscordLogin.LoginState.Waiting => "Waiting for Discord...",
+                _ => "Log in with Discord",
+            };
+        }
+
+        private string AccountRowDescription()
+        {
+            var settings = MultiplayerSettings.Instance;
+            var login = DiscordLogin.Instance;
+            if (settings.IsLoggedIn)
+                return $"Logged in as @{settings.AccountDiscordName}. Your name and picture come from Discord; your rankings follow you on every device. Click to log out.";
+            string msg = !string.IsNullOrEmpty(login.Message) ? login.Message + " "
+                : !string.IsNullOrEmpty(NetworkManager.Instance.SessionNotice) ? NetworkManager.Instance.SessionNotice + " " : "";
+            if (login.State == DiscordLogin.LoginState.Waiting)
+                return msg + "Click to open the login page again.";
+            return msg + "Log in with Discord to create and join rooms. Without an account you can still look at rooms and leaderboards.";
         }
 
         private void ToggleSettingValue(int category, int selection)
@@ -1178,8 +1245,8 @@ namespace FunkyMakerPlayer.Multiplayer
             switch (category)
             {
                 case 0: // User
-                    if (selection == 0) // Username - start text editing
-                        BeginUsernameEdit();
+                    if (selection == 0) // Discord account
+                        ActivateAccountRow();
                     else if (selection == 2)
                         CycleEquippedCharacter(1);
                     break;
@@ -1863,16 +1930,23 @@ namespace FunkyMakerPlayer.Multiplayer
         {
             var settings = MultiplayerSettings.Instance;
             Color myColor = settings.GetPlayerColor();
-            string username = string.IsNullOrWhiteSpace(settings.Username) ? "Player" : settings.Username;
+            var account = NetworkManager.Instance.IsConnected ? NetworkManager.Instance.Account : null; // also a local dev login
+            bool loggedIn = settings.IsLoggedIn || account != null;
+            var login = DiscordLogin.Instance;
+            // Guests (no Discord login) see a login button instead of a name (protocol 5).
+            string username = account?.Username ?? (loggedIn ? (string.IsNullOrWhiteSpace(settings.AccountName) ? settings.Username : settings.AccountName) : "Guest");
+            string avatarUrl = account?.Avatar ?? settings.AccountAvatar;
             bool isOnline = NetworkManager.Instance.IsConnected;
 
             int fontSize = FontPx(15, uiScale, 11, 22);
             int subSize = FontPx(11, uiScale, 10, 16);
             Vector2 nameSz = MeasureText(font, username, fontSize);
-            string statusTxt = isOnline ? "ONLINE" : "READY";
+            string statusTxt = loggedIn ? (isOnline ? "ONLINE" : "READY")
+                : login.State == DiscordLogin.LoginState.Waiting ? "WAITING FOR DISCORD..."
+                : "LOG IN WITH DISCORD";
             Vector2 statusSz = MeasureText(font, statusTxt, subSize);
 
-            int swatchSize = Px(20, uiScale, 14);
+            int swatchSize = Px(26, uiScale, 18);
             int chipH = Px(38, uiScale, 28);
             int pad = Px(10, uiScale, 8);
             int chipW = pad + swatchSize + Px(10, uiScale) + (int)MathF.Ceiling(nameSz.X) + Px(12, uiScale) + (int)MathF.Ceiling(statusSz.X) + pad;
@@ -1880,17 +1954,18 @@ namespace FunkyMakerPlayer.Multiplayer
                 x -= chipW;
 
             _identityChipRect = new Rectangle(x, y, chipW, chipH);
-            DrawPanel(sb, pixel, x, y, chipW, chipH, BG_MEDIUM, BORDER_SUBTLE, 1, myColor);
+            bool hovered = !loggedIn && _identityChipRect.Contains(_lastMousePos);
+            DrawPanel(sb, pixel, x, y, chipW, chipH, hovered ? BG_LIGHT : BG_MEDIUM, hovered ? ACCENT_WARNING : BORDER_SUBTLE, 1, myColor);
+            if (!loggedIn) Hit("login", _identityChipRect);
 
             int swatchY = y + (chipH - swatchSize) / 2;
-            sb.Draw(pixel, new Rectangle(x + pad, swatchY, swatchSize, swatchSize), myColor * _fadeAlpha);
-            DrawBorder(sb, pixel, x + pad, swatchY, swatchSize, swatchSize, Color.White * (0.4f * _fadeAlpha), 1);
+            DrawAvatar(sb, font, loggedIn ? avatarUrl : "", new Rectangle(x + pad, swatchY, swatchSize, swatchSize), settings.PlayerColorHue, username, _fadeAlpha);
 
             float textX = x + pad + swatchSize + Px(10, uiScale);
-            DrawText(sb, font, username, new Vector2(textX, y + (chipH - nameSz.Y) / 2f), Color.Lerp(myColor, Color.White, 0.35f) * _fadeAlpha, fontSize);
+            DrawText(sb, font, username, new Vector2(textX, y + (chipH - nameSz.Y) / 2f), (loggedIn ? NameColor(settings.PlayerColorHue) : TEXT_SECONDARY) * _fadeAlpha, fontSize);
 
             int badgeX = (int)(textX + nameSz.X + Px(10, uiScale));
-            Color statusCol = isOnline ? ACCENT_SUCCESS : ACCENT_PRIMARY;
+            Color statusCol = !loggedIn ? ACCENT_WARNING : isOnline ? ACCENT_SUCCESS : ACCENT_PRIMARY;
             int dot = Px(6, uiScale, 5);
             sb.Draw(pixel, new Rectangle(badgeX, y + (chipH - dot) / 2, dot, dot), statusCol * _fadeAlpha);
             DrawText(sb, font, statusTxt, new Vector2(badgeX + dot + 5, y + (chipH - statusSz.Y) / 2f), statusCol * _fadeAlpha, subSize);
@@ -2475,14 +2550,13 @@ namespace FunkyMakerPlayer.Multiplayer
             switch (category)
             {
                 case 0: // User
-                    string usernameValue = _isEditingText && _settingsSelection == 0 ? _editingTextValue + "_" : settings.Username;
                     list.Add(new SettingInfo
                     {
-                        Label = "Username",
-                        Value = usernameValue,
+                        Label = "Discord",
+                        Value = AccountRowValue(),
                         IsToggle = false,
                         IsAdjustable = false,
-                        Description = "Display name shown to opponents in matches and on the leaderboard. Press ENTER or click to type (supports uppercase)."
+                        Description = AccountRowDescription()
                     });
                     list.Add(new SettingInfo
                     {
@@ -2490,7 +2564,7 @@ namespace FunkyMakerPlayer.Multiplayer
                         Value = $"Hue: {settings.PlayerColorHue} deg",
                         IsToggle = false,
                         IsAdjustable = true,
-                        Description = "Color hue (0-350 deg) used to tint your player name in the multiplayer HUD, results screen, and leaderboard."
+                        Description = "Color hue (0-350 deg) of your name in rooms, chat, results and the leaderboard (saved with your account)."
                     });
                     list.Add(new SettingInfo
                     {
@@ -3038,13 +3112,13 @@ namespace FunkyMakerPlayer.Multiplayer
 
             int startIdx = _leaderboardScrollOffset;
             int endIdx = Math.Min(startIdx + _leaderboardVisible, topPlayers.Count);
-            string localUser = MultiplayerSettings.Instance.Username;
+            string localId = MultiplayerSettings.Instance.OnlinePlayerId;
 
             for (int i = startIdx; i < endIdx; i++)
             {
                 var player = topPlayers[i];
                 bool selected = i == _leaderboardSelection;
-                bool isSelf = !string.IsNullOrWhiteSpace(localUser) && string.Equals(player.Username, localUser, StringComparison.OrdinalIgnoreCase);
+                bool isSelf = !string.IsNullOrWhiteSpace(localId) && player.PlayerId == localId;
                 int displayIdx = i - startIdx;
                 int currentY = listTop + displayIdx * (rowH + rowGap);
 
@@ -3066,17 +3140,15 @@ namespace FunkyMakerPlayer.Multiplayer
                 int badgeH = Math.Max(Px(24, uiScale, 18), (int)MeasureText(font, "Ag", rankFont).Y + Px(6, uiScale, 4));
                 DrawPillBadge(sb, font, pixel, col1X, currentY + (rowH - badgeH) / 2, badgeH, $"#{player.Rank}", rankColor, rankFont, 8, filledStrong: player.Rank <= 3);
 
-                Color playerColor = GetColorFromHue(player.ColorHue);
-                int swatchSz = Px(16, uiScale, 12);
-                sb.Draw(pixel, new Rectangle(col2X, currentY + (rowH - swatchSz) / 2, swatchSz, swatchSz), playerColor * _fadeAlpha);
-                DrawBorder(sb, pixel, col2X, currentY + (rowH - swatchSz) / 2, swatchSz, swatchSz, Color.White * (0.4f * _fadeAlpha), 1);
+                int swatchSz = Math.Max(Px(16, uiScale, 12), rowH - Px(10, uiScale, 6));
+                DrawAvatar(sb, font, player.Avatar, new Rectangle(col2X, currentY + (rowH - swatchSz) / 2, swatchSz, swatchSz), player.ColorHue, player.Username, _fadeAlpha);
 
                 float maxUserW = Math.Max(60f, col3X - (col2X + swatchSz + Px(20, uiScale)));
                 string pName = TruncateToWidth(font, string.IsNullOrWhiteSpace(player.Username) ? "Player" : player.Username, maxUserW, rowFont);
                 Vector2 nameSz = MeasureText(font, pName, rowFont);
                 float textCenterY = currentY + (rowH - nameSz.Y) / 2f;
                 DrawText(sb, font, pName, new Vector2(col2X + swatchSz + Px(10, uiScale), textCenterY),
-                    (isSelf ? ACCENT_SUCCESS : TEXT_PRIMARY) * _fadeAlpha, rowFont, shadow: selected);
+                    NameColor(player.ColorHue) * _fadeAlpha, rowFont, shadow: selected);
 
                 DrawText(sb, font, player.EloRating.ToString(), new Vector2(col3X, textCenterY), ACCENT_SECONDARY * _fadeAlpha, rowFont);
                 DrawText(sb, font, $"{player.Wins}/{player.Losses}", new Vector2(col4X, textCenterY), TEXT_SECONDARY * _fadeAlpha, rowFont);
@@ -3095,8 +3167,15 @@ namespace FunkyMakerPlayer.Multiplayer
         private void DrawMyStatsTab(SpriteBatch sb, SpriteFont font, Texture2D pixel, float uiScale, int panelX, int panelY, int panelW, int panelH)
         {
             var settings = MultiplayerSettings.Instance;
-            var myStats = LeaderboardManager.Instance.GetPlayerStats(settings.PlayerId, settings.Username);
+            // Accounts (protocol 5): your stats are the ones of your Discord id (names can repeat).
+            var myStats = settings.IsLoggedIn ? LeaderboardManager.Instance.GetPlayerStats(settings.AccountId) : null;
 
+            if (myStats == null && !settings.IsLoggedIn)
+            {
+                DrawCenteredTextInPanel(sb, font, "Log in with Discord to have stats", panelX, panelY + panelH / 2 - Px(20, uiScale), panelW, TEXT_SECONDARY, FontPx(19, uiScale, 14, 28));
+                DrawCenteredTextInPanel(sb, font, "Your rankings are saved with your account, on every device.", panelX, panelY + panelH / 2 + Px(12, uiScale), panelW, TEXT_DISABLED, FontPx(14, uiScale, 11, 20));
+                return;
+            }
             if (myStats == null)
             {
                 DrawCenteredTextInPanel(sb, font, "No personal stats yet", panelX, panelY + panelH / 2 - Px(20, uiScale), panelW, TEXT_SECONDARY, FontPx(19, uiScale, 14, 28));
@@ -3115,11 +3194,12 @@ namespace FunkyMakerPlayer.Multiplayer
             int swatchSz = Px(32, uiScale, 22);
             int swatchX = panelX + padX + Px(18, uiScale);
             int swatchY = bannerY + (bannerH - swatchSz) / 2;
-            sb.Draw(pixel, new Rectangle(swatchX, swatchY, swatchSz, swatchSz), myColor * _fadeAlpha);
-            DrawBorder(sb, pixel, swatchX, swatchY, swatchSz, swatchSz, Color.White * (0.5f * _fadeAlpha), 1);
+            string displayName = string.IsNullOrWhiteSpace(settings.AccountName) ? settings.Username : settings.AccountName;
+            swatchSz = Math.Max(swatchSz, bannerH - Px(18, uiScale, 12));
+            swatchY = bannerY + (bannerH - swatchSz) / 2;
+            DrawAvatar(sb, font, settings.AccountAvatar, new Rectangle(swatchX, swatchY, swatchSz, swatchSz), settings.PlayerColorHue, displayName, _fadeAlpha);
 
             int nameFont = FontPx(24, uiScale, 16, 34);
-            string displayName = string.IsNullOrWhiteSpace(settings.Username) ? "Player" : settings.Username;
             Vector2 nameSz = MeasureText(font, displayName, nameFont);
             DrawText(sb, font, displayName, new Vector2(swatchX + swatchSz + Px(14, uiScale), bannerY + (bannerH - nameSz.Y) / 2f),
                 Color.Lerp(myColor, Color.White, 0.3f) * _fadeAlpha, nameFont, shadow: true);

@@ -54,6 +54,14 @@ namespace FunkyMakerPlayer.Multiplayer
         /// <summary>Preferred chunk size in bytes for chunked uploads (default 4 MB).</summary>
         public int UploadChunkBytes { get; private set; } = 4 * 1024 * 1024;
         public string ServerVersion { get; private set; } = "";
+        /// <summary>No Discord account on this connection: room list and leaderboards only (protocol 5).</summary>
+        public bool IsGuest { get; private set; } = true;
+        /// <summary>The account this connection is logged in as (null for guests).</summary>
+        public AccountInfo? Account { get; private set; }
+        /// <summary>Why the saved session was dropped (shown once by the online menu, which clears it).</summary>
+        public string SessionNotice { get; set; } = "";
+        /// <summary>Logged in / out / another account (game thread).</summary>
+        public event Action? OnAccountChanged;
 
         private const string HubEndpoint = "/multiplayer";
         private string? _serverUrlOverride;
@@ -212,6 +220,7 @@ namespace FunkyMakerPlayer.Multiplayer
                 ProtocolVersion = Protocol.Version,
                 OsuSkipVideo = settings.OsuSkipVideo,
                 FnfChartOnly = settings.ChartOnlyMode,
+                SessionToken = settings.SessionToken,
             };
         }
 
@@ -365,6 +374,8 @@ namespace FunkyMakerPlayer.Multiplayer
                         UploadChunkBytes = reconnectHello.UploadChunkBytes > 0 ? reconnectHello.UploadChunkBytes : 4 * 1024 * 1024;
                     }
                     Console.WriteLine($"[Multiplayer] Reconnected ({connectionId})");
+                    var reconnectAccount = reconnectHello;
+                    Post(() => ApplyHelloAccount(reconnectAccount));
                     SendPing();
                     Post(() => OnReconnected?.Invoke());
                 };
@@ -439,7 +450,11 @@ namespace FunkyMakerPlayer.Multiplayer
 
                 Console.WriteLine($"[Multiplayer] [OK] Connected (server {hello.ServerVersion}, protocol {hello.ProtocolVersion})");
                 SendPing();
-                Post(() => OnConnected?.Invoke());
+                Post(() =>
+                {
+                    ApplyHelloAccount(hello);
+                    OnConnected?.Invoke();
+                });
             }
             catch (OperationCanceledException)
             {
@@ -562,8 +577,34 @@ namespace FunkyMakerPlayer.Multiplayer
             });
         }
 
-        /// <summary>Sends the (changed) username / color again.</summary>
-        public void ResendProfile() => Call<HelloResult>("Hello", new object?[] { BuildHello() }, null);
+        /// <summary>Sends the (changed) color / account again (after logging in or out the same connection switches).</summary>
+        public void ResendProfile() => Call<HelloResult>("Hello", new object?[] { BuildHello() }, r => { if (r.Ok) ApplyHelloAccount(r); });
+
+        /// <summary>
+        /// Game thread: who the server says this connection is. A refreshed token is saved; a refused
+        /// one (expired after 30 days without playing, or invalid) logs out.
+        /// </summary>
+        private void ApplyHelloAccount(HelloResult hello)
+        {
+            var settings = MultiplayerSettings.Instance;
+            bool wasGuest = IsGuest;
+            string oldId = Account?.PlayerId ?? "";
+            IsGuest = hello.Guest || hello.Account == null;
+            Account = IsGuest ? null : hello.Account;
+            if (Account != null)
+            {
+                // Dev server logins (dev-<id>) aren't saved as an account: there is no token.
+                if (!string.IsNullOrEmpty(hello.SessionToken)) settings.ApplyAccount(Account, hello.SessionToken);
+            }
+            else if (!string.IsNullOrEmpty(hello.AuthError) && !string.IsNullOrEmpty(settings.SessionToken))
+            {
+                settings.ClearAccount();
+                SessionNotice = hello.AuthError == "expired"
+                    ? "Your Discord session expired (30 days without playing). Log in again."
+                    : "Your Discord session isn't valid any more. Log in again.";
+            }
+            if (wasGuest != IsGuest || oldId != (Account?.PlayerId ?? "")) OnAccountChanged?.Invoke();
+        }
 
         // ── In-match relay ───────────────────────────────────────────────────
 

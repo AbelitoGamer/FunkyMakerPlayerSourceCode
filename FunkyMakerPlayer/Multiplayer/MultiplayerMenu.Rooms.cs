@@ -156,14 +156,13 @@ namespace FunkyMakerPlayer.Multiplayer
             return r;
         }
 
-        /// <summary>A small coloured square for a player; records it for the name tooltip.</summary>
-        private void DrawPlayerSquare(SpriteBatch sb, Texture2D pixel, Rectangle r, int hue, string name)
+        /// <summary>A player's round picture (protocol 5; colour disc while it loads); records it for the name tooltip.</summary>
+        private void DrawPlayerSquare(SpriteBatch sb, SpriteFont? font, Rectangle r, int hue, string name, string avatar)
         {
             bool hovered = r.Contains(_lastMousePos);
             if (hovered)
-                sb.Draw(pixel, new Rectangle(r.X - 2, r.Y - 2, r.Width + 4, r.Height + 4), Color.White * (0.9f * _fadeAlpha));
-            sb.Draw(pixel, r, GetColorFromHue(hue) * _fadeAlpha);
-            DrawBorder(sb, pixel, r.X, r.Y, r.Width, r.Height, Color.Black * (0.5f * _fadeAlpha), 1);
+                sb.Draw(AvatarCache.Circle(sb.GraphicsDevice), new Rectangle(r.X - 2, r.Y - 2, r.Width + 4, r.Height + 4), Color.White * (0.9f * _fadeAlpha));
+            DrawAvatar(sb, font, avatar, r, hue, name, _fadeAlpha);
             _holderSquares.Add((r, name));
         }
 

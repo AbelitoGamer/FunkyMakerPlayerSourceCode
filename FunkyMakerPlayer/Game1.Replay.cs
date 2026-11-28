@@ -302,7 +302,7 @@ public partial class Game1
             return;
         }
 
-        string me = Multiplayer.MultiplayerSettings.Instance.PlayerId;
+        string me = Multiplayer.MultiplayerSettings.Instance.OnlinePlayerId;
         string? opponent = _opponentPlayerId;
         if (string.IsNullOrWhiteSpace(me) || string.IsNullOrWhiteSpace(opponent) || string.IsNullOrEmpty(replay.LevelHash))
             return;

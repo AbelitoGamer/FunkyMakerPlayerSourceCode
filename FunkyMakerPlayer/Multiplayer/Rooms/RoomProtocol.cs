@@ -10,12 +10,14 @@ namespace FunkyMakerPlayer.Multiplayer.Rooms;
 public static class Protocol
 {
     /// <summary>
+    /// 5 = Discord accounts: Hello carries the session token (none = guest: room list and leaderboards
+    ///     only, no creating / joining rooms); players carry an avatar URL.
     /// 4 = Cloudflare Workers server: plain WebSocket JSON hub instead of SignalR, R2 chunked uploads
     ///     (equal-size chunks), X-File-Hash on packed uploads.
     /// 3 = osu!mania songs (level kinds, room song types, packed set transfers with variants).
     /// 2 = room system (room list, waiting room, turns, N players). 1 was the old pair-transfer server.
     /// </summary>
-    public const int Version = 4;
+    public const int Version = 5;
 
     // ── Level kinds ──────────────────────────────────────────────────────────
     /// <summary>A Funky Maker level file (.fnmm / .zip / .rar).</summary>
@@ -121,6 +123,23 @@ public sealed class HelloRequest
     public bool OsuSkipVideo { get; set; }
     /// <summary>Receive FNF levels as chart + music only (no sprites). Sent again when it changes.</summary>
     public bool FnfChartOnly { get; set; }
+    /// <summary>Session token from the Discord login (empty = guest). Since protocol 5 the server ignores
+    /// PlayerId / Username and takes them from the account (only a local dev server still uses them).</summary>
+    public string SessionToken { get; set; } = "";
+}
+
+/// <summary>The Discord account a connection is logged in as.</summary>
+public sealed class AccountInfo
+{
+    /// <summary>Discord user id (= PlayerId everywhere).</summary>
+    public string PlayerId { get; set; } = "";
+    /// <summary>Shown name (Discord display name folded to ASCII, or the unique username).</summary>
+    public string Username { get; set; } = "";
+    /// <summary>Unique Discord username.</summary>
+    public string DiscordUsername { get; set; } = "";
+    /// <summary>Avatar PNG URL (Discord CDN).</summary>
+    public string Avatar { get; set; } = "";
+    public int ColorHue { get; set; } = 180;
 }
 
 public sealed class HelloResult
@@ -138,6 +157,13 @@ public sealed class HelloResult
     public bool SupportsFnfChartOnly { get; set; }
     /// <summary>Preferred chunk size in bytes for chunked uploads (0 = client default).</summary>
     public int UploadChunkBytes { get; set; }
+    /// <summary>No (valid) account: leaderboards and the room list only.</summary>
+    public bool Guest { get; set; } = true;
+    public AccountInfo? Account { get; set; }
+    /// <summary>Renewed session token (30 days from now); save it. Empty for guests.</summary>
+    public string SessionToken { get; set; } = "";
+    /// <summary>"expired" / "invalid" when the saved token was refused.</summary>
+    public string AuthError { get; set; } = "";
 }
 
 public sealed class OpResult
@@ -213,6 +239,8 @@ public sealed class RoomPlayerSummary
     public string Id { get; set; } = "";
     public string Username { get; set; } = "";
     public int ColorHue { get; set; } = 180;
+    /// <summary>Avatar URL (Discord CDN), empty = none.</summary>
+    public string Avatar { get; set; } = "";
 }
 
 /// <summary>A row of the room browser.</summary>
@@ -260,6 +288,8 @@ public sealed class RoomMember
     public string Id { get; set; } = "";
     public string Username { get; set; } = "";
     public int ColorHue { get; set; } = 180;
+    /// <summary>Avatar URL (Discord CDN), empty = none.</summary>
+    public string Avatar { get; set; } = "";
     public bool IsHost { get; set; }
     /// <summary>notready / ready / playing / spectating.</summary>
     public string Status { get; set; } = Protocol.StatusNotReady;
@@ -331,6 +361,7 @@ public sealed class PlayerResult
     public string PlayerId { get; set; } = "";
     public string Username { get; set; } = "";
     public int ColorHue { get; set; } = 180;
+    public string Avatar { get; set; } = "";
     public int Side { get; set; }
     public int Team { get; set; } = -1;
     public long Score { get; set; }
@@ -365,6 +396,8 @@ public sealed class ChatMessage
     public string PlayerId { get; set; } = "";
     public string Username { get; set; } = "";
     public int ColorHue { get; set; } = 180;
+    /// <summary>Sender's avatar URL, empty for system messages.</summary>
+    public string Avatar { get; set; } = "";
     public string Text { get; set; } = "";
     public bool System { get; set; }
     public long Timestamp { get; set; }

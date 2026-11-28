@@ -30,6 +30,8 @@ namespace FunkyMakerPlayer.Multiplayer
         /// Player's color hue
         /// </summary>
         public int ColorHue { get; set; } = 180;
+        /// <summary>Avatar URL (Discord CDN), empty = none (protocol 5).</summary>
+        public string Avatar { get; set; } = "";
         
         // ══════════════════════════════════════════════════════════════════════
         // Statistics
@@ -244,6 +246,8 @@ namespace FunkyMakerPlayer.Multiplayer
         public string Username { get; set; } = "Unknown";
         public int AvatarIndex { get; set; } = 0;
         public int ColorHue { get; set; } = 180;
+        /// <summary>Avatar URL (Discord CDN), empty = none (protocol 5).</summary>
+        public string Avatar { get; set; } = "";
         
         /// <summary>
         /// Final score

@@ -65,6 +65,8 @@ namespace FunkyMakerPlayer.Multiplayer
         public string Username { get; set; } = "";
         public int AvatarIndex { get; set; } = 0;
         public int ColorHue { get; set; } = 180;
+        /// <summary>Avatar URL (Discord CDN), empty = none (protocol 5).</summary>
+        public string Avatar { get; set; } = "";
         public long TotalScore { get; set; } = 0;
         public int Wins { get; set; } = 0;
         public int Losses { get; set; } = 0;
@@ -99,6 +101,8 @@ namespace FunkyMakerPlayer.Multiplayer
         public string Username { get; set; } = "";
         public int AvatarIndex { get; set; } = 0;
         public int ColorHue { get; set; } = 180;
+        /// <summary>Avatar URL (Discord CDN), empty = none (protocol 5).</summary>
+        public string Avatar { get; set; } = "";
         public long Score { get; set; } = 0;
         public float Accuracy { get; set; } = 0f;
         public int MaxCombo { get; set; } = 0;

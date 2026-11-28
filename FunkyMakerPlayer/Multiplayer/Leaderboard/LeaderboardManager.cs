@@ -218,92 +218,43 @@ namespace FunkyMakerPlayer.Multiplayer
         }
 
         /// <summary>
-        /// Merge global leaderboard entries received from server without losing offline records.
+        /// The server's leaderboard (top 50) replaces the cached copy. Since protocol 5 (Discord accounts)
+        /// the server is the only source: the ranking restarted from zero with accounts, and merging kept
+        /// showing the old device-id players forever.
         /// </summary>
         public void ApplyServerLeaderboard(IEnumerable<LeaderboardEntryPacket> serverEntries)
         {
-            bool changed = false;
-            foreach (var pkt in serverEntries)
-            {
-                var existing = _leaderboard.FirstOrDefault(e =>
-                    (!string.IsNullOrWhiteSpace(pkt.PlayerId) && e.PlayerId == pkt.PlayerId) ||
-                    (!string.IsNullOrWhiteSpace(pkt.Username) &&
-                     string.Equals(e.Username, pkt.Username, StringComparison.OrdinalIgnoreCase)));
-
-                int serverMatches = pkt.Wins + pkt.Losses + pkt.Draws;
-                if (existing == null)
+            _leaderboard = serverEntries
+                .Where(pkt => pkt != null && !string.IsNullOrWhiteSpace(pkt.PlayerId))
+                .Select(pkt => new LeaderboardEntry
                 {
-                    _leaderboard.Add(new LeaderboardEntry
-                    {
-                        PlayerId = pkt.PlayerId,
-                        Username = pkt.Username,
-                        AvatarIndex = pkt.AvatarIndex,
-                        ColorHue = pkt.ColorHue,
-                        TotalScore = pkt.TotalScore,
-                        Wins = pkt.Wins,
-                        Losses = pkt.Losses,
-                        Draws = pkt.Draws,
-                        HighestScore = pkt.HighestScore,
-                        HighestCombo = pkt.HighestCombo,
-                        BestAccuracy = pkt.BestAccuracy,
-                        EloRating = pkt.EloRating,
-                        LastPlayedTimestamp = pkt.LastPlayedTimestamp,
-                        CreatedTimestamp = pkt.CreatedTimestamp
-                    });
-                    changed = true;
-                }
-                else if (serverMatches >= existing.TotalMatches)
-                {
-                    if (!string.IsNullOrWhiteSpace(pkt.PlayerId))
-                        existing.PlayerId = pkt.PlayerId;
-                    if (!string.IsNullOrWhiteSpace(pkt.Username))
-                        existing.Username = pkt.Username;
-                    existing.ColorHue = pkt.ColorHue;
-                    existing.TotalScore = Math.Max(existing.TotalScore, pkt.TotalScore);
-                    existing.Wins = pkt.Wins;
-                    existing.Losses = pkt.Losses;
-                    existing.Draws = pkt.Draws;
-                    existing.HighestScore = Math.Max(existing.HighestScore, pkt.HighestScore);
-                    existing.HighestCombo = Math.Max(existing.HighestCombo, pkt.HighestCombo);
-                    existing.BestAccuracy = Math.Max(existing.BestAccuracy, pkt.BestAccuracy);
-                    existing.EloRating = pkt.EloRating;
-                    existing.LastPlayedTimestamp = Math.Max(existing.LastPlayedTimestamp, pkt.LastPlayedTimestamp);
-                    changed = true;
-                }
-            }
-
-            if (changed)
-            {
-                UpdateRankings();
-                Save();
-            }
+                    PlayerId = pkt.PlayerId,
+                    Username = pkt.Username,
+                    AvatarIndex = pkt.AvatarIndex,
+                    ColorHue = pkt.ColorHue,
+                    Avatar = pkt.Avatar ?? "",
+                    TotalScore = pkt.TotalScore,
+                    Wins = pkt.Wins,
+                    Losses = pkt.Losses,
+                    Draws = pkt.Draws,
+                    HighestScore = pkt.HighestScore,
+                    HighestCombo = pkt.HighestCombo,
+                    BestAccuracy = pkt.BestAccuracy,
+                    EloRating = pkt.EloRating,
+                    LastPlayedTimestamp = pkt.LastPlayedTimestamp,
+                    CreatedTimestamp = pkt.CreatedTimestamp
+                })
+                .ToList();
+            UpdateRankings();
+            Save();
         }
 
-        /// <summary>
-        /// Merge match history received from server deduplicating by MatchId.
-        /// </summary>
+        /// <summary>The server's recent matches replace the cached copy (see <see cref="ApplyServerLeaderboard"/>).</summary>
         public void ApplyServerMatchHistory(IEnumerable<MatchHistoryPacket> serverMatches)
         {
-            bool changed = false;
-            foreach (var pkt in serverMatches)
-            {
-                if (pkt == null) continue;
-                var players = (pkt.Players ?? new List<PlayerMatchData>()).Select(ToInfo).ToList();
-                var existing = string.IsNullOrEmpty(pkt.MatchId) ? null : _matchHistory.FirstOrDefault(m => m.MatchId == pkt.MatchId);
-                if (existing != null)
-                {
-                    // Older builds cached room matches as plain 1v1 duels: fill in the full participant list.
-                    if (existing.Players.Count == 0 && players.Count > 0)
-                    {
-                        existing.Players = players;
-                        existing.Mode = pkt.Mode ?? "";
-                        existing.WinningTeam = pkt.WinningTeam;
-                        changed = true;
-                    }
-                    continue;
-                }
-
-                _matchHistory.Add(new MatchHistoryEntry
+            _matchHistory = serverMatches
+                .Where(pkt => pkt != null)
+                .Select(pkt => new MatchHistoryEntry
                 {
                     MatchId = pkt.MatchId,
                     LevelName = pkt.LevelName,
@@ -314,13 +265,10 @@ namespace FunkyMakerPlayer.Multiplayer
                     WinningTeam = pkt.WinningTeam,
                     Player1 = ToInfo(pkt.Player1),
                     Player2 = ToInfo(pkt.Player2),
-                    Players = players,
-                });
-                changed = true;
-            }
-
-            if (changed)
-                Save();
+                    Players = (pkt.Players ?? new List<PlayerMatchData>()).Select(ToInfo).ToList(),
+                })
+                .ToList();
+            Save();
         }
 
         private static PlayerMatchInfo ToInfo(PlayerMatchData? p) => p == null ? new PlayerMatchInfo() : new PlayerMatchInfo
@@ -329,6 +277,7 @@ namespace FunkyMakerPlayer.Multiplayer
             Username = p.Username,
             AvatarIndex = p.AvatarIndex,
             ColorHue = p.ColorHue,
+            Avatar = p.Avatar ?? "",
             Score = p.Score,
             Accuracy = p.Accuracy,
             MaxCombo = p.MaxCombo,
