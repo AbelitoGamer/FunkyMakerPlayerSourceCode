@@ -28,9 +28,9 @@ public class NoteRenderer
     // Shit:  ±166ms  →  17 pts  (also the miss threshold)
     // Miss:          → -20 pts
     public const float HIT_WINDOW  = 0.166f;   // outermost window — beyond this = miss
-    private const float W_SICK  = 0.045f;
-    private const float W_GOOD  = 0.090f;
-    private const float W_BAD   = 0.135f;
+    public const float W_SICK  = 0.045f;
+    public const float W_GOOD  = 0.090f;
+    public const float W_BAD   = 0.135f;
     // W_SHIT = HIT_WINDOW (0.166f)
 
     public const int SCORE_SICK = 120;
@@ -80,6 +80,8 @@ public class NoteRenderer
     /// When true (default), ghost taps have no penalty.
     /// </summary>
     public static bool GhostTapping = true;
+    /// <summary>Fork: play the note style's miss sound when a note is missed (Settings → AUDIO &amp; VIDEO).</summary>
+    public static bool MissSounds = true;
 
     /// <summary>Draw each lane's key name on the player's strums (Settings → Gameplay). Off by default.</summary>
     public static bool ShowKeyLabels = false;
@@ -245,12 +247,6 @@ public class NoteRenderer
     // don't immediately cancel an active hold note (deterministic in songTime for replays).
     private const float HOLD_RELEASE_GRACE = 0.085f;
 
-    /// <summary>
-    /// When true, receptors and notes are hidden when no note is active.
-    /// Used for opponent strumlines — they only flash when singing.
-    /// </summary>
-    public bool HideWhenIdle = false;
-
     /// <summary>Alpha multiplier for drawing (0=invisible, 1=fully visible).</summary>
     public float Alpha = 1.0f;
 
@@ -327,7 +323,9 @@ public class NoteRenderer
     private float ScaleX  => ScreenW / 1280f;
     private float ScaleY  => ScreenH / 720f;
     // Effective scroll speed including visual multiplier and screen scale
-    private float EffSpeed => _scrollSpeed * ScrollMultiplier * ScaleY;
+    // × NoteScale: smaller strumlines (stage ones) scroll proportionally slower, so notes take the
+    // same time per note size as on a full-size strumline (HUD strumlines have NoteScale 1)
+    private float EffSpeed => _scrollSpeed * ScrollMultiplier * ScaleY * NoteScale;
 
     /// <summary>
     /// Fork (osu! songs): variable scroll speed (SV). Null = constant speed. Notes are drawn by
@@ -383,6 +381,83 @@ public class NoteRenderer
         return groupStart + shift + (second ? lane - 2 : lane) * laneW + hudOffsetX;
     }
 
+    // ── Stage strumlines (fork: extra strumlines drawn over their character) ─────────
+
+    /// <summary>
+    /// True while a hold is being played or a note of this strumline reaches the receptor within
+    /// <paramref name="lookAhead"/> seconds (notes still inside the hit window count too).
+    /// </summary>
+    public bool HasNotesWithin(float songTime, float lookAhead)
+    {
+        for (int lane = 0; lane < LANE_COUNT; lane++)
+        {
+            if (_holdEndTime[lane] > 0f && songTime < _holdEndTime[lane]) return true;
+            foreach (var n in _notes[lane])
+            {
+                if (n.Start > songTime + lookAhead) continue;
+                if (n.Start + n.Duration >= songTime - HIT_WINDOW) return true;
+            }
+        }
+        return false;
+    }
+
+    /// <summary>Width of the four lanes on screen (render-target pixels) at the current scales.</summary>
+    public float LanesWidthPx => LANE_COUNT * LANE_WIDTH * ScaleX * NoteScale * HudStrumScale;
+
+    /// <summary>
+    /// Horizontal span of the lanes on screen, with the lane underlay's margin
+    /// (the same column <see cref="DrawLaneUnderlay"/> covers).
+    /// </summary>
+    public (float Left, float Right) LaneSpan()
+    {
+        float sx0 = ScaleX * NoteScale;
+        float laneW = LANE_WIDTH * sx0 * HudStrumScale;
+        float hudOffsetX = HudOffsetPx.X;
+        float left = float.MaxValue, right = float.MinValue;
+        for (int lane = 0; lane < LANE_COUNT; lane++)
+        {
+            float baseX = LaneLeftX(lane, sx0, laneW, hudOffsetX);
+            left = Math.Min(left, baseX);
+            right = Math.Max(right, baseX + laneW);
+        }
+        float margin = laneW * 0.08f;
+        return (left - margin, right + margin);
+    }
+
+    /// <summary>No beat-synced arrow effects (bounces, hold pulse) on this strumline (stage strumlines).</summary>
+    public bool NoArrowEffects;
+
+    /// <summary>
+    /// Stage strumlines: notes (and hold tails) are only drawn closer than this to the receptor,
+    /// in render-target pixels, fading in over the last <see cref="NoteFadeLength"/> px. 0 = off.
+    /// </summary>
+    public float NoteFadeDistance;
+    public float NoteFadeLength;
+
+    /// <summary>Lanes width on screen per unit of <see cref="NoteScale"/> (render-target pixels).</summary>
+    public float LanesWidthPerScale => LANE_COUNT * LANE_WIDTH * ScaleX * HudStrumScale;
+
+    /// <summary>
+    /// Places the lanes with their centre at <paramref name="centerX"/> and the receptors'
+    /// centre at <paramref name="receptorY"/> (render-target pixels).
+    /// <see cref="SetXOffset"/> takes unscaled units, so the screen position is converted here.
+    /// </summary>
+    public void PlaceAt(float centerX, float receptorY)
+    {
+        float sx0 = Math.Max(0.0001f, ScaleX * NoteScale);
+        SetXOffset((centerX - LANE_COUNT * LANE_WIDTH * sx0 / 2f) / sx0);
+        SetStrumY(receptorY);
+    }
+
+    /// <summary>Undoes <see cref="PlaceAt"/>/<see cref="NoteScale"/> (back to the HUD layout's Y and size).</summary>
+    public void ResetStagePlacement()
+    {
+        _customStrumY = -1f;
+        NoteScale = 1f;
+        NoArrowEffects = false;
+        NoteFadeDistance = 0f;
+    }
+
     /// <summary>Score rounded from the exact (multiplied) total.</summary>
     public int Score => (int)Math.Round(_scoreExact);
     private double _scoreExact;
@@ -407,7 +482,7 @@ public class NoteRenderer
         Combo = 0;
         AddScore(-MISS_PENALTY);
         _comboBreakTimer[lane] = 0.5f;
-        if (!MuteMissSound) _style?.PlayMissSound();
+        if (!MuteMissSound && MissSounds) _style?.PlayMissSound();
         LastMissLane = lane;
         OnNoteMiss?.Invoke();
         OnJudgement?.Invoke(judgement);
@@ -453,6 +528,9 @@ public class NoteRenderer
     public int Combo  { get; private set; }
     
     // ── Rating counters (for accurate accuracy calculation) ───────────────
+    /// <summary>Fork: signed timing error of every note hit, in song seconds (negative = early), for the results screen.</summary>
+    public readonly List<float> HitErrors = new();
+
     public int Sicks { get; private set; }
     public int Goods { get; private set; }
     public int Bads  { get; private set; }
@@ -997,6 +1075,7 @@ public class NoteRenderer
 
                 // Press the note and fire onPressEvent — level handles effects via action_packs.
                 // Fallback: if no onPressEvent, apply default mechanic based on skin type.
+                if (HitErrors.Count < 50000) HitErrors.Add(songTime - best.Start);
                 int scoreGain = RateScore(bestDist);
                 AddScore(scoreGain);
                 Combo++;
@@ -1160,13 +1239,6 @@ public class NoteRenderer
             return;
         }
 
-        // HideWhenIdle: opponent strumlines only show when a note is active
-        if (HideWhenIdle && !_anyLaneActive)
-        {
-            _pendingSplashLane = -1;
-            return;
-        }
-
         float sh     = ScreenH;
         float sx0    = ScaleX * NoteScale;
         float sx     = sx0 * HudStrumScale;
@@ -1191,6 +1263,7 @@ public class NoteRenderer
             {
                 float remainingTime = ScrollDistance(songTime, _holdEndTime[lane]);
                 float holdPx = remainingTime * spd;
+                if (NoteFadeDistance > 0f) holdPx = Math.Min(holdPx, NoteFadeDistance);
                 DrawActiveHold(sb, lane, baseX, cx, strumY, holdPx, laneW);
             }
 
@@ -1224,12 +1297,25 @@ public class NoteRenderer
                     if (Downscroll  && noteY > strumY && pastReceptor > HIT_WINDOW) continue;
                 }
 
-                if (note.Duration > 0)
+                // Notes only appear within NoteFadeDistance of the receptor, fading in (stage strumlines)
+                float noteAlpha = alpha;
+                float holdPxMax = float.MaxValue;
+                if (NoteFadeDistance > 0f)
                 {
-                    DrawHold(sb, lane, baseX, cx, noteY, ScrollDistance(note.Start, note.Start + note.Duration) * spd, strumY, laneW, alpha, sx);
+                    float dist = Math.Abs(noteY - strumY);
+                    if (dist >= NoteFadeDistance) continue;
+                    float fadeLen = Math.Max(1f, NoteFadeLength);
+                    noteAlpha = alpha * Math.Clamp((NoteFadeDistance - dist) / fadeLen, 0f, 1f);
+                    holdPxMax = NoteFadeDistance - dist;  // tails stop at the same limit
                 }
 
-                DrawNoteHead(sb, lane, cx, noteY, note, sx, alpha, strumY);
+                if (note.Duration > 0)
+                {
+                    float holdPx = Math.Min(ScrollDistance(note.Start, note.Start + note.Duration) * spd, holdPxMax);
+                    DrawHold(sb, lane, baseX, cx, noteY, holdPx, strumY, laneW, noteAlpha, sx);
+                }
+
+                DrawNoteHead(sb, lane, cx, noteY, note, sx, noteAlpha, strumY);
             }
         }
 
@@ -1254,8 +1340,8 @@ public class NoteRenderer
                 float baseX = LaneLeftX(lane, sx0, laneW, hudOffset.X);
                 float lx = baseX + laneW / 2f;
                 string label = Controls.AsciiKeyName(PlayerKeys[lane]);
-                var sz = font.MeasureString(label);
-                sb.DrawString(font, label,
+                var sz = font.MeasureUi(label);
+                sb.DrawUiString(font, label,
                     new Vector2(lx - sz.X / 2f, strumY - sz.Y / 2f),
                     Color.White * 0.5f * alpha);  // Use alpha parameter (respects HUD visibility fade)
             }
@@ -1303,7 +1389,7 @@ public class NoteRenderer
 
         // Apply BPM-synchronized pulse effect
         float pulseScale = 1f;
-        if (_arrowEffects != null && ArrowEffectManager.Enabled)
+        if (_arrowEffects != null && ArrowEffectManager.Enabled && !NoArrowEffects)
         {
             float songBeats = _currentSongTime / 60f * _level.Data.EffectiveBpm;
             pulseScale = _arrowEffects.GetHoldNotePulse(songBeats);
@@ -1452,7 +1538,7 @@ public class NoteRenderer
         float effectOffsetX = 0f, effectOffsetY = 0f, effectRotation = 0f;
         float effectScale = 1f, effectGlow = 0f;
         
-        if (_arrowEffects != null && ArrowEffectManager.Enabled)
+        if (_arrowEffects != null && ArrowEffectManager.Enabled && !NoArrowEffects)
         {
             var transform = _arrowEffects.GetArrowTransform(lane, cx, cy);
             effectOffsetX = transform.offsetX;
@@ -1642,7 +1728,7 @@ public class NoteRenderer
     private void DrawFmmReceptor(SpriteBatch sb, int lane, float cx, float cy, float sx, float alpha)
     {
         float rotation = 0f;
-        if (_arrowEffects != null && ArrowEffectManager.Enabled)
+        if (_arrowEffects != null && ArrowEffectManager.Enabled && !NoArrowEffects)
         {
             var transform = _arrowEffects.GetArrowTransform(lane, cx, cy);
             cx += transform.offsetX;
@@ -1709,7 +1795,6 @@ public class NoteRenderer
                     ? LaneColors[lane] * alpha
                     : baseTint * alpha;
                 
-                // CHECK: Cornered-exclusive yellow arrows (NOTE_undyne - scrambled notes)
                 float s     = _style.NoteScale * sx;
                 
                 // ── FNF-STYLE NOTE ENHANCEMENTS ───────────────────────────────
@@ -1848,7 +1933,7 @@ public class NoteRenderer
         if (_font == null) return;
 
         // Scale so the symbol fills ~40% of the note's visual width
-        var baseSize = _font.MeasureString(symbol);
+        var baseSize = _font.MeasureUi(symbol);
         float targetW = noteVisualW * 0.40f;
         float symScale = baseSize.X > 0 ? targetW / baseSize.X : 1f;
         var symSize = baseSize * symScale;
@@ -1859,13 +1944,13 @@ public class NoteRenderer
         // Dark outline — draw at 4 offsets
         float off = symScale * 1.5f;
         Color outline = Color.Black * 0.8f * alpha;
-        sb.DrawString(_font, symbol, new Vector2(x - off, y - off), outline, 0f, Vector2.Zero, symScale, SpriteEffects.None, 0f);
-        sb.DrawString(_font, symbol, new Vector2(x + off, y - off), outline, 0f, Vector2.Zero, symScale, SpriteEffects.None, 0f);
-        sb.DrawString(_font, symbol, new Vector2(x - off, y + off), outline, 0f, Vector2.Zero, symScale, SpriteEffects.None, 0f);
-        sb.DrawString(_font, symbol, new Vector2(x + off, y + off), outline, 0f, Vector2.Zero, symScale, SpriteEffects.None, 0f);
+        sb.DrawUiString(_font, symbol, new Vector2(x - off, y - off), outline, 0f, Vector2.Zero, symScale, SpriteEffects.None, 0f);
+        sb.DrawUiString(_font, symbol, new Vector2(x + off, y - off), outline, 0f, Vector2.Zero, symScale, SpriteEffects.None, 0f);
+        sb.DrawUiString(_font, symbol, new Vector2(x - off, y + off), outline, 0f, Vector2.Zero, symScale, SpriteEffects.None, 0f);
+        sb.DrawUiString(_font, symbol, new Vector2(x + off, y + off), outline, 0f, Vector2.Zero, symScale, SpriteEffects.None, 0f);
 
         // Bright fill in lane color
-        sb.DrawString(_font, symbol, new Vector2(x, y), laneColor * alpha, 0f, Vector2.Zero, symScale, SpriteEffects.None, 0f);
+        sb.DrawUiString(_font, symbol, new Vector2(x, y), laneColor * alpha, 0f, Vector2.Zero, symScale, SpriteEffects.None, 0f);
     }
 
     // ── Helpers ──────────────────────────────────────────────────────────────

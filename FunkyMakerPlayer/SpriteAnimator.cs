@@ -458,7 +458,11 @@ public class SpriteAnimator
     public void Draw(SpriteBatch sb)
     {
         if (!Visible || _def.Data.Count == 0) return;
+        DrawCurrent(sb);
+    }
 
+    private void DrawCurrent(SpriteBatch sb)
+    {
         int   sprType  = (int)_def.Type;
         var   anim     = _def.Data[_currentAnim];
         float sprScale = anim.Scale;
@@ -619,7 +623,7 @@ public class SpriteAnimator
                 fixedScale = new Vector2(absScaleX * sprScale * dc * ps, absScaleY * sprScale * dc * ps);
             }
             
-            sb.Draw(tex, Position, src, BlendColor, 0f, origin, fixedScale, effects, 0f);
+            Emit(sb, tex, Position, src, origin, fixedScale, effects, 0f);
         }
         else
         {
@@ -649,7 +653,7 @@ public class SpriteAnimator
                 _offsetLogged = true;
             }
             
-            sb.Draw(tex, drawPos, src, BlendColor, 0f, Vector2.Zero, finalScale, effects, 0f);
+            Emit(sb, tex, drawPos, src, Vector2.Zero, finalScale, effects, 0f);
         }
     }
 
@@ -698,7 +702,7 @@ public class SpriteAnimator
                 fixedScale = new Vector2(absScaleX * sprScale * dc * ps, absScaleY * sprScale * dc * ps);
             }
             
-            sb.Draw(tex, Position, null, BlendColor, 0f, origin, fixedScale, effects, 0f);
+            Emit(sb, tex, Position, null, origin, fixedScale, effects, 0f);
         }
         else
         {
@@ -728,7 +732,7 @@ public class SpriteAnimator
                 _offsetLogged = true;
             }
             
-            sb.Draw(tex, drawPos, null, BlendColor, 0f, Vector2.Zero, finalScale, effects, 0f);
+            Emit(sb, tex, drawPos, null, Vector2.Zero, finalScale, effects, 0f);
         }
     }
 
@@ -775,7 +779,7 @@ public class SpriteAnimator
             _offsetLogged = true;
         }
 
-        sb.Draw(tex, drawPos, src, BlendColor, 0f, Vector2.Zero, finalScale, effects, 0f);
+        Emit(sb, tex, drawPos, src, Vector2.Zero, finalScale, effects, 0f);
     }
 
     /// <summary>
@@ -829,7 +833,7 @@ public class SpriteAnimator
                 ? new Vector2(absScaleX * sprScale * dc, absScaleY * sprScale * dc)
                 : new Vector2(absScaleX * sprScale * dc * ps, absScaleY * sprScale * dc * ps);
             
-            sb.Draw(tex, Position, src, BlendColor, 0f, origin, fixedScale, effects, 0f);
+            Emit(sb, tex, Position, src, origin, fixedScale, effects, 0f);
         }
         else
         {
@@ -844,8 +848,114 @@ public class SpriteAnimator
                 _offsetLogged = true;
             }
             
-            sb.Draw(tex, drawPos, src, BlendColor, 0f, Vector2.Zero, finalScale, effects, 0f);
+            Emit(sb, tex, drawPos, src, Vector2.Zero, finalScale, effects, 0f);
         }
+    }
+
+    // ── Drawn bounds (fork: stage strumlines are placed over the character) ──────────
+    /// <summary>
+    /// Matrix the scene renderer last drew this sprite with (camera, fixed-world or identity,
+    /// without the render-target scale). Turns <see cref="TryGetAnchorBounds"/> into screen space.
+    /// </summary>
+    public Matrix LastDrawMatrix = Matrix.Identity;
+
+    private bool    _hasDrawRect;
+    private Vector2 _drawMin, _drawMax;              // last drawn frame, local (pre-matrix) coords
+    private bool    _hasIdleRect;
+    private Vector2 _idleMin, _idleMax;              // union of the idle (anim 0) frames, relative to Position
+    private Vector3 _idleKey;                        // Scale + FixedPixelScale the idle union was built with
+
+    private bool    _measuring;                      // MeasureIdleBox: Emit only records, no draw
+    private const int IdleMeasureMaxFrames = 64;
+
+    /// <summary>Draws one sprite quad and remembers the rectangle it covered.</summary>
+    private void Emit(SpriteBatch sb, Texture2D tex, Vector2 pos, Rectangle? src, Vector2 origin,
+                      Vector2 scale, SpriteEffects effects, float depth)
+    {
+        float w = src?.Width ?? tex.Width;
+        float h = src?.Height ?? tex.Height;
+        var min = pos - origin * scale;
+        var max = min + new Vector2(w, h) * scale;
+
+        if (_measuring)
+        {
+            // Idle frames are merged into one stable box
+            if (!_hasIdleRect) { _idleMin = min - Position; _idleMax = max - Position; _hasIdleRect = true; }
+            else
+            {
+                _idleMin = Vector2.Min(_idleMin, min - Position);
+                _idleMax = Vector2.Max(_idleMax, max - Position);
+            }
+            return;
+        }
+
+        sb.Draw(tex, pos, src, BlendColor, 0f, origin, scale, effects, depth);
+        _drawMin = min;
+        _drawMax = max;
+        _hasDrawRect = true;
+    }
+
+    /// <summary>
+    /// Builds the idle (anim 0) box from the sprite data by running the draw math over its
+    /// frames without drawing. It doesn't depend on the idle having been shown: a character
+    /// that appears mid-song singing (or sings non-stop) used to fall back to the current
+    /// frame's box, so whatever was placed over it jumped on every animation change.
+    /// </summary>
+    private void MeasureIdleBox(Vector3 key)
+    {
+        _idleKey = key;
+        _hasIdleRect = false;
+        if (_def.Data.Count == 0) return;
+
+        int savedAnim = _currentAnim;
+        float savedFrame = _currentFrame;
+        bool savedLogged = _offsetLogged;
+        _measuring = true;
+        try
+        {
+            _currentAnim = IdleAnim;
+            int fc = Math.Max(1, GetFrameCount(IdleAnim));
+            int samples = Math.Min(fc, IdleMeasureMaxFrames);
+            for (int s = 0; s < samples; s++)
+            {
+                _currentFrame = samples == fc ? s : (int)((long)s * (fc - 1) / Math.Max(1, samples - 1));
+                DrawCurrent(null!);
+            }
+        }
+        catch (Exception)
+        {
+            _hasIdleRect = false;  // bad sprite data: fall back to the drawn frame
+        }
+        finally
+        {
+            _measuring = false;
+            _currentAnim = savedAnim;
+            _currentFrame = savedFrame;
+            _offsetLogged = savedLogged;
+        }
+    }
+
+    /// <summary>
+    /// Box of the character in the sprite's local (pre-<see cref="LastDrawMatrix"/>) coordinates:
+    /// the idle frames' box at the current position and scale (whatever animation is playing),
+    /// or the last drawn frame if the idle has nothing to measure. False until then.
+    /// </summary>
+    public bool TryGetAnchorBounds(out Vector2 min, out Vector2 max)
+    {
+        var key = new Vector3(Scale, FixedPixelScale);
+        if (!_hasIdleRect || Vector3.DistanceSquared(key, _idleKey) > 1e-8f)
+        {
+            MeasureIdleBox(key);
+        }
+        if (_hasIdleRect)
+        {
+            min = Position + _idleMin;
+            max = Position + _idleMax;
+            return true;
+        }
+        min = _drawMin;
+        max = _drawMax;
+        return _hasDrawRect;
     }
 
     private static SpriteEffects BuildEffects(ref Vector2 scale)

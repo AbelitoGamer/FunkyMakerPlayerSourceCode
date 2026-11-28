@@ -581,6 +581,9 @@ public partial class Game1
                 chartIndex = 1 - i;  // Freeplay enemy mode (fork): you play the enemy chart
             }
             
+            // Teams (fork): a song with notes on only one of the two playable charts gives both teams
+            // that chart (the empty side gets the other side's notes).
+            if (i <= 1) chartIndex = TeamsChartFor(chartIndex);
             var renderer = new NoteRenderer(_level, chartIndex, xOffset, GraphicsDevice, LevelNoteStyle()); // osu! beatmap skin (fork)
             renderer.SetSplashStyle(_noteSplashStyle);  // Apply splash style (null = programmatic default)
             renderer.SetParticleSplash(_particleNoteSplash);  // Apply particle splash (null if not using)
@@ -629,8 +632,6 @@ public partial class Game1
             }
             // HUD editor strumline offsets: index 0 = player, 1 = opponent
             renderer.HudRole = i <= 1 ? i : -1;
-            // With 3+ strumlines: extras (2+) hide when idle
-            if (strumlineCount >= 3 && i >= 2) renderer.HideWhenIdle = true;
             // Multiplayer: Disable botplay for opponent (index 1) — hits come from network
             if (duelLayout && i == 1) renderer.DisableBotplay = true;
             renderer.SetRenderTargetSize(rtW, rtH);
@@ -639,7 +640,7 @@ public partial class Game1
         }
 
         if (_isMultiplayerMatch)
-            ConfigureRoomMatchRenderers(myChartIndex);
+            ConfigureRoomMatchRenderers(TeamsChartFor(myChartIndex));
 
         // Apply midlescroll split to opponent strumline if needed (online: also with extra strumlines,
         // strumline 1 keeps its fixed place there, see DrawNotes)
@@ -656,6 +657,8 @@ public partial class Game1
         // Wire character animations for each strumline.
         // Callbacks read objs[j].StrumLine at call time so ObjectChartChange
         // events that reassign an object to a different strumline take effect immediately.
+        _rendererCharStrumLine = new int[_noteRenderers.Count];
+        ResetStageStrumlines();
         for (int i = 0; i < _noteRenderers.Count; i++)
         {
             int strumlineIdx = i;
@@ -676,7 +679,8 @@ public partial class Game1
             {
                 characterStrumLineToAnimate = 1 - i;  // Freeplay enemy mode (fork)
             }
-            
+            _rendererCharStrumLine[i] = characterStrumLineToAnimate; // stage strumlines float over these
+
             var hitRenderer = _noteRenderers[i];
             _noteRenderers[i].OnNoteHit = (lane, holdEnd) =>
             {
@@ -841,19 +845,6 @@ public partial class Game1
         }
         
         _events = new EventProcessor(_level, _objAnimators, texCache);
-        
-        // Initialize Cornered-specific event handler using UUID detection (more reliable than name)
-        // UUID: 01kd72pw682p6mrj4wg388zgz5 from Cornered/meta.json
-        // Chart was already replaced in SetupLevel before renderers were created
-        if ((_level.Meta?.UUID ?? "").Equals("01kd72pw682p6mrj4wg388zgz5", StringComparison.OrdinalIgnoreCase))
-        {
-            _corneredEvents = new CorneredEventHandler(_events, _level, "default");
-            Console.WriteLine($"[Cornered] Exclusive event handler activated");
-        }
-        else
-        {
-            _corneredEvents = null;
-        }
         
         // Store initial camera position for scrollFactor calculations
         if (_events.Camera != null)
