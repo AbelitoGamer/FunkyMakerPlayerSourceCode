@@ -524,6 +524,9 @@ public partial class Game1 : Game
             // Required for Android/PC to handle large spritesheets
             GraphicsProfile = GraphicsProfile.HiDef,
         };
+#if !ANDROID
+        ApplyDevHarnessStartup(); // FMP_* environment variables only (Game1.DevShot.cs)
+#endif
         Content.RootDirectory = "Content";
         IsMouseVisible  = true;
         IsFixedTimeStep = false;  // uncapped — runs as fast as the PC allows
@@ -1119,6 +1122,9 @@ public partial class Game1 : Game
             return;
         }
 
+#if !ANDROID
+        UpdateDevHarness((float)gameTime.ElapsedGameTime.TotalSeconds); // FMP_* dev harness only
+#endif
         var uiSnapshot = CaptureUiSfxSnapshot();
         try
         {
@@ -2980,6 +2986,9 @@ public partial class Game1 : Game
         {
             if (DrawTestGate()) return;  // test build still gated (fork)
             DrawInternal(gameTime);
+#if !ANDROID
+            DevShotAfterDraw();
+#endif
         }
         catch (Exception ex)
         {

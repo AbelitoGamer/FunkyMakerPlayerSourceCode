@@ -258,3 +258,22 @@ public partial class FreeplayMenu
     }
 #endif
 }
+
+public partial class FreeplayMenu
+{
+    /// <summary>Developer harness (Game1.DevShot.cs): opens a screen of this menu.</summary>
+    internal void DevOpen(string what)
+    {
+        switch (what)
+        {
+            case "freeplay": ExecuteMainMenuSelection(0); break;
+            case "editors": ExecuteMainMenuSelection(3); break;
+            case "credits": ExecuteMainMenuSelection(5); break;
+            case "replays": ExecuteMainMenuSelection(2); break;
+            case "online": ExecuteMainMenuSelection(1); break;
+#if !ANDROID
+            case "modsfolder": RunTitleButton(TitleButton.ModsFolder); break;
+#endif
+        }
+    }
+}

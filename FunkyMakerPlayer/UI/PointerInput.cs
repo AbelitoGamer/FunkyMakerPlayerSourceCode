@@ -24,7 +24,7 @@ public static class PointerInput
     public const float LongPressSeconds = 0.5f;
 
     /// <summary>True on platforms where the pointer is a finger (Android).</summary>
-    public static bool IsTouch => OperatingSystem.IsAndroid();
+    public static bool IsTouch => OperatingSystem.IsAndroid() || UiScale.SimulatedTouch;
 
     /// <summary>Label of the screens' back buttons: no keyboard key on phones.</summary>
     public static string BackLabel => IsTouch ? "<  Back" : "ESC  Back";
