@@ -640,6 +640,7 @@ public partial class FreeplayMenu
         Point rtMouse = TransformMouseToRenderTarget(mouse.Position, windowWidth, windowHeight, screenWidth, screenHeight);
         bool mouseClicked = mouse.LeftButton == ButtonState.Pressed && 
                            _prevMs.LeftButton == ButtonState.Released;
+        _pointerDown = mouse.LeftButton == ButtonState.Pressed;
 
         #if ANDROID
         var touches = Microsoft.Xna.Framework.Input.Touch.TouchPanel.GetState();
@@ -680,7 +681,7 @@ public partial class FreeplayMenu
                 _touchLongPressed = true;
                 touchLongPress = true;
             }
-            if (_touchDragging && _panelOpen)
+            if (_touchDragging && _panelOpen && _attemptsView == null) // the attempts row drags itself
             {
                 _manualScroll = true;
                 _targetScrollY += _touchLast.Y - rtMouse.Y;
@@ -694,6 +695,7 @@ public partial class FreeplayMenu
             mouseClicked = !_touchDragging && !_touchLongPressed;
         }
         _prevTouchDown = touchDown;
+        _pointerDown = touchDown;
         if (touchLongPress)
             mouse = new MouseState(mouse.X, mouse.Y, mouse.ScrollWheelValue, ButtonState.Released,
                 ButtonState.Released, ButtonState.Pressed, ButtonState.Released, ButtonState.Released);
@@ -796,14 +798,12 @@ public partial class FreeplayMenu
             bool mRight = (kb.IsKeyDown(Keys.Right) && !_prevKb.IsKeyDown(Keys.Right)) || (kb.IsKeyDown(Keys.Down) && !_prevKb.IsKeyDown(Keys.Down));
             bool mEnter = (kb.IsKeyDown(Keys.Enter) && !_prevKb.IsKeyDown(Keys.Enter)) || (kb.IsKeyDown(Keys.Space) && !_prevKb.IsKeyDown(Keys.Space));
             bool mEsc   = kb.IsKeyDown(Keys.Escape) && !_prevKb.IsKeyDown(Keys.Escape);
-            bool mYes   = (kb.IsKeyDown(Keys.Y) && !_prevKb.IsKeyDown(Keys.Y)) || (!_modalIsDelete && kb.IsKeyDown(Keys.S) && !_prevKb.IsKeyDown(Keys.S));
-            bool mNo    = kb.IsKeyDown(Keys.N) && !_prevKb.IsKeyDown(Keys.N);
 
             if (mLeft || mRight)
             {
                 _importModalSelection = 1 - _importModalSelection;
             }
-            else if (mYes || (mEnter && _importModalSelection == 0))
+            else if (mEnter && _importModalSelection == 0)
             {
                 _importModalOpen = false;
                 if (_modalIsDelete)
@@ -814,7 +814,7 @@ public partial class FreeplayMenu
                     LevelChosen = true;
                 }
             }
-            else if (mNo || mEsc || (mEnter && _importModalSelection == 1))
+            else if (mEsc || (mEnter && _importModalSelection == 1))
             {
                 _importModalOpen = false;
             }
@@ -948,6 +948,16 @@ public partial class FreeplayMenu
             return;
         }
 
+#if !ANDROID
+        // Move mods folder window (opened by the MODS FOLDER button, FreeplayMenu.TitleButtons.cs)
+        if (UpdateModsMoveWindow(kb, rtMouse, mouseClicked, mouseMoved, enter, esc))
+        {
+            _prevKb = kb;
+            _prevMs = mouse;
+            return;
+        }
+#endif
+
         // ── Psych Engine-style Update Modal (non-blocking, main menu only) ────
         if (_updateAvailable && _updateModalOpen && !_panelOpen && !_importModalOpen)
         {
@@ -988,12 +998,11 @@ public partial class FreeplayMenu
             return;
         }
 
-        // Corner badge or [U] key re-opens update prompt when dismissed
+        // The corner badge re-opens the update prompt when dismissed
         if (_updateAvailable && !_panelOpen)
         {
             _updateBadgeHover = _updateBadgeBounds != Rectangle.Empty && _updateBadgeBounds.Contains(rtMouse);
-            bool uPressed = Controls.Pressed(HotkeyAction.ShowUpdatePrompt, kb, _prevKb);
-            if ((_updateBadgeHover && mouseClicked) || uPressed)
+            if (_updateBadgeHover && mouseClicked)
             {
                 _updateModalOpen = true;
                 _updateDismissed = false;
@@ -1015,11 +1024,15 @@ public partial class FreeplayMenu
         }
         else
         {
-            #if ANDROID
-            const int menuCount = 9;
-            #else
             const int menuCount = 6;
-            #endif
+
+            // Secondary buttons under the main options (mods folder / Android import)
+            if (UpdateTitleButtons(rtMouse, mouseClicked))
+            {
+                _prevKb = kb;
+                _prevMs = mouse;
+                return;
+            }
 
             if (up)
             {
@@ -1092,33 +1105,12 @@ public partial class FreeplayMenu
         {
             SettingsRequested = true;
         }
-        #if ANDROID
-        else if (sel == 5)  // OPEN MODS (Android only)
-        {
-            MenuAction = 5;  // Signal to open mods folder
-        }
-        else if (sel == 6)  // IMPORT FILE (Android only)
-        {
-            MenuAction = 4;  // Signal to open file picker for mods
-        }
-        else if (sel == 7)  // GRANT FOLDER ACCESS (Android only)
-        {
-            MenuAction = 6;  // Signal to open SAF folder picker
-        }
-        else if (sel == 8)  // Credits — fade in
-        {
-            _transition   = TransitionState.CreditsIn;
-            _transTimer   = 0f;
-            _creditsAlpha = 0f;
-        }
-        #else
         else if (sel == 5)  // Credits — fade in
         {
             _transition   = TransitionState.CreditsIn;
             _transTimer   = 0f;
             _creditsAlpha = 0f;
         }
-        #endif
     }
 
     /// <summary>Consumes and returns the current main menu selection action, or -1 if none.</summary>
@@ -1186,11 +1178,9 @@ public partial class FreeplayMenu
         if ((_font != null || _fontRenderer != null) && !showDetails)
         {
             // Menu items — play modes & Editors clearly accessible on main menu
-            #if ANDROID
-            string[] items = { "FREEPLAY", "MULTIPLAYER", "REPLAYS", "EDITORS", "SETTINGS", "OPEN MODS", "IMPORT FILE", "GRANT FOLDER ACCESS", "CREDITS" };
-            #else
+            // The same six on every platform; the extra actions (mods folder, Android import / folder
+            // access) are the smaller buttons under them (FreeplayMenu.TitleButtons.cs)
             string[] items = { "FREEPLAY", "MULTIPLAYER", "REPLAYS", "EDITORS", "SETTINGS", "CREDITS" };
-            #endif
 
             // Title with glow effect - scaled cleanly across 720p .. 4K
             int maxLeftTitleW = Math.Max(140, leftW - UiScale.Px(36, s));
@@ -1242,7 +1232,7 @@ public partial class FreeplayMenu
             string mainMenuHint = $"UP/DOWN Navigate  |  ENTER / Click Select  |  [{Controls.Hint(HotkeyAction.OpenChartEditor)}] Editors  |  ESC Settings";
             #endif
             string hint = _inPanel 
-                ? "< ESC Back  |  7 Edit  |  N New Chart  |  I Import  |  R Refresh" 
+                ? "< ESC Back" 
                 : mainMenuHint;
             int hintSize = FitFontSize(hint, UiScale.FontPx(17, s), 11, leftW - UiScale.Px(24, s));
             var hintSz = MeasureText(hint, hintSize);
@@ -1263,17 +1253,34 @@ public partial class FreeplayMenu
             #endif
 
             float topBoundary = subY + subSz.Y + UiScale.Px(20, s);
-            float bottomBoundary = hintY - UiScale.Px(18, s);
+            // Secondary buttons row just above the hint
+            int titleRowH = TitleButtonsRowHeight(s);
+            int titleRowY = (int)(hintY - UiScale.Px(14, s) - titleRowH);
+            float bottomBoundary = titleRowY - UiScale.Px(16, s);
             float availableCardH = Math.Max(100f, bottomBoundary - topBoundary);
-            int totalMenuH = items.Length * cardHeight + (items.Length - 1) * cardSpacing;
-            if (totalMenuH > availableCardH && items.Length > 0)
+
+            // Touch screens (fork): a 2-column grid of big cards, so they stay finger-sized on a phone
+            // instead of being squeezed into one column (UI/UiScale.Touch)
+            int cols = UI.PointerInput.IsTouch && items.Length > 3 ? 2 : 1;
+            int rows = (items.Length + cols - 1) / cols;
+            int colGap = UiScale.Px(16, s, 8);
+            if (cols == 2)
+            {
+                menuSize = UiScale.FontPx(26, s);
+                cardWidth = Math.Clamp((int)((leftW - UiScale.Px(48, s) - colGap) / 2f), UiScale.Px(160, s), UiScale.Px(360, s));
+                cardHeight = UiScale.Px(64, s, 44);
+                cardSpacing = UiScale.Px(14, s, 8);
+            }
+            int totalMenuH = rows * cardHeight + (rows - 1) * cardSpacing;
+            if (totalMenuH > availableCardH && rows > 0)
             {
                 float ratio = availableCardH / totalMenuH;
                 cardSpacing = Math.Max(4, (int)(cardSpacing * ratio));
-                cardHeight = Math.Max(28, (int)((availableCardH - (items.Length - 1) * cardSpacing) / items.Length));
+                cardHeight = Math.Max(28, (int)((availableCardH - (rows - 1) * cardSpacing) / rows));
                 menuSize = Math.Clamp((int)(cardHeight * 0.56f), 14, menuSize);
-                totalMenuH = items.Length * cardHeight + (items.Length - 1) * cardSpacing;
+                totalMenuH = rows * cardHeight + (rows - 1) * cardSpacing;
             }
+            int gridW = cols * cardWidth + (cols - 1) * colGap;
             int startCardY = (int)Math.Max(topBoundary, topBoundary + (availableCardH - totalMenuH) / 2f);
 
             _mainMenuCardBounds.Clear();
@@ -1289,8 +1296,8 @@ public partial class FreeplayMenu
                 int itemSize = sel ? menuSize + UiScale.Px(2, s, 1) : menuSize;
                 var sz = MeasureText(items[i], itemSize);
                 
-                int cardX = leftW / 2 - cardWidth / 2;
-                int cardY = startCardY + i * (cardHeight + cardSpacing);
+                int cardX = leftW / 2 - gridW / 2 + (i % cols) * (cardWidth + colGap);
+                int cardY = startCardY + (i / cols) * (cardHeight + cardSpacing);
                 _mainMenuCardBounds.Add(new Rectangle(cardX, cardY, cardWidth, cardHeight));
                 
                 // Card background
@@ -1344,6 +1351,8 @@ public partial class FreeplayMenu
                 DrawText(sb, items[i], new Vector2(textX, textY), textCol, itemSize);
             }
 
+            DrawTitleButtons(sb, leftW, titleRowY, s);
+
             DrawText(sb, hint, new Vector2(leftW / 2f - hintSz.X / 2f, hintY),
                 Color.White * 0.35f, hintSize);
         }
@@ -1365,13 +1374,10 @@ public partial class FreeplayMenu
                 : _searchTyping
                 ? "Type to search  |  UP/DOWN Results  |  ENTER / ESC Done  |  Ctrl+Backspace Clear"
                 : _online != null
-                    ? $"ENTER Pick  |  [{Controls.Hint(HotkeyAction.PrevTab)}]/[{Controls.Hint(HotkeyAction.NextTab)}] Tabs  |  " +
-                      (OsuTab ? "LEFT/RIGHT Difficulty  |  " : "") +
-                      $"[{Controls.Hint(HotkeyAction.FreeplayOptions)}] Options  |  [{Controls.Hint(HotkeyAction.FreeplayFavorite)}] Favorite  |  " +
-                      $"[{Controls.Hint(HotkeyAction.FreeplaySort)}] Sort  |  ESC Back"
-                : $"ENTER Play  |  [{Controls.Hint(HotkeyAction.FreeplayOptions)}] Options  |  [{Controls.Hint(HotkeyAction.FreeplayModifiers)}] Modifiers  |  " +
-                  $"[{Controls.Hint(HotkeyAction.FreeplayAttempts)}] Attempts  |  [{Controls.Hint(HotkeyAction.FreeplayFavorite)}] Favorite  |  " +
-                  $"[{Controls.Hint(HotkeyAction.FreeplaySort)}] Sort  |  ESC Back";
+                    ? "UP/DOWN Select  |  ENTER Pick  |  " + (OsuTab ? "LEFT/RIGHT Difficulty  |  " : "") +
+                      "\"...\" or right click: Options  |  ESC Back"
+                : "UP/DOWN Select  |  ENTER Play  |  " + (OsuTab ? "LEFT/RIGHT Difficulty" : "LEFT/RIGHT Song Speed") +
+                  "  |  \"...\" or right click: Options  |  ESC Back";
             int phSize = FitFontSize(panelHint, UiScale.FontPx(14, s), 9, leftW - UiScale.Px(24, s));
             var phSz = MeasureText(panelHint, phSize);
             DrawText(sb, panelHint, new Vector2(leftW / 2f - phSz.X / 2f, sh - UiScale.Px(30, s)),
@@ -1587,6 +1593,7 @@ public partial class FreeplayMenu
                 ("Built with", null),
                 ("  MonoGame  MonoGame.Extended  FontStashSharp  NVorbis  NLayer", null),
                 ("  ImageSharp  SharpCompress  DiscordRichPresence", null),
+                ("  Claude (Anthropic)", null),
                 ("", null),
                 ("Special Thanks", null),
                 ("  AnnaHolOl (Ideas & Testing)", null),
@@ -1594,49 +1601,60 @@ public partial class FreeplayMenu
                 ("[Enter] or [ESC] to close", null),
             };
             
-            int creditSize = UiScale.FontPx(23, s);
+            // Touch screens (fork): two columns, so the text can be twice as big on a phone; the last
+            // line (how to close) goes under them. Split at "Online menu music..." (the second group).
+            bool twoCols = UI.PointerInput.IsTouch;
+            var closeLine = creditData[^1];
+            if (twoCols) closeLine = ("Tap anywhere to close", null);
+            var body = creditData[..^1];
+            int split = twoCols ? Array.FindIndex(body, c => c.text.StartsWith("Online menu music")) : -1;
+            var columns = split > 0 ? new[] { body[..split], body[split..] } : new[] { body };
+            int maxLines = 0;
+            foreach (var col0 in columns) maxLines = Math.Max(maxLines, col0.Length);
+            maxLines += 2; // gap + close line
+            float colW = sw * (columns.Length == 2 ? 0.46f : 0.94f);
+
+            int creditSize = UiScale.FontPx(columns.Length == 2 ? 26 : 23, s);
             // Shrink to fit short / narrow windows (the list is long).
-            float widest = 0f;
-            foreach (var (t, _) in creditData) widest = Math.Max(widest, MeasureText(t, creditSize).X);
-            while (creditSize > 10 &&
-                   ((MeasureText("A", creditSize).Y + UiScale.Px(6, s)) * creditData.Length > sh * 0.92f || widest > sw * 0.94f))
+            float Widest(int size)
             {
-                creditSize--;
-                widest = 0f;
-                foreach (var (t, _) in creditData) widest = Math.Max(widest, MeasureText(t, creditSize).X);
+                float w = 0f;
+                foreach (var col0 in columns) foreach (var (t, _) in col0) w = Math.Max(w, MeasureText(t, size).X);
+                return w;
             }
+            while (creditSize > 10 &&
+                   ((MeasureText("A", creditSize).Y + UiScale.Px(6, s)) * maxLines > sh * 0.92f || Widest(creditSize) > colW))
+                creditSize--;
             int ch = (int)(MeasureText("A", creditSize).Y) + UiScale.Px(6, s);
-            int totalCH = creditData.Length * ch;
-            int cy = sh / 2 - totalCH / 2;
-            
+            int top = sh / 2 - maxLines * ch / 2;
+
             Point pointerPos = _lastPointerPos;
-            
-            foreach (var (text, url) in creditData)
+
+            void DrawCredit(string text, string? url, float centerX, int cy)
             {
-                if (text.Length == 0) { cy += ch; continue; }
-                
+                if (text.Length == 0) return;
                 var sz = MeasureText(text, creditSize);
-                float textX = sw / 2f - sz.X / 2f;
-                
+                float textX = centerX - sz.X / 2f;
+
                 Color col;
                 bool isTitle = text == "Funky Maker Player";
                 bool isIndented = text.StartsWith("  ");
                 bool isLink = url != null;
-                
+
                 // Create bounds for clickable links (matching screen draw coordinates)
                 Rectangle bounds = new Rectangle((int)textX, cy, (int)sz.X, (int)sz.Y);
                 bool isHovered = isLink && bounds.Contains(pointerPos);
-                
+
                 if (isLink)
                 {
-                    _creditLinks.Add(new ClickableLink 
-                    { 
-                        Bounds = bounds, 
+                    _creditLinks.Add(new ClickableLink
+                    {
+                        Bounds = bounds,
                         Url = url ?? string.Empty,
                         IsHovered = isHovered
                     });
                 }
-                
+
                 // Color logic
                 if (isTitle)
                     col = new Color(255, 215, 0) * credAlpha;  // Gold
@@ -1648,17 +1666,28 @@ public partial class FreeplayMenu
                     col = Color.White * 0.5f * credAlpha;
                 else
                     col = Color.White * 0.85f * credAlpha;
-                
+
                 // Underline for links
                 if (isLink)
                 {
                     int underlineY = cy + (int)sz.Y + 2;
                     DrawRect(sb, (int)textX, underlineY, (int)sz.X, 1, col * 0.6f);
                 }
-                
+
                 DrawText(sb, text, new Vector2(textX, cy), col, creditSize);
-                cy += ch;
             }
+
+            for (int c = 0; c < columns.Length; c++)
+            {
+                float centerX = columns.Length == 2 ? sw * (c == 0 ? 0.27f : 0.73f) : sw / 2f;
+                int cy = top;
+                foreach (var (text, url) in columns[c])
+                {
+                    DrawCredit(text, url, centerX, cy);
+                    cy += ch;
+                }
+            }
+            DrawCredit(closeLine.text, closeLine.url, sw / 2f, top + (maxLines - 1) * ch);
         }
         else
         {
@@ -1686,12 +1715,15 @@ public partial class FreeplayMenu
             _updateLaterBounds = Rectangle.Empty;
             _updateBadgeBounds = Rectangle.Empty;
         }
+#if !ANDROID
+        DrawModsMoveWindow(sb, sw, sh);
+#endif
     }
 
     private void DrawUpdateCornerBadge(SpriteBatch sb, int sw, int sh)
     {
         float s = UiScale.FromScreen(sw, sh);
-        string text = UI.PointerInput.IsTouch ? $"UPDATE {_updateTag} AVAILABLE" : $"UPDATE {_updateTag} AVAILABLE  [{Controls.Hint(HotkeyAction.ShowUpdatePrompt)}]";
+        string text = $"UPDATE {_updateTag} AVAILABLE";
         int fontSize = UiScale.FontPx(15, s);
         var sz = MeasureText(text, fontSize);
         int padX = UiScale.Px(14, s);
@@ -1852,7 +1884,7 @@ public partial class FreeplayMenu
         {
             // Fallback to bitmap font with scale
             float scale = fontSize / 32f;  // Assuming base font is ~32px
-            sb.DrawString(_font, text, position, color, 0f, Vector2.Zero, scale, SpriteEffects.None, 0f);
+            sb.DrawUiString(_font, text, position, color, 0f, Vector2.Zero, scale, SpriteEffects.None, 0f);
         }
     }
     
@@ -1868,7 +1900,7 @@ public partial class FreeplayMenu
         else if (_font != null)
         {
             float scale = fontSize / 32f;
-            return _font.MeasureString(text) * scale;
+            return _font.MeasureUi(text) * scale;
         }
         return Vector2.Zero;
     }
@@ -1954,7 +1986,7 @@ public partial class FreeplayMenu
         #if ANDROID
         return "Tap here to pick a file";
         #else
-        return $"Click here or press [{Controls.Hint(HotkeyAction.ImportLevel)}] to browse files";
+        return "Click here to browse files";
         #endif
         #endif
     }
@@ -1975,8 +2007,8 @@ public partial class FreeplayMenu
         return OsuTab ? "Use IMPORT to add .OSZ songs / .OSK skins" : "Use IMPORT to add .FNMM / .ZIP / .RAR levels";
         #else
         return OsuTab
-            ? $"Drop .OSZ (songs) / .OSK (skins)  |  [{Controls.Hint(HotkeyAction.ImportLevel)}] Import"
-            : $"Drop .FNMM / .ZIP / .RAR  |  [{Controls.Hint(HotkeyAction.ImportLevel)}] Import File";
+            ? "Drop .OSZ songs / .OSK skins here, or use IMPORT"
+            : "Drop .FNMM / .ZIP / .RAR levels here, or use IMPORT";
         #endif
         #endif
     }

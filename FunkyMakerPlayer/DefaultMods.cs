@@ -59,6 +59,12 @@ public static class DefaultMods
         name.Equals(NoteStyleName, StringComparison.OrdinalIgnoreCase) ||
         name.Equals(LegacyNoteStyleName, StringComparison.OrdinalIgnoreCase);
 
+    /// <summary>Name shown for the default countdown in menus (its folder / setting value stay "Default").</summary>
+    public const string CountdownDisplayName = "FMM (Default)";
+
+    /// <summary>Display name of a countdown setting value / folder.</summary>
+    public static string CountdownLabel(string? name) => IsDefaultCountdown(name) ? CountdownDisplayName : name!;
+
     /// <summary>Countdown setting value / folder name that means "the default countdown"
     /// (the setting value is the legacy lowercase "default").</summary>
     public static bool IsDefaultCountdown(string? name) =>

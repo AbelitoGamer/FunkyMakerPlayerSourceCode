@@ -125,7 +125,7 @@ public class ArrowsMenu : IScreenOverlay
         }
         else
         {
-            spriteBatch.DrawString(_font, "ARROWS",
+            spriteBatch.DrawUiString(_font, "ARROWS",
                 new Vector2(20 * u, 6 * u), new Color(0xFF, 0x44, 0x88), 0f, Vector2.Zero, 1.3f, SpriteEffects.None, 0f);
         }
         
@@ -146,7 +146,7 @@ public class ArrowsMenu : IScreenOverlay
         }
         else
         {
-            spriteBatch.DrawString(_font, "SKINS",
+            spriteBatch.DrawUiString(_font, "SKINS",
                 new Vector2(listX + 8, listY),
                 new Color(0xFF, 0x44, 0x88) * 0.6f, 0f, Vector2.Zero, 0.65f, SpriteEffects.None, 0f);
         }
@@ -179,7 +179,7 @@ public class ArrowsMenu : IScreenOverlay
             }
             else
             {
-                spriteBatch.DrawString(_font, label,
+                spriteBatch.DrawUiString(_font, label,
                     new Vector2(listX + 12 * u, iy + 8 * u),
                     textColor, 0f, Vector2.Zero, 0.82f, SpriteEffects.None, 0f);
             }
@@ -224,7 +224,7 @@ public class ArrowsMenu : IScreenOverlay
             float rowY = firstRowY + row * rowGap;
             Vector2 labelSz = _fontRenderer != null
                 ? _fontRenderer.MeasureString(rowNames[row], rowLabelSize)
-                : _font.MeasureString(rowNames[row]) * 0.6f;
+                : _font.MeasureUi(rowNames[row]) * 0.6f;
             DrawText(spriteBatch, rowNames[row],
                 new Vector2(startRX - 14f - labelSz.X, rowY - labelSz.Y / 2f),
                 Color.White * 0.45f, rowLabelSize, 0.6f);
@@ -250,8 +250,8 @@ public class ArrowsMenu : IScreenOverlay
         }
         else
         {
-            var hintSz = _font.MeasureString(hint) * 0.55f;
-            spriteBatch.DrawString(_font, hint,
+            var hintSz = _font.MeasureUi(hint) * 0.55f;
+            spriteBatch.DrawUiString(_font, hint,
                 new Vector2(sw / 2f - hintSz.X / 2f, sh - 22),
                 Color.White * 0.2f, 0f, Vector2.Zero, 0.55f, SpriteEffects.None, 0f);
         }
@@ -339,15 +339,15 @@ public class ArrowsMenu : IScreenOverlay
     /// <summary>X / O overlay like NoteRenderer.DrawNoteSymbol: ~40 % of the note width, dark outline.</summary>
     private void DrawSymbol(SpriteBatch sb, string symbol, float cx, float cy, float noteW, Color color)
     {
-        var baseSize = _font.MeasureString(symbol);
+        var baseSize = _font.MeasureUi(symbol);
         float scale = baseSize.X > 0 ? noteW * 0.40f / baseSize.X : 1f;
         var size = baseSize * scale;
         var pos = new Vector2(cx - size.X / 2f, cy - size.Y / 2f);
         float off = scale * 1.5f;
         Color outline = Color.Black * 0.8f;
         foreach (var d in new[] { new Vector2(-off, -off), new Vector2(off, -off), new Vector2(-off, off), new Vector2(off, off) })
-            sb.DrawString(_font, symbol, pos + d, outline, 0f, Vector2.Zero, scale, SpriteEffects.None, 0f);
-        sb.DrawString(_font, symbol, pos, color, 0f, Vector2.Zero, scale, SpriteEffects.None, 0f);
+            sb.DrawUiString(_font, symbol, pos + d, outline, 0f, Vector2.Zero, scale, SpriteEffects.None, 0f);
+        sb.DrawUiString(_font, symbol, pos, color, 0f, Vector2.Zero, scale, SpriteEffects.None, 0f);
     }
 
     /// <summary>Text with the TrueType font when available, else the sprite font at <paramref name="fallbackScale"/>.</summary>
@@ -356,7 +356,7 @@ public class ArrowsMenu : IScreenOverlay
         if (_fontRenderer != null)
             _fontRenderer.DrawString(sb, text, pos, color, fontSize);
         else
-            sb.DrawString(_font, text, pos, color, 0f, Vector2.Zero, fallbackScale, SpriteEffects.None, 0f);
+            sb.DrawUiString(_font, text, pos, color, 0f, Vector2.Zero, fallbackScale, SpriteEffects.None, 0f);
     }
 
     private void DrawRect(SpriteBatch sb, int x, int y, int w, int h, Color c)

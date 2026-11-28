@@ -75,7 +75,7 @@ public class TimerBar
         float progress = Math.Clamp(songTime / songEndTime, 0f, 1f);
         string timeStr = GetText(songTime, songEndTime, levelName);
         float labelScale = 0.9f;
-        var labelSize = _font.MeasureString(timeStr) * labelScale;
+        var labelSize = _font.MeasureUi(timeStr) * labelScale;
         
         // Use custom position/size
         int barW = Size.X;
@@ -131,12 +131,12 @@ public class TimerBar
         float textY = barY + (barH - labelSize.Y) / 2f;
         
         // Text shadow
-        _spriteBatch.DrawString(_font, timeStr,
+        _spriteBatch.DrawUiString(_font, timeStr,
             new Vector2(textX + 2, textY + 2),
             Color.Black * 0.8f, 0f, Vector2.Zero, labelScale, SpriteEffects.None, 0f);
         
         // Main text
-        _spriteBatch.DrawString(_font, timeStr,
+        _spriteBatch.DrawUiString(_font, timeStr,
             new Vector2(textX, textY),
             Color.White, 0f, Vector2.Zero, labelScale, SpriteEffects.None, 0f);
     }
@@ -213,18 +213,18 @@ public class TimerBar
         if (!string.IsNullOrEmpty(timeStr))
         {
             float labelScale = 0.6f;
-            var labelSize = _font.MeasureString(timeStr) * labelScale;
+            var labelSize = _font.MeasureUi(timeStr) * labelScale;
             float textX = barX + (barW - labelSize.X) / 2f;
             float textY = barY + (barH - labelSize.Y) / 2f;
             
             // Outline (2px border like Haxe)
-            _spriteBatch.DrawString(_font, timeStr, new Vector2(textX + 2, textY), Color.Black, 0f, Vector2.Zero, labelScale, SpriteEffects.None, 0f);
-            _spriteBatch.DrawString(_font, timeStr, new Vector2(textX - 2, textY), Color.Black, 0f, Vector2.Zero, labelScale, SpriteEffects.None, 0f);
-            _spriteBatch.DrawString(_font, timeStr, new Vector2(textX, textY + 2), Color.Black, 0f, Vector2.Zero, labelScale, SpriteEffects.None, 0f);
-            _spriteBatch.DrawString(_font, timeStr, new Vector2(textX, textY - 2), Color.Black, 0f, Vector2.Zero, labelScale, SpriteEffects.None, 0f);
+            _spriteBatch.DrawUiString(_font, timeStr, new Vector2(textX + 2, textY), Color.Black, 0f, Vector2.Zero, labelScale, SpriteEffects.None, 0f);
+            _spriteBatch.DrawUiString(_font, timeStr, new Vector2(textX - 2, textY), Color.Black, 0f, Vector2.Zero, labelScale, SpriteEffects.None, 0f);
+            _spriteBatch.DrawUiString(_font, timeStr, new Vector2(textX, textY + 2), Color.Black, 0f, Vector2.Zero, labelScale, SpriteEffects.None, 0f);
+            _spriteBatch.DrawUiString(_font, timeStr, new Vector2(textX, textY - 2), Color.Black, 0f, Vector2.Zero, labelScale, SpriteEffects.None, 0f);
             
             // Main text
-            _spriteBatch.DrawString(_font, timeStr, new Vector2(textX, textY), Color.White, 0f, Vector2.Zero, labelScale, SpriteEffects.None, 0f);
+            _spriteBatch.DrawUiString(_font, timeStr, new Vector2(textX, textY), Color.White, 0f, Vector2.Zero, labelScale, SpriteEffects.None, 0f);
         }
     }
     
@@ -252,20 +252,20 @@ public class TimerBar
         if (!string.IsNullOrEmpty(timeStr))
         {
             float labelScale = 0.6f;
-            var labelSize = _font.MeasureString(timeStr) * labelScale;
+            var labelSize = _font.MeasureUi(timeStr) * labelScale;
             
             // Position text next to the bar based on preset
             float textX = Preset == "Left" ? barX + bgW + 5 : barX - labelSize.X - 5;
             float textY = barY + (barW - labelSize.Y) / 2f;
             
             // Outline (2px border)
-            _spriteBatch.DrawString(_font, timeStr, new Vector2(textX + 2, textY), Color.Black, 0f, Vector2.Zero, labelScale, SpriteEffects.None, 0f);
-            _spriteBatch.DrawString(_font, timeStr, new Vector2(textX - 2, textY), Color.Black, 0f, Vector2.Zero, labelScale, SpriteEffects.None, 0f);
-            _spriteBatch.DrawString(_font, timeStr, new Vector2(textX, textY + 2), Color.Black, 0f, Vector2.Zero, labelScale, SpriteEffects.None, 0f);
-            _spriteBatch.DrawString(_font, timeStr, new Vector2(textX, textY - 2), Color.Black, 0f, Vector2.Zero, labelScale, SpriteEffects.None, 0f);
+            _spriteBatch.DrawUiString(_font, timeStr, new Vector2(textX + 2, textY), Color.Black, 0f, Vector2.Zero, labelScale, SpriteEffects.None, 0f);
+            _spriteBatch.DrawUiString(_font, timeStr, new Vector2(textX - 2, textY), Color.Black, 0f, Vector2.Zero, labelScale, SpriteEffects.None, 0f);
+            _spriteBatch.DrawUiString(_font, timeStr, new Vector2(textX, textY + 2), Color.Black, 0f, Vector2.Zero, labelScale, SpriteEffects.None, 0f);
+            _spriteBatch.DrawUiString(_font, timeStr, new Vector2(textX, textY - 2), Color.Black, 0f, Vector2.Zero, labelScale, SpriteEffects.None, 0f);
             
             // Main text
-            _spriteBatch.DrawString(_font, timeStr, new Vector2(textX, textY), Color.White, 0f, Vector2.Zero, labelScale, SpriteEffects.None, 0f);
+            _spriteBatch.DrawUiString(_font, timeStr, new Vector2(textX, textY), Color.White, 0f, Vector2.Zero, labelScale, SpriteEffects.None, 0f);
         }
     }
     

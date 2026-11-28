@@ -120,7 +120,7 @@ namespace FunkyMakerPlayer
             var endSrc = endFrame.Source;
             
             // Trim 1px top/bottom of pieceSrc so anti-aliased edge rows (e.g. row 43 with Alpha=127
-            // in Cornered/Avulsion/Haunted) are never stretched into a dark horizontal seam above the endcap.
+            // in some Codename skins) are never stretched into a dark horizontal seam above the endcap.
             var cleanPieceSrc = pieceSrc.Height > 4
                 ? new Rectangle(pieceSrc.X, pieceSrc.Y + 1, pieceSrc.Width, pieceSrc.Height - 2)
                 : pieceSrc;

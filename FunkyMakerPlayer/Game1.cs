@@ -67,9 +67,7 @@ public partial class Game1 : Game
     public FnmmLevel?      _level;  // Public for SettingsManager
     private List<NoteRenderer> _noteRenderers = new();  // Support multiple strumlines
     public EventProcessor? _events;  // Public for SettingsManager
-    private CorneredEventHandler? _corneredEvents;  // Exclusive event handler for Cornered level
     
-    // Singleton accessor for NoteRenderer to access Cornered handler
     public static Game1? Instance { get; private set; }
 
     /// <summary>Saves settings.json from anywhere (keeps the current VSync state).</summary>
@@ -89,6 +87,7 @@ public partial class Game1 : Game
         try
         {
             _fontRenderer = new FontRenderer(GraphicsDevice, path);
+            FontRenderer.Current = _fontRenderer;
             CurrentFontPath = path;
             _freeplay?.SetFontRenderer(_fontRenderer);
             _mainSettingsMenu?.SetFontRenderer(_fontRenderer);
@@ -168,7 +167,6 @@ public partial class Game1 : Game
 
         return true;
     }
-    public CorneredEventHandler? CurrentCorneredHandler => _corneredEvents;
     
     private Microsoft.Xna.Framework.Vector2 _initialCameraPos = Microsoft.Xna.Framework.Vector2.Zero;  // Initial camera position for scrollFactor
     
@@ -208,9 +206,7 @@ public partial class Game1 : Game
     private string? _playtestTempPath = null;
     private (byte[] Pcm, int SampleRate, int Channels)? _preloadedPlaytestPcm = null;
     
-    #if ANDROID
     private ModsHelpScreen? _modsHelpScreen;  // Help screen for Android mods setup
-    #endif
     private FontRenderer? _fontRenderer = null;  // TrueType font renderer for crisp UI
 
     // ── Main Settings menu / HUD Editor launcher ─────────────────────────────
@@ -259,7 +255,10 @@ public partial class Game1 : Game
     private bool _crashLogged = false;  // Prevent spam logging the same crash
     private bool? _opponentReadyState = null;  // Store opponent ready state received before LoadingScreen exists
     private float _stateUpdateTimer = 0f;  // Timer for sending state updates to opponent
-    private MultiplayerResultsScreen? _resultsScreen = null;  // Results screen shown after match ends
+    private MultiplayerResultsScreen? _resultsScreen = null;
+    /// <summary>Fork: osu!-style results after a solo song (null otherwise).</summary>
+    private UI.SoloResultsScreen? _soloResults;
+    private Point _soloResultsTouchPos = new(-9999, -9999);  // Results screen shown after match ends
     
     // ── Health Bar (UI component) ────────────────────────────────────────────
     private UI.HealthBar? _healthBar;
@@ -307,7 +306,12 @@ public partial class Game1 : Game
     private double _pauseStarted  = 0.0;  // When the current pause started
 
     // Song end
+    // Song length shown by the timer and used to clamp seeks: the music length when known, else the
+    // end of the last note (fork: it used to always be the last note, so the timer hit 0 early and a
+    // seek past the last note jumped back).
     private float _songEndTime = float.MaxValue;
+    // End of the last note (start + hold), in song seconds.
+    private float _chartEndTime = float.MaxValue;
     private float _musicDurationSeconds = float.MaxValue;
     private float _songEndDelay = 0f;  // countdown after song ends before transition starts
 
@@ -344,7 +348,13 @@ public partial class Game1 : Game
     // ── HUD options ───────────────────────────────────────────────────────────
     public static bool  ShowTimer       = true;   // song timer bar above strumline
     public static bool  ShowCombo       = true;   // combo counter popup (on/off)
-    public static float TimeskipSeconds = 10f;    // seconds per timeskip step (0 = Timeskip off)
+    public static float TimeskipSeconds = 0f;     // seconds per timeskip step (0 = Timeskip off)
+    /// <summary>
+    /// Fork: audio offset in ms for every song (Settings → GAMEPLAY), like FNF's note offset.
+    /// Positive = the notes come later (for audio that reaches you late, e.g. Bluetooth).
+    /// </summary>
+    public static int GlobalOffsetMs = 0;
+    public const int MaxOffsetMs = 500;
     public static bool  TimeskipEnabled => TimeskipSeconds > 0f;
     public static bool  ShowDebugInfo   = false;  // Level debug: BPM, cam, events (off by default)
 #if ANDROID
@@ -359,16 +369,16 @@ public partial class Game1 : Game
     public static bool   TimerForceTop  = false;         // Ignore downscroll (only for Top/Left/Middle/Right/Strumline presets)
     
 
-    public static bool  HideExtraStrumlines = false;  // hide strumlines beyond player+opponent
+    public static bool  HideExtraStrumlines = true;   // hide strumlines beyond player+opponent
     public static bool  HideOpponentStrumline = false; // hide opponent strumline (index 1)
 
     /// <summary>Tint of a non-player character's "miss" (sing animation in dark purple).</summary>
     private static readonly Color NonPlayerMissTint = new Color(0x5B, 0x3A, 0x8C);
     // Timer color presets: 0=white, 1=cyan, 2=pink, 3=yellow, 4=green, 5=custom
-    public static int   TimerColorPreset = 0;
+    public static int   TimerColorPreset = 1;
     public static Color TimerColorCustom = new Color(0xE0, 0xE0, 0xFF);
     // Master volume (0..1): scales every sound — song, menu music and sound effects.
-    public static float MasterVolume = 0.85f;
+    public static float MasterVolume = 0.5f;
     // Song music volume (0..1), scaled by MasterVolume.
     public static float SongVolume = 1.0f;
     /// <summary>Volume the playing song's music instance uses.</summary>
@@ -376,8 +386,8 @@ public partial class Game1 : Game
     // ── Android Touch Controls Settings ───────────────────────────────────────
     // Hide touch hitbox colors (android only)
     public static bool   HideTouchHitboxColors = false;
-    /// <summary>(fork) Opacity of a pressed touch hitbox (Settings → Touch Hitbox Opacity), default 30 %.</summary>
-    public static float  TouchHitboxOpacity = 0.3f;
+    /// <summary>(fork) Opacity of a pressed touch hitbox (Settings → Touch Hitbox Opacity), default 10 %.</summary>
+    public static float  TouchHitboxOpacity = 0.1f;
     /// <summary>(fork) On-screen menu buttons (Android): 0 = Auto (hidden on tap-ready screens), 1 = On, 2 = Off.</summary>
     public static int    MenuButtonsMode = 0;
     // Note style name — "Default" or a folder name in mods/notestyles/
@@ -512,6 +522,9 @@ public partial class Game1 : Game
             // Required for Android/PC to handle large spritesheets
             GraphicsProfile = GraphicsProfile.HiDef,
         };
+#if !ANDROID
+        ApplyDevHarnessStartup(); // FMP_* environment variables only (Game1.DevShot.cs)
+#endif
         Content.RootDirectory = "Content";
         IsMouseVisible  = true;
         IsFixedTimeStep = false;  // uncapped — runs as fast as the PC allows
@@ -664,6 +677,14 @@ public partial class Game1 : Game
         IsMouseVisible = false;
         
         Console.WriteLine($"[Android] Screen resolution: {displayMode.Width}x{displayMode.Height}");
+        try
+        {
+            // Phone-sized menus (fork): bigger menus on physically small screens (UI/UiScale.Touch)
+            var metrics = Microsoft.Xna.Framework.Game.Activity?.Resources?.DisplayMetrics;
+            if (metrics != null && metrics.Xdpi > 1f && metrics.Ydpi > 1f)
+                UI.UiScale.InitTouchFromScreen(Math.Min(metrics.WidthPixels / metrics.Xdpi, metrics.HeightPixels / metrics.Ydpi));
+        }
+        catch (Exception ex) { Console.WriteLine($"[UiScale] DisplayMetrics failed: {ex.Message}"); }
         
         // Initialize crash logger with Android dialog callback
         CrashLogger.Initialize(crashReport =>
@@ -937,6 +958,7 @@ public partial class Game1 : Game
                 try
                 {
                     _fontRenderer = new FontRenderer(GraphicsDevice, fontPath);
+                    FontRenderer.Current = _fontRenderer;
                     CurrentFontPath = fontPath;
                     Console.WriteLine($"[FontRenderer] Loaded TrueType font from: {fontPath}");
                 }
@@ -955,10 +977,8 @@ public partial class Game1 : Game
         _freeplay = new FreeplayMenu(_pixel, _font, levelsFolder, _folderIcon, _fontRenderer);
         _mainSettingsMenu?.SetFontRenderer(_fontRenderer);
         
-        #if ANDROID
         // Init mods help screen
         _modsHelpScreen = new ModsHelpScreen(_fontRenderer, _pixel);
-        #endif
         
         // Init pause menu
         _pauseMenu = new PauseMenu(_pixel, _font, _fontRenderer);
@@ -1098,6 +1118,9 @@ public partial class Game1 : Game
             return;
         }
 
+#if !ANDROID
+        UpdateDevHarness((float)gameTime.ElapsedGameTime.TotalSeconds); // FMP_* dev harness only
+#endif
         var uiSnapshot = CaptureUiSfxSnapshot();
         try
         {
@@ -1167,7 +1190,7 @@ public partial class Game1 : Game
 
             // Results / Game Over / Loading count as menu (A/B buttons instead of the 4 lane hitboxes).
             bool inGameplay = _level != null && _loadingScreen == null && _errorMsg == null &&
-                             _songTransition == null && !_inPauseMenu && _resultsScreen == null &&
+                             _songTransition == null && !_inPauseMenu && _resultsScreen == null && _soloResults == null &&
                              !(_gameOverOverlay?.IsActive ?? false) &&
                              !_inFreeplay && !(_settingsManager?.IsActive ?? false) &&
                              !(_arrowsMenu?.IsActive ?? false) && !(_splashMenu?.IsActive ?? false) &&
@@ -1241,6 +1264,16 @@ public partial class Game1 : Game
         bool suppressUserInput = !windowActive || _focusRegainGrace > 0f || _waitMouseReleaseAfterFocus;
         var kb = suppressUserInput ? default : rawKb;
 
+        // Notice window (fork, UI/NoticeWindow.cs): takes every input while open, and for the frames
+        // until the closing tap / key is released, so the screen underneath doesn't get it.
+        if (UI.NoticeWindow.IsOpen || UI.NoticeWindow.SwallowInput())
+        {
+            UI.NoticeWindow.Update(dt);
+            _prevKb = kb;
+            base.Update(gameTime);
+            return;
+        }
+
         // Settings → CONTROLS key capture (fork): the capture gets the raw keys; the rest of the game
         // sees no keyboard until every key is released, so the captured key doesn't also act.
         if (_settingsManager != null)
@@ -1296,7 +1329,6 @@ public partial class Game1 : Game
                 _errorDismissGrace = Math.Max(0f, _errorDismissGrace - dt);
 
             bool escPressed     = kb.IsKeyDown(Keys.Escape) && !_prevKb.IsKeyDown(Keys.Escape);
-            bool pErrPressed    = Controls.Pressed(HotkeyAction.Pause, kb, _prevKb);
             bool confirmPressed = (kb.IsKeyDown(Keys.Enter) && !_prevKb.IsKeyDown(Keys.Enter)) ||
                                   (kb.IsKeyDown(Keys.Space) && !_prevKb.IsKeyDown(Keys.Space));
             bool clicked        = !suppressUserInput && ms.LeftButton == ButtonState.Pressed && prevMs.LeftButton == ButtonState.Released;
@@ -1305,7 +1337,7 @@ public partial class Game1 : Game
                 clicked = true;
 #endif
 
-            if (escPressed || pErrPressed || (_errorDismissGrace <= 0f && (confirmPressed || clicked)))
+            if (escPressed || (_errorDismissGrace <= 0f && (confirmPressed || clicked)))
                 DismissErrorToMenu();
 
             _prevKb = kb;
@@ -1323,7 +1355,8 @@ public partial class Game1 : Game
         // Chart Editor, where - / + zoom the grid.
         bool typingText = (_inLevelSelector && _levelSelector != null && _levelSelector.IsTypingName) ||
                           (_inMultiplayer && _multiplayerMenu != null && _multiplayerMenu.IsEditingText) ||
-                          (_inFreeplay && _freeplay != null && _freeplay.IsTypingSearch);
+                          (_inFreeplay && _freeplay != null && _freeplay.IsTypingSearch) ||
+                          (_settingsManager?.IsActive == true && _settingsManager.IsSearching);
         bool allowVolumeHotkeys = !suppressUserInput && !_keyBindOverlay.IsActive && !_inEditor && !typingText;
         if (allowVolumeHotkeys)
         {
@@ -1353,9 +1386,9 @@ public partial class Game1 : Game
             if (slower || faster)
             {
                 float old = NoteRenderer.ScrollMultiplier;
-                // Same step and range as the Scroll Speed setting
+                // Same range as the Scroll Speed setting, in 0.25x steps (the setting row itself moves 0.10x)
                 NoteRenderer.ScrollMultiplier = MathF.Round(
-                    Math.Clamp(old + (faster ? 0.10f : -0.10f), 0.25f, 5.0f), 2);
+                    Math.Clamp(old + (faster ? 0.25f : -0.25f), 0.25f, 5.0f), 2);
                 UI.UiSfx.Play(NoteRenderer.ScrollMultiplier == old ? UI.UiSound.SliderEnd
                     : faster ? UI.UiSound.SliderUp : UI.UiSound.SliderDown);
                 _scrollToastTimer = VOLUME_TOAST_DURATION;
@@ -1364,7 +1397,7 @@ public partial class Game1 : Game
         }
 
 #if !ANDROID
-        // Toggle borderless fullscreen (default Alt+Enter / F11, rebindable). Keys are then withheld
+        // Toggle borderless fullscreen (default F11, rebindable). Keys are then withheld
         // until released so e.g. the Enter of Alt+Enter doesn't also confirm a menu.
         if (!suppressUserInput && !typingText && !_keyBindOverlay.IsActive &&
             Controls.Pressed(HotkeyAction.ToggleFullscreen, kb, _prevKb))
@@ -1377,9 +1410,8 @@ public partial class Game1 : Game
 
         // ESC opens pause menu (or settings if no level loaded)
         // Skip if in arrows or splash menu (they handle ESC themselves)
-        // P key also pauses (for touch controls)
+        // (the touch Pause button sends ESC too, see MergeTouchWithKeyboard)
         bool escPressedForPause = kb.IsKeyDown(Keys.Escape) && !_prevKb.IsKeyDown(Keys.Escape);
-        bool pPressed = Controls.Pressed(HotkeyAction.Pause, kb, _prevKb);
 
         if (_playtestingFromEditor && _suspendedChartEditor != null && !_inPauseMenu &&
             !(_settingsManager?.IsActive ?? false) && !_keyBindOverlay.IsActive && escPressedForPause)
@@ -1398,11 +1430,7 @@ public partial class Game1 : Game
             !(_countdownMenu?.IsActive ?? false) && !(_fontMenu?.IsActive ?? false) &&
             !_keyBindOverlay.IsActive)
         {
-            if (_settingsManager.IsFocused)
-            {
-                _settingsManager.Unfocus();   // first ESC releases an adjustable row, like elsewhere
-            }
-            else
+            if (!_settingsManager.HandleEscape())   // first ESC releases a focused row / clears the search
             {
                 _settingsManager.IsActive = false;
 #if ANDROID
@@ -1416,7 +1444,7 @@ public partial class Game1 : Game
             return;
         }
 
-        if ((escPressedForPause || pPressed) &&
+        if (escPressedForPause &&
             !(_arrowsMenu?.IsActive ?? false) && !(_splashMenu?.IsActive ?? false) &&
             !(_countdownMenu?.IsActive ?? false) && !(_fontMenu?.IsActive ?? false) &&
             !_inMainSettings && !_inHudEditor && !_inMultiplayer &&
@@ -1425,10 +1453,9 @@ public partial class Game1 : Game
             // Allow pause in both singleplayer and multiplayer (Minecraft-style live pause in MP)
             if (_settingsManager?.IsActive == true)
             {
-                // If focused on a numeric/adjustable setting, ESC releases focus first
-                if (_settingsManager.IsFocused)
+                // ESC first releases a focused value / clears the search
+                if (_settingsManager.HandleEscape())
                 {
-                    _settingsManager.Unfocus();
                     AdvanceLiveMultiplayerIfActive(gameTime, dt);
                     _prevKb = kb;
                     base.Update(gameTime);
@@ -1494,7 +1521,7 @@ public partial class Game1 : Game
                     break;
 
                 case PauseMenu.PauseAction.OpenHudEditor:
-                    if (!_isMultiplayerMatch)
+                    if (!_isMultiplayerMatch && !BlockEditorOnMobile("HUD Editor"))
                     {
                         _inPauseMenu = false;
                         _hudEditorReturnTarget = HudEditorReturnTarget.PauseMenu;
@@ -1659,6 +1686,7 @@ public partial class Game1 : Game
         // ── Key binding overlay (when opened from Settings in Main Menu or Pause) ──
         if (_keyBindOverlay.IsActive)
         {
+            UI.TextEntry.Clear(); // keys pressed to bind must not reach the settings search afterwards
             _keyBindOverlay.Update(kb, _prevKb);
             AdvanceLiveMultiplayerIfActive(gameTime, dt);
             _prevKb = kb;
@@ -1669,17 +1697,8 @@ public partial class Game1 : Game
         // ── Settings menu ────────────────────────────────────────────────────
         if (_settingsManager?.IsActive == true && _settingsManager != null)
         {
-#if ANDROID
-            // Show Q and E buttons for tab navigation on Android
-            _touchControls?.SetSettingsButtonsVisible(true);
-#endif
-
-            // Tab navigation with Q/E (also used by Android virtual buttons)
-            if (Controls.Pressed(HotkeyAction.PrevTab, kb, _prevKb))
-                _settingsManager.PrevTab();
-
-            if (Controls.Pressed(HotkeyAction.NextTab, kb, _prevKb))
-                _settingsManager.NextTab();
+            // Search box: letters / digits typed anywhere filter every tab
+            _settingsManager.UpdateSearch(kb, _prevKb, dt, discardTyping: _keyCaptureHoldoff);
 
             // Up/Down navigation (releases focus cleanly when switching option; skips section headers)
             if (kb.IsKeyDown(Keys.Up) && !_prevKb.IsKeyDown(Keys.Up))
@@ -1697,8 +1716,9 @@ public partial class Game1 : Game
             }
 
             // Enter or Space: executes toggle/action OR focuses/unfocuses adjustable option
+            // (Space types into the search while searching)
             if ((kb.IsKeyDown(Keys.Enter) && !_prevKb.IsKeyDown(Keys.Enter)) ||
-                (kb.IsKeyDown(Keys.Space) && !_prevKb.IsKeyDown(Keys.Space)))
+                (!_settingsManager.IsSearching && kb.IsKeyDown(Keys.Space) && !_prevKb.IsKeyDown(Keys.Space)))
             {
                 var result = _settingsManager.HandleSelectAction(this);
                 ApplySettingsSelectResult(result);
@@ -1714,7 +1734,7 @@ public partial class Game1 : Game
                     var adj = _settingsManager.HandleAdjustment(this, leftPressed);
                     ApplySettingsAdjustmentResult(adj);
                 }
-                else
+                else if (!_settingsManager.IsSearching)   // search results span every tab
                 {
                     if (leftPressed) _settingsManager.PrevTab();
                     else _settingsManager.NextTab();
@@ -1742,7 +1762,6 @@ public partial class Game1 : Game
         // ── Freeplay menu ────────────────────────────────────────────────────
         if (_inFreeplay && _freeplay != null && _loadingScreen == null)
         {
-            #if ANDROID
             // Update mods help screen if visible
             if (_modsHelpScreen != null && _modsHelpScreen.IsVisible)
             {
@@ -1751,7 +1770,9 @@ public partial class Game1 : Game
                 // If user requested to launch folder picker
                 if (_modsHelpScreen.LaunchFolderPicker)
                 {
+#if ANDROID
                     PickAndroidModsFolder();
+#endif
                 }
                 
                 // If user closes help screen, return to freeplay
@@ -1759,14 +1780,15 @@ public partial class Game1 : Game
                 {
                     _freeplay.ResetInputCooldown();
                     // Show touch controls again
+#if ANDROID
                     _touchControls?.SetAllControlsVisible(true);
+#endif
                 }
                 
                 _prevKb = kb;
                 base.Update(gameTime);
                 return;
             }
-            #endif
             
             var winBounds = Window.ClientBounds;
             _freeplay.Update(dt, kb, winBounds.Width, winBounds.Height, winBounds.Width, winBounds.Height);
@@ -1797,10 +1819,13 @@ public partial class Game1 : Game
             if (_freeplay.NewChartRequested)
             {
                 _freeplay.ConsumeNewChartRequest();
-                _inFreeplay = false;
-                _inLevelSelector = true;
-                _levelSelectorReturnTarget = ChartEditorReturnTarget.Freeplay;
-                _levelSelector = new Editors.Chart.LevelSelector(_pixel!, _font!, _fontRenderer, startCreateModal: true);
+                if (!BlockEditorOnMobile("Chart Editor"))
+                {
+                    _inFreeplay = false;
+                    _inLevelSelector = true;
+                    _levelSelectorReturnTarget = ChartEditorReturnTarget.Freeplay;
+                    _levelSelector = new Editors.Chart.LevelSelector(_pixel!, _font!, _fontRenderer, startCreateModal: true);
+                }
             }
             
             // Check if user requested editing a chart from Freeplay panel ("7" or EDIT button)
@@ -2130,20 +2155,7 @@ public partial class Game1 : Game
             }
         }
 
-        // P toggles pause (disabled during multiplayer matches)
-        if (Controls.Pressed(HotkeyAction.Pause, kb, _prevKb))
-        {
-            if (_isMultiplayerMatch)
-            {
-                Console.WriteLine("[Game1] Pause disabled during multiplayer match");
-            }
-            else
-            {
-                if (_paused) ResumeSong(); else PauseSong();
-            }
-        }
-
-        // Timeskip (rebindable, Settings → CONTROLS; default T / Ctrl+Right forward, Shift+T / Ctrl+Left back).
+        // Timeskip (rebindable, Settings → CONTROLS; default T forward, Shift+T back).
         // Unmodified keys that are also note lane keys are ignored. Holding repeats.
         // Never in multiplayer: skipping desyncs the song from the opponent
         if (TimeskipEnabled && _started && !_paused && !_isMultiplayerMatch)
@@ -2178,24 +2190,8 @@ public partial class Game1 : Game
             }
         }
 
-        // Big scroll speed steps in gameplay (default PageUp/PageDown, rebindable)
-        if (_level != null && _started && !_paused)
-        {
-            bool speedUp = Controls.Pressed(HotkeyAction.ScrollSpeedUpBig, kb, _prevKb);
-            bool speedDown = Controls.Pressed(HotkeyAction.ScrollSpeedDownBig, kb, _prevKb);
-            if (speedUp)
-            {
-                NoteRenderer.ScrollMultiplier = MathF.Round(Math.Min(5.0f, NoteRenderer.ScrollMultiplier + 0.25f), 2);
-                _scrollToastTimer = VOLUME_TOAST_DURATION;
-                Settings.Save(_graphics.SynchronizeWithVerticalRetrace);
-            }
-            if (speedDown)
-            {
-                NoteRenderer.ScrollMultiplier = MathF.Round(Math.Max(0.25f, NoteRenderer.ScrollMultiplier - 0.25f), 2);
-                _scrollToastTimer = VOLUME_TOAST_DURATION;
-                Settings.Save(_graphics.SynchronizeWithVerticalRetrace);
-            }
-        }
+        // Skip Breaks (fork): Space skips a long stretch without arrows; replays repeat recorded skips
+        UpdateBreakSkip(kb, dt);
 
         // Key binding: delegate to overlay
         _keyBindOverlay.Update(kb, _prevKb);
@@ -2326,6 +2322,15 @@ public partial class Game1 : Game
                 _transitionToFreeplay = false;  // Go to multiplayer menu, not freeplay
             }
             
+            _prevKb = kb;
+            base.Update(gameTime);
+            return;
+        }
+
+        // ── Results Screen (solo, fork) ────────────────────────────────────
+        if (_soloResults != null && _songTransition == null)
+        {
+            UpdateSoloResults(dt, kb, ms, prevMs);
             _prevKb = kb;
             base.Update(gameTime);
             return;
@@ -2742,11 +2747,6 @@ public partial class Game1 : Game
             int currentBeat = (int)Math.Floor(_songBeats);
             _cameraManager?.UpdateBeatZoom(currentBeat, dt);
 
-            if (_corneredEvents != null)
-            {
-                _corneredEvents.Update(_songTime, currentBeat);
-            }
-
             // Audio recovery: if music stopped unexpectedly, try to restart
             // BUT NOT if the song or audio buffer has naturally ended
             bool audioFileEnded = _music != null && _songTime >= _musicDurationSeconds - 0.1f;
@@ -2801,7 +2801,7 @@ public partial class Game1 : Game
         // Song-relative timers follow the Freeplay song rate (fork; 1 outside solo play)
         float songDt = dt * _runRate;
         foreach (var renderer in _noteRenderers)
-            renderer.Update(_songTime, songDt, gameplayKb, gameplayPrevKb);
+            renderer.Update(NoteTime, songDt, gameplayKb, gameplayPrevKb);
 
         if (_noteRenderers.Count > 0)
             _playerMaxCombo = Math.Max(_playerMaxCombo, _noteRenderers[0].Combo);
@@ -2866,11 +2866,9 @@ public partial class Game1 : Game
                 else
                 {
                     OnSoloSongFinishedForReplay(); // replays (fork): save the run / check a watched replay
-                    OnSoloSongFinishedForFreeplay(); // personal best (fork)
-                    UI.UiSfx.Play(UI.UiSound.Save);   // song finished
-                    _songTransition = new SongTransition(_catTex, _pixel!);
-                    _songTransition.Start(_rtWidth, _rtHeight);
-                    _transitionToFreeplay = true;
+                    var results = OnSoloSongFinishedForFreeplay(); // personal best (fork)
+                    // osu!-style results screen (fork); it continues to Freeplay, retries or watches the replay.
+                    _soloResults = new UI.SoloResultsScreen(_pixel!, results);
                 }
             }
         }
@@ -2999,6 +2997,10 @@ public partial class Game1 : Game
         {
             if (DrawTestGate()) return;  // test build still gated (fork)
             DrawInternal(gameTime);
+            DrawNoticeWindow();
+#if !ANDROID
+            DevShotAfterDraw();
+#endif
         }
         catch (Exception ex)
         {
@@ -3035,7 +3037,6 @@ public partial class Game1 : Game
                 _freeplay.Draw(_spriteBatch, winBounds.Width, winBounds.Height, winBounds.Width, winBounds.Height);
             _spriteBatch.End();
             
-            #if ANDROID
             // Draw mods help screen on top if visible
 #pragma warning disable CS8602 // Null check already done in if condition
             if (_modsHelpScreen != null && _modsHelpScreen.IsVisible)
@@ -3045,7 +3046,6 @@ public partial class Game1 : Game
                 _spriteBatch.End();
             }
 #pragma warning restore CS8602
-            #endif
             
             // If there's an active song transition, render it over the menu then return
 #pragma warning disable CS8602 // Null check already done in if condition
@@ -3083,7 +3083,7 @@ public partial class Game1 : Game
             {
                 var hudCamMatrix = BuildCameraMatrix(sw, sh);
                 _lastCamMatrix = hudCamMatrix;
-                DrawSceneOrdered(sw, sh, hudCamMatrix);
+                DrawSceneOrdered(sw, sh, hudCamMatrix, stageStrumlines: true);
                 _spriteBatch.Begin(SpriteSortMode.Deferred, BlendState.NonPremultiplied, SamplerState.LinearClamp,
                     null, null, null, RtScaleMatrix);
                 DrawLaneUnderlay();
@@ -3156,6 +3156,19 @@ public partial class Game1 : Game
             return;
         }
 
+        // ── Results Screen (solo, fork) ────────────────────────────────────
+        if (_soloResults != null && _songTransition == null)
+        {
+            GraphicsDevice.SetRenderTarget(_renderTarget);
+            GraphicsDevice.Clear(Color.Black);
+            _spriteBatch.Begin(samplerState: RtTextSampler, transformMatrix: RtScaleMatrix);
+            _soloResults.Draw(_spriteBatch, _font, sw, sh);
+            _spriteBatch.End();
+            BlitToScreen();
+            DrawTouchControls();
+            return;
+        }
+
         // ── Results Screen (Multiplayer) ───────────────────────────────────
         if (_resultsScreen != null)
         {
@@ -3191,7 +3204,7 @@ public partial class Game1 : Game
         var camMatrix = BuildCameraMatrix(sw, sh);
         _lastCamMatrix = camMatrix;
         DrawOsuBackground(sw, sh); // osu! levels only (fork)
-        DrawSceneOrdered(sw, sh, camMatrix);
+        DrawSceneOrdered(sw, sh, camMatrix, stageStrumlines: true);
 
         // ── HUD: health bar, icons, stats (drawn before notes) ───────────────
         _spriteBatch.Begin(SpriteSortMode.Deferred, BlendState.NonPremultiplied, SamplerState.LinearClamp,
@@ -3230,6 +3243,7 @@ public partial class Game1 : Game
         DrawCountdown(sw, sh);
         DrawJudgement(sw, sh);
         DrawReplayBanner(sw, sh);
+        DrawBreakSkipPrompt(sw, sh);
         
         // Draw game over overlay using extracted UI component
         if (_gameOverOverlay != null && _gameOverOverlay.IsActive && _noteRenderers.Count > 0)
@@ -3392,8 +3406,8 @@ public partial class Game1 : Game
         else if (_font != null)
         {
             float scale = 16f / Math.Max(16f, (float)_font.LineSpacing);
-            var sz = _font.MeasureString(text) * scale;
-            _spriteBatch.DrawString(_font, text,
+            var sz = _font.MeasureUi(text) * scale;
+            _spriteBatch.DrawUiString(_font, text,
                 new Vector2(boxX + (boxW - sz.X) / 2f, boxY + (boxH - sz.Y) / 2f), Color.White * alpha,
                 0f, Vector2.Zero, scale, SpriteEffects.None, 0f);
         }
@@ -3442,8 +3456,8 @@ public partial class Game1 : Game
         else if (_font != null)
         {
             float scale = 16f / Math.Max(16f, (float)_font.LineSpacing);
-            var sz = _font.MeasureString(volTxt) * scale;
-            _spriteBatch.DrawString(_font, volTxt,
+            var sz = _font.MeasureUi(volTxt) * scale;
+            _spriteBatch.DrawUiString(_font, volTxt,
                 new Vector2(boxX + (boxW - sz.X) / 2f, boxY + 27), Color.White * alpha,
                 0f, Vector2.Zero, scale, SpriteEffects.None, 0f);
         }
@@ -3626,15 +3640,11 @@ public partial class Game1 : Game
             }
         }
 
-        // Add virtual menu navigation keys + Q, E for settings tabs + P for pause
-        foreach (var key in new[] { Keys.Left, Keys.Right, Keys.Up, Keys.Down, Keys.Space, Keys.Enter, Keys.Escape, Keys.P, Keys.Q, Keys.E })
+        // Add virtual menu navigation keys; the on-screen Pause button (P) acts as ESC (opens / closes the pause menu)
+        foreach (var key in new[] { Keys.Left, Keys.Right, Keys.Up, Keys.Down, Keys.Space, Keys.Enter, Keys.Escape, Keys.P })
         {
             if (!_touchControls.IsKeyDown(key)) continue;
-            // Touch Pause / tab buttons follow the rebindable hotkeys (Settings → CONTROLS)
-            var action = key switch { Keys.P => HotkeyAction.Pause, Keys.Q => HotkeyAction.PrevTab, Keys.E => HotkeyAction.NextTab, _ => (HotkeyAction?)null };
-            var mapped = key;
-            if (action is HotkeyAction a && Controls.Get(a, 0) is { IsNone: false, ModifierCount: 0 } b)
-                mapped = b.Key;
+            var mapped = key == Keys.P ? Keys.Escape : key;
             if (!pressedKeys.Contains(mapped))
                 pressedKeys.Add(mapped);
         }
@@ -3711,13 +3721,19 @@ public partial class Game1 : Game
     /// Draws ALL scene objects in their index order, switching camera transform
     /// per-object via the shared <see cref="FnmmSceneRenderer"/> pipeline.
     /// </summary>
-    private void DrawSceneOrdered(int sw, int sh, Matrix camMatrix)
+    /// <param name="stageStrumlines">Also draw the stage strumlines, each right below its character
+    /// (positioned/faded first by <see cref="UpdateStageStrumlines"/>).</param>
+    private void DrawSceneOrdered(int sw, int sh, Matrix camMatrix, bool stageStrumlines = false)
     {
         if (_level == null) return;
 
+        if (stageStrumlines) UpdateStageStrumlines((float)_lastDt);
+        bool withStage = stageStrumlines && _stageStrumlinesActive;
         FnmmSceneRenderer.DrawSceneOrdered(
             _spriteBatch, _level, _objAnimators, _events, _cameraManager,
-            sw, sh, camMatrix, null, includeFixedOverlays: true, outputTransform: RtScaleMatrix);
+            sw, sh, camMatrix, null, includeFixedOverlays: true, outputTransform: RtScaleMatrix,
+            hasLayerBelow: withStage ? HasStageStrumlineBelow : null,
+            drawLayerBelow: withStage ? DrawStageStrumlinesBelow : null);
     }
 
     /// <summary>
@@ -3803,94 +3819,22 @@ public partial class Game1 : Game
     private void DrawNotes()
     {
         if (_level == null) return;
-        float laneW = NoteRenderer.LANE_COUNT * NoteRenderer.LANE_WIDTH;
-        var   objs  = _level.Scene.Objects;
-        int   count = _noteRenderers.Count;
-
-        // Position strumlines based on mode:
-        // - Classic mode (HideExtraStrumlines = true): 2 strumlines in fixed FNF positions (centered)
-        // - Extra strumlines mode (HideExtraStrumlines = false AND count >= 3): position strumlines 1+ above characters
-        // This allows levels with 3+ strumlines to work in classic mode when the setting is enabled
-        
-        bool useClassicMode = HideExtras || count < 3;
-        
-        if (!useClassicMode)
-        {
-            // Extra strumlines mode: position opponent (1) and extras (2+) over their characters
-            // For each strumline 1+, find the VISIBLE character currently assigned to it
-            // Use _objAnimators to get runtime strumLine (handles ObjectChartChange events)
-            // Online / duel replays (fork): strumline 1 is a real player (or the other side), so it stays
-            // in its fixed place; only the CPU extras (2+) float over characters. Placed over a character
-            // it was often the wrong one for your side, and near the screen edge only its right arrow
-            // was visible (Teams report).
-            int firstFloating = (_isMultiplayerMatch || IsDuelReplay) ? 2 : 1;
-            float floatMaxX = _rtWidth - laneW * 0.6f;
-            for (int slIndex = firstFloating; slIndex < count; slIndex++)
-            {
-                SpriteAnimator? bestChar = null;
-                int bestObjIndex = -1;
-
-                // Find the first visible object currently on this strumLine
-                for (int objIdx = 0; objIdx < _objAnimators.Length && objIdx < objs.Count; objIdx++)
-                {
-                    var anim = _objAnimators[objIdx];
-                    var obj  = objs[objIdx];
-                    
-                    // Check if this object is currently assigned to this strumLine
-                    // Use runtime strumLine from scene object (updated by ObjectChartChange)
-                    int currentStrumLine = (int)obj.StrumLine;
-                    
-                    // Check visibility
-                    bool isVisible = anim != null && anim.Visible;
-                    bool isOnThisStrumLine = currentStrumLine == slIndex;
-                    
-                    if (isVisible && isOnThisStrumLine)
-                    {
-                        bestChar = anim;
-                        bestObjIndex = objIdx;
-                        break;  // Use first visible character on this strumLine
-                    }
-                }
-
-                // Position strumLine over the character
-                if (bestChar != null && bestObjIndex >= 0)
-                {
-                    var obj = objs[bestObjIndex];
-                    var v   = Vector2.Transform(new Vector2(obj.X, obj.Y), _lastCamMatrix);
-                    float sy = _rtHeight / 720f;
-                    _noteRenderers[slIndex].SetXOffset(Math.Clamp(v.X - laneW * 0.6f / 2f, 0f, Math.Max(0f, floatMaxX)));
-                    _noteRenderers[slIndex].SetStrumY(v.Y - 160f * sy);
-                    _noteRenderers[slIndex].NoteScale = 0.6f;
-                }
-                else
-                {
-                    // Fallback: if no character found, stack above opponent (strumLine 1)
-                    // Extra strumlines (2+) should appear above the enemy, not the player
-                    var oppObj = objs.Find(o => (int)o.StrumLine == 1);
-                    if (oppObj != null)
-                    {
-                        var v = Vector2.Transform(new Vector2(oppObj.X, oppObj.Y), _lastCamMatrix);
-                        float sy = _rtHeight / 720f;
-                        // Position above opponent, stacked vertically for multiple extra strumlines
-                        float verticalOffset = 180f * sy * (slIndex - 1);  // Stack upward
-                        _noteRenderers[slIndex].SetXOffset(Math.Clamp(v.X - laneW * 0.6f / 2f, 0f, Math.Max(0f, floatMaxX)));
-                        _noteRenderers[slIndex].SetStrumY(v.Y - 160f * sy - verticalOffset);
-                        _noteRenderers[slIndex].NoteScale = 0.6f;
-                    }
-                }
-            }
-        }
+        int count = _noteRenderers.Count;
+        // Stage strumlines (1+ with 3+ strumlines and the extras setting on) are drawn inside the
+        // scene by DrawStageStrumlinesBelow and positioned by UpdateStageStrumlines; only the HUD
+        // ones are drawn here. Classic layout: player + opponent in their FNF places.
 
         if (!HudSettings.Instance.MasterHudVisible || !NoteRenderer.ShowStrumlines)
         {
             for (int i = 0; i < count; i++)
-                _noteRenderers[i].Draw(_spriteBatch, _songTime, _font);
+                if (!IsStageStrumline(i)) _noteRenderers[i].Draw(_spriteBatch, NoteTime, _font);
             return;
         }
 
         // Draw all strumlines — opponent first, player on top
         for (int i = count - 1; i >= 0; i--)
         {
+            if (IsStageStrumline(i)) continue;
             // Extra strumlines (2+): respect HideExtraStrumlines setting
             if (i >= 2 && HideExtras)
             {
@@ -3910,7 +3854,7 @@ public partial class Game1 : Game
             {
                 _noteRenderers[i].Alpha = _notesAlpha;
             }
-            _noteRenderers[i].Draw(_spriteBatch, _songTime, _font);
+            _noteRenderers[i].Draw(_spriteBatch, NoteTime, _font);
         }
     }
 

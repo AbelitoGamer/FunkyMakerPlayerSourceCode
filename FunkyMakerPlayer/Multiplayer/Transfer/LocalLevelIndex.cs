@@ -30,6 +30,14 @@ namespace FunkyMakerPlayer.Multiplayer.Transfer
         /// <summary>The file other players receive (osu!: the set packed as .osz).</summary>
         public string FileName => IsOsu ? Path.GetFileName(SetFolder) + ".osz" : Path.GetFileName(RelativePath);
         public string Name => IsOsu ? $"{SetName} [{Difficulty}]" : Path.GetFileNameWithoutExtension(RelativePath);
+
+        /// <summary>
+        /// Downloaded from an online room rather than imported by you: FNF levels land in
+        /// levels/Received/, osu! sets are listed by <see cref="Osu.OsuLibrary.MarkReceived"/>.
+        /// </summary>
+        public bool Received => IsOsu
+            ? Osu.OsuLibrary.IsReceived(SetFolder)
+            : RelativePath.Replace('\\', '/').StartsWith("Received/", StringComparison.OrdinalIgnoreCase);
     }
 
     /// <summary>

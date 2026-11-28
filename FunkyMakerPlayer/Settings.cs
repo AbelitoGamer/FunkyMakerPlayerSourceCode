@@ -36,14 +36,14 @@ public static class Settings
         public bool? Autoplay          { get; set; }
         public bool  Downscroll        { get; set; } = false;
         public bool  VSync             { get; set; } = true;
-        public float ScrollMultiplier  { get; set; } = 1.0f;
+        public float ScrollMultiplier  { get; set; } = 2.5f;
         public bool  ShowTimer         { get; set; } = true;
         /// <summary>Seconds per Timeskip step; 0 = Timeskip off.</summary>
-        public float TimeskipSeconds   { get; set; } = 10f;
+        public float TimeskipSeconds   { get; set; } = 0f;
         /// <summary>Legacy on/off switch (read from old files only): false meant Timeskip off.</summary>
         [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
         public bool? TimeskipEnabled   { get; set; }
-        public int   TimerColorPreset  { get; set; } = 0;
+        public int   TimerColorPreset  { get; set; } = 1;
         
         // ── Timer Bar Options (V-Slice style with Legacy support) ─────────────
         public string TimerPreset      { get; set; } = "HUD Editor";  // Legacy, HUD Editor ("Custom HUD" in old files), Top, Left, Middle, Right, Strumline
@@ -60,8 +60,8 @@ public static class Settings
         [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
         public float? MusicVolume      { get; set; }
         public float SongVolume        { get; set; } = 1.0f;   // song music, scaled by master
-        public float SfxVolume         { get; set; } = 0.8f;   // UI sound effects (UiSfx)
-        public float MenuMusicVolume   { get; set; } = 0.7f;   // menu background music (OnlineMenuMusic)
+        public float SfxVolume         { get; set; } = 1.0f;   // UI sound effects (UiSfx)
+        public float MenuMusicVolume   { get; set; } = 1.0f;   // menu background music (OnlineMenuMusic)
         /// <summary>Fork: settings for osu! songs (Osu/OsuSettings.cs).</summary>
         public Osu.OsuSettings.Data? Osu { get; set; }
         public string NoteStyleName    { get; set; } = DefaultMods.NoteStyleName;
@@ -71,7 +71,7 @@ public static class Settings
         public string? UiFontFile { get; set; }
         public bool  ShowStrumlines       { get; set; } = true;
         public bool  HidePlayerStrumline  { get; set; } = false;
-        public bool  HideExtraStrumlines { get; set; } = false;
+        public bool  HideExtraStrumlines { get; set; } = true;
         public bool  HideOpponentStrumline { get; set; } = false;
         public bool  ShowCombo         { get; set; } = true;
         
@@ -80,21 +80,19 @@ public static class Settings
         /// Ghost Tapping: When true, pressing keys without notes has no penalty.
         /// When false, ghost taps break combo and count as miss (competitive mode).
         /// </summary>
-        public bool  GhostTapping      { get; set; } = true;
-        public bool  ShowKeyLabels     { get; set; } = false;
+        public bool  GhostTapping      { get; set; } = false;
+        public bool  ShowKeyLabels     { get; set; } = true;
         public float LaneUnderlay      { get; set; } = 0f;
         
-        /// <summary>
-        /// Input buffer in seconds. Allows lowering pre-hit anticipation below default.
-        /// Default / Max: 0.010 (10ms). Range: 0.000 to 0.010 (0-10ms)
-        /// </summary>
-        public float InputBuffer       { get; set; } = 0.010f;
-        
-        /// <summary>
-        /// Safe frames at song start in seconds. Misses don't count during this time.
-        /// Default / Max: 0.083 (~5 frames at 60fps). Range: 0.000 to 0.083 (0-83ms)
-        /// </summary>
-        public float SafeFramesTime    { get; set; } = 0.083f;
+        // Input buffer / safe frames are no longer settings (fork): NoteRenderer's defaults always apply,
+        // and values saved by older versions are ignored.
+
+        /// <summary>Fork: global song offset in ms (notes later when positive).</summary>
+        public int GlobalOffsetMs { get; set; } = 0;
+        /// <summary>Fork: play the miss sound.</summary>
+        public bool MissSounds { get; set; } = true;
+        /// <summary>Fork: Skip Breaks (Space skips long stretches without arrows; Game1.BreakSkip.cs).</summary>
+        public bool SkipBreaks { get; set; } = false;
         
         /// <summary>
         /// Health icons: 0 = move with the health bar divider (FNF style), 1 = pinned to the bar ends.
@@ -115,8 +113,8 @@ public static class Settings
         /// </summary>
         public bool  HideTouchHitboxColors   { get; set; } = false;
 
-        /// <summary>(fork) Opacity of a touch hitbox while it is pressed, 0-1 (android only). Default 30 %.</summary>
-        public float TouchHitboxOpacity      { get; set; } = 0.3f;
+        /// <summary>(fork) Opacity of a touch hitbox while it is pressed, 0-1 (android only). Default 10 %.</summary>
+        public float TouchHitboxOpacity      { get; set; } = 0.1f;
 
         /// <summary>(fork) On-screen menu buttons (android only): 0 = Auto, 1 = On, 2 = Off.</summary>
         public int   MenuButtonsMode         { get; set; } = 0;
@@ -138,9 +136,9 @@ public static class Settings
         /// <summary>
         /// Custom key bindings for gameplay (4 lanes: Left, Down, Up, Right).
         /// Stored as key names (e.g., "D", "F", "J", "K").
-        /// Default: D, F, J, K
+        /// Default: A, S, K, L
         /// </summary>
-        public string[] PlayerKeyBindings { get; set; } = { "D", "F", "J", "K" };
+        public string[] PlayerKeyBindings { get; set; } = { "A", "S", "K", "L" };
 
         /// <summary>Fork: rebindable hotkeys (Settings → CONTROLS), action → [primary, alternate].</summary>
         public System.Collections.Generic.Dictionary<string, string[]>? Hotkeys { get; set; }
@@ -164,8 +162,9 @@ public static class Settings
             NoteRenderer.GhostTapping      = d.GhostTapping;
             NoteRenderer.ShowKeyLabels     = d.ShowKeyLabels;
             NoteRenderer.LaneUnderlay      = Math.Clamp(d.LaneUnderlay, 0f, NoteRenderer.LaneUnderlayMax);
-            NoteRenderer.InputBuffer       = Math.Clamp(d.InputBuffer, 0f, 0.010f);
-            NoteRenderer.SafeFramesTime    = Math.Clamp(d.SafeFramesTime, 0f, 0.083f);
+            NoteRenderer.MissSounds        = d.MissSounds;
+            Game1.SkipBreaks               = d.SkipBreaks;
+            Game1.GlobalOffsetMs           = Math.Clamp(d.GlobalOffsetMs, -Game1.MaxOffsetMs, Game1.MaxOffsetMs);
             Game1.ShowTimer                = d.ShowTimer;
             Game1.TimeskipSeconds          = d.TimeskipEnabled == false || d.TimeskipSeconds <= 0f
                                                  ? 0f
@@ -177,7 +176,7 @@ public static class Settings
             Game1.ShowDebugInfo            = d.ShowDebugInfo;
             Game1.ShowFpsCounter           = d.ShowFpsCounter;
             Game1.NativeRenderResolution   = d.NativeRenderResolution;
-            Game1.MasterVolume             = Math.Clamp(d.MasterVolume ?? d.MusicVolume ?? 0.85f, 0f, 1f);
+            Game1.MasterVolume             = Math.Clamp(d.MasterVolume ?? d.MusicVolume ?? 0.5f, 0f, 1f);
             Game1.SongVolume               = Math.Clamp(d.SongVolume, 0f, 1f);
             UI.UiSfx.Volume                = Math.Clamp(d.SfxVolume, 0f, 1f);
             Managers.OnlineMenuMusic.Volume = Math.Clamp(d.MenuMusicVolume, 0f, 1f);
@@ -243,8 +242,9 @@ public static class Settings
                 GhostTapping     = NoteRenderer.GhostTapping,
                 ShowKeyLabels    = NoteRenderer.ShowKeyLabels,
                 LaneUnderlay     = NoteRenderer.LaneUnderlay,
-                InputBuffer      = NoteRenderer.InputBuffer,
-                SafeFramesTime   = NoteRenderer.SafeFramesTime,
+                GlobalOffsetMs   = Game1.GlobalOffsetMs,
+                MissSounds       = NoteRenderer.MissSounds,
+                SkipBreaks       = Game1.SkipBreaks,
                 ShowTimer        = Game1.ShowTimer,
                 TimeskipSeconds  = Game1.TimeskipSeconds,
                 TimerColorPreset = Game1.TimerColorPreset,

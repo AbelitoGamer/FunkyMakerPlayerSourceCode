@@ -7,8 +7,8 @@ namespace FunkyMakerPlayer.UI;
 /// <summary>
 /// Shared drawing helpers for menus drawn straight to the window (fork): rectangles, text with the
 /// TrueType font (FontStashSharp) or the bitmap fallback, measuring, centring, truncation.
-/// Used by the reusable UI pieces (<see cref="OptionsMenu"/>, <see cref="ModifiersWindow"/>,
-/// <see cref="AttemptsWindow"/>) so every screen draws them the same way.
+/// Used by the reusable UI pieces (<see cref="OptionsMenu"/>, <see cref="ModifiersWindow"/>) so every
+/// screen draws them the same way.
 /// </summary>
 public sealed class UiDraw
 {
@@ -43,13 +43,13 @@ public sealed class UiDraw
     public void Text(SpriteBatch sb, string text, Vector2 pos, Color color, int size)
     {
         if (FontRenderer != null) FontRenderer.DrawString(sb, text, pos, color, size);
-        else if (_font != null) sb.DrawString(_font, Safe(text), pos, color, 0f, Vector2.Zero, size / 32f, SpriteEffects.None, 0f);
+        else if (_font != null) sb.DrawUiString(_font, Safe(text), pos, color, 0f, Vector2.Zero, size / 32f, SpriteEffects.None, 0f);
     }
 
     public Vector2 Measure(string text, int size)
     {
         if (FontRenderer != null) return FontRenderer.MeasureString(text, size);
-        if (_font != null) return _font.MeasureString(Safe(text)) * (size / 32f);
+        if (_font != null) return _font.MeasureUi(Safe(text)) * (size / 32f);
         return new Vector2(text.Length * size * 0.5f, size);
     }
 

@@ -197,14 +197,14 @@ namespace FunkyMakerPlayer.Multiplayer
         private void UpdateDeleteConfirm(KeyboardState kb, MouseState mouse)
         {
             if (_inputCooldown > 0f) return;
-            if (IsKeyPressed(kb, Keys.Left) || IsKeyPressed(kb, Keys.Right) || IsKeyPressed(kb, Keys.Tab))
+            if (IsKeyPressed(kb, Keys.Left) || IsKeyPressed(kb, Keys.Right))
                 _deleteConfirmSelection = 1 - _deleteConfirmSelection;
             if (_deleteYesRect.Contains(_lastMousePos)) _deleteConfirmSelection = 0;
             else if (_deleteNoRect.Contains(_lastMousePos)) _deleteConfirmSelection = 1;
 
-            bool yes = IsRectClicked(mouse, _deleteYesRect) || IsKeyPressed(kb, Keys.Y) ||
+            bool yes = IsRectClicked(mouse, _deleteYesRect) ||
                        (IsKeyPressed(kb, Keys.Enter) && _deleteConfirmSelection == 0);
-            bool no = IsRectClicked(mouse, _deleteNoRect) || IsKeyPressed(kb, Keys.Escape) || IsKeyPressed(kb, Keys.N) ||
+            bool no = IsRectClicked(mouse, _deleteNoRect) || IsKeyPressed(kb, Keys.Escape) ||
                       (IsKeyPressed(kb, Keys.Enter) && _deleteConfirmSelection == 1);
 
             if (yes)

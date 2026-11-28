@@ -80,8 +80,8 @@ public sealed class PickerTouch
         }
         else
         {
-            var sz = font.MeasureString(text) * 0.6f;
-            sb.DrawString(font, text, new Vector2((sw - sz.X) / 2f, sh - sz.Y - 8), Color.White * 0.5f,
+            var sz = font.MeasureUi(text) * 0.6f;
+            sb.DrawUiString(font, text, new Vector2((sw - sz.X) / 2f, sh - sz.Y - 8), Color.White * 0.5f,
                 0f, Vector2.Zero, 0.6f, SpriteEffects.None, 0f);
         }
     }
@@ -105,8 +105,8 @@ public sealed class PickerTouch
         else
         {
             float s = r.Height / 40f;
-            var sz = font.MeasureString(label) * s;
-            sb.DrawString(font, label, new Vector2(r.X + (r.Width - sz.X) / 2f, r.Y + (r.Height - sz.Y) / 2f),
+            var sz = font.MeasureUi(label) * s;
+            sb.DrawUiString(font, label, new Vector2(r.X + (r.Width - sz.X) / 2f, r.Y + (r.Height - sz.Y) / 2f),
                 Color.White, 0f, Vector2.Zero, s, SpriteEffects.None, 0f);
         }
     }

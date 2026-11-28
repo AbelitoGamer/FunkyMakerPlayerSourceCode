@@ -468,6 +468,24 @@ public static class FnmmConverter
                     }
                 };
 
+            // Old health-bar icon changes: icon1 = opponent (left), icon2 = player (right); arg 0 is
+            // the sprite name. BarIconChange target: 0 = opponent, 1 = player.
+            case "icon1":
+            case "icon2":
+            {
+                string sprite = Arg(0);
+                if (string.IsNullOrWhiteSpace(sprite)) return null;
+                return new JsonObject
+                {
+                    ["type"] = "BarIconChange",
+                    ["props"] = new JsonObject
+                    {
+                        ["target"] = type.Equals("icon1", StringComparison.OrdinalIgnoreCase) ? 0.0 : 1.0,
+                        ["sprite"] = sprite,
+                    }
+                };
+            }
+
             // Old format didn't have these, but we support them for completeness
             case "opacity":
                 return new JsonObject

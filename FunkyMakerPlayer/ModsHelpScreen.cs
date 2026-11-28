@@ -1,470 +1,237 @@
+using System;
+using FunkyMakerPlayer.UI;
 using Microsoft.Xna.Framework;
 using Microsoft.Xna.Framework.Graphics;
 using Microsoft.Xna.Framework.Input;
-using Microsoft.Xna.Framework.Input.Touch;
-using System;
-using System.Collections.Generic;
 
 namespace FunkyMakerPlayer
 {
     /// <summary>
-    /// Paginated help screen explaining how to use mods on Android
-    /// Swipe left/right to navigate pages
+    /// Android "FOLDER ACCESS" guide (title screen secondary button). Rewritten 2026-11-28 (fork):
+    /// it was seven swipe pages of tiny centred text with no way back except the system gesture.
+    /// Now one screen sized with <see cref="UiScale.FromScreen"/>: a Back button, three short steps
+    /// and a big CHOOSE FOLDER button that opens the Android folder picker
+    /// (<see cref="LaunchFolderPicker"/>, handled by Game1). Works by tap (UI/PointerInput) and keys
+    /// (Escape / back gesture closes, Enter picks the folder).
     /// </summary>
     public class ModsHelpScreen
     {
-        private FontRenderer _fontRenderer;
-        private Texture2D _pixel;
-        
-        // Page navigation
-        private int _currentPage = 0;
-        private int _totalPages = 0;
-        
-        // Page transition animation
-        private float _pageTransition = 0f;
-        private int _targetPage = 0;
-        
-        // Content pages
-        private List<HelpPage> _pages = new List<HelpPage>();
-        
+        private readonly UiDraw _ui;
+        private Rectangle _backBounds, _pickBounds;
+        private bool _backHover, _pickHover;
+        private MouseState _prevMouse;
+        private KeyboardState _prevKb;
+        private float _openTime;
+
         public bool IsVisible { get; set; } = false;
         public bool LaunchFolderPicker { get; private set; } = false;
-        
-        private class HelpPage
+
+        private static readonly (string Title, string Body)[] Steps =
         {
-            public string Title { get; set; } = "";
-            public List<string> Lines { get; set; } = new List<string>();
-            public Color TitleColor { get; set; } = new Color(100, 200, 255);
-            public bool HasButton { get; set; } = false;
-            public string ButtonText { get; set; } = "";
-        }
-        
+            ("Put your mods in a folder",
+             "Copy your mods to the phone, inside a folder that has a \"mods\" folder in it.\nExample: Documents/MyMods/mods"),
+            ("Choose that folder",
+             "Tap CHOOSE FOLDER and pick the folder that has \"mods\" inside (MyMods in the example)."),
+            ("Allow access",
+             "Tap \"Use this folder\" and then \"Allow\". The game copies everything into its own mods folder."),
+        };
+
         public ModsHelpScreen(FontRenderer fontRenderer, Texture2D pixel)
         {
-            _fontRenderer = fontRenderer;
-            _pixel = pixel;
-            
-            InitializePages();
-            _totalPages = _pages.Count;
+            _ui = new UiDraw(pixel, null, fontRenderer);
         }
-        
+
         public void Show()
         {
             IsVisible = true;
-            _currentPage = 0;
-            _targetPage = 0;
-            _pageTransition = 0f;
-            
-            // Enable only Tap gesture for buttons
-            TouchPanel.EnabledGestures = GestureType.Tap;
+            LaunchFolderPicker = false;
+            _openTime = 0f;
+            _prevMouse = PointerInput.GetState();
+            _prevKb = LayoutKeyboard.GetState();
         }
-        
-        private void InitializePages()
-        {
-            // PAGE 1: Introducción
-            _pages.Add(new HelpPage
-            {
-                Title = "MODS EN ANDROID",
-                TitleColor = new Color(100, 255, 100),
-                Lines = new List<string>
-                {
-                    "",
-                    "Bienvenido a la guia de mods",
-                    "para Android!",
-                    "",
-                    "Debido a las restricciones de",
-                    "Android 10+, necesitas dar",
-                    "permiso para leer archivos.",
-                    "",
-                    "Esta guia te mostrara como",
-                    "agregar tus niveles personalizados.",
-                    "",
-                    "",
-                    "Desliza para continuar"
-                }
-            });
-            
-            // PAGE 2: Método recomendado
-            _pages.Add(new HelpPage
-            {
-                Title = "METODO RECOMENDADO",
-                TitleColor = new Color(100, 255, 100),
-                Lines = new List<string>
-                {
-                    "",
-                    "1. Copia tus archivos .fnmm,",
-                    "   .zip o .rar a tu telefono",
-                    "",
-                    "2. Crea una carpeta con una",
-                    "   subcarpeta mods, por ej.:",
-                    "   Documents/",
-                    "   FunkyMakerPlayerPublicMods/",
-                    "   mods/",
-                    "",
-                    "3. En el menu, toca",
-                    "   'GRANT FOLDER ACCESS'",
-                    "",
-                    "4. Selecciona la carpeta que",
-                    "   contiene 'mods' y el app",
-                    "   la copiara a su storage"
-                }
-            });
-            
-            // PAGE 3: Grant Folder Access
-            _pages.Add(new HelpPage
-            {
-                Title = "GRANT FOLDER ACCESS",
-                TitleColor = new Color(255, 200, 100),
-                Lines = new List<string>
-                {
-                    "",
-                    "Cuando toques el boton,",
-                    "se abrira el selector",
-                    "de carpetas de Android.",
-                    "",
-                    "Navega hasta la carpeta que",
-                    "contiene 'mods', por ej.:",
-                    "Documents/",
-                    "FunkyMakerPlayerPublicMods",
-                    "",
-                    "Toca 'USAR ESTA CARPETA'",
-                    "o 'SELECT'",
-                    "",
-                    "El app copiara tu contenido",
-                    "a su storage interno."
-                },
-                HasButton = true,
-                ButtonText = "ABRIR SELECTOR"
-            });
-            
-            // PAGE 4: Import File
-            _pages.Add(new HelpPage
-            {
-                Title = "METODO ALTERNATIVO",
-                TitleColor = new Color(100, 200, 255),
-                Lines = new List<string>
-                {
-                    "",
-                    "Si 'Grant Folder Access'",
-                    "no funciona, usa:",
-                    "",
-                    "'IMPORT FILE'",
-                    "",
-                    "1. Toca 'IMPORT FILE'",
-                    "   en el menu",
-                    "",
-                    "2. Selecciona tu archivo",
-                    "   .fnmm, .zip o .rar",
-                    "",
-                    "3. El nivel se copiara",
-                    "   a la app"
-                }
-            });
-            
-            // PAGE 5: Formatos
-            _pages.Add(new HelpPage
-            {
-                Title = "FORMATOS SOPORTADOS",
-                TitleColor = new Color(150, 255, 255),
-                Lines = new List<string>
-                {
-                    "",
-                    ".fnmm",
-                    "Formato nativo de",
-                    "FunkyMaker",
-                    "",
-                    ".zip",
-                    "Archivos comprimidos ZIP",
-                    "",
-                    ".rar",
-                    "Archivos comprimidos RAR",
-                    "",
-                    "Los niveles aparecen en",
-                    "Freeplay despues de",
-                    "reiniciar la app"
-                }
-            });
-            
-            // PAGE 6: Problemas
-            _pages.Add(new HelpPage
-            {
-                Title = "PROBLEMAS COMUNES",
-                TitleColor = new Color(255, 100, 100),
-                Lines = new List<string>
-                {
-                    "",
-                    "No veo mis niveles:",
-                    "- Reinicia la app",
-                    "- Verifica la carpeta",
-                    "- Da permiso con",
-                    "  Grant Folder Access",
-                    "",
-                    "Selector no se abre:",
-                    "- Usa Import File",
-                    "- Instala un File Manager",
-                    "",
-                    "App se cierra:",
-                    "- Verifica que el archivo",
-                    "  no este corrupto"
-                }
-            });
-            
-            // PAGE 7: Tips
-            _pages.Add(new HelpPage
-            {
-                Title = "TIPS UTILES",
-                TitleColor = new Color(255, 255, 100),
-                Lines = new List<string>
-                {
-                    "",
-                    "- Organiza tus niveles",
-                    "  en subcarpetas",
-                    "",
-                    "- Documents no se lee",
-                    "  directo: importa con",
-                    "  GRANT FOLDER ACCESS o",
-                    "  IMPORT FILE",
-                    "",
-                    "- Comparte niveles via",
-                    "  Bluetooth o mensajes",
-                    "",
-                    "- Mantén backups en",
-                    "  la nube",
-                    "",
-                    "Disfruta jugando!"
-                }
-            });
-        }
-        
-        
+
+        public void Hide() => IsVisible = false;
+
         public void Update(GameTime gameTime)
         {
+            LaunchFolderPicker = false;
             if (!IsVisible) return;
-            if (!Game1.CanAcceptInput) return;
-            
-            float deltaTime = (float)gameTime.ElapsedGameTime.TotalSeconds;
-            
-            // Handle keyboard input
+            _openTime += (float)gameTime.ElapsedGameTime.TotalSeconds;
+
+            var ms = PointerInput.GetState();
             var kb = LayoutKeyboard.GetState();
-            if (kb.IsKeyDown(Keys.Escape) || kb.IsKeyDown(Keys.Back))
+            if (!Game1.CanAcceptInput)
             {
-                UI.UiSfx.Play(UI.UiSound.Back);
-                IsVisible = false;
+                _prevMouse = Game1.NeutralMouseState(ms);
+                _prevKb = kb;
                 return;
             }
-            
-            // Reset launch flag
-            LaunchFolderPicker = false;
-            
-            int screenWidth = GraphicsAdapter.DefaultAdapter.CurrentDisplayMode.Width;
-            int screenHeight = GraphicsAdapter.DefaultAdapter.CurrentDisplayMode.Height;
-            
-            // Navigation button bounds
-            int navButtonWidth = 120;
-            int navButtonHeight = 60;
-            int navButtonY = screenHeight - 200;
-            int navButtonMargin = 40;
-            
-            Rectangle prevButtonBounds = new Rectangle(navButtonMargin, navButtonY, navButtonWidth, navButtonHeight);
-            Rectangle nextButtonBounds = new Rectangle(screenWidth - navButtonWidth - navButtonMargin, navButtonY, navButtonWidth, navButtonHeight);
-            
-            // Green button bounds (page 3)
-            Rectangle greenButtonBounds = Rectangle.Empty;
-            if (_currentPage == 2 && _pages[_currentPage].HasButton)
+
+            _backHover = _backBounds.Contains(ms.Position);
+            _pickHover = _pickBounds.Contains(ms.Position);
+            bool clicked = _openTime > 0.15f &&
+                           ms.LeftButton == ButtonState.Pressed && _prevMouse.LeftButton == ButtonState.Released;
+            bool Pressed(Keys k) => kb.IsKeyDown(k) && !_prevKb.IsKeyDown(k);
+            _prevMouse = ms;
+            _prevKb = kb;
+
+            if (Pressed(Keys.Escape) || Pressed(Keys.Back) || (clicked && _backHover))
             {
-                int buttonWidth = (int)(screenWidth * 0.7f);
-                int buttonHeight = 60;
-                int buttonX = (screenWidth - buttonWidth) / 2;
-                int buttonY = screenHeight - 280;
-                greenButtonBounds = new Rectangle(buttonX, buttonY, buttonWidth, buttonHeight);
+                UiSfx.Play(UiSound.Back);
+                IsVisible = false;
             }
-            
-            // Process all available gestures
-            while (TouchPanel.IsGestureAvailable)
+            else if (Pressed(Keys.Enter) || (clicked && _pickHover))
             {
-                GestureSample gesture = TouchPanel.ReadGesture();
-                
-                if (gesture.GestureType == GestureType.Tap)
-                {
-                    var tapPos = gesture.Position;
-                    
-                    // Check green button (page 3)
-                    if (!greenButtonBounds.IsEmpty && greenButtonBounds.Contains(tapPos))
-                    {
-                        LaunchFolderPicker = true;
-                        UI.UiSfx.Play(UI.UiSound.Confirm);
-                        IsVisible = false;
-                        return;
-                    }
-                    
-                    // Check previous button
-                    if (_currentPage > 0 && prevButtonBounds.Contains(tapPos))
-                    {
-                        _targetPage = _currentPage - 1;
-                        _pageTransition = 0f;
-                        UI.UiSfx.Play(UI.UiSound.Move);
-                    }
-                    
-                    // Check next button
-                    if (_currentPage < _totalPages - 1 && nextButtonBounds.Contains(tapPos))
-                    {
-                        _targetPage = _currentPage + 1;
-                        _pageTransition = 0f;
-                        UI.UiSfx.Play(UI.UiSound.Move);
-                    }
-                }
-            }
-            
-            // Animate page transition
-            if (_targetPage != _currentPage)
-            {
-                _pageTransition += deltaTime * 8f;
-                
-                if (_pageTransition >= 1f)
-                {
-                    _currentPage = _targetPage;
-                    _pageTransition = 0f;
-                }
+                UiSfx.Play(UiSound.Confirm);
+                LaunchFolderPicker = true;
+                IsVisible = false;
             }
         }
-        
-        
-        public void Draw(SpriteBatch sb, int screenWidth, int screenHeight)
+
+        public void Draw(SpriteBatch sb, int sw, int sh)
         {
             if (!IsVisible) return;
-            
-            // Semi-transparent background
-            sb.Draw(_pixel, new Rectangle(0, 0, screenWidth, screenHeight), Color.Black * 0.95f);
-            
-            var currentPageData = _pages[_currentPage];
-            
-            // Title bar
-            int titleFontSize = 36;  // Aumentado de 28 a 36
-            int bodyFontSize = 28;   // Aumentado de 22 a 28
-            int titleHeight = 80;
-            
-            sb.Draw(_pixel, new Rectangle(0, 0, screenWidth, titleHeight), currentPageData.TitleColor * 0.3f);
-            
-            var titleSize = _fontRenderer.MeasureString(currentPageData.Title, titleFontSize);
-            int titleX = (int)((screenWidth - titleSize.X) / 2);
-            int titleY = (int)((titleHeight - titleSize.Y) / 2);
-            
-            // Title shadow
-            _fontRenderer.DrawString(sb, currentPageData.Title, new Vector2(titleX + 2, titleY + 2), Color.Black * 0.5f, titleFontSize);
-            _fontRenderer.DrawString(sb, currentPageData.Title, new Vector2(titleX, titleY), currentPageData.TitleColor, titleFontSize);
-            
-            // Content area
-            int contentY = titleHeight + 40;
-            int lineHeight = 40;  // Aumentado de 32 a 40 para más espacio entre líneas
-            
-            foreach (var line in currentPageData.Lines)
+            float s = UiScale.FromScreen(sw, sh);
+            Color accent = new Color(255, 68, 136);
+            Color gold = new Color(255, 215, 0);
+            Color green = new Color(70, 220, 140);
+
+            _ui.Rect(sb, 0, 0, sw, sh, new Color(20, 18, 28));
+
+            int margin = UiScale.Px(28, s);
+            int top = UiScale.Px(20, s);
+
+            // Back button (top left)
+            int backH = UiScale.Px(44, s, 40);
+            int backFont = UiScale.FontPx(17, s);
+            string backLabel = PointerInput.BackLabel;
+            int backW = (int)_ui.Measure(backLabel, backFont).X + UiScale.Px(36, s);
+            _backBounds = new Rectangle(margin, top, backW, backH);
+            _ui.Rect(sb, _backBounds, _backHover ? new Color(56, 48, 76) : new Color(34, 30, 48));
+            Border(sb, _backBounds, _backHover ? accent : Color.White * 0.18f);
+            _ui.CenterText(sb, backLabel, _backBounds, Color.White * (_backHover ? 1f : 0.88f), backFont);
+
+            // Title, centred on the Back button's row
+            int titleFont = UiScale.FontPx(34, s);
+            const string title = "FOLDER ACCESS";
+            var tsz = _ui.Measure(title, titleFont);
+            float titleY = top + (backH - tsz.Y) / 2f;
+            _ui.Text(sb, title, new Vector2((sw - tsz.X) / 2f, titleY), gold, titleFont);
+
+            int subFont = UiScale.FontPx(17, s);
+            const string sub = "Import a whole folder of mods at once";
+            var subSz = _ui.Measure(sub, subFont);
+            float subY = top + backH + UiScale.Px(10, s);
+            _ui.Text(sb, sub, new Vector2((sw - subSz.X) / 2f, subY), Color.White * 0.6f, subFont);
+
+            // Bottom: CHOOSE FOLDER button and the IMPORT FILE tip
+            int tipFont = UiScale.FontPx(15, s);
+            const string tip = "Only one level file? Use IMPORT FILE on the title screen instead.";
+            var tipSz = _ui.Measure(tip, tipFont);
+            float tipY = sh - UiScale.Px(18, s) - tipSz.Y;
+            int pickH = UiScale.Px(62, s, 48);
+            int pickW = Math.Min(UiScale.Px(420, s), sw - margin * 2);
+            _pickBounds = new Rectangle((sw - pickW) / 2, (int)(tipY - UiScale.Px(14, s) - pickH), pickW, pickH);
+            int glow = UiScale.Px(3, s, 2);
+            _ui.Rect(sb, _pickBounds.X - glow, _pickBounds.Y - glow, _pickBounds.Width + glow * 2, _pickBounds.Height + glow * 2,
+                green * (_pickHover ? 0.5f : 0.28f));
+            _ui.Rect(sb, _pickBounds, _pickHover ? new Color(40, 150, 95) : new Color(30, 120, 78));
+            _ui.CenterText(sb, "CHOOSE FOLDER", _pickBounds, Color.White, UiScale.FontPx(24, s));
+            _ui.Text(sb, tip, new Vector2((sw - tipSz.X) / 2f, tipY), Color.White * 0.5f, tipFont);
+
+            // Steps: side by side on a wide (landscape) screen, stacked otherwise
+            float stepsTop = subY + subSz.Y + UiScale.Px(20, s);
+            float stepsBottom = _pickBounds.Y - UiScale.Px(20, s);
+            int gap = UiScale.Px(16, s);
+            bool row = sw > sh;
+            int n = Steps.Length;
+            int areaW = Math.Min(sw - margin * 2, UiScale.Px(1200, s));
+            int areaX = (sw - areaW) / 2;
+            int cardW = row ? (areaW - gap * (n - 1)) / n : areaW;
+            // Cards no taller than their text needs: the block is centred instead of stretched
+            int cardH = row
+                ? (int)Math.Min(stepsBottom - stepsTop, UiScale.Px(200, s))
+                : (int)Math.Min((stepsBottom - stepsTop - gap * (n - 1)) / n, UiScale.Px(170, s));
+            float blockH = row ? cardH : n * cardH + gap * (n - 1);
+            stepsTop += Math.Max(0f, (stepsBottom - stepsTop - blockH) / 2f);
+            int pad = UiScale.Px(18, s);
+            int numFont = UiScale.FontPx(26, s);
+            int headFont = UiScale.FontPx(20, s);
+            int bodyFont = UiScale.FontPx(17, s);
+
+            for (int i = 0; i < n; i++)
             {
-                if (!string.IsNullOrEmpty(line))
+                var r = row
+                    ? new Rectangle(areaX + i * (cardW + gap), (int)stepsTop, cardW, cardH)
+                    : new Rectangle(areaX, (int)stepsTop + i * (cardH + gap), cardW, cardH);
+                _ui.Rect(sb, r, new Color(28, 26, 42));
+                Border(sb, r, Color.White * 0.10f);
+                _ui.Rect(sb, r.X, r.Y, r.Width, UiScale.Px(3, s, 2), accent * 0.8f);
+
+                // Number badge + heading
+                string num = (i + 1).ToString();
+                int badge = UiScale.Px(40, s, 30);
+                var badgeR = new Rectangle(r.X + pad, r.Y + pad, badge, badge);
+                _ui.Rect(sb, badgeR, accent * 0.22f);
+                Border(sb, badgeR, accent * 0.8f);
+                _ui.CenterText(sb, num, badgeR, Color.White, numFont);
+
+                float textX = badgeR.Right + UiScale.Px(12, s);
+                float headMax = r.Right - pad - textX;
+                int hf = headFont;
+                while (hf > 11 && _ui.Measure(Steps[i].Title, hf).X > headMax) hf--;
+                var hsz = _ui.Measure(Steps[i].Title, hf);
+                _ui.Text(sb, Steps[i].Title, new Vector2(textX, badgeR.Y + (badge - hsz.Y) / 2f), Color.White, hf);
+
+                // Body, wrapped; shrinks until it fits the card
+                float bodyTop = badgeR.Bottom + UiScale.Px(12, s);
+                float maxW = r.Width - pad * 2;
+                float maxH = r.Bottom - pad - bodyTop;
+                int bf = bodyFont;
+                var lines = Wrap(Steps[i].Body, bf, maxW);
+                float lineH = _ui.Measure("Ag", bf).Y + UiScale.Px(4, s);
+                while (bf > 11 && lines.Count * lineH > maxH)
                 {
-                    var lineSize = _fontRenderer.MeasureString(line, bodyFontSize);
-                    int lineX = (int)((screenWidth - lineSize.X) / 2);
-                    
-                    _fontRenderer.DrawString(sb, line, new Vector2(lineX, contentY), Color.White * 0.9f, bodyFontSize);
+                    bf--;
+                    lines = Wrap(Steps[i].Body, bf, maxW);
+                    lineH = _ui.Measure("Ag", bf).Y + UiScale.Px(4, s);
                 }
-                contentY += lineHeight;
+                float y = bodyTop;
+                foreach (var l in lines)
+                {
+                    _ui.Text(sb, l, new Vector2(r.X + pad, y), Color.White * 0.78f, bf);
+                    y += lineH;
+                }
             }
-            
-            // Navigation buttons (Previous / Next)
-            int navButtonWidth = 120;
-            int navButtonHeight = 60;
-            int navButtonY = screenHeight - 200;
-            int navButtonMargin = 40;
-            
-            // Previous button (left)
-            if (_currentPage > 0)
-            {
-                int prevButtonX = navButtonMargin;
-                Rectangle prevBounds = new Rectangle(prevButtonX, navButtonY, navButtonWidth, navButtonHeight);
-                
-                sb.Draw(_pixel, prevBounds, new Color(50, 150, 200) * 0.9f);
-                sb.Draw(_pixel, new Rectangle(prevButtonX - 2, navButtonY - 2, navButtonWidth + 4, navButtonHeight + 4), new Color(30, 100, 150) * 0.7f);
-                
-                string prevText = "< ATRAS";
-                int prevFontSize = 26;  // Aumentado de 22 a 26
-                var prevTextSize = _fontRenderer.MeasureString(prevText, prevFontSize);
-                int prevTextX = (int)(prevButtonX + (navButtonWidth - prevTextSize.X) / 2);
-                int prevTextY = (int)(navButtonY + (navButtonHeight - prevTextSize.Y) / 2);
-                
-                _fontRenderer.DrawString(sb, prevText, new Vector2(prevTextX, prevTextY), Color.White, prevFontSize);
-            }
-            
-            // Next button (right)
-            if (_currentPage < _totalPages - 1)
-            {
-                int nextButtonX = screenWidth - navButtonWidth - navButtonMargin;
-                Rectangle nextBounds = new Rectangle(nextButtonX, navButtonY, navButtonWidth, navButtonHeight);
-                
-                sb.Draw(_pixel, nextBounds, new Color(50, 150, 200) * 0.9f);
-                sb.Draw(_pixel, new Rectangle(nextButtonX - 2, navButtonY - 2, navButtonWidth + 4, navButtonHeight + 4), new Color(30, 100, 150) * 0.7f);
-                
-                string nextText = "SIGUIENTE >";
-                int nextFontSize = 24;  // Aumentado de 20 a 24
-                var nextTextSize = _fontRenderer.MeasureString(nextText, nextFontSize);
-                int nextTextX = (int)(nextButtonX + (navButtonWidth - nextTextSize.X) / 2);
-                int nextTextY = (int)(navButtonY + (navButtonHeight - nextTextSize.Y) / 2);
-                
-                _fontRenderer.DrawString(sb, nextText, new Vector2(nextTextX, nextTextY), Color.White, nextFontSize);
-            }
-            
-            // Page indicator dots
-            int dotY = screenHeight - 140;
-            int dotSize = 12;
-            int dotSpacing = 20;
-            int totalDotsWidth = (_totalPages * dotSize) + ((_totalPages - 1) * dotSpacing);
-            int dotStartX = (screenWidth - totalDotsWidth) / 2;
-            
-            for (int i = 0; i < _totalPages; i++)
-            {
-                int dotX = dotStartX + (i * (dotSize + dotSpacing));
-                Color dotColor = (i == _currentPage) ? new Color(100, 200, 255) : Color.White * 0.3f;
-                float dotScale = (i == _currentPage) ? 1.2f : 1.0f;
-                int scaledSize = (int)(dotSize * dotScale);
-                int offset = (scaledSize - dotSize) / 2;
-                
-                sb.Draw(_pixel, new Rectangle(dotX - offset, dotY - offset, scaledSize, scaledSize), dotColor);
-            }
-            
-            // Button on page 3 (Grant Folder Access)
-            if (currentPageData.HasButton)
-            {
-                int buttonWidth = (int)(screenWidth * 0.7f);
-                int buttonHeight = 60;
-                int buttonX = (screenWidth - buttonWidth) / 2;
-                int buttonY = screenHeight - 280;
-                
-                // Button background with glow
-                sb.Draw(_pixel, new Rectangle(buttonX - 4, buttonY - 4, buttonWidth + 8, buttonHeight + 8), new Color(100, 255, 100) * 0.3f);
-                sb.Draw(_pixel, new Rectangle(buttonX, buttonY, buttonWidth, buttonHeight), new Color(100, 255, 100));
-                
-                // Button text
-                int buttonFontSize = 28;  // Aumentado de 24 a 28
-                var buttonTextSize = _fontRenderer.MeasureString(currentPageData.ButtonText, buttonFontSize);
-                int buttonTextX = (int)((screenWidth - buttonTextSize.X) / 2);
-                int buttonTextY = (int)(buttonY + (buttonHeight - buttonTextSize.Y) / 2);
-                
-                _fontRenderer.DrawString(sb, currentPageData.ButtonText, new Vector2(buttonTextX, buttonTextY), Color.White, buttonFontSize);
-            }
-            
-            // Page number
-            string pageNum = $"{_currentPage + 1}/{_totalPages}";
-            int pageNumFontSize = 18;
-            var pageNumSize = _fontRenderer.MeasureString(pageNum, pageNumFontSize);
-            int pageNumX = screenWidth - (int)pageNumSize.X - 20;
-            int pageNumY = titleHeight + 10;
-            
-            _fontRenderer.DrawString(sb, pageNum, new Vector2(pageNumX, pageNumY), Color.White * 0.5f, pageNumFontSize);
         }
-        
-        public void Hide()
+
+        private System.Collections.Generic.List<string> Wrap(string text, int size, float maxW)
         {
-            IsVisible = false;
-            // Restore previous gestures when hiding
-            TouchPanel.EnabledGestures = GestureType.None;
+            var result = new System.Collections.Generic.List<string>();
+            foreach (var para in text.Split('\n'))
+            {
+                string line = "";
+                foreach (var word in para.Split(' '))
+                {
+                    string test = line.Length == 0 ? word : line + " " + word;
+                    if (_ui.Measure(test, size).X > maxW && line.Length > 0)
+                    {
+                        result.Add(line);
+                        line = word;
+                    }
+                    else line = test;
+                }
+                result.Add(line);
+            }
+            return result;
+        }
+
+        private void Border(SpriteBatch sb, Rectangle r, Color c)
+        {
+            _ui.Rect(sb, r.X, r.Y, r.Width, 1, c);
+            _ui.Rect(sb, r.X, r.Bottom - 1, r.Width, 1, c);
+            _ui.Rect(sb, r.X, r.Y, 1, r.Height, c);
+            _ui.Rect(sb, r.Right - 1, r.Y, 1, r.Height, c);
         }
     }
 }

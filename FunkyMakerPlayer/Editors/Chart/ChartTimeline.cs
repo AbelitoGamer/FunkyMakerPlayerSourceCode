@@ -65,14 +65,14 @@ public class ChartTimeline
         string durationStr = FormatTime(Duration);
         string timeLabel = $"{currentTimeStr} / {durationStr}";
         
-        var textSize = _font.MeasureString(timeLabel);
-        sb.DrawString(_font, timeLabel,
+        var textSize = _font.MeasureUi(timeLabel);
+        sb.DrawUiString(_font, timeLabel,
             new Vector2(bounds.X + bounds.Width - textSize.X - 10, bounds.Y + 5),
             Color.White * 0.8f);
         
         // Draw BPM
         string bpmLabel = $"BPM: {BPM:F1}";
-        sb.DrawString(_font, bpmLabel,
+        sb.DrawUiString(_font, bpmLabel,
             new Vector2(bounds.X + 10, bounds.Y + 5),
             Color.Cyan * 0.8f);
     }

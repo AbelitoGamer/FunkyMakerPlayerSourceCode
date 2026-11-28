@@ -169,18 +169,18 @@ public partial class FreeplayMenu
         int row3Y = row2Y + row2H + UiScale.Px(8, s);
         int row3H = UiScale.Px(28, s, 22);
         int btnW = (innerW - gap * 2) / 3;
-        int actionFont = FitFontSize($"{Controls.Tag(HotkeyAction.Refresh)}REFRESH", UiScale.FontPx(12, s), 9, btnW - UiScale.Px(10, s));
+        int actionFont = FitFontSize("+ NEW (FNF only)", UiScale.FontPx(12, s), 9, btnW - UiScale.Px(10, s));
         _importBtnBounds  = new Rectangle(panelLeft + pad, row3Y, btnW, row3H);
         _newBtnBounds     = new Rectangle(_importBtnBounds.Right + gap, row3Y, btnW, row3H);
         _refreshBtnBounds = new Rectangle(_newBtnBounds.Right + gap, row3Y, btnW, row3H);
-        DrawPanelHeaderButton(sb, _importBtnBounds, $"{Controls.Tag(HotkeyAction.ImportLevel)}IMPORT", _importBtnHover, new Color(0, 200, 255), actionFont);
+        DrawPanelHeaderButton(sb, _importBtnBounds, "IMPORT", _importBtnHover, new Color(0, 200, 255), actionFont);
         if (_online != null)
-            DrawPanelHeaderButton(sb, _newBtnBounds, "[ESC] BACK", _newBtnHover, new Color(255, 68, 136), actionFont);
+            DrawPanelHeaderButton(sb, _newBtnBounds, "BACK", _newBtnHover, new Color(255, 68, 136), actionFont);
         else if (OsuTab)
             DrawPanelHeaderButton(sb, _newBtnBounds, "+ NEW (FNF only)", false, new Color(90, 90, 110), actionFont);
         else
-            DrawPanelHeaderButton(sb, _newBtnBounds, $"{Controls.Tag(HotkeyAction.NewChart)}+ NEW", _newBtnHover, new Color(46, 224, 150), actionFont);
-        DrawPanelHeaderButton(sb, _refreshBtnBounds, $"{Controls.Tag(HotkeyAction.Refresh)}REFRESH", _refreshBtnHover, new Color(255, 215, 0), actionFont);
+            DrawPanelHeaderButton(sb, _newBtnBounds, "+ NEW", _newBtnHover, new Color(46, 224, 150), actionFont);
+        DrawPanelHeaderButton(sb, _refreshBtnBounds, "REFRESH", _refreshBtnHover, new Color(255, 215, 0), actionFont);
     }
 
     private void DrawSearchBox(SpriteBatch sb, Rectangle r, float s)
@@ -206,7 +206,7 @@ public partial class FreeplayMenu
         float maxW = r.Right - tx - UiScale.Px(6, s);
         bool empty = _search.Length == 0;
         string text = empty
-            ? (active ? "" : UI.PointerInput.IsTouch ? "Search (tap)" : $"Search  [{Controls.Hint(HotkeyAction.FreeplaySearch)}]")
+            ? (active ? "" : "Search")
             : Safe(_search);
         if (!empty)
         {
@@ -253,8 +253,8 @@ public partial class FreeplayMenu
         string main = _favoritesOnly && _search.Length == 0 ? "NO FAVORITES YET" : "NO LEVELS FOUND";
         string sub = _search.Length > 0
             ? $"Nothing matches \"{Safe(_search)}\""
-            : UI.PointerInput.IsTouch ? "Use \"...\" on a level to mark it" : $"Press [{Controls.Hint(HotkeyAction.FreeplayFavorite)}] on a level to mark it";
-        string help = _search.Length > 0 ? "Esc clears the search" : (UI.PointerInput.IsTouch ? "Tap FAVS again to show every level" : $"[{Controls.Hint(HotkeyAction.FreeplayFavoritesOnly)}] shows every level");
+            : "Use \"...\" on a level to mark it";
+        string help = _search.Length > 0 ? "Esc clears the search" : (UI.PointerInput.IsTouch ? "Tap FAVS again to show every level" : "Click FAVS again to show every level");
         int mainSize = FitFontSize(main, UiScale.FontPx(24, s), 14, panelW - UiScale.Px(32, s));
         int subSize = FitFontSize(sub, UiScale.FontPx(15, s), 10, panelW - UiScale.Px(32, s));
         int helpSize = UiScale.FontPx(13, s);
@@ -325,6 +325,9 @@ public partial class FreeplayMenu
             if (StartsGroup(i))
                 DrawGroupHeader(sb, i, panelLeft + itemPadding + (int)((1f - ease) * panelW * 0.35f), panelW - itemPadding * 2 - UiScale.Px(12, s),
                     (int)itemY + UiScale.Px(2, s), itemH, s, ease * (_confirming ? 1f - confirmFade : 1f));
+
+            // Online: songs that can't be picked (too big to send / refused this turn) are greyed out.
+            if (OnlineSongOf(path)?.Disabled == true) alpha *= 0.45f;
 
             int rowX = panelLeft + itemPadding + curveX;
             int rowW = Math.Max(1, panelW - itemPadding * 2 - curveX - UiScale.Px(12, s));
@@ -519,7 +522,7 @@ public partial class FreeplayMenu
     {
         _options.Draw(sb, sw, sh);
         _modWindow.Draw(sb, sw, sh);
-        _attemptsWindow.Draw(sb, sw, sh);
+        if (_attemptsView != null && _font != null) _attemptsView.Draw(sb, _font, sw, sh);
     }
 
     // ── Empty state (no levels at all): drop zone ───────────────────────────

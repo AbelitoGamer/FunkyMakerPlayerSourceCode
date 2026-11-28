@@ -97,7 +97,7 @@ namespace FunkyMakerPlayer.Multiplayer
         public bool ShowOpponentScore { get; set; } = true;
         public bool ShowConnectionQuality { get; set; } = true;
         /// <summary>Opacity (0-100%) of the opponent's notes in online matches ("Opponent Notes Opacity").</summary>
-        public int GhostTransparency { get; set; } = 50;
+        public int GhostTransparency { get; set; } = 100;
         /// <summary>
         /// Fork: osu! songs received from other players come without their background video (smaller
         /// downloads). Told to the server in Hello (resent when changed).
@@ -119,7 +119,7 @@ namespace FunkyMakerPlayer.Multiplayer
             Medium = 60,    // 60 updates/second
             High = 120      // 120 updates/second
         }
-        public NetworkUpdateRate UpdateRate { get; set; } = NetworkUpdateRate.Medium;
+        public NetworkUpdateRate UpdateRate { get; set; } = NetworkUpdateRate.High;
         public bool EnableInterpolation { get; set; } = true;
 
         // ══════════════════════════════════════════════════════════════════════
@@ -366,9 +366,9 @@ namespace FunkyMakerPlayer.Multiplayer
             ShowOpponentNotes = true;   // also saved in settings.json (shared with Opponent Strumline)
             ShowOpponentScore = true;
             ShowConnectionQuality = true;
-            GhostTransparency = 50;
+            GhostTransparency = 100;
             
-            UpdateRate = NetworkUpdateRate.Medium;
+            UpdateRate = NetworkUpdateRate.High;
             EnableInterpolation = true;
             
             HudOpacity = 100;

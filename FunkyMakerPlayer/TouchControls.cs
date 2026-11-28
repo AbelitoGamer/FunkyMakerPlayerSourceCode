@@ -38,6 +38,13 @@ public class TouchControls
     private readonly bool[] _laneJustPressed = new bool[4];
     private readonly Dictionary<int, int> _fingerLane = new();      // Active gameplay touch.Id -> locked lane (0..3)
     private readonly HashSet<int> _pauseFingerIds = new();          // Active touches that began on the pause button
+    private readonly HashSet<int> _skipFingerIds = new();           // Active touches that began on the Skip Breaks prompt
+
+    /// <summary>
+    /// (fork) Skip Breaks prompt in screen (touch) coordinates while it is shown, else null. Touches that
+    /// start on it press Space (the skip) and never reach a lane.
+    /// </summary>
+    public Rectangle? SkipButtonBounds { get; set; }
     private readonly HashSet<int> _seenTouchIds = new();
     private readonly List<int> _staleTouchIds = new();
     private Texture2D? _hitboxTexture;
@@ -278,6 +285,7 @@ public class TouchControls
         _mode = mode;
         _fingerLane.Clear();
         _pauseFingerIds.Clear();
+        _skipFingerIds.Clear();
         Array.Clear(_laneDown, 0, _laneDown.Length);
         Array.Clear(_laneDownPrev, 0, _laneDownPrev.Length);
         Array.Clear(_laneJustPressed, 0, _laneJustPressed.Length);
@@ -368,6 +376,7 @@ public class TouchControls
             _keyStatesPrev.Clear();
             _fingerLane.Clear();
             _pauseFingerIds.Clear();
+            _skipFingerIds.Clear();
             Array.Clear(_laneDown, 0, _laneDown.Length);
             Array.Clear(_laneDownPrev, 0, _laneDownPrev.Length);
             Array.Clear(_laneJustPressed, 0, _laneJustPressed.Length);
@@ -430,6 +439,16 @@ public class TouchControls
                 {
                     bool isTrackedPause = _pauseFingerIds.Contains(touch.Id);
                     bool isTrackedLane = _fingerLane.TryGetValue(touch.Id, out int lane);
+
+                    // Skip Breaks prompt: claims only touches that started on it
+                    if (_skipFingerIds.Contains(touch.Id) || (!isTrackedLane && !isTrackedPause &&
+                        touch.State == TouchLocationState.Pressed && SkipButtonBounds is Rectangle skipRect &&
+                        skipRect.Contains((int)touchPos.X, (int)touchPos.Y)))
+                    {
+                        _skipFingerIds.Add(touch.Id);
+                        _keyStates[Keys.Space] = true;
+                        continue;
+                    }
 
                     // Pause button only claims touches that started on it (never steals an active lane hold)
                     if (isTrackedPause || (!isTrackedLane && !_hidePauseButton && _pauseButton != null &&
@@ -508,6 +527,7 @@ public class TouchControls
             {
                 _fingerLane.Remove(touch.Id);
                 _pauseFingerIds.Remove(touch.Id);
+                _skipFingerIds.Remove(touch.Id);
             }
         }
 
@@ -527,6 +547,14 @@ public class TouchControls
                 if (!_seenTouchIds.Contains(id)) _staleTouchIds.Add(id);
             foreach (var id in _staleTouchIds)
                 _pauseFingerIds.Remove(id);
+        }
+        if (_skipFingerIds.Count > 0)
+        {
+            _staleTouchIds.Clear();
+            foreach (var id in _skipFingerIds)
+                if (!_seenTouchIds.Contains(id)) _staleTouchIds.Add(id);
+            foreach (var id in _staleTouchIds)
+                _skipFingerIds.Remove(id);
         }
 
         // Mirror active gameplay lanes into _keyStates using the live PlayerKeys mapping
@@ -767,13 +795,13 @@ public class TouchControls
         {
             try
             {
-                var labelSize = font.MeasureString(label);
+                var labelSize = font.MeasureUi(label);
                 var labelPos = center - labelSize / 2f;
                 
                 // Shadow
-                spriteBatch.DrawString(font, label, labelPos + new Vector2(1.5f, 1.5f), new Color(0, 0, 0, 180));
+                spriteBatch.DrawUiString(font, label, labelPos + new Vector2(1.5f, 1.5f), new Color(0, 0, 0, 180));
                 // Main text
-                spriteBatch.DrawString(font, label, labelPos, isPressed ? new Color(255, 255, 255) : new Color(220, 220, 230));
+                spriteBatch.DrawUiString(font, label, labelPos, isPressed ? new Color(255, 255, 255) : new Color(220, 220, 230));
             }
             catch { }
         }

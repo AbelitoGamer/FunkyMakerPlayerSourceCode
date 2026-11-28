@@ -184,6 +184,7 @@ public static class OsuLibrary
     {
         var r = Import(oszPath);
         if (!r.Ok || r.Path == null) { error = r.Message; return null; }
+        MarkReceived(r.Path);
         foreach (var file in Directory.GetFiles(r.Path, "*.osu", SearchOption.TopDirectoryOnly))
             if (string.Equals(Multiplayer.LevelHasher.CalculateHash(file), osuHash, StringComparison.OrdinalIgnoreCase))
             {
@@ -192,6 +193,53 @@ public static class OsuLibrary
             }
         error = "The received set doesn't contain the picked difficulty.";
         return null;
+    }
+
+    // ── Sets received online (fork) ─────────────────────────────────────────
+    // Kept in a list next to the online settings (a marker file in the set would be sent along with it).
+
+    private static readonly object _receivedLock = new();
+    private static HashSet<string>? _received;
+
+    private static string ReceivedListPath =>
+        Path.Combine(Multiplayer.MultiplayerSettings.GetStorageDirectory(), "received_osu_sets.txt");
+
+    private static HashSet<string> ReceivedSets()
+    {
+        if (_received != null) return _received;
+        var set = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        try
+        {
+            if (File.Exists(ReceivedListPath))
+                foreach (var line in File.ReadAllLines(ReceivedListPath))
+                    if (line.Trim().Length > 0) set.Add(line.Trim());
+        }
+        catch (Exception ex) { Console.WriteLine($"[Osu] Could not read the received sets list: {ex.Message}"); }
+        return _received = set;
+    }
+
+    /// <summary>Remembers that this set folder was downloaded from an online room (not imported by you).</summary>
+    public static void MarkReceived(string setFolder)
+    {
+        string name = Path.GetFileName(setFolder.TrimEnd('/', '\\'));
+        if (name.Length == 0) return;
+        lock (_receivedLock)
+        {
+            if (!ReceivedSets().Add(name)) return;
+            try
+            {
+                Directory.CreateDirectory(Path.GetDirectoryName(ReceivedListPath)!);
+                File.WriteAllLines(ReceivedListPath, _received!.OrderBy(x => x, StringComparer.OrdinalIgnoreCase));
+            }
+            catch (Exception ex) { Console.WriteLine($"[Osu] Could not save the received sets list: {ex.Message}"); }
+        }
+    }
+
+    /// <summary>The set folder was downloaded from an online room.</summary>
+    public static bool IsReceived(string setFolder)
+    {
+        string name = Path.GetFileName(setFolder.TrimEnd('/', '\\'));
+        lock (_receivedLock) return name.Length > 0 && ReceivedSets().Contains(name);
     }
 
     /// <summary>The set a difficulty belongs to (scans if needed), or null.</summary>
@@ -305,7 +353,7 @@ public static class OsuLibrary
         string dest = Path.Combine(PlatformPaths.GetNoteStylesPath(), SafeName("osu! " + name));
         ExtractAll(zip, dest, prefix);
         Console.WriteLine($"[Osu] Imported skin {name} → {dest}");
-        return new ImportResult(true, $"Skin \"{name}\" importada. Elígela en Settings → Note Style.", dest, true);
+        return new ImportResult(true, $"Skin \"{name}\" importada. Elígela en Settings → APPEARANCE → Note Style.", dest, true);
     }
 
     private static void ExtractAll(ZipArchive zip, string dest, string prefix = "")

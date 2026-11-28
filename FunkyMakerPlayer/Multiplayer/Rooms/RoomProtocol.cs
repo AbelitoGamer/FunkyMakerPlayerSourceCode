@@ -46,6 +46,8 @@ public static class Protocol
     public const string TransferUpload = "TransferUpload";
     public const string TransferDownload = "TransferDownload";
     public const string TransferFailed = "TransferFailed";
+    /// <summary>A pick was dropped for the turn (the lobby voted no / the level couldn't be sent).</summary>
+    public const string SongRejected = "SongRejected";
     public const string MatchLoading = "MatchLoading";
     public const string MatchStart = "MatchStart";
     public const string MatchResults = "MatchResults";
@@ -96,6 +98,11 @@ public static class Protocol
     public const int MaxPlayers = 8;
     public const int MaxRoomNameLength = 32;
     public const int MaxChatLength = 200;
+    /// <summary>Songs at least this long (seconds) are put to a lobby vote before they are played (server rule).</summary>
+    public const int LongSongSeconds = 240;
+
+    /// <summary>osu! songs (one strumline) can be played in Mirror and Teams (both teams play the same chart).</summary>
+    public static bool OsuModeAllowed(string mode) => mode is ModeMirror or ModeTeams;
 }
 
 // ══════════════════════════════════════════════════════════════════════════
@@ -170,6 +177,8 @@ public sealed class LevelEntry
     public string Difficulty { get; set; } = "";
     /// <summary>osu!: about the size of the set without its video; 0 = the set has no video.</summary>
     public long SizeNoVideo { get; set; }
+    /// <summary>Song length in seconds (end of the last note), 0 = unknown.</summary>
+    public float Duration { get; set; }
 }
 
 public sealed class RoomSettings
@@ -242,6 +251,8 @@ public sealed class SongInfo
     public string SetName { get; set; } = "";
     public string Difficulty { get; set; } = "";
     public long SizeNoVideo { get; set; }
+    /// <summary>Seconds, 0 = unknown.</summary>
+    public float Duration { get; set; }
 }
 
 public sealed class RoomMember
@@ -283,6 +294,7 @@ public sealed class RoomLevel
     public string SetName { get; set; } = "";
     public string Difficulty { get; set; } = "";
     public long SizeNoVideo { get; set; }
+    public float Duration { get; set; }
 }
 
 public sealed class MatchAssignment
@@ -382,6 +394,34 @@ public sealed class RoomStatePacket
     public List<RoomLevel>? Levels { get; set; }
     /// <summary>Rounds played in this room, oldest first. Null = unchanged since the last RoomState you got.</summary>
     public List<RoundResult>? History { get; set; }
+    /// <summary>A long song waiting for the lobby's vote, or null.</summary>
+    public SongVoteInfo? SongVote { get; set; }
+    /// <summary>Songs that can't be picked again this turn (voted down / couldn't be sent).</summary>
+    public List<string> BlockedHashes { get; set; } = new();
+}
+
+/// <summary>"Play this long song?": everybody playing except the picker votes (server closes it after 30 s).</summary>
+public sealed class SongVoteInfo
+{
+    public SongInfo Song { get; set; } = new();
+    public int Yes { get; set; }
+    public int No { get; set; }
+    /// <summary>Players asked to vote.</summary>
+    public List<string> Eligible { get; set; } = new();
+    /// <summary>Who already voted.</summary>
+    public List<string> Voted { get; set; } = new();
+    /// <summary>Server time (ms) the vote closes.</summary>
+    public long EndsAt { get; set; }
+    /// <summary>Your vote: 1 yes, 0 no, -1 none.</summary>
+    public int YourVote { get; set; } = -1;
+}
+
+public sealed class SongRejectedPacket
+{
+    public string Hash { get; set; } = "";
+    public string Name { get; set; } = "";
+    public string Reason { get; set; } = "";
+    public string PickedBy { get; set; } = "";
 }
 
 // ══════════════════════════════════════════════════════════════════════════
@@ -395,6 +435,8 @@ public sealed class SongSelection
     public string Name { get; set; } = "";
     public string OfficialId { get; set; } = "";
     public float Stars { get; set; }
+    /// <summary>Song length in seconds as this game measured it (0 = unknown); long songs go to a vote.</summary>
+    public float Duration { get; set; }
 }
 
 public sealed class LevelStatusUpdate

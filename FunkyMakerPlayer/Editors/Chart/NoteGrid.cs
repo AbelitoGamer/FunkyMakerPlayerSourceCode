@@ -326,8 +326,8 @@ public class NoteGrid
         if (_strumlines == null || _strumlines.Count == 0)
         {
             string msg = "No strumlines found";
-            var size = _font.MeasureString(msg);
-            sb.DrawString(_font, msg,
+            var size = _font.MeasureUi(msg);
+            sb.DrawUiString(_font, msg,
                 new Vector2(gridBounds.X + gridBounds.Width / 2 - size.X / 2, gridBounds.Y + gridBounds.Height / 2),
                 Color.Gray);
             return;
@@ -360,8 +360,8 @@ public class NoteGrid
             
             // Draw strumline label
             string label = s == 0 ? "Player" : s == 1 ? "Opponent" : $"Chart {s + 1}";
-            var labelSize = _font.MeasureString(label) * 0.35f;
-            sb.DrawString(_font, label,
+            var labelSize = _font.MeasureUi(label) * 0.35f;
+            sb.DrawUiString(_font, label,
                 new Vector2(currentX + strumlineWidth / 2 - labelSize.X / 2, gridBounds.Y + 2),
                 new Color(150, 150, 170), 0f, Vector2.Zero, 0.35f, SpriteEffects.None, 0f);
             
@@ -430,8 +430,8 @@ public class NoteGrid
                 
                 // Draw beat number on measure lines
                 string beatNum = $"{beatIndex}";
-                var size = _font.MeasureString(beatNum) * 0.35f;
-                sb.DrawString(_font, beatNum,
+                var size = _font.MeasureUi(beatNum) * 0.35f;
+                sb.DrawUiString(_font, beatNum,
                     new Vector2(bounds.X - size.X - 3, y - size.Y / 2),
                     new Color(120, 120, 140), 0f, Vector2.Zero, 0.35f, SpriteEffects.None, 0f);
             }

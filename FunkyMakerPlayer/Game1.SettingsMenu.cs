@@ -67,9 +67,11 @@ public partial class Game1
                 _keyBindCallbacksWired = true;
                 _keyBindOverlay.OnComplete += () => {
                     if (_settingsManager != null) _settingsManager.IsActive = true;
+                    _keyCaptureHoldoff = true; // the key that closed it must not type into the search
                 };
                 _keyBindOverlay.OnCancel += () => {
                     if (_settingsManager != null) _settingsManager.IsActive = true;
+                    _keyCaptureHoldoff = true; // the key that closed it must not type into the search
                 };
             }
         }
@@ -85,6 +87,9 @@ public partial class Game1
 
         if (result.OpenFontMenu)
             _fontMenu?.Open(GraphicsDevice);
+
+        if (result.OpenHudEditor && BlockEditorOnMobile("HUD Editor"))
+            result.OpenHudEditor = false; // phones: stay in Settings, the notice window explains why
 
         if (result.OpenHudEditor)
         {
@@ -123,7 +128,15 @@ public partial class Game1
         if (result.ToggleVSync)
         {
             _graphics.SynchronizeWithVerticalRetrace = !_graphics.SynchronizeWithVerticalRetrace;
+            // ApplyChanges re-centres / re-borders the SDL window, which broke our borderless
+            // fullscreen: lay it out again (keeping the windowed position it returns to).
+            var windowedPos = _windowedPosition;
             _graphics.ApplyChanges();
+            if (_isFullscreen)
+            {
+                SetFullscreen(true);
+                _windowedPosition = windowedPos;
+            }
         }
 
         if (result.ToggleFullscreen)

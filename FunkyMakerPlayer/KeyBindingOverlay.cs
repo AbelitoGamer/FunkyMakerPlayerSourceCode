@@ -118,13 +118,13 @@ public class KeyBindingOverlay
         DrawRect(0, 0, sw, 54, new Color(15, 15, 28));
         DrawRect(0, 52, sw, 2, new Color(0xFF, 0x44, 0x88) * 0.7f);
         DrawRect(0, 0, 4, 54, new Color(0xFF, 0x44, 0x88));
-        spriteBatch.DrawString(font, "KEY BINDING",
+        spriteBatch.DrawUiString(font, "KEY BINDING",
             new Vector2(20, 10), new Color(0xFF, 0x44, 0x88), 0f, Vector2.Zero, 1.3f, SpriteEffects.None, 0f);
 
         // Instruction text
         string instr = $"Press a key for  {_laneNames[_currentLane]}  ({_currentLane + 1} / 4)";
-        var instrSz = font.MeasureString(instr) * 0.9f;
-        spriteBatch.DrawString(font, instr,
+        var instrSz = font.MeasureUi(instr) * 0.9f;
+        spriteBatch.DrawUiString(font, instr,
             new Vector2(sw / 2f - instrSz.X / 2f, 72f),
             Color.White, 0f, Vector2.Zero, 0.9f, SpriteEffects.None, 0f);
 
@@ -183,8 +183,8 @@ public class KeyBindingOverlay
 
             // Lane name
             string lname = _laneNames[lane];
-            var lsz = font.MeasureString(lname) * 0.68f;
-            spriteBatch.DrawString(font, lname,
+            var lsz = font.MeasureUi(lname) * 0.68f;
+            spriteBatch.DrawUiString(font, lname,
                 new Vector2(cx - lsz.X / 2f, slotY + slotH - 54f),
                 sel ? _laneColors[lane] : Color.White * 0.5f, 0f, Vector2.Zero, 0.68f, SpriteEffects.None, 0f);
 
@@ -193,16 +193,16 @@ public class KeyBindingOverlay
                 ? Controls.AsciiKeyName(NoteRenderer.PlayerKeys[lane])
                 : (sel ? "..." : Controls.AsciiKeyName(NoteRenderer.PlayerKeys[lane]));
             Color keyCol = done ? new Color(0x44, 0xFF, 0x44) : (sel ? Color.White : Color.White * 0.4f);
-            var ksz = font.MeasureString(keyStr) * 0.75f;
-            spriteBatch.DrawString(font, keyStr,
+            var ksz = font.MeasureUi(keyStr) * 0.75f;
+            spriteBatch.DrawUiString(font, keyStr,
                 new Vector2(cx - ksz.X / 2f, slotY + slotH - 28f),
                 keyCol, 0f, Vector2.Zero, 0.75f, SpriteEffects.None, 0f);
         }
 
         // Footer hint
         string hint = "ESC  Cancel";
-        var hintSz = font.MeasureString(hint) * 0.55f;
-        spriteBatch.DrawString(font, hint,
+        var hintSz = font.MeasureUi(hint) * 0.55f;
+        spriteBatch.DrawUiString(font, hint,
             new Vector2(sw / 2f - hintSz.X / 2f, sh - 22f),
             Color.White * 0.2f, 0f, Vector2.Zero, 0.55f, SpriteEffects.None, 0f);
     }

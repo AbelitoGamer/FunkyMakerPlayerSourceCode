@@ -15,9 +15,9 @@ namespace FunkyMakerPlayer;
 /// Fork: Freeplay level browsing. The scanned levels (<see cref="_allPaths"/>) are filtered by the
 /// search text and the favourites filter and sorted into the visible list (<see cref="_paths"/>, which
 /// every other part of the menu indexes). Also: the level options menu (<see cref="OptionsMenu"/>:
-/// right click / "..." / C), the modifiers window (<see cref="ModifiersWindow"/>, M), the attempts
-/// window (<see cref="AttemptsWindow"/>, H or the personal best card), random pick, and the short
-/// confirm animation before a level loads.
+/// right click / "..."), the modifiers window (<see cref="ModifiersWindow"/>), the attempts
+/// (the personal best card: the results screen, <see cref="SoloResultsScreen"/>, in browse mode),
+/// random pick, and the short confirm animation before a level loads.
 /// </summary>
 public partial class FreeplayMenu
 {
@@ -49,11 +49,14 @@ public partial class FreeplayMenu
     private readonly List<(int Index, Rectangle Bounds)> _levelMoreBounds = new();
     private int _hoveredMoreIndex = -1;
 
-    // Shared UI pieces (fork): "..." options menu, modifiers window, attempts window
+    // Shared UI pieces (fork): "..." options menu, modifiers window, attempts (results screen)
     private UiDraw _ui = null!;
     private OptionsMenu _options = null!;
     private ModifiersWindow _modWindow = null!;
-    private AttemptsWindow _attemptsWindow = null!;
+    private SoloResultsScreen? _attemptsView;
+    private string _attemptsPath = "";
+    private bool _attemptsEnemy;
+    private bool _pointerDown; // left button / a finger held this frame (the attempts row drags with it)
     private int _optionsIndex = -1;
 
     // Details panel hot areas (modifiers bar, personal best card)
@@ -86,7 +89,6 @@ public partial class FreeplayMenu
         _ui = new UiDraw(pixel, font, fontRenderer);
         _options = new OptionsMenu(_ui);
         _modWindow = new ModifiersWindow(_ui);
-        _attemptsWindow = new AttemptsWindow(_ui);
         PlayModifiers.HasEnemyChart = path => GetInfo(path!) is not { StrumlineCount: < 2 };
         PlayModifiers.Changed += () =>
         {
@@ -96,7 +98,7 @@ public partial class FreeplayMenu
     }
 
     /// <summary>True while a modal window of the menu (modifiers, attempts) is open.</summary>
-    private bool WindowOpen => _modWindow.IsOpen || _attemptsWindow.IsOpen;
+    private bool WindowOpen => _modWindow.IsOpen || _attemptsView != null;
 
     private void LoadBrowseState()
     {
@@ -333,8 +335,74 @@ public partial class FreeplayMenu
     private void OpenAttempts()
     {
         if (SelectedPath is not { } path) return;
-        bool enemy = SideFor(GetInfo(path)) == 1;
-        _attemptsWindow.Open(path, _names[_selected], enemy, LayoutKeyboard.GetState());
+        int side = SideFor(GetInfo(path));
+        OpenAttemptsView(path, _names[_selected], side == 1, null, skipIntro: false);
+    }
+
+    /// <summary>
+    /// The attempts of a level and side on the results screen (browse mode): the personal best in the
+    /// middle (the best finished run when nothing is ranked yet), the others around it.
+    /// </summary>
+    private void OpenAttemptsView(string path, string name, bool enemy, FreeplayAttempt? focus, bool skipIntro)
+    {
+        _attemptsView = null;
+        var attempts = FreeplayData.Instance.Get(path)?.Attempts.Where(a => a.Enemy == enemy).ToList() ?? new();
+        if (attempts.Count == 0 || _font == null)
+        {
+            if (!skipIntro) { UiSfx.Play(UiSound.Error); ShowToast("Todavia no hay intentos en esta cancion"); }
+            return;
+        }
+        var anchor = FreeplayData.Instance.Get(path)?.Best(enemy)
+                     ?? attempts.OrderBy(a => a.Failed).ThenByDescending(a => a.Score).First();
+
+        var run = new SoloResultsScreen.Run { Browse = true, Current = anchor, SongName = name };
+        foreach (var a in attempts) if (a != anchor) run.Others.Add(a);
+        if (GetInfo(path)?.Sides[enemy ? 1 : 0] is { } si)
+        {
+            run.Stars = si.Stars; // at 1.00x (the best is a 1.00x run)
+            run.ChartNotes = si.Notes.Count;
+        }
+        run.Difficulty = enemy ? "Enemy side" : "Player side";
+        if (Osu.OsuLibrary.IsOsuChart(path))
+        {
+            try
+            {
+                var map = Osu.OsuBeatmap.ParseFile(path, headerOnly: true);
+                if (map.SongName.Length > 0) run.SongName = map.SongName;
+                run.Mapper = map.Creator;
+                run.Difficulty = map.Version.Length > 0 ? map.Version : "osu!mania";
+            }
+            catch (Exception ex) { Console.WriteLine($"[Freeplay] Could not read the beatmap header: {ex.Message}"); }
+        }
+
+        _attemptsPath = path;
+        _attemptsEnemy = enemy;
+        _attemptsView = new SoloResultsScreen(_pixel, run, focus, skipIntro);
+    }
+
+    /// <summary>Attempts screen input (it takes all input while open).</summary>
+    private void UpdateAttemptsView(float dt, KeyboardState kb, MouseState mouse, Point rtMouse, int wheelDelta)
+    {
+        var view = _attemptsView!;
+        float wheel = wheelDelta / 120f - (mouse.HorizontalScrollWheelValue - _prevMs.HorizontalScrollWheelValue) / 120f;
+        switch (view.Update(dt, kb, _prevKb, rtMouse, _pointerDown, wheel))
+        {
+            case SoloResultsScreen.Choice.Continue:
+                _attemptsView = null;
+                break;
+            case SoloResultsScreen.Choice.WatchReplay:
+                ReplayRequested = view.ReplayPath;
+                _attemptsView = null;
+                break;
+            case SoloResultsScreen.Choice.Delete:
+                var gone = view.FocusedAttempt;
+                var next = view.FocusNeighbor;
+                FreeplayData.Instance.DeleteAttempt(_attemptsPath, gone);
+                ShowToast("Intento borrado (su replay se conserva)");
+                OpenAttemptsView(_attemptsPath, _names.Count > _selected && _selected >= 0 ? _names[_selected] : "",
+                    _attemptsEnemy, next, skipIntro: true); // closes when it was the last one
+                break;
+        }
     }
 
     // ── Level options menu ("...") ──────────────────────────────────────────
@@ -543,20 +611,13 @@ public partial class FreeplayMenu
         // Modal windows take all input while open.
         if (_modWindow.IsOpen)
         {
-            _modWindow.Update(dt, kb, rtMouse, mouseClicked, mouseMoved,
-                (k, p) => Controls.Pressed(HotkeyAction.FreeplayModifiers, k, p));
+            _modWindow.Update(dt, kb, rtMouse, mouseClicked, mouseMoved);
             UpdateListScroll(dt, itemH);
             return true;
         }
-        if (_attemptsWindow.IsOpen)
+        if (_attemptsView != null)
         {
-            if (wheelDelta != 0) _attemptsWindow.Scroll(wheelDelta > 0 ? -1 : 1);
-            _attemptsWindow.Update(dt, kb, rtMouse, mouseClicked, rightClicked, mouseMoved);
-            if (_attemptsWindow.WatchRequested is { } replay)
-            {
-                _attemptsWindow.WatchRequested = null;
-                ReplayRequested = replay;
-            }
+            UpdateAttemptsView(dt, kb, mouse, rtMouse, wheelDelta);
             UpdateListScroll(dt, itemH);
             return true;
         }
@@ -600,59 +661,8 @@ public partial class FreeplayMenu
         bool up = Pressed(Keys.Up), down = Pressed(Keys.Down), enter = Pressed(Keys.Enter), esc = Pressed(Keys.Escape);
         bool pageUp = Pressed(Keys.PageUp), pageDown = Pressed(Keys.PageDown), home = Pressed(Keys.Home), end = Pressed(Keys.End);
 
-        if (Controls.Pressed(HotkeyAction.DeleteItem, kb, _prevKb) && SelectedPath != null && CanDelete(SelectedPath))
-        {
-            OpenDeleteModal(_selected);
-            return true;
-        }
-        if (_online != null)
-        {
-            // Online song select: no chart editor / new chart / modifiers / attempts.
-        }
-        else if (Controls.Pressed(HotkeyAction.OpenChartEditor, kb, _prevKb) && SelectedPath != null && OsuTab)
-        {
-            ShowToast("Los charts de osu! no se pueden editar aquí");
-        }
-        else if (Controls.Pressed(HotkeyAction.OpenChartEditor, kb, _prevKb) && SelectedPath != null)
-        {
-            LevelPath = _paths[_selected];
-            ChartEditorRequested = true;
-            Console.WriteLine($"[FreeplayMenu] Chart Editor requested for level: {_names[_selected]}");
-        }
-        if (_online == null && Controls.Pressed(HotkeyAction.NewChart, kb, _prevKb) && !OsuTab) NewChartRequested = true;
-        if (_online != null)
-        {
-            if (Controls.Pressed(HotkeyAction.PrevTab, kb, _prevKb)) { CycleOnlineTab(-1); return true; }
-            if (Controls.Pressed(HotkeyAction.NextTab, kb, _prevKb)) { CycleOnlineTab(1); return true; }
-        }
-        else
-        {
-            if (Controls.Pressed(HotkeyAction.PrevTab, kb, _prevKb)) { SwitchTab(FreeplayTab.Fnf); return true; }
-            if (Controls.Pressed(HotkeyAction.NextTab, kb, _prevKb)) { SwitchTab(FreeplayTab.Osu); return true; }
-        }
-        if (Controls.Pressed(HotkeyAction.FreeplaySearch, kb, _prevKb)) { StartSearchTyping(); return true; }
-        if (Controls.Pressed(HotkeyAction.FreeplayOptions, kb, _prevKb) && SelectedPath != null)
-        {
-            var more = _levelMoreBounds.FirstOrDefault(b => b.Index == _selected).Bounds;
-            var row = _levelItemBounds.FirstOrDefault(b => b.Index == _selected).Bounds;
-            OpenLevelOptions(_selected, more != Rectangle.Empty ? new Point(more.Right, more.Bottom)
-                : row != Rectangle.Empty ? new Point(row.Right - 8, row.Bottom) : rtMouse);
-            return true;
-        }
-        if (_online == null && Controls.Pressed(HotkeyAction.FreeplayModifiers, kb, _prevKb)) { OpenModifiers(); return true; }
-        if (_online == null && Controls.Pressed(HotkeyAction.FreeplayAttempts, kb, _prevKb)) { OpenAttempts(); return true; }
-        if (Controls.Pressed(HotkeyAction.FreeplayFavoritesOnly, kb, _prevKb)) ToggleFavoritesOnly();
-        else if (Controls.Pressed(HotkeyAction.FreeplayFavorite, kb, _prevKb)) ToggleFavorite(_selected);
-        if (Controls.Pressed(HotkeyAction.FreeplaySort, kb, _prevKb)) CycleSort();
-        if (Controls.Pressed(HotkeyAction.FreeplayRandom, kb, _prevKb)) SelectRandom();
-        else if (Controls.Pressed(HotkeyAction.Refresh, kb, _prevKb)) RefreshFromPanel();
-        if (Controls.Pressed(HotkeyAction.ImportLevel, kb, _prevKb))
-        {
-            ImportFromPanel();
-            _prevKb = kb;
-            _prevMs = Mouse.GetState();
-            return true;
-        }
+        // Everything else in the panel (tabs, search, sort, favorites, random, import, new, refresh,
+        // the "..." options, modifiers, attempts) is a button: no extra hotkeys (fork).
 
         // Left / Right: difficulty (osu! songs) or song rate (FNF levels; not online, rates are Freeplay modifiers)
         if (Pressed(Keys.Left)) { if (OsuTab) ChangeDifficulty(-1); else if (_online == null) ChangeRate(-FreeplayData.RateStep); }

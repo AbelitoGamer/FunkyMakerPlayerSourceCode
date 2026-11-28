@@ -245,6 +245,14 @@ public class EditorPicker : FunkyMakerPlayer.UI.IDirectScreen
 
         float topBound = subY + subSz.Y + UiScale.Px(24, s);
         float bottomBound = sh - UiScale.Px(110, s);
+        // Small / boosted (touch) screens: shrink the cards so they never run under the footer
+        float availH = bottomBound - topBound;
+        if (totalH > availH && _cards.Length > 0)
+        {
+            cardGap = Math.Max(4, (int)(cardGap * 0.6f));
+            cardH = Math.Max(UiScale.Px(44, s), (int)((availH - (_cards.Length - 1) * cardGap) / _cards.Length));
+            totalH = _cards.Length * cardH + (_cards.Length - 1) * cardGap;
+        }
         int startY = (int)Math.Max(topBound, topBound + (bottomBound - topBound - totalH) / 2f);
         int cardX = sw / 2 - cardW / 2;
 
@@ -286,6 +294,11 @@ public class EditorPicker : FunkyMakerPlayer.UI.IDirectScreen
             int textX = badgeRect.Right + badgePad;
             int nameSize = Math.Clamp((int)(cardH * 0.28f), UiScale.FontPx(18, s), UiScale.FontPx(28, s));
             int descSize = Math.Clamp((int)(cardH * 0.17f), UiScale.FontPx(12, s), UiScale.FontPx(17, s));
+            int textMaxW = r.Right - textX - UiScale.Px(40, s);
+            if (UI.PointerInput.IsTouch && card.Type != EditorType.Character)
+                textMaxW -= UiScale.Px(110, s); // room for the "PC ONLY" tag
+            while (nameSize > 10 && MeasureText(card.Name, nameSize).X > textMaxW) nameSize--;
+            while (descSize > 9 && MeasureText(card.Description, descSize).X > textMaxW) descSize--;
             var nameSz = MeasureText(card.Name, nameSize);
             var descSz = MeasureText(card.Description, descSize);
             float blockH = nameSz.Y + textGap + descSz.Y;
@@ -293,6 +306,19 @@ public class EditorPicker : FunkyMakerPlayer.UI.IDirectScreen
 
             DrawText(sb, card.Name, new Vector2(textX, textTop), selected ? Color.White : Color.White * 0.88f, nameSize);
             DrawText(sb, card.Description, new Vector2(textX, textTop + nameSz.Y + textGap), Color.White * (selected ? 0.68f : 0.45f), descSize);
+            if (UI.PointerInput.IsTouch && card.Type != EditorType.Character)
+            {
+                // Phones: not available yet (Game1.BlockEditorOnMobile)
+                int wipFont = UiScale.FontPx(13, s);
+                const string wip = "PC ONLY";
+                var wSz = MeasureText(wip, wipFont);
+                int wPad = UiScale.Px(8, s);
+                var wr = new Rectangle(r.Right - (int)wSz.X - wPad * 2 - UiScale.Px(46, s), r.Y + (cardH - (int)wSz.Y - wPad) / 2,
+                    (int)wSz.X + wPad * 2, (int)wSz.Y + wPad);
+                DrawRect(sb, wr.X, wr.Y, wr.Width, wr.Height, new Color(255, 160, 40) * 0.18f);
+                DrawBorder(sb, wr, new Color(255, 160, 40) * 0.7f);
+                DrawText(sb, wip, new Vector2(wr.X + wPad, wr.Y + wPad / 2f), new Color(255, 190, 90), wipFont);
+            }
 
             if (selected)
             {
@@ -350,13 +376,13 @@ public class EditorPicker : FunkyMakerPlayer.UI.IDirectScreen
     private Vector2 MeasureText(string text, int size)
     {
         if (_fontRenderer != null) return _fontRenderer.MeasureString(text, size);
-        if (_font != null) return _font.MeasureString(text) * (size / 32f);
+        if (_font != null) return _font.MeasureUi(text) * (size / 32f);
         return new Vector2(text.Length * size * 0.5f, size);
     }
 
     private void DrawText(SpriteBatch sb, string text, Vector2 pos, Color color, int size)
     {
         if (_fontRenderer != null) _fontRenderer.DrawString(sb, text, pos, color, size);
-        else if (_font != null) sb.DrawString(_font, text, pos, color, 0f, Vector2.Zero, size / 32f, SpriteEffects.None, 0f);
+        else if (_font != null) sb.DrawUiString(_font, text, pos, color, 0f, Vector2.Zero, size / 32f, SpriteEffects.None, 0f);
     }
 }

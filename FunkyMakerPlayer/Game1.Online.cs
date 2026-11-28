@@ -67,6 +67,20 @@ public partial class Game1
 
     private static int MatchMisses(NoteRenderer r) => r.Misses;
 
+    /// <summary>
+    /// Teams (fork): when only one of the two playable charts (0 player / 1 enemy) has notes, both
+    /// sides play that one, so the team on the empty side isn't left with nothing to do. Other modes
+    /// and levels with notes on both sides keep their chart.
+    /// </summary>
+    private int TeamsChartFor(int chartIndex)
+    {
+        if (!_isMultiplayerMatch || _roomMatch?.Mode != Protocol.ModeTeams || _level == null || _level.IsOsu) return chartIndex;
+        if (chartIndex is not (0 or 1) || _level.Data.Strumlines.Count < 2) return chartIndex;
+        bool HasNotes(int c) => _level.Data.Strumlines[c].Any(lane => lane.Count > 0);
+        int other = 1 - chartIndex;
+        return !HasNotes(chartIndex) && HasNotes(other) ? other : chartIndex;
+    }
+
     private int MyTeam(string playerId) => _roomMatch?.Players.FirstOrDefault(p => p.PlayerId == playerId)?.Team ?? -1;
 
     /// <summary>
@@ -78,6 +92,8 @@ public partial class Game1
     {
         var mine = info.Players.FirstOrDefault(p => p.PlayerId == pov);
         if (mine == null) return null;
+        // osu! songs have a single strumline (Mirror and Teams): nobody drives a second one.
+        if (info.Song.Kind == Protocol.KindOsu) return null;
         switch (info.Mode)
         {
             case Protocol.ModeMirror:

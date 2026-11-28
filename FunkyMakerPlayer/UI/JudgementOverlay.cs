@@ -98,7 +98,7 @@ public class JudgementOverlay
         float totalWidth = 0f;
         foreach (char c in comboStr)
         {
-            Vector2 size = _font.MeasureString(c.ToString());
+            Vector2 size = _font.MeasureUi(c.ToString());
             totalWidth += size.X * 0.9f * sizeMul;  // 90% spacing (tighter)
         }
         
@@ -110,7 +110,7 @@ public class JudgementOverlay
         float xOffset = 0f;
         foreach (char digit in comboStr)
         {
-            Vector2 digitSize = _font.MeasureString(digit.ToString());
+            Vector2 digitSize = _font.MeasureUi(digit.ToString());
             
             _comboDigits.Add(new ComboDigit
             {
@@ -183,7 +183,7 @@ public class JudgementOverlay
         // Draw falling combo digits
         foreach (var digit in _comboDigits)
         {
-            _spriteBatch.DrawString(
+            _spriteBatch.DrawUiString(
                 _font,
                 digit.Digit.ToString(),
                 digit.Position,
@@ -199,7 +199,7 @@ public class JudgementOverlay
         // Draw falling judgement popups
         foreach (var popup in _judgementPopups)
         {
-            _spriteBatch.DrawString(
+            _spriteBatch.DrawUiString(
                 _font,
                 popup.Text,
                 popup.Position,

@@ -20,6 +20,12 @@ namespace FunkyMakerPlayer.Replay;
 /// </summary>
 public readonly record struct ReplayFrame(float T, float P, int H, int R, int J);
 
+/// <summary>
+/// (fork) A Skip Breaks jump (<see cref="Game1"/>): at song time <c>From</c> the song jumped to <c>To</c>.
+/// Playback repeats it at the same song time, so the replay stays valid.
+/// </summary>
+public readonly record struct ReplaySkip(float From, float To);
+
 /// <summary>Final numbers of a track, used to show results and to detect a replay that drifted.</summary>
 public sealed class ReplayResult
 {
@@ -62,6 +68,8 @@ public sealed class ReplayTrack
     /// <summary>(fork) Online side balancing multiplier the run was scored with (1 = none).</summary>
     public double ScoreMultiplier { get; set; } = 1.0;
     public List<ReplayFrame> Frames { get; set; } = new();
+    /// <summary>(fork) Skip Breaks jumps, in order (empty in older replays).</summary>
+    public List<ReplaySkip> Skips { get; set; } = new();
     public ReplayResult Result { get; set; } = new();
 }
 

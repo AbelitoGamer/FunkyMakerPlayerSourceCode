@@ -75,7 +75,7 @@ public class ParticleManager
         {
             if (p.IsActive && !string.IsNullOrEmpty(p.Text))
             {
-                spriteBatch.DrawString(
+                spriteBatch.DrawUiString(
                     font,
                     p.Text,
                     p.Position,
@@ -95,7 +95,7 @@ public class ParticleManager
     /// </summary>
     public void SpawnComboDigit(char digit, Vector2 position, SpriteFont font)
     {
-        Vector2 digitSize = font.MeasureString(digit.ToString());
+        Vector2 digitSize = font.MeasureUi(digit.ToString());
         
         _particles.Add(new Particle
         {

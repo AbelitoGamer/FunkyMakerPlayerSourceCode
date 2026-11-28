@@ -193,10 +193,10 @@ public class PauseMenu
         }
         else
         {
-            spriteBatch.DrawString(_font, title,
+            spriteBatch.DrawUiString(_font, title,
                 new Vector2(titleX + 4, titleY + 4),
                 Color.Black * 0.6f, 0f, Vector2.Zero, 2.1f, SpriteEffects.None, 0f);
-            spriteBatch.DrawString(_font, title,
+            spriteBatch.DrawUiString(_font, title,
                 new Vector2(titleX, titleY),
                 Color.White, 0f, Vector2.Zero, 2.1f, SpriteEffects.None, 0f);
         }
@@ -216,7 +216,7 @@ public class PauseMenu
             }
             else
             {
-                spriteBatch.DrawString(_font, liveBadge, new Vector2(titleX, liveY), headerAccent, 0f, Vector2.Zero, 0.72f, SpriteEffects.None, 0f);
+                spriteBatch.DrawUiString(_font, liveBadge, new Vector2(titleX, liveY), headerAccent, 0f, Vector2.Zero, 0.72f, SpriteEffects.None, 0f);
             }
         }
 
@@ -295,7 +295,7 @@ public class PauseMenu
             else
             {
                 float labelScale = isSelected ? 1.25f : 1.05f;
-                spriteBatch.DrawString(_font, label,
+                spriteBatch.DrawUiString(_font, label,
                     new Vector2(menuX + textOffsetX, itemY),
                     labelColor, 0f, Vector2.Zero, labelScale, SpriteEffects.None, 0f);
             }
@@ -315,7 +315,7 @@ public class PauseMenu
                 }
                 else
                 {
-                    spriteBatch.DrawString(_font, arrow,
+                    spriteBatch.DrawUiString(_font, arrow,
                         new Vector2(menuX - TransformSize(28), itemY + TransformSize(2)),
                         accentColor, 0f, Vector2.Zero, 1.35f, SpriteEffects.None, 0f);
                 }
@@ -338,7 +338,7 @@ public class PauseMenu
         }
         else
         {
-            spriteBatch.DrawString(_font, instructions,
+            spriteBatch.DrawUiString(_font, instructions,
                 new Vector2(titleX, bottomY),
                 Color.White * 0.45f, 0f, Vector2.Zero, 0.65f, SpriteEffects.None, 0f);
         }

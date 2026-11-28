@@ -102,21 +102,32 @@ namespace FunkyMakerPlayer.Multiplayer
                 return;
             }
 
-            bool hasScroll = recentMatches.Count > MAX_LEADERBOARD_VISIBLE;
+            // Card height comes from its two text lines (fork, 2026-11-28): it used to be 1/7 of the
+            // panel, so on a phone (bigger text, shorter panel) the two lines overlapped. As many cards
+            // as fit are shown and the rest scroll.
+            int levelFont = FontPx(15, uiScale, 12, 30);
+            int timeFont = FontPx(12, uiScale, 10, 24);
+            int rowFont = FontPx(13, uiScale, 10, 26);
+            int badgeFont = FontPx(11, uiScale, 9, 22);
+            int pillH = Math.Max(Px(20, uiScale, 16), (int)MeasureText(font, "Ag", badgeFont).Y + Px(6, uiScale, 4));
+            int line1H = Math.Max(pillH, (int)MeasureText(font, "Ag", levelFont).Y);
+            int line2H = Math.Max(pillH, (int)MeasureText(font, "Ag", rowFont).Y);
+            int padV = Px(8, uiScale, 5);
+            int lineGap = Px(6, uiScale, 4);
+            int cardH = padV * 2 + line1H + lineGap + line2H;
+
             int padX = Px(22, uiScale, 12);
-            int cardW = panelW - padX * 2 - (hasScroll ? Px(18, uiScale, 12) : 0);
-            int listTop = panelY + Px(16, uiScale);
-            int availH = Math.Max(160, panelY + panelH - Px(16, uiScale) - listTop);
+            int listTop = panelY + Px(14, uiScale);
+            int availH = Math.Max(cardH, panelY + panelH - Px(14, uiScale) - listTop);
             int cardGap = Px(8, uiScale, 5);
-            int cardH = ClampUi((availH - cardGap * (MAX_LEADERBOARD_VISIBLE - 1)) / MAX_LEADERBOARD_VISIBLE, 46, Px(68, uiScale));
+            _leaderboardVisible = Math.Max(1, (availH + cardGap) / (cardH + cardGap));
+            bool hasScroll = recentMatches.Count > _leaderboardVisible;
+            int cardW = panelW - padX * 2 - (hasScroll ? Px(18, uiScale, 12) : 0);
+            _leaderboardScrollOffset = Math.Clamp(_leaderboardScrollOffset, 0, Math.Max(0, recentMatches.Count - _leaderboardVisible));
+            AdjustLeaderboardScroll();
 
             int startIdx = _leaderboardScrollOffset;
-            int endIdx = Math.Min(startIdx + MAX_LEADERBOARD_VISIBLE, recentMatches.Count);
-
-            int levelFont = FontPx(15, uiScale, 12, 21);
-            int timeFont = FontPx(12, uiScale, 10, 17);
-            int rowFont = FontPx(13, uiScale, 10, 19);
-            int badgeFont = FontPx(11, uiScale, 9, 15);
+            int endIdx = Math.Min(startIdx + _leaderboardVisible, recentMatches.Count);
 
             for (int i = startIdx; i < endIdx; i++)
             {
@@ -124,8 +135,6 @@ namespace FunkyMakerPlayer.Multiplayer
                 var ps = match.Participants;
                 bool selected = i == _leaderboardSelection;
                 int currentY = listTop + (i - startIdx) * (cardH + cardGap);
-                if (currentY + cardH > panelY + panelH - Px(10, uiScale))
-                    break;
 
                 var cardRect = new Rectangle(panelX + padX, currentY, cardW, cardH);
                 _clickableAreas.Add(cardRect);
@@ -140,22 +149,23 @@ namespace FunkyMakerPlayer.Multiplayer
                 int right = cardRect.Right - Px(16, uiScale);
 
                 // ── Line 1: [MODE · N players]  Level name ............ time ago
-                int pillH = Px(20, uiScale, 16);
                 string modeBadge = ps.Count > 2 ? $"{MatchModeName(match).ToUpperInvariant()} · {ps.Count}P" : MatchModeName(match).ToUpperInvariant();
                 int modeW = (int)MathF.Ceiling(MeasureText(font, modeBadge, badgeFont).X) + Px(16, uiScale);
-                int line1Y = currentY + Px(7, uiScale);
-                DrawPillBadge(sb, font, pixel, infoX, line1Y, pillH, modeBadge, modeColor, badgeFont, Px(8, uiScale), filledStrong: false);
+                int line1Y = currentY + padV;
+                DrawPillBadge(sb, font, pixel, infoX, line1Y + (line1H - pillH) / 2, pillH, modeBadge, modeColor, badgeFont, Px(8, uiScale), filledStrong: false);
 
                 Vector2 timeSize = MeasureText(font, match.TimeAgo, timeFont);
-                DrawText(sb, font, match.TimeAgo, new Vector2(right - timeSize.X, line1Y + 2), TEXT_DISABLED * _fadeAlpha, timeFont);
+                DrawText(sb, font, match.TimeAgo, new Vector2(right - timeSize.X, line1Y + (line1H - timeSize.Y) / 2f), TEXT_DISABLED * _fadeAlpha, timeFont);
 
                 int levelX = infoX + modeW + Px(10, uiScale);
                 string levelName = TruncateToWidth(font, string.IsNullOrWhiteSpace(match.LevelName) ? "Match" : match.LevelName,
                     Math.Max(40f, right - timeSize.X - Px(14, uiScale) - levelX), levelFont);
-                DrawText(sb, font, levelName, new Vector2(levelX, line1Y), ACCENT_PRIMARY * _fadeAlpha, levelFont, shadow: selected);
+                float levelY = line1Y + (line1H - MeasureText(font, "Ag", levelFont).Y) / 2f;
+                DrawText(sb, font, levelName, new Vector2(levelX, levelY), ACCENT_PRIMARY * _fadeAlpha, levelFont, shadow: selected);
 
                 // ── Line 2: result pill (right) + participants by place with scores
-                int line2Y = currentY + cardH - Px(25, uiScale);
+                int line2Top = line1Y + line1H + lineGap;
+                int line2Y = line2Top + (line2H - (int)MeasureText(font, "Ag", rowFont).Y) / 2;
                 string result = MatchResultText(match, ps);
                 string resultBadge = me != null ? $"YOU #{(me.Disconnected ? "-" : me.Place.ToString())}" : result.ToUpperInvariant();
                 Color resultColor = me != null
@@ -163,7 +173,7 @@ namespace FunkyMakerPlayer.Multiplayer
                     : (result == "Draw" ? ACCENT_WARNING : ACCENT_SUCCESS);
                 int resW = (int)MathF.Ceiling(MeasureText(font, resultBadge, badgeFont).X) + Px(16, uiScale);
                 int resX = right - resW;
-                DrawPillBadge(sb, font, pixel, resX, line2Y - Px(2, uiScale), pillH, resultBadge, resultColor, badgeFont, Px(8, uiScale), filledStrong: true);
+                DrawPillBadge(sb, font, pixel, resX, line2Top + (line2H - pillH) / 2, pillH, resultBadge, resultColor, badgeFont, Px(8, uiScale), filledStrong: true);
 
                 var segments = new List<(string Text, Color Color, bool IsPlayer)>();
                 if (me != null)
@@ -202,7 +212,7 @@ namespace FunkyMakerPlayer.Multiplayer
 
             if (hasScroll)
             {
-                DrawScrollBar(sb, pixel, panelX + padX + cardW + Px(10, uiScale), listTop, availH, recentMatches.Count, MAX_LEADERBOARD_VISIBLE, _leaderboardScrollOffset, ACCENT_PRIMARY);
+                DrawScrollBar(sb, pixel, panelX + padX + cardW + Px(10, uiScale), listTop, availH, recentMatches.Count, _leaderboardVisible, _leaderboardScrollOffset, ACCENT_PRIMARY);
             }
         }
 
@@ -342,7 +352,7 @@ namespace FunkyMakerPlayer.Multiplayer
             if (shown < ps.Count)
                 DrawText(sb, font, $"+{ps.Count - shown} more", new Vector2(r.X, ry), TEXT_DISABLED * _fadeAlpha, hf);
 
-            DrawCenteredTextInPanel(sb, font, "ENTER / ESC / click: close", x, y + h - pad - Px(16, uiScale), w, TEXT_DISABLED, FontPx(12, uiScale, 10, 16));
+            DrawCenteredTextInPanel(sb, font, FunkyMakerPlayer.UI.PointerInput.IsTouch ? "Tap anywhere to close" : "ENTER / ESC / click: close", x, y + h - pad - Px(16, uiScale), w, TEXT_DISABLED, FontPx(12, uiScale, 10, 16));
         }
     }
 }

@@ -1504,8 +1504,12 @@ public static class FnmmSceneRenderer
         Matrix camMatrix,
         Effect? activeEffect = null,
         bool includeFixedOverlays = true,
-        Matrix? outputTransform = null)
+        Matrix? outputTransform = null,
+        Func<int, bool>? hasLayerBelow = null,
+        Action<int>? drawLayerBelow = null)
     {
+        // hasLayerBelow / drawLayerBelow (fork): something drawn right below object i (above i-1),
+        // e.g. the stage strumlines. drawLayerBelow runs with no batch open and opens its own.
         // outputTransform (fork): logical → physical render-target scale, applied after every
         // object matrix so callers keep working in logical (e.g. 1280×720) coordinates.
         var objs = level.Scene.Objects;
@@ -1529,6 +1533,13 @@ public static class FnmmSceneRenderer
             var anim = i < animators.Length ? animators[i] : null;
             if (anim == null) continue;
 
+            if (drawLayerBelow != null && hasLayerBelow != null && hasLayerBelow(i))
+            {
+                if (currentMode >= 0) sb.End();
+                currentMode = -1;
+                drawLayerBelow(i);
+            }
+
             bool wantBilinear = anim.CurrentBilinear;
             int wantMode;
 
@@ -1550,6 +1561,10 @@ public static class FnmmSceneRenderer
             int matrixMode = wantMode;
             if (obj.Fixed && wantMode == 2 && hasPositionEvents)
                 matrixMode = 1;
+
+            anim.LastDrawMatrix = matrixMode == 0 ? camMatrix
+                                : matrixMode == 2 ? fixedWorldMatrix
+                                : Matrix.Identity;
 
             if (matrixMode != currentMode || wantBilinear != currentBilinear)
             {

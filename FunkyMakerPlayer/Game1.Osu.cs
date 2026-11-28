@@ -173,10 +173,14 @@ public partial class Game1
 
         _spriteBatch.Begin(SpriteSortMode.Deferred, BlendState.AlphaBlend, SamplerState.LinearClamp,
             null, null, null, RtScaleMatrix);
-        if (_osuBackground != null && !storyboardBackground)
-            DrawCovered(_osuBackground, sw, sh, Color.White);
-        if (_osuVideo?.Texture is { } video && _osuVideo.Alpha > 0f)
-            DrawCovered(video, sw, sh, Color.White * _osuVideo.Alpha, fit: true);
+        Texture2D? video = _osuVideo?.Alpha > 0f ? _osuVideo.Texture : null;
+        // While a video plays, the background only shows around it (letterbox) if the setting says
+        // so; otherwise it fades out as the video fades in, leaving black bars.
+        float bgAlpha = video == null || OsuSettings.BackgroundBehindVideo ? 1f : 1f - _osuVideo!.Alpha;
+        if (_osuBackground != null && !storyboardBackground && bgAlpha > 0f)
+            DrawCovered(_osuBackground, sw, sh, Color.White * bgAlpha);
+        if (video != null)
+            DrawCovered(video, sw, sh, Color.White * _osuVideo!.Alpha, fit: true);
         _spriteBatch.End();
 
         _osuStoryboard?.Draw(_spriteBatch, RtScaleMatrix, _songTime, overlay: false, OsuPassing, 1f);

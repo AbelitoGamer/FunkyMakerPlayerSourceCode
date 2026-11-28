@@ -82,7 +82,7 @@ namespace FunkyMakerPlayer.Multiplayer
             }
             var picker = SongPicker;
             if (picker == null) return;
-            bool confirming = UpdatePickConfirm(kb, mouse);
+            bool confirming = UpdatePickNotice(kb, mouse) || UpdatePickConfirm(kb, mouse);
             // While the popup is open the picker only keeps its input state in sync (it's Busy).
             picker.Update(dt, kb, _pickerW, _pickerH, _pickerW, _pickerH);
             if (confirming) return;
@@ -103,6 +103,7 @@ namespace FunkyMakerPlayer.Multiplayer
             _pickerH = sh;
             SongPicker?.Draw(sb, sw, sh, sw, sh);
             DrawPickConfirm(sb, font, pixel, sw, sh);
+            DrawPickNotice(sb, font, pixel, sw, sh);
         }
 
         // ── IOnlineSongSource ────────────────────────────────────────────────
@@ -137,9 +138,11 @@ namespace FunkyMakerPlayer.Multiplayer
             Room.State?.Settings.Mode,
             RuntimeHelpers.GetHashCode(Room.OfficialLevels),
             Room.Scanning,
-            _pickerLocalVersion);
+            HashCode.Combine(_pickerLocalVersion,
+                string.Join(",", Room.State?.BlockedHashes ?? new List<string>()),
+                NetworkManager.Instance.MaxUploadBytes));
 
-        bool IOnlineSongSource.Busy => _pickingSong || _pickConfirm != null;
+        bool IOnlineSongSource.Busy => _pickingSong || _pickConfirm != null || _pickNotice != null;
 
         IReadOnlyList<FreeplayTab> IOnlineSongSource.Tabs => (Room.State?.Settings.SongTypes ?? Protocol.SongTypesBoth) switch
         {
@@ -174,21 +177,26 @@ namespace FunkyMakerPlayer.Multiplayer
             var st = Room.State;
             if (st?.Levels == null) yield break;
             bool osuTab = tab == FreeplayTab.Osu;
-            var levels = st.Levels.Where(l => l.Pickable && (l.Kind == Protocol.KindOsu) == osuTab).ToList();
-            string? HereOf(RoomLevel l)
+            // Songs refused this turn stay in the list (greyed out) instead of vanishing.
+            var levels = st.Levels.Where(l => (l.Pickable || Room.IsBlocked(l.Hash)) && (l.Kind == Protocol.KindOsu) == osuTab).ToList();
+            Transfer.LocalLevel? LocalOf(RoomLevel l)
             {
                 var local = l.YouHave ? Room.LocalByHash(l.Hash) : null;
-                return local != null && System.IO.File.Exists(local.FullPath) ? local.FullPath : null;
+                return local != null && System.IO.File.Exists(local.FullPath) ? local : null;
             }
             // Sections: osu! difficulties go where their set goes (you have any of it / who else has it).
             var sections = new Dictionary<string, (string Group, int Order)>();
             foreach (var g in levels.GroupBy(l => osuTab ? "set:" + l.SetId : "lvl:" + l.Hash))
-                sections[g.Key] = SectionOf(st, g.Any(l => HereOf(l) != null), g.SelectMany(l => l.Holders).ToHashSet());
+            {
+                var mine = g.Select(LocalOf).Where(x => x != null).ToList();
+                sections[g.Key] = SectionOf(st, mine.Count > 0, mine.Count > 0 && mine.All(x => x!.Received), g.SelectMany(l => l.Holders).ToHashSet());
+            }
             foreach (var l in levels)
             {
-                string? path = HereOf(l);
+                string? path = LocalOf(l)?.FullPath;
                 bool here = path != null;
                 var section = sections[osuTab ? "set:" + l.SetId : "lvl:" + l.Hash];
+                bool blocked = Room.IsBlocked(l.Hash);
                 yield return new OnlineSong
                 {
                     Key = path ?? FreeplayMenu.OnlineKey(l.Hash),
@@ -197,21 +205,53 @@ namespace FunkyMakerPlayer.Multiplayer
                     OnDevice = here, Yours = here, Holders = HoldersFor(l),
                     SetId = l.SetId, SetName = l.SetName, Difficulty = l.Difficulty,
                     Group = section.Group, GroupOrder = section.Order,
+                    Duration = l.Duration > 0 ? l.Duration : Room.DurationFor(l.Hash),
+                    DisabledTag = blocked ? "REFUSED" : "",
+                    DisabledTitle = blocked ? "Refused for this turn." : "",
+                    DisabledReason = blocked ? "The lobby voted it down or it couldn't be sent. Pick another song; it's back next turn." : "",
+                };
+            }
+
+            // Your own songs the server left out because they're bigger than it accepts: shown greyed out
+            // at the end (picking one explains why) instead of silently missing.
+            if (Room.Scanning) yield break;
+            var listed = st.Levels.Select(l => l.Hash).ToHashSet(StringComparer.OrdinalIgnoreCase);
+            long maxMb = NetworkManager.Instance.MaxUploadBytes / (1024 * 1024);
+            foreach (var local in Room.LocalLevels)
+            {
+                if (local.IsOsu != osuTab || listed.Contains(local.Hash) || !Room.TooHeavy(local)) continue;
+                if (!System.IO.File.Exists(local.FullPath)) continue;
+                long size = local.IsOsu && local.SizeNoVideo > 0 && local.SizeNoVideo < local.Size ? local.SizeNoVideo : local.Size;
+                yield return new OnlineSong
+                {
+                    Key = local.FullPath,
+                    Name = local.Name,
+                    Hash = local.Hash, Stars = Room.StarsFor(local.Hash), Size = local.Size, SizeNoVideo = local.SizeNoVideo,
+                    OnDevice = true, Yours = true,
+                    Holders = new List<(Color Color, string Name)> { (GetColorFromHue(MultiplayerSettings.Instance.PlayerColorHue), (Room.Me?.Username ?? "You") + " (you)") },
+                    SetId = local.SetId, SetName = local.SetName, Difficulty = local.Difficulty,
+                    Group = "TOO BIG TO SEND", GroupOrder = 2000,
+                    Duration = Room.DurationFor(local.Hash),
+                    DisabledTag = "TOO BIG",
+                    DisabledTitle = $"Too big to send ({size / (1024.0 * 1024.0):0.0} MB).",
+                    DisabledReason = $"The server accepts levels up to {maxMb} MB, so it can't be picked online.",
                 };
             }
         }
 
         /// <summary>
-        /// List section of a song: SHARED (you and somebody else have it), YOURS (only you), else the
-        /// first player (join order) who has it: "&lt;NAME&gt;'S LEVELS".
+        /// List section of a song: SHARED (you imported it and somebody else has it), YOURS (only you),
+        /// DOWNLOADED (you got it from an online room), else the first player (join order) who has it:
+        /// "&lt;NAME&gt;'S LEVELS".
         /// </summary>
-        private static (string Group, int Order) SectionOf(RoomStatePacket st, bool you, HashSet<string> others)
+        private static (string Group, int Order) SectionOf(RoomStatePacket st, bool you, bool downloaded, HashSet<string> others)
         {
             others.Remove(st.YouId);
+            if (you && downloaded) return ("DOWNLOADED LEVELS", 2);
             if (you) return others.Count > 0 ? ("SHARED LEVELS", 0) : ("YOUR LEVELS", 1);
             for (int i = 0; i < st.Members.Count; i++)
                 if (others.Contains(st.Members[i].Id))
-                    return ($"{st.Members[i].Username.ToUpperInvariant()}'S LEVELS", 2 + i);
+                    return ($"{st.Members[i].Username.ToUpperInvariant()}'S LEVELS", 3 + i);
             return ("OTHER LEVELS", 1000);
         }
 
@@ -222,10 +262,10 @@ namespace FunkyMakerPlayer.Multiplayer
                 return ("Loading official levels from the server...", "");
             if (Room.Scanning)
                 return ($"Scanning your levels... {Room.ScanDone}/{Room.ScanTotal}", "");
-            if (tab == FreeplayTab.Osu && st != null && st.Settings.Mode != Protocol.ModeMirror)
-                return ("osu!mania songs are only played in Mirror mode", Room.IsHost
-                    ? "They have a single strumline: switch the room to Mirror in the room settings to pick them"
-                    : "They have a single strumline: the host can switch the room to Mirror");
+            if (tab == FreeplayTab.Osu && st != null && !Protocol.OsuModeAllowed(st.Settings.Mode))
+                return ("osu!mania songs are only played in Mirror or Teams", Room.IsHost
+                    ? "They have a single strumline: switch the room to Mirror or Teams in the room settings to pick them"
+                    : "They have a single strumline: the host can switch the room to Mirror or Teams");
             string restricted = st?.Settings.AllowGuestLocalLevels == false && !Room.IsHost
                 ? "This room only allows official levels and the host's levels" : "";
             return tab == FreeplayTab.Osu
@@ -236,17 +276,64 @@ namespace FunkyMakerPlayer.Multiplayer
         /// <summary>Song waiting for "are you sure?" (a pick can't be changed once sent), or null.</summary>
         private (SongSelection Selection, string Title)? _pickConfirm;
 
-        void IOnlineSongSource.Pick(OnlineSong song, float stars)
+        void IOnlineSongSource.Pick(OnlineSong song, float stars, float seconds)
         {
-            if (_pickingSong || _pickConfirm != null) return;
-            var selection = song.Official
-                ? new SongSelection { Source = Protocol.SourceOfficial, Hash = song.Hash, Name = song.Name, OfficialId = song.OfficialId, Stars = stars }
-                : new SongSelection { Source = Protocol.SourceLocal, Hash = song.Hash, Name = song.Name, Stars = stars };
+            if (_pickingSong || _pickConfirm != null || _pickNotice != null) return;
             string title = song.SetName.Length > 0
                 ? (song.Difficulty.Length > 0 ? $"{song.SetName} [{song.Difficulty}]" : song.SetName)
                 : song.Name;
+            if (song.Disabled)
+            {
+                // Too big to send / refused this turn: explain instead of sending a pick the server refuses.
+                _pickNotice = (title, song.DisabledTitle, song.DisabledReason);
+                _inputCooldown = INPUT_COOLDOWN_TIME;
+                return;
+            }
+            var selection = song.Official
+                ? new SongSelection { Source = Protocol.SourceOfficial, Hash = song.Hash, Name = song.Name, OfficialId = song.OfficialId, Stars = stars, Duration = seconds }
+                : new SongSelection { Source = Protocol.SourceLocal, Hash = song.Hash, Name = song.Name, Stars = stars, Duration = seconds };
             _pickConfirm = (selection, title);
             _inputCooldown = INPUT_COOLDOWN_TIME;
+        }
+
+        /// <summary>"Can't pick this song" window (title, headline, explanation), or null.</summary>
+        private (string Title, string Headline, string Reason)? _pickNotice;
+        private Rectangle _pickNoticeRect;
+
+        /// <summary>The "can't pick" window: any key / click closes it. True while it's open.</summary>
+        private bool UpdatePickNotice(KeyboardState kb, MouseState mouse)
+        {
+            if (_pickNotice == null) return false;
+            if (_inputCooldown > 0f) return true;
+            string? clicked = ClickedHit(mouse);
+            if (clicked == "notice-ok" || IsKeyPressed(kb, Keys.Enter) || IsKeyPressed(kb, Keys.Escape) || IsKeyPressed(kb, Keys.Back)
+                || IsKeyPressed(kb, Keys.Space) || (clicked == null && IsLeftClickReleased(mouse)))
+            {
+                _pickNotice = null;
+                FunkyMakerPlayer.UI.UiSfx.Play(FunkyMakerPlayer.UI.UiSound.Back);
+                _inputCooldown = INPUT_COOLDOWN_TIME;
+            }
+            return true;
+        }
+
+        private void DrawPickNotice(SpriteBatch sb, SpriteFont font, Texture2D pixel, int sw, int sh)
+        {
+            if (_pickNotice is not { } n) return;
+            float uiScale = GetUiScale(sw, sh);
+            sb.Draw(pixel, new Rectangle(0, 0, sw, sh), Color.Black * 0.65f);
+            int w = Math.Min(Px(600, uiScale), sw - 32), h = Px(220, uiScale, 160);
+            int x = (sw - w) / 2, y = (sh - h) / 2;
+            _pickNoticeRect = new Rectangle(x, y, w, h);
+            DrawPanel(sb, pixel, x, y, w, h, BG_MEDIUM, ACCENT_ERROR, 2, ACCENT_ERROR);
+            int pad = Px(20, uiScale, 12);
+            int titleF = FontPx(20, uiScale, 14, 28), textF = FontPx(13, uiScale, 10, 18);
+            DrawCenteredTextInPanel(sb, font, TruncateToWidth(font, n.Headline, w - pad * 2, titleF), x, y + Px(18, uiScale), w, ACCENT_ERROR, titleF, shadow: true);
+            DrawCenteredTextInPanel(sb, font, TruncateToWidth(font, n.Title, w - pad * 2, textF), x, y + Px(56, uiScale), w, TEXT_PRIMARY, textF);
+            var lines = WrapTextToWidth(font, n.Reason, w - pad * 2, textF).Split('\n');
+            for (int i = 0; i < lines.Length && i < 3; i++)
+                DrawCenteredTextInPanel(sb, font, lines[i], x, y + Px(84, uiScale) + i * Px(20, uiScale), w, TEXT_SECONDARY, textF);
+            int bh = Px(36, uiScale, 28), bw = Math.Min(Px(200, uiScale), w - pad * 2);
+            DrawRoomButton(sb, font, pixel, uiScale, "notice-ok", new Rectangle(x + (w - bw) / 2, y + h - pad - bh, bw, bh), "OK", ACCENT_WARNING, strong: true);
         }
 
         /// <summary>The confirmation popup over the song select. True while it's open (the picker waits).</summary>
@@ -255,13 +342,13 @@ namespace FunkyMakerPlayer.Multiplayer
             if (_pickConfirm is not { } pending) return false;
             if (_inputCooldown > 0f) return true;
             string? clicked = ClickedHit(mouse);
-            if (clicked == "pick-yes" || IsKeyPressed(kb, Keys.Y) || IsKeyPressed(kb, Keys.Enter))
+            if (clicked == "pick-yes" || IsKeyPressed(kb, Keys.Enter))
             {
                 _pickConfirm = null;
                 FunkyMakerPlayer.UI.UiSfx.Play(FunkyMakerPlayer.UI.UiSound.Confirm);
                 SendPick(pending.Selection);
             }
-            else if (clicked == "pick-no" || IsKeyPressed(kb, Keys.N) || IsKeyPressed(kb, Keys.Escape)
+            else if (clicked == "pick-no" || IsKeyPressed(kb, Keys.Escape)
                      || IsKeyPressed(kb, Keys.Back) || (clicked == null && IsLeftClickReleased(mouse) && !_pickConfirmRect.Contains(mouse.X, mouse.Y)))
             {
                 _pickConfirm = null;
@@ -286,10 +373,14 @@ namespace FunkyMakerPlayer.Multiplayer
             int titleF = FontPx(20, uiScale, 14, 28), textF = FontPx(13, uiScale, 10, 18);
             DrawCenteredTextInPanel(sb, font, "Pick this song?", x, y + Px(18, uiScale), w, TEXT_PRIMARY, titleF, shadow: true);
             DrawCenteredTextInPanel(sb, font, TruncateToWidth(font, pending.Title, w - pad * 2, textF), x, y + Px(54, uiScale), w, ACCENT_WARNING, textF);
-            DrawCenteredTextInPanel(sb, font, "Once confirmed you can't change it for this round.", x, y + Px(82, uiScale), w, TEXT_SECONDARY, textF);
+            bool longSong = pending.Selection.Duration >= Protocol.LongSongSeconds && (Room.State?.Members.Count(m => !m.Spectate) ?? 0) > 1;
+            DrawCenteredTextInPanel(sb, font, longSong
+                    ? $"It's {Clock(pending.Selection.Duration)} long: the other players vote whether to play it."
+                    : "Once confirmed you can't change it for this round.",
+                x, y + Px(82, uiScale), w, longSong ? ACCENT_WARNING : TEXT_SECONDARY, textF);
             int bh = Px(36, uiScale, 28), bw = (w - pad * 3) / 2, by = y + h - pad - bh;
-            DrawRoomButton(sb, font, pixel, uiScale, "pick-no", new Rectangle(x + pad, by, bw, bh), "N  Cancel", TEXT_SECONDARY);
-            DrawRoomButton(sb, font, pixel, uiScale, "pick-yes", new Rectangle(x + pad * 2 + bw, by, bw, bh), "Y  CONFIRM", ACCENT_SUCCESS, strong: true);
+            DrawRoomButton(sb, font, pixel, uiScale, "pick-no", new Rectangle(x + pad, by, bw, bh), "Cancel", TEXT_SECONDARY);
+            DrawRoomButton(sb, font, pixel, uiScale, "pick-yes", new Rectangle(x + pad * 2 + bw, by, bw, bh), "CONFIRM", ACCENT_SUCCESS, strong: true);
         }
 
         private void SendPick(SongSelection selection)

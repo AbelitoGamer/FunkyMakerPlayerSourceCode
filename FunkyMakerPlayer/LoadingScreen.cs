@@ -297,10 +297,10 @@ public class LoadingScreen
 
         // Level title (shadow + main)
         string title = Safe(_levelName);
-        var titleSz  = _font.MeasureString(title);
+        var titleSz  = _font.MeasureUi(title);
         var titlePos = new Vector2(scx - titleSz.X / 2f, scy - 60f);
-        sb.DrawString(_font, title, titlePos + new Vector2(2, 2), Color.Black   * _uiAlpha);
-        sb.DrawString(_font, title, titlePos,                      Color.Yellow  * _uiAlpha);
+        sb.DrawUiString(_font, title, titlePos + new Vector2(2, 2), Color.Black   * _uiAlpha);
+        sb.DrawUiString(_font, title, titlePos,                      Color.Yellow  * _uiAlpha);
 
         // Status line with progress
         string status;
@@ -387,10 +387,10 @@ public class LoadingScreen
             ? Color.Lerp(Color.White, Color.Yellow, 0.5f + 0.5f * MathF.Sin(_pulse))
             : Color.White * 0.75f;
 
-        var statusSz  = _font.MeasureString(status);
+        var statusSz  = _font.MeasureUi(status);
         var statusPos = new Vector2(scx - statusSz.X / 2f, scy + 30f);
-        sb.DrawString(_font, status, statusPos + new Vector2(2, 2), Color.Black   * _uiAlpha);
-        sb.DrawString(_font, status, statusPos,                      statusColor   * _uiAlpha);
+        sb.DrawUiString(_font, status, statusPos + new Vector2(2, 2), Color.Black   * _uiAlpha);
+        sb.DrawUiString(_font, status, statusPos,                      statusColor   * _uiAlpha);
 
         // Room matches: who has loaded (while I load too, below the progress bar).
         if (_isMultiplayer && RoomPlayers != null && RoomPlayers.Count > 0)
@@ -404,11 +404,11 @@ public class LoadingScreen
             
             // Player 1 indicator
             string p1Text = "Player 1 (Boyfriend)";
-            var p1Size = _font.MeasureString(p1Text);
+            var p1Size = _font.MeasureUi(p1Text);
             var p1Pos = new Vector2(scx - 150 - p1Size.X / 2f, indicatorY);
             Color p1Color = Player1Ready ? Color.LimeGreen : Color.Gray;
-            sb.DrawString(_font, p1Text, p1Pos + new Vector2(1, 1), Color.Black * _uiAlpha);
-            sb.DrawString(_font, p1Text, p1Pos, p1Color * _uiAlpha);
+            sb.DrawUiString(_font, p1Text, p1Pos + new Vector2(1, 1), Color.Black * _uiAlpha);
+            sb.DrawUiString(_font, p1Text, p1Pos, p1Color * _uiAlpha);
             
             // Player 1 checkmark/circle
             int p1CircleX = (int)(scx - 150);
@@ -417,22 +417,22 @@ public class LoadingScreen
             {
                 // Green checkmark
                 sb.Draw(_pixel, new Rectangle(p1CircleX - 15, p1CircleY - 15, 30, 30), Color.LimeGreen * _uiAlpha);
-                sb.DrawString(_font, "OK", new Vector2(p1CircleX - 10, p1CircleY - 18), Color.White * _uiAlpha);
+                sb.DrawUiString(_font, "OK", new Vector2(p1CircleX - 10, p1CircleY - 18), Color.White * _uiAlpha);
             }
             else
             {
                 // Gray waiting circle
                 sb.Draw(_pixel, new Rectangle(p1CircleX - 15, p1CircleY - 15, 30, 30), Color.Gray * 0.5f * _uiAlpha);
-                sb.DrawString(_font, "...", new Vector2(p1CircleX - 12, p1CircleY - 18), Color.White * _uiAlpha);
+                sb.DrawUiString(_font, "...", new Vector2(p1CircleX - 12, p1CircleY - 18), Color.White * _uiAlpha);
             }
             
             // Player 2 indicator
             string p2Text = "Player 2 (Enemy)";
-            var p2Size = _font.MeasureString(p2Text);
+            var p2Size = _font.MeasureUi(p2Text);
             var p2Pos = new Vector2(scx + 150 - p2Size.X / 2f, indicatorY);
             Color p2Color = Player2Ready ? Color.LimeGreen : Color.Gray;
-            sb.DrawString(_font, p2Text, p2Pos + new Vector2(1, 1), Color.Black * _uiAlpha);
-            sb.DrawString(_font, p2Text, p2Pos, p2Color * _uiAlpha);
+            sb.DrawUiString(_font, p2Text, p2Pos + new Vector2(1, 1), Color.Black * _uiAlpha);
+            sb.DrawUiString(_font, p2Text, p2Pos, p2Color * _uiAlpha);
             
             // Player 2 checkmark/circle
             int p2CircleX = (int)(scx + 150);
@@ -441,13 +441,13 @@ public class LoadingScreen
             {
                 // Green checkmark
                 sb.Draw(_pixel, new Rectangle(p2CircleX - 15, p2CircleY - 15, 30, 30), Color.LimeGreen * _uiAlpha);
-                sb.DrawString(_font, "OK", new Vector2(p2CircleX - 10, p2CircleY - 18), Color.White * _uiAlpha);
+                sb.DrawUiString(_font, "OK", new Vector2(p2CircleX - 10, p2CircleY - 18), Color.White * _uiAlpha);
             }
             else
             {
                 // Gray waiting circle
                 sb.Draw(_pixel, new Rectangle(p2CircleX - 15, p2CircleY - 15, 30, 30), Color.Gray * 0.5f * _uiAlpha);
-                sb.DrawString(_font, "...", new Vector2(p2CircleX - 12, p2CircleY - 18), Color.White * _uiAlpha);
+                sb.DrawUiString(_font, "...", new Vector2(p2CircleX - 12, p2CircleY - 18), Color.White * _uiAlpha);
             }
         }
 
@@ -505,22 +505,22 @@ public class LoadingScreen
             var box = new Rectangle(x, y + 3, 22, 22);
             sb.Draw(_pixel, box, (e.Loaded ? Color.LimeGreen : Color.Gray * 0.5f) * _uiAlpha);
             string mark = e.Loaded ? "OK" : "...";
-            var msz = _font.MeasureString(mark) * 0.45f;
-            sb.DrawString(_font, mark, new Vector2(box.Center.X - msz.X / 2f, box.Center.Y - msz.Y / 2f), Color.White * _uiAlpha,
+            var msz = _font.MeasureUi(mark) * 0.45f;
+            sb.DrawUiString(_font, mark, new Vector2(box.Center.X - msz.X / 2f, box.Center.Y - msz.Y / 2f), Color.White * _uiAlpha,
                 0f, Vector2.Zero, 0.45f, SpriteEffects.None, 0f);
 
             string text = Safe(e.Name) + (e.IsMe ? " (you)" : "");
             string side = string.IsNullOrEmpty(e.Side) ? "" : "  " + e.Side;
-            float maxW = colW - 50 - _font.MeasureString(side).X * scale;
-            while (text.Length > 1 && _font.MeasureString(text).X * scale > maxW) text = text[..^1];
+            float maxW = colW - 50 - _font.MeasureUi(side).X * scale;
+            while (text.Length > 1 && _font.MeasureUi(text).X * scale > maxW) text = text[..^1];
             var pos = new Vector2(x + 32, y + (rowH - _font.LineSpacing * scale) / 2f);
             Color nameColor = Color.Lerp(e.Color, Color.White, 0.35f) * (e.Loaded ? 1f : 0.6f);
-            sb.DrawString(_font, text, pos + new Vector2(1, 1), Color.Black * _uiAlpha, 0f, Vector2.Zero, scale, SpriteEffects.None, 0f);
-            sb.DrawString(_font, text, pos, nameColor * _uiAlpha, 0f, Vector2.Zero, scale, SpriteEffects.None, 0f);
+            sb.DrawUiString(_font, text, pos + new Vector2(1, 1), Color.Black * _uiAlpha, 0f, Vector2.Zero, scale, SpriteEffects.None, 0f);
+            sb.DrawUiString(_font, text, pos, nameColor * _uiAlpha, 0f, Vector2.Zero, scale, SpriteEffects.None, 0f);
             if (side.Length > 0)
             {
-                var spos = pos + new Vector2(_font.MeasureString(text).X * scale, 0);
-                sb.DrawString(_font, side, spos, Color.Gray * _uiAlpha, 0f, Vector2.Zero, scale, SpriteEffects.None, 0f);
+                var spos = pos + new Vector2(_font.MeasureUi(text).X * scale, 0);
+                sb.DrawUiString(_font, side, spos, Color.Gray * _uiAlpha, 0f, Vector2.Zero, scale, SpriteEffects.None, 0f);
             }
         }
     }

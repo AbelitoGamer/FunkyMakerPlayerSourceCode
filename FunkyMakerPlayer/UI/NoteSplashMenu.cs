@@ -188,7 +188,7 @@ public class NoteSplashMenu : IScreenOverlay
         }
         else
         {
-            spriteBatch.DrawString(_font, "NOTE SPLASH",
+            spriteBatch.DrawUiString(_font, "NOTE SPLASH",
                 new Vector2(20 * u, 6 * u), accentColor, 0f, Vector2.Zero, 1.3f, SpriteEffects.None, 0f);
         }
         
@@ -209,7 +209,7 @@ public class NoteSplashMenu : IScreenOverlay
         }
         else
         {
-            spriteBatch.DrawString(_font, "STYLES",
+            spriteBatch.DrawUiString(_font, "STYLES",
                 new Vector2(listX + 8, listY),
                 accentColor * 0.6f, 0f, Vector2.Zero, 0.65f, SpriteEffects.None, 0f);
         }
@@ -242,7 +242,7 @@ public class NoteSplashMenu : IScreenOverlay
             }
             else
             {
-                spriteBatch.DrawString(_font, label,
+                spriteBatch.DrawUiString(_font, label,
                     new Vector2(listX + 12 * u, iy + 8 * u),
                     textColor, 0f, Vector2.Zero, 0.82f, SpriteEffects.None, 0f);
             }
@@ -262,7 +262,7 @@ public class NoteSplashMenu : IScreenOverlay
         }
         else
         {
-            spriteBatch.DrawString(_font, "PREVIEW",
+            spriteBatch.DrawUiString(_font, "PREVIEW",
                 new Vector2(previewX + 8, 64f),
                 accentColor * 0.6f, 0f, Vector2.Zero, 0.65f, SpriteEffects.None, 0f);
         }
@@ -295,7 +295,7 @@ public class NoteSplashMenu : IScreenOverlay
                 _fontRenderer.DrawString(spriteBatch, text, new Vector2(previewX + 8, infoY),
                     small ? infoColor * 0.6f : infoColor, small ? noteSize : infoSize);
             else
-                spriteBatch.DrawString(_font, text, new Vector2(previewX + 8, infoY),
+                spriteBatch.DrawUiString(_font, text, new Vector2(previewX + 8, infoY),
                     small ? infoColor * 0.6f : infoColor, 0f, Vector2.Zero, small ? 0.65f : 0.7f, SpriteEffects.None, 0f);
             infoY += small ? 20f : 24f;
         }
@@ -324,7 +324,7 @@ public class NoteSplashMenu : IScreenOverlay
         }
         else
         {
-            spriteBatch.DrawString(_font, laneNames[_animLane],
+            spriteBatch.DrawUiString(_font, laneNames[_animLane],
                 new Vector2(previewCx - 25, previewCy + 60),
                 laneColors[_animLane] * 0.7f, 0f, Vector2.Zero, 0.7f, SpriteEffects.None, 0f);
         }
@@ -395,8 +395,8 @@ public class NoteSplashMenu : IScreenOverlay
         }
         else
         {
-            var hintSz = _font.MeasureString(hint) * 0.55f;
-            spriteBatch.DrawString(_font, hint,
+            var hintSz = _font.MeasureUi(hint) * 0.55f;
+            spriteBatch.DrawUiString(_font, hint,
                 new Vector2(sw / 2f - hintSz.X / 2f, sh - 22),
                 Color.White * 0.2f, 0f, Vector2.Zero, 0.55f, SpriteEffects.None, 0f);
         }

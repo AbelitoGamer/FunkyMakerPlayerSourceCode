@@ -21,6 +21,36 @@ namespace FunkyMakerPlayer;
 /// <summary>Editor Hub, Level Selector and Chart Editor navigation, playtests (moved out of Game1.cs).</summary>
 public partial class Game1
 {
+    private UI.UiDraw? _noticeUi;
+
+    /// <summary>
+    /// Phones (fork, 2026-11-28): the chart editor (also New Chart / Level) and the HUD editor are
+    /// keyboard-and-mouse tools that don't work by touch yet, so they don't open; a window says so.
+    /// True (and the window shown) when <paramref name="editorName"/> must not open. Also true with the
+    /// desktop touch simulation (FMP_TOUCH_SIM), to check it without a phone.
+    /// The Character Editor works by touch and is not blocked.
+    /// </summary>
+    internal bool BlockEditorOnMobile(string editorName)
+    {
+        if (!UI.PointerInput.IsTouch) return false;
+        UI.NoticeWindow.Show("WORK IN PROGRESS",
+            $"The {editorName} is not available on mobile yet.\nPlease use the PC version to use it.");
+        return true;
+    }
+
+    /// <summary>After everything else is drawn: the notice window, straight to the window.</summary>
+    private void DrawNoticeWindow()
+    {
+        if (!UI.NoticeWindow.IsOpen || _spriteBatch == null || _pixel == null) return;
+        if (GraphicsDevice.RenderTargetCount > 0) GraphicsDevice.SetRenderTarget(null);
+        _noticeUi ??= new UI.UiDraw(_pixel, _font, _fontRenderer);
+        _noticeUi.FontRenderer = _fontRenderer;
+        var win = Window.ClientBounds;
+        _spriteBatch.Begin(samplerState: SamplerState.LinearClamp);
+        UI.NoticeWindow.Draw(_spriteBatch, _noticeUi, win.Width, win.Height);
+        _spriteBatch.End();
+    }
+
     /// <summary>
     /// Opens the Editor Picker menu
     /// </summary>
@@ -53,7 +83,13 @@ public partial class Game1
     private void OpenEditor(Editors.EditorType type)
     {
         Console.WriteLine($"[Game1] Opening editor: {type}");
-        
+        if (type is Editors.EditorType.NewChart or Editors.EditorType.Chart or Editors.EditorType.Hud &&
+            BlockEditorOnMobile(type == Editors.EditorType.Hud ? "HUD Editor" : "Chart Editor"))
+        {
+            _editorPicker?.ResetInputCooldown(); // stay in the Editor Hub (also clears EditorChosen, or it reopened every frame)
+            return;
+        }
+
         if (type == Editors.EditorType.NewChart || type == Editors.EditorType.Chart)
         {
             _inEditorPicker = false;
@@ -217,6 +253,7 @@ public partial class Game1
             _freeplay?.ShowToast("Los charts de osu! no se pueden editar aquí");
             return;
         }
+        if (BlockEditorOnMobile("Chart Editor")) return;
         Console.WriteLine($"[Game1] Opening Chart Editor with level: {levelPath} (return={returnTarget})");
 
         _chartEditorReturnTarget = returnTarget;
@@ -330,7 +367,6 @@ public partial class Game1
         _level = null;
         _objAnimators = Array.Empty<SpriteAnimator?>();
         _events = null;
-        _corneredEvents = null;
         _noteRenderers.Clear();
         if (_healthBar != null)
         {

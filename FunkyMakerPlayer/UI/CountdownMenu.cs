@@ -201,7 +201,7 @@ public class CountdownMenu : IScreenOverlay
         }
         else
         {
-            spriteBatch.DrawString(_font, "SELECT COUNTDOWN PACK",
+            spriteBatch.DrawUiString(_font, "SELECT COUNTDOWN PACK",
                 new Vector2(20 * u, 6 * u), new Color(0xFF, 0x44, 0x88), 0f, Vector2.Zero, 1.1f, SpriteEffects.None, 0f);
         }
         
@@ -236,7 +236,7 @@ public class CountdownMenu : IScreenOverlay
             
             Color textColor = sel ? Color.White : Color.White * 0.7f;
             string displayName = _packs[i];
-            if (displayName == "default") displayName = "Default (Built-in)";
+            displayName = DefaultMods.CountdownLabel(displayName);
             
             if (_fontRenderer != null)
             {
@@ -246,7 +246,7 @@ public class CountdownMenu : IScreenOverlay
             }
             else
             {
-                spriteBatch.DrawString(_font, displayName,
+                spriteBatch.DrawUiString(_font, displayName,
                     new Vector2(panelX + 10 * u, y + 8 * u), textColor, 0f, Vector2.Zero, 0.7f, SpriteEffects.None, 0f);
             }
         }
@@ -281,8 +281,8 @@ public class CountdownMenu : IScreenOverlay
         }
         else
         {
-            Vector2 hintMeasure = _font.MeasureString(hint) * 0.5f;
-            spriteBatch.DrawString(_font, hint,
+            Vector2 hintMeasure = _font.MeasureUi(hint) * 0.5f;
+            spriteBatch.DrawUiString(_font, hint,
                 new Vector2(sw / 2f - hintMeasure.X / 2f, sh - 26), hintColor, 
                 0f, Vector2.Zero, 0.5f, SpriteEffects.None, 0f);
         }
@@ -299,7 +299,7 @@ public class CountdownMenu : IScreenOverlay
         }
         else
         {
-            sb.DrawString(_font, label, new Vector2(x + 10, y), labelColor, 0f, Vector2.Zero, 0.6f, SpriteEffects.None, 0f);
+            sb.DrawUiString(_font, label, new Vector2(x + 10, y), labelColor, 0f, Vector2.Zero, 0.6f, SpriteEffects.None, 0f);
         }
         
         // Image area
@@ -334,8 +334,8 @@ public class CountdownMenu : IScreenOverlay
             }
             else
             {
-                Vector2 measure = _font.MeasureString(noPreview) * 0.5f;
-                sb.DrawString(_font, noPreview,
+                Vector2 measure = _font.MeasureUi(noPreview) * 0.5f;
+                sb.DrawUiString(_font, noPreview,
                     new Vector2(x + (w - measure.X) / 2f, imgY + (imgH - measure.Y) / 2f),
                     noPreviewColor, 0f, Vector2.Zero, 0.5f, SpriteEffects.None, 0f);
             }

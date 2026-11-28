@@ -17,7 +17,7 @@ namespace FunkyMakerPlayer.Managers;
 public sealed class OnlineMenuMusic : IDisposable
 {
     /// <summary>"Menu Music Volume" setting (0..1), persisted in settings.json as <c>MenuMusicVolume</c>.</summary>
-    public static float Volume = 0.7f;
+    public static float Volume = 1.0f;
 
     private const float FadeInSeconds = 1.5f;       // Portraits coming back
     private const float FadeOutSeconds = 0.35f;     // "fades out quickly"

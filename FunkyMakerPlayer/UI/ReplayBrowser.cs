@@ -166,10 +166,9 @@ public sealed class ReplayBrowser : IDirectScreen
             BackPressed = true;
             UiSfx.Play(UiSound.Back);
         }
-        else if (Controls.Pressed(HotkeyAction.PrevTab, kb, _prevKb) || Pressed(Keys.Left) ||
-                 Controls.Pressed(HotkeyAction.NextTab, kb, _prevKb) || Pressed(Keys.Right))
+        else if (Pressed(Keys.Left) || Pressed(Keys.Right))
         {
-            int dir = Controls.Pressed(HotkeyAction.PrevTab, kb, _prevKb) || Pressed(Keys.Left) ? -1 : 1;
+            int dir = Pressed(Keys.Left) ? -1 : 1;
             _filter = (_filter + dir + Tabs.Length) % Tabs.Length;
             _selected = 0;
             _scroll = 0;
@@ -187,14 +186,6 @@ public sealed class ReplayBrowser : IDirectScreen
             _selected = (_selected - 1 + _shown.Count) % _shown.Count;
             KeepSelectionVisible();
             UiSfx.Play(UiSound.MoveList);
-        }
-        else if (Controls.Pressed(HotkeyAction.DeleteItem, kb, _prevKb) && _selected < _shown.Count)
-        {
-            OpenOptions(_selected, null, kb, confirmFirst: "delete");
-        }
-        else if (Controls.Pressed(HotkeyAction.FreeplayOptions, kb, _prevKb) && _selected < _shown.Count)
-        {
-            OpenOptions(_selected, null, kb);
         }
         else if (rightClicked && hovered >= 0 && hovered < _shown.Count)
         {
@@ -403,7 +394,7 @@ public sealed class ReplayBrowser : IDirectScreen
         Rect(sb, 0, sh - footerH, sw, footerH, Color.Black * 0.45f);
         string hint = UI.PointerInput.IsTouch
             ? "Tap a replay, tap it again to watch  |  \"...\" or hold: Options  |  Drag to scroll  |  Back: return"
-            : $"UP/DOWN: Select  |  ENTER: Watch  |  [{Controls.Hint(HotkeyAction.FreeplayOptions)}] / ...: Options  |  DEL: Delete  |  Q/E: Filter  |  ESC: Back";
+            : "UP/DOWN: Select  |  ENTER: Watch  |  LEFT/RIGHT: Filter  |  \"...\" or right click: Options  |  ESC: Back";
         int hf = UiScale.FontPx(13, s);
         var hsz = Measure(hint, hf);
         Text(sb, hint, new Vector2(sw / 2f - hsz.X / 2f, sh - footerH + (footerH - hsz.Y) / 2f), Dim, hf);
@@ -430,13 +421,13 @@ public sealed class ReplayBrowser : IDirectScreen
     private void Text(SpriteBatch sb, string text, Vector2 pos, Color color, int size)
     {
         if (_fontRenderer != null) _fontRenderer.DrawString(sb, text, pos, color, size);
-        else if (_font != null) sb.DrawString(_font, text, pos, color, 0f, Vector2.Zero, size / 32f, SpriteEffects.None, 0f);
+        else if (_font != null) sb.DrawUiString(_font, text, pos, color, 0f, Vector2.Zero, size / 32f, SpriteEffects.None, 0f);
     }
 
     private Vector2 Measure(string text, int size)
     {
         if (_fontRenderer != null) return _fontRenderer.MeasureString(text, size);
-        if (_font != null) return _font.MeasureString(text) * (size / 32f);
+        if (_font != null) return _font.MeasureUi(text) * (size / 32f);
         return new Vector2(text.Length * size * 0.5f, size);
     }
 

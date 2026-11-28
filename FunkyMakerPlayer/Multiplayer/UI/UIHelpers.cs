@@ -65,16 +65,16 @@ namespace FunkyMakerPlayer.Multiplayer.UI
             DrawPanel(sb, pixel, x, y, w, h, bgColor, borderColor, 3);
 
             // Title
-            Vector2 titleSize = font.MeasureString(title);
+            Vector2 titleSize = font.MeasureUi(title);
             Vector2 titlePos = new Vector2(x + w / 2 - titleSize.X / 2, y + h / 2 - titleSize.Y / 2 - 10);
-            sb.DrawString(font, title, titlePos, selected ? Color.Yellow : Color.White);
+            sb.DrawUiString(font, title, titlePos, selected ? Color.Yellow : Color.White);
 
             // Subtitle
             if (!string.IsNullOrEmpty(subtitle))
             {
-                Vector2 subSize = font.MeasureString(subtitle);
+                Vector2 subSize = font.MeasureUi(subtitle);
                 Vector2 subPos = new Vector2(x + w / 2 - subSize.X / 2, y + h / 2 + 10);
-                sb.DrawString(font, subtitle, subPos, Color.Gray);
+                sb.DrawUiString(font, subtitle, subPos, Color.Gray);
             }
         }
 
@@ -83,9 +83,9 @@ namespace FunkyMakerPlayer.Multiplayer.UI
         /// </summary>
         public static void DrawCenteredText(SpriteBatch sb, SpriteFont font, string text, int screenWidth, int y, Color color)
         {
-            Vector2 size = font.MeasureString(text);
+            Vector2 size = font.MeasureUi(text);
             Vector2 pos = new Vector2(screenWidth / 2 - size.X / 2, y);
-            sb.DrawString(font, text, pos, color);
+            sb.DrawUiString(font, text, pos, color);
         }
 
         /// <summary>
@@ -93,9 +93,9 @@ namespace FunkyMakerPlayer.Multiplayer.UI
         /// </summary>
         public static void DrawCenteredTextInPanel(SpriteBatch sb, SpriteFont font, string text, int panelX, int y, int panelW, Color color)
         {
-            Vector2 size = font.MeasureString(text);
+            Vector2 size = font.MeasureUi(text);
             Vector2 pos = new Vector2(panelX + panelW / 2 - size.X / 2, y);
-            sb.DrawString(font, text, pos, color);
+            sb.DrawUiString(font, text, pos, color);
         }
     }
 }
