@@ -350,13 +350,13 @@ public class EditorPicker : FunkyMakerPlayer.UI.IDirectScreen
     private Vector2 MeasureText(string text, int size)
     {
         if (_fontRenderer != null) return _fontRenderer.MeasureString(text, size);
-        if (_font != null) return _font.MeasureString(text) * (size / 32f);
+        if (_font != null) return _font.MeasureUi(text) * (size / 32f);
         return new Vector2(text.Length * size * 0.5f, size);
     }
 
     private void DrawText(SpriteBatch sb, string text, Vector2 pos, Color color, int size)
     {
         if (_fontRenderer != null) _fontRenderer.DrawString(sb, text, pos, color, size);
-        else if (_font != null) sb.DrawString(_font, text, pos, color, 0f, Vector2.Zero, size / 32f, SpriteEffects.None, 0f);
+        else if (_font != null) sb.DrawUiString(_font, text, pos, color, 0f, Vector2.Zero, size / 32f, SpriteEffects.None, 0f);
     }
 }

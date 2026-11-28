@@ -154,6 +154,7 @@ public partial class Game1
         int pw = Math.Max(1, (int)MathF.Round(_rtWidth  * scale));
         int ph = Math.Max(1, (int)MathF.Round(_rtHeight * scale));
         _rtScale = pw / (float)_rtWidth;
+        FontRenderer.RenderTargetScale = _rtScale; // text into the target is rasterized at physical size
         if (_renderTarget != null && !_renderTarget.IsDisposed && _renderTarget.Width == pw && _renderTarget.Height == ph)
             return;
 

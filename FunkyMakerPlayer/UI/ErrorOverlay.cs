@@ -19,15 +19,15 @@ public static class ErrorOverlay
         if (font == null) return;
 
         string[] lines = { "Funky Maker Player", "", "Drag a .FNMM, .ZIP or .RAR file here", "", "[ESC] Settings" };
-        int lineH = (int)font.MeasureString("A").Y + 6;
+        int lineH = (int)font.MeasureUi("A").Y + 6;
         int totalH = lines.Length * lineH;
         int y = sh / 2 - totalH / 2;
 
         foreach (var line in lines)
         {
             if (line.Length == 0) { y += lineH; continue; }
-            var sz = font.MeasureString(line);
-            spriteBatch.DrawString(font, line,
+            var sz = font.MeasureUi(line);
+            spriteBatch.DrawUiString(font, line,
                 new Vector2(sw / 2f - sz.X / 2f, y),
                 line == "Funky Maker Player" ? Color.Yellow : Color.White * 0.7f);
             y += lineH;
@@ -52,10 +52,10 @@ public static class ErrorOverlay
             spriteBatch.Draw(pixel, new Rectangle(0, 0, sw, 4), accent);
         }
 
-        spriteBatch.DrawString(font, title,
+        spriteBatch.DrawUiString(font, title,
             new Vector2(20, 14), titleColor, 0f, Vector2.Zero, 1.1f, SpriteEffects.None, 0f);
 
-        int lineH = (int)(font.MeasureString("A").Y * 0.8f) + 4;
+        int lineH = (int)(font.MeasureUi("A").Y * 0.8f) + 4;
         int y = 56;
         string normalized = msg.Replace("\r\n", "\n").Replace('\r', '\n');
         var rawLines = normalized.Split('\n');
@@ -72,14 +72,14 @@ public static class ErrorOverlay
 
             foreach (var line in WrapText(Safe(rawLine), 90))
             {
-                spriteBatch.DrawString(font, line, new Vector2(20, y), Color.White * 0.85f, 0f, Vector2.Zero, 0.8f, SpriteEffects.None, 0f);
+                spriteBatch.DrawUiString(font, line, new Vector2(20, y), Color.White * 0.85f, 0f, Vector2.Zero, 0.8f, SpriteEffects.None, 0f);
                 y += lineH;
             }
         }
 
         string hint = "ENTER / ESC / CLICK  Back to menu";
-        var hintSz = font.MeasureString(hint) * 0.65f;
-        spriteBatch.DrawString(font, hint,
+        var hintSz = font.MeasureUi(hint) * 0.65f;
+        spriteBatch.DrawUiString(font, hint,
             new Vector2(sw / 2f - hintSz.X / 2f, sh - 28f),
             Color.White * 0.35f, 0f, Vector2.Zero, 0.65f, SpriteEffects.None, 0f);
     }

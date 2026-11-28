@@ -197,7 +197,7 @@ public class FontMenu : IScreenOverlay
         }
         else
         {
-            spriteBatch.DrawString(_font, "SELECT FONT",
+            spriteBatch.DrawUiString(_font, "SELECT FONT",
                 new Vector2(20 * u, 6 * u), new Color(0xFF, 0x44, 0x88), 0f, Vector2.Zero, 1.1f, SpriteEffects.None, 0f);
         }
         
@@ -240,7 +240,7 @@ public class FontMenu : IScreenOverlay
             }
             else
             {
-                spriteBatch.DrawString(_font, _fonts[i].name,
+                spriteBatch.DrawUiString(_font, _fonts[i].name,
                     new Vector2(panelX + 10 * u, y + 8 * u), textColor, 0f, Vector2.Zero, 0.7f, SpriteEffects.None, 0f);
             }
         }
@@ -309,8 +309,8 @@ public class FontMenu : IScreenOverlay
             }
             else
             {
-                Vector2 measure = _font.MeasureString(noPreview) * 0.6f;
-                spriteBatch.DrawString(_font, noPreview,
+                Vector2 measure = _font.MeasureUi(noPreview) * 0.6f;
+                spriteBatch.DrawUiString(_font, noPreview,
                     new Vector2(previewX + (previewW - measure.X) / 2f, previewY + previewH / 2f - measure.Y / 2f),
                     noPreviewColor, 0f, Vector2.Zero, 0.6f, SpriteEffects.None, 0f);
             }
@@ -329,8 +329,8 @@ public class FontMenu : IScreenOverlay
         }
         else
         {
-            Vector2 hintMeasure = _font.MeasureString(hint) * 0.5f;
-            spriteBatch.DrawString(_font, hint,
+            Vector2 hintMeasure = _font.MeasureUi(hint) * 0.5f;
+            spriteBatch.DrawUiString(_font, hint,
                 new Vector2(sw / 2f - hintMeasure.X / 2f, sh - 26), hintColor, 
                 0f, Vector2.Zero, 0.5f, SpriteEffects.None, 0f);
         }

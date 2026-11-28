@@ -767,13 +767,13 @@ public class TouchControls
         {
             try
             {
-                var labelSize = font.MeasureString(label);
+                var labelSize = font.MeasureUi(label);
                 var labelPos = center - labelSize / 2f;
                 
                 // Shadow
-                spriteBatch.DrawString(font, label, labelPos + new Vector2(1.5f, 1.5f), new Color(0, 0, 0, 180));
+                spriteBatch.DrawUiString(font, label, labelPos + new Vector2(1.5f, 1.5f), new Color(0, 0, 0, 180));
                 // Main text
-                spriteBatch.DrawString(font, label, labelPos, isPressed ? new Color(255, 255, 255) : new Color(220, 220, 230));
+                spriteBatch.DrawUiString(font, label, labelPos, isPressed ? new Color(255, 255, 255) : new Color(220, 220, 230));
             }
             catch { }
         }

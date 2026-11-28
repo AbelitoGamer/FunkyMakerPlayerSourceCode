@@ -180,7 +180,7 @@ public static class GameplayHudOverlay
                     speedStr += ErrorOverlay.Safe($" [RATE x{Game1.CurrentRunRate:F2}]");
                 if (Game1.CurrentRunEnemy) speedStr += " [ENEMY]";
                 Vector2 statusPos = new Vector2(hudSettings.StatusInfoPosition.X, hudSettings.StatusInfoPosition.Y);
-                spriteBatch.DrawString(font,
+                spriteBatch.DrawUiString(font,
                     ErrorOverlay.Safe($"{autoStr} {scrollStr} {speedStr} {pauseStr}"),
                     statusPos,
                     NoteRenderer.Botplay ? Color.Yellow * 0.8f : Color.White * 0.4f,
@@ -278,14 +278,14 @@ public static class GameplayHudOverlay
             DrawShadowedText(sb, font, placeText, new Vector2(r.X + 8 * uiScale, ty), Color.White * 0.75f, textScale);
             // Players who left: "LEFT" tag instead of the live score, name struck through.
             string score = e.Gone ? $"LEFT  {e.Score:N0}" : e.Score.ToString("N0");
-            float scoreW = font.MeasureString(score).X * textScale;
+            float scoreW = font.MeasureUi(score).X * textScale;
             float nameX = r.X + 30 * uiScale;
             string name = TruncateToWidth(font, ErrorOverlay.Safe(e.Name), r.Right - 10 * uiScale - scoreW - nameX - 6, textScale);
             Color nameColor = Color.Lerp(c, Color.White, e.IsLocal ? 0.6f : 0.35f) * (e.Gone ? 0.5f : 1f);
             DrawShadowedText(sb, font, name, new Vector2(nameX, ty), nameColor, textScale);
             if (e.Gone)
             {
-                float nameW = font.MeasureString(name).X * textScale;
+                float nameW = font.MeasureUi(name).X * textScale;
                 sb.Draw(pixel, new Rectangle((int)nameX, (int)(ty + font.LineSpacing * textScale * 0.55f), (int)nameW, Math.Max(1, (int)(2 * uiScale))), nameColor);
             }
             DrawShadowedText(sb, font, score, new Vector2(r.Right - 8 * uiScale - scoreW, ty), e.Gone ? new Color(255, 110, 120) : Color.White, textScale);
@@ -359,7 +359,7 @@ public static class GameplayHudOverlay
             string rating = stats.Rating;
             if (rating.Length > 0)
             {
-                float accW = font.MeasureString(accText).X * accScale;
+                float accW = font.MeasureUi(accText).X * accScale;
                 DrawShadowedText(spriteBatch, font, $"[{rating}]",
                     accPos + new Vector2(accW + 10f * accScale, 0f),
                     GameplayStats.RatingColor(rating), accScale);
@@ -398,7 +398,7 @@ public static class GameplayHudOverlay
             : (ping > 0 ? $"Ping {ping}ms ({quality})" : $"Ping -- ({quality})");
 
         float textScale = 0.68f * uiScale;
-        Vector2 txtSize = font.MeasureString(pingText) * textScale;
+        Vector2 txtSize = font.MeasureUi(pingText) * textScale;
         int dotSize = Math.Max(6, (int)MathF.Round(7 * uiScale));
         int padX = Math.Max(8, (int)MathF.Round(10 * uiScale));
         int boxW = padX * 2 + dotSize + (int)MathF.Round(7 * uiScale) + (int)MathF.Ceiling(txtSize.X);
@@ -450,15 +450,15 @@ public static class GameplayHudOverlay
     {
         if (string.IsNullOrEmpty(text) || maxWidth <= 0)
             return "";
-        if (font.MeasureString(text).X * scale <= maxWidth)
+        if (font.MeasureUi(text).X * scale <= maxWidth)
             return text;
 
         const string ellipsis = "...";
-        if (font.MeasureString(ellipsis).X * scale > maxWidth)
+        if (font.MeasureUi(ellipsis).X * scale > maxWidth)
             return "";
 
         int len = text.Length;
-        while (len > 0 && font.MeasureString(text.Substring(0, len) + ellipsis).X * scale > maxWidth)
+        while (len > 0 && font.MeasureUi(text.Substring(0, len) + ellipsis).X * scale > maxWidth)
             len--;
         return text.Substring(0, len) + ellipsis;
     }
@@ -473,7 +473,7 @@ public static class GameplayHudOverlay
         CameraManager? cameraManager,
         float songBeats)
     {
-        spriteBatch.DrawString(font,
+        spriteBatch.DrawUiString(font,
             ErrorOverlay.Safe($"BPM: {level.Data.EffectiveBpm}  Beat: {songBeats:F1}"),
             new Vector2(20, 48), Color.White * 0.5f);
 
@@ -484,7 +484,7 @@ public static class GameplayHudOverlay
         float dbgScale = cameraManager?.GetEffectiveScale(events.Camera) ?? 1f;
         float dbgPx = Math.Min((float)rtWidth / (worldW * dbgScale), (float)rtHeight / (worldH * dbgScale));
 
-        spriteBatch.DrawString(font,
+        spriteBatch.DrawUiString(font,
             ErrorOverlay.Safe($"Cam: ({events.Camera.X:F0},{events.Camera.Y:F0}) zoom={events.Camera.Scale:F3} base={events.Camera.BaseScale:F3} px={dbgPx:F3}" +
                 (cameraManager?.HasManualOverride == true ? $" [manual:{cameraManager.ScaleOverride:F2}]" : "") +
                 (events.HasCameraEvents ? " [EVENT]" : $" [AUTO->({events.AutoCamTargetX:F0},{events.AutoCamTargetY:F0})]")),
@@ -494,7 +494,7 @@ public static class GameplayHudOverlay
         if (unknown.Count > 0)
         {
             string unknownStr = "UNKNOWN EVENTS: " + string.Join(", ", unknown);
-            spriteBatch.DrawString(font, ErrorOverlay.Safe(unknownStr),
+            spriteBatch.DrawUiString(font, ErrorOverlay.Safe(unknownStr),
                 new Vector2(20, 76), new Color(255, 80, 80) * 0.9f);
         }
     }
@@ -513,7 +513,7 @@ public static class GameplayHudOverlay
 
 #if ANDROID
         string fpsText = ErrorOverlay.Safe($"FPS: {fps:F0}");
-        Vector2 textSize = font.MeasureString(fpsText);
+        Vector2 textSize = font.MeasureUi(fpsText);
         Vector2 fpsPos = new Vector2(sw - textSize.X - 20, 20);
 
         if (pixel != null)
@@ -527,13 +527,13 @@ public static class GameplayHudOverlay
         }
 
         Color fpsColor = fps >= 55 ? Color.LimeGreen : (fps >= 30 ? Color.Yellow : Color.Red);
-        spriteBatch.DrawString(font, fpsText, fpsPos + new Vector2(2, 2), Color.Black * 0.8f);
-        spriteBatch.DrawString(font, fpsText, fpsPos, fpsColor);
+        spriteBatch.DrawUiString(font, fpsText, fpsPos + new Vector2(2, 2), Color.Black * 0.8f);
+        spriteBatch.DrawUiString(font, fpsText, fpsPos, fpsColor);
 #else
         Vector2 fpsPos = new Vector2(songInfoPos.X, songInfoVisible ? songInfoPos.Y + 28 : songInfoPos.Y);
         string fpsText = ErrorOverlay.Safe($"FPS: {fps:F0}  {(vsyncEnabled ? "VSYNC" : "UNCAPPED")}");
-        spriteBatch.DrawString(font, fpsText, fpsPos + new Vector2(2, 2), Color.Black * 0.6f);
-        spriteBatch.DrawString(font, fpsText, fpsPos, Color.White * 0.7f);
+        spriteBatch.DrawUiString(font, fpsText, fpsPos + new Vector2(2, 2), Color.Black * 0.6f);
+        spriteBatch.DrawUiString(font, fpsText, fpsPos, Color.White * 0.7f);
 #endif
     }
 
@@ -547,10 +547,10 @@ public static class GameplayHudOverlay
         float shadowOffset = 2f,
         float shadowAlpha = 1f)
     {
-        spriteBatch.DrawString(font, text,
+        spriteBatch.DrawUiString(font, text,
             pos + new Vector2(shadowOffset, shadowOffset), Color.Black * (0.7f * shadowAlpha),
             0f, Vector2.Zero, scale, SpriteEffects.None, 0f);
-        spriteBatch.DrawString(font, text,
+        spriteBatch.DrawUiString(font, text,
             pos, color,
             0f, Vector2.Zero, scale, SpriteEffects.None, 0f);
     }

@@ -102,9 +102,6 @@ public class GameOverOverlay
         if (confirmPressed)
             return _selection == 0;
 
-        if (Controls.Pressed(HotkeyAction.Retry, currentKb, prevKb))
-            return true;
-
         return null;  // Still waiting
     }
     
@@ -134,9 +131,9 @@ public class GameOverOverlay
         // "GAME OVER" — slides down from above
         float titleScale = 2.2f;
         string title = "GAME OVER";
-        var titleSz = _font.MeasureString(title) * titleScale;
+        var titleSz = _font.MeasureUi(title) * titleScale;
         float titleY = -titleSz.Y + (sh / 2f - 80f - (-titleSz.Y)) * ease;
-        _spriteBatch.DrawString(_font, title,
+        _spriteBatch.DrawUiString(_font, title,
             new Vector2(sw / 2f - titleSz.X / 2f, titleY),
             new Color(0xFF, 0x33, 0x33) * fadeT, 0f, Vector2.Zero, titleScale, SpriteEffects.None, 0f);
         
@@ -169,8 +166,8 @@ public class GameOverOverlay
             DrawRect(retryX, btnY, btnW, btnH, (retrySel ? new Color(60, 200, 120) : new Color(35, 35, 50)) * (0.35f * hintT));
             DrawRect(retryX, btnY, btnW, 2, (retrySel ? new Color(80, 255, 150) : Color.White * 0.2f) * hintT);
             string retryLbl = "RETRY (ENTER)";
-            var retrySz = _font.MeasureString(retryLbl) * 0.65f;
-            _spriteBatch.DrawString(_font, retryLbl,
+            var retrySz = _font.MeasureUi(retryLbl) * 0.65f;
+            _spriteBatch.DrawUiString(_font, retryLbl,
                 new Vector2(retryX + (btnW - retrySz.X) / 2f, btnY + (btnH - retrySz.Y) / 2f),
                 (retrySel ? Color.White : Color.White * 0.65f) * hintT, 0f, Vector2.Zero, 0.65f, SpriteEffects.None, 0f);
 
@@ -178,14 +175,14 @@ public class GameOverOverlay
             DrawRect(menuX, btnY, btnW, btnH, (menuSel ? new Color(255, 70, 110) : new Color(35, 35, 50)) * (0.35f * hintT));
             DrawRect(menuX, btnY, btnW, 2, (menuSel ? new Color(255, 90, 130) : Color.White * 0.2f) * hintT);
             string menuLbl = "MENU (ESC)";
-            var menuSz = _font.MeasureString(menuLbl) * 0.65f;
-            _spriteBatch.DrawString(_font, menuLbl,
+            var menuSz = _font.MeasureUi(menuLbl) * 0.65f;
+            _spriteBatch.DrawUiString(_font, menuLbl,
                 new Vector2(menuX + (btnW - menuSz.X) / 2f, btnY + (btnH - menuSz.Y) / 2f),
                 (menuSel ? Color.White : Color.White * 0.65f) * hintT, 0f, Vector2.Zero, 0.65f, SpriteEffects.None, 0f);
 
             string hint = "LEFT/RIGHT: Choose   |   ENTER: Confirm   |   ESC: Exit to Menu";
-            var hintSz = _font.MeasureString(hint) * 0.58f;
-            _spriteBatch.DrawString(_font, hint,
+            var hintSz = _font.MeasureUi(hint) * 0.58f;
+            _spriteBatch.DrawUiString(_font, hint,
                 new Vector2(sw / 2f - hintSz.X / 2f, sh - 34f),
                 Color.White * (hintT * 0.55f), 0f, Vector2.Zero, 0.58f, SpriteEffects.None, 0f);
         }
@@ -220,29 +217,29 @@ public class GameOverOverlay
         float ss = 0.75f;
         
         // Score
-        _spriteBatch.DrawString(_font, "Score",
+        _spriteBatch.DrawUiString(_font, "Score",
             new Vector2(col1, row1), Color.White * 0.5f * alpha, 0f, Vector2.Zero, ss * 0.7f, SpriteEffects.None, 0f);
-        _spriteBatch.DrawString(_font, renderer.Score.ToString(),
+        _spriteBatch.DrawUiString(_font, renderer.Score.ToString(),
             new Vector2(col1, row1 + 14f), Color.White * alpha, 0f, Vector2.Zero, ss, SpriteEffects.None, 0f);
         
         // Misses
-        _spriteBatch.DrawString(_font, "Misses",
+        _spriteBatch.DrawUiString(_font, "Misses",
             new Vector2(col2, row1), Color.White * 0.5f * alpha, 0f, Vector2.Zero, ss * 0.7f, SpriteEffects.None, 0f);
-        _spriteBatch.DrawString(_font, renderer.Misses.ToString(),
+        _spriteBatch.DrawUiString(_font, renderer.Misses.ToString(),
             new Vector2(col2, row1 + 14f), new Color(0xFF, 0x66, 0x66) * alpha, 0f, Vector2.Zero, ss, SpriteEffects.None, 0f);
         
         // Accuracy
-        _spriteBatch.DrawString(_font, "Accuracy",
+        _spriteBatch.DrawUiString(_font, "Accuracy",
             new Vector2(col1, row2), Color.White * 0.5f * alpha, 0f, Vector2.Zero, ss * 0.7f, SpriteEffects.None, 0f);
         Color accColor = acc >= 95f ? new Color(0, 255, 100) : acc >= 80f ? new Color(255, 200, 0) : new Color(255, 100, 100);
-        _spriteBatch.DrawString(_font, $"{acc:F1}%",
+        _spriteBatch.DrawUiString(_font, $"{acc:F1}%",
             new Vector2(col1, row2 + 14f), accColor * alpha, 0f, Vector2.Zero, ss, SpriteEffects.None, 0f);
         
         // Ratings breakdown (compact)
-        _spriteBatch.DrawString(_font, "Ratings",
+        _spriteBatch.DrawUiString(_font, "Ratings",
             new Vector2(col2, row2), Color.White * 0.5f * alpha, 0f, Vector2.Zero, ss * 0.7f, SpriteEffects.None, 0f);
         string ratings = $"S:{renderer.Sicks} G:{renderer.Goods} B:{renderer.Bads} Sh:{renderer.Shits}";
-        _spriteBatch.DrawString(_font, ratings,
+        _spriteBatch.DrawUiString(_font, ratings,
             new Vector2(col2, row2 + 14f), new Color(150, 200, 255) * alpha, 0f, Vector2.Zero, ss * 0.7f, SpriteEffects.None, 0f);
     }
     

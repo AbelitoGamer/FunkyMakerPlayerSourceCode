@@ -1505,25 +1505,25 @@ namespace FunkyMakerPlayer
             string missText = $"Misses: {renderer.Misses}";
             
             // Score (arriba izquierda)
-            spriteBatch.DrawString(font, scoreText, new Vector2(20, 20), Color.White, 0f, Vector2.Zero, 0.8f, SpriteEffects.None, 0f);
+            spriteBatch.DrawUiString(font, scoreText, new Vector2(20, 20), Color.White, 0f, Vector2.Zero, 0.8f, SpriteEffects.None, 0f);
             
             // Misses (arriba izquierda, debajo del score)
-            spriteBatch.DrawString(font, missText, new Vector2(20, 50), Color.Red * 0.8f, 0f, Vector2.Zero, 0.7f, SpriteEffects.None, 0f);
+            spriteBatch.DrawUiString(font, missText, new Vector2(20, 50), Color.Red * 0.8f, 0f, Vector2.Zero, 0.7f, SpriteEffects.None, 0f);
             
             // Combo (centro arriba)
             if (renderer.Combo > 0)
             {
-                var comboSize = font.MeasureString(comboText);
+                var comboSize = font.MeasureUi(comboText);
                 // Usar la escala animada con bounce (FNF style)
-                spriteBatch.DrawString(font, comboText,
+                spriteBatch.DrawUiString(font, comboText,
                     new Vector2(sw / 2f - comboSize.X * comboScale / 2f, 20),
                     Color.Yellow, 0f, Vector2.Zero, comboScale, SpriteEffects.None, 0f);
             }
             
             // Song info (arriba derecha)
             string songInfo = $"{CurrentSongName}\nBPM: {CurrentChart?.Bpm ?? 0}";
-            var infoSize = font.MeasureString(songInfo) * 0.6f;
-            spriteBatch.DrawString(font, songInfo,
+            var infoSize = font.MeasureUi(songInfo) * 0.6f;
+            spriteBatch.DrawUiString(font, songInfo,
                 new Vector2(sw - infoSize.X - 20, 20),
                 Color.White * 0.7f, 0f, Vector2.Zero, 0.6f, SpriteEffects.None, 0f);
         }
@@ -1556,8 +1556,8 @@ namespace FunkyMakerPlayer
             
             // Texto
             string healthText = $"Health: {(int)(health * 100)}%";
-            var textSize = font.MeasureString(healthText) * 0.7f;
-            spriteBatch.DrawString(font, healthText,
+            var textSize = font.MeasureUi(healthText) * 0.7f;
+            spriteBatch.DrawUiString(font, healthText,
                 new Vector2(sw / 2f - textSize.X / 2f, barY - textSize.Y - 5),
                 Color.White, 0f, Vector2.Zero, 0.7f, SpriteEffects.None, 0f);
         }
@@ -1571,15 +1571,15 @@ namespace FunkyMakerPlayer
             string missText = "Misses: 0";
             
             // Score (arriba izquierda)
-            spriteBatch.DrawString(font, scoreText, new Vector2(20, 20), Color.White, 0f, Vector2.Zero, 0.8f, SpriteEffects.None, 0f);
+            spriteBatch.DrawUiString(font, scoreText, new Vector2(20, 20), Color.White, 0f, Vector2.Zero, 0.8f, SpriteEffects.None, 0f);
             
             // Misses (arriba izquierda, debajo del score)
-            spriteBatch.DrawString(font, missText, new Vector2(20, 50), Color.Red * 0.8f, 0f, Vector2.Zero, 0.7f, SpriteEffects.None, 0f);
+            spriteBatch.DrawUiString(font, missText, new Vector2(20, 50), Color.Red * 0.8f, 0f, Vector2.Zero, 0.7f, SpriteEffects.None, 0f);
             
             // Song info (arriba derecha)
             string songInfo = $"{CurrentSongName}\nBPM: {CurrentChart?.Bpm ?? 0}";
-            var infoSize = font.MeasureString(songInfo) * 0.6f;
-            spriteBatch.DrawString(font, songInfo,
+            var infoSize = font.MeasureUi(songInfo) * 0.6f;
+            spriteBatch.DrawUiString(font, songInfo,
                 new Vector2(sw - infoSize.X - 20, 20),
                 Color.White * 0.7f, 0f, Vector2.Zero, 0.6f, SpriteEffects.None, 0f);
         }

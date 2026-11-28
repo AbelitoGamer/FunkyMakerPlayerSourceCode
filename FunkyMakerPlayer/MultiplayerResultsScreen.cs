@@ -202,7 +202,7 @@ public class MultiplayerResultsScreen
                 (won ? new Color(255, 215, 80) : Color.Lerp(teamColor, Color.White, 0.3f)) * a);
 
             for (int c = 0; c < heads.Length; c++)
-                sb.DrawString(font, heads[c], new Vector2(x0 + 8 + (colW - 16) * cols[c], top + headerH + 6), new Color(115, 120, 145) * a, 0f, Vector2.Zero, 0.5f, SpriteEffects.None, 0f);
+                sb.DrawUiString(font, heads[c], new Vector2(x0 + 8 + (colW - 16) * cols[c], top + headerH + 6), new Color(115, 120, 145) * a, 0f, Vector2.Zero, 0.5f, SpriteEffects.None, 0f);
 
             float y = rowsTop;
             foreach (var p in result.Players.Where(p => p.Team == team))
@@ -241,7 +241,7 @@ public class MultiplayerResultsScreen
         float[] cols = { 0f, 0.07f, 0.42f, 0.57f, 0.73f, 0.87f };
         string[] heads = { "#", "PLAYER", _mode == Protocol.ModeTeams ? "TEAM" : "SIDE", "SCORE", "ACCURACY", "MISSES" };
         for (int c = 0; c < heads.Length; c++)
-            sb.DrawString(font, heads[c], new Vector2(x0 + tableW * cols[c], y), new Color(115, 120, 145) * a, 0f, Vector2.Zero, 0.55f, SpriteEffects.None, 0f);
+            sb.DrawUiString(font, heads[c], new Vector2(x0 + tableW * cols[c], y), new Color(115, 120, 145) * a, 0f, Vector2.Zero, 0.55f, SpriteEffects.None, 0f);
         y += 28;
         float rowH = Math.Clamp((sh * 0.86f - y) / Math.Max(1, rows.Count) - 6, 30, 52);
         float textScale = Math.Clamp(rowH / 52f, 0.55f, 0.8f);
@@ -286,22 +286,22 @@ public class MultiplayerResultsScreen
     private static string Fit(SpriteFont font, string text, float maxW, float scale)
     {
         text = UI.ErrorOverlay.Safe(text);
-        if (font.MeasureString(text).X * scale <= maxW) return text;
-        while (text.Length > 1 && font.MeasureString(text + "...").X * scale > maxW) text = text[..^1];
+        if (font.MeasureUi(text).X * scale <= maxW) return text;
+        while (text.Length > 1 && font.MeasureUi(text + "...").X * scale > maxW) text = text[..^1];
         return text + "...";
     }
 
     private static void Text(SpriteBatch sb, SpriteFont font, string text, float x, float y, float scale, Color color)
     {
         text = UI.ErrorOverlay.Safe(text);
-        sb.DrawString(font, text, new Vector2(x + 2, y + 2), Color.Black * (color.A / 255f * 0.7f), 0f, Vector2.Zero, scale, SpriteEffects.None, 0f);
-        sb.DrawString(font, text, new Vector2(x, y), color, 0f, Vector2.Zero, scale, SpriteEffects.None, 0f);
+        sb.DrawUiString(font, text, new Vector2(x + 2, y + 2), Color.Black * (color.A / 255f * 0.7f), 0f, Vector2.Zero, scale, SpriteEffects.None, 0f);
+        sb.DrawUiString(font, text, new Vector2(x, y), color, 0f, Vector2.Zero, scale, SpriteEffects.None, 0f);
     }
 
     private static void DrawCentered(SpriteBatch sb, SpriteFont font, string text, float y, float scale, Color color, int sw)
     {
         text = UI.ErrorOverlay.Safe(text);
-        float w = font.MeasureString(text).X * scale;
+        float w = font.MeasureUi(text).X * scale;
         if (w > sw - 40) { scale *= (sw - 40) / w; w = sw - 40; }
         Text(sb, font, text, (sw - w) / 2f, y, scale, color);
     }

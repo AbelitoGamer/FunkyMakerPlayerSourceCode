@@ -169,7 +169,7 @@ public partial class Game1
     {
         if (_fontRenderer != null) return _fontRenderer.MeasureString(text, size);
         if (_font == null) return new Vector2(text.Length * size * 0.5f, size);
-        return _font.MeasureString(ErrorOverlay.Safe(text)) * (size / (float)Math.Max(1, _font.LineSpacing));
+        return _font.MeasureUi(ErrorOverlay.Safe(text)) * (size / (float)Math.Max(1, _font.LineSpacing));
     }
 
     private void DrawGateCentered(string text, int size, float y, int screenW, Color color)
@@ -179,7 +179,7 @@ public partial class Game1
         if (_fontRenderer != null)
             _fontRenderer.DrawString(_spriteBatch, text, pos, color, size);
         else if (_font != null)
-            _spriteBatch.DrawString(_font, ErrorOverlay.Safe(text), pos, color, 0f, Vector2.Zero,
+            _spriteBatch.DrawUiString(_font, ErrorOverlay.Safe(text), pos, color, 0f, Vector2.Zero,
                 size / (float)Math.Max(1, _font.LineSpacing), SpriteEffects.None, 0f);
     }
 

@@ -130,6 +130,7 @@ public partial class Game1
         _activeReplay = _pendingReplay;
         _pendingReplay = null;
         _replayRecorder = null;
+        _soloResults = null; // a new level replaces the results screen (fork)
     }
 
     /// <summary>Called for each strumline as it is created in SetupLevel.</summary>
@@ -411,21 +412,21 @@ public partial class Game1
                 : r.Local?.Username ?? "";
             string text = $"REPLAY  |  {who}  |  {DateTimeOffset.FromUnixTimeSeconds(r.CreatedUnix).ToLocalTime():yyyy-MM-dd HH:mm}";
             float scale = Math.Clamp(sh / 720f, 0.6f, 2f) * 0.6f;
-            Vector2 size = _font.MeasureString(text) * scale;
+            Vector2 size = _font.MeasureUi(text) * scale;
             int padX = (int)(14 * scale / 0.6f), padY = (int)(6 * scale / 0.6f);
             var rect = new Rectangle((int)(sw / 2f - size.X / 2f) - padX, (int)(sh * 0.012f), (int)size.X + padX * 2, (int)size.Y + padY * 2);
             _spriteBatch.Draw(_pixel, rect, Color.Black * 0.6f);
             _spriteBatch.Draw(_pixel, new Rectangle(rect.X, rect.Bottom - 2, rect.Width, 2), new Color(255, 68, 136));
-            _spriteBatch.DrawString(_font, text, new Vector2(rect.X + padX, rect.Y + padY), Color.White, 0f, Vector2.Zero, scale, SpriteEffects.None, 0f);
+            _spriteBatch.DrawUiString(_font, text, new Vector2(rect.X + padX, rect.Y + padY), Color.White, 0f, Vector2.Zero, scale, SpriteEffects.None, 0f);
         }
 
         if (_replayMessage != null)
         {
             float scale = Math.Clamp(sh / 720f, 0.6f, 2f) * 0.5f;
-            Vector2 size = _font.MeasureString(_replayMessage) * scale;
+            Vector2 size = _font.MeasureUi(_replayMessage) * scale;
             var pos = new Vector2(sw / 2f - size.X / 2f, sh * 0.08f);
             _spriteBatch.Draw(_pixel, new Rectangle((int)pos.X - 10, (int)pos.Y - 5, (int)size.X + 20, (int)size.Y + 10), Color.Black * 0.7f);
-            _spriteBatch.DrawString(_font, _replayMessage, pos, new Color(255, 210, 80), 0f, Vector2.Zero, scale, SpriteEffects.None, 0f);
+            _spriteBatch.DrawUiString(_font, _replayMessage, pos, new Color(255, 210, 80), 0f, Vector2.Zero, scale, SpriteEffects.None, 0f);
         }
     }
 }

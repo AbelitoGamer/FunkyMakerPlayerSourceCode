@@ -177,7 +177,7 @@ namespace FunkyMakerPlayer.Multiplayer.UI
             if (_fontRenderer != null)
                 return _fontRenderer.MeasureString(text, fontSize);
             if (font != null)
-                return font.MeasureString(text) * (fontSize / 28f);
+                return font.MeasureUi(text) * (fontSize / 28f);
             return Vector2.Zero;
         }
 
@@ -191,7 +191,7 @@ namespace FunkyMakerPlayer.Multiplayer.UI
             else if (font != null)
             {
                 float scale = fontSize / 28f;
-                sb.DrawString(font, text, pos, color, 0f, Vector2.Zero, scale, SpriteEffects.None, 0f);
+                sb.DrawUiString(font, text, pos, color, 0f, Vector2.Zero, scale, SpriteEffects.None, 0f);
             }
         }
         
