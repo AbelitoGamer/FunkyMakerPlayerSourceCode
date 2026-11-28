@@ -164,9 +164,9 @@ public class MainSettingsMenu : UI.IDirectScreen
             "",
             "CONTROLS:",
             "  - Left-Click & drag to move elements",
-            "  - Right-Click / V / Space: Hide or Show element",
+            "  - Right-Click / Space: Hide or Show element",
             "  - A: Hide/Show ALL elements at once",
-            "  - S: Save layout   |   R: Reset defaults",
+            "  - R: Reset defaults",
             "  - H: Hide/Show instructions",
             "  - ESC: Save & Exit editor",
             "",
@@ -295,7 +295,7 @@ public class MainSettingsMenu : UI.IDirectScreen
     {
         if (_fontRenderer != null)
             return _fontRenderer.MeasureString(text, fontSize);
-        return _font.MeasureString(text) * fallbackScale;
+        return _font.MeasureUi(text) * fallbackScale;
     }
 
     private void DrawText(SpriteBatch sb, string text, Vector2 pos, Color color, int fontSize, float fallbackScale)
@@ -303,7 +303,7 @@ public class MainSettingsMenu : UI.IDirectScreen
         if (_fontRenderer != null)
             _fontRenderer.DrawString(sb, text, pos, color, fontSize);
         else
-            sb.DrawString(_font, text, pos, color, 0f, Vector2.Zero, fallbackScale, SpriteEffects.None, 0f);
+            sb.DrawUiString(_font, text, pos, color, 0f, Vector2.Zero, fallbackScale, SpriteEffects.None, 0f);
     }
     
     private void DrawRectangleBorder(SpriteBatch sb, int x, int y, int width, int height, Color color, int thickness)

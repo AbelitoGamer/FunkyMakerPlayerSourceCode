@@ -84,17 +84,13 @@ public static class Settings
         public bool  ShowKeyLabels     { get; set; } = false;
         public float LaneUnderlay      { get; set; } = 0f;
         
-        /// <summary>
-        /// Input buffer in seconds. Allows lowering pre-hit anticipation below default.
-        /// Default / Max: 0.010 (10ms). Range: 0.000 to 0.010 (0-10ms)
-        /// </summary>
-        public float InputBuffer       { get; set; } = 0.010f;
-        
-        /// <summary>
-        /// Safe frames at song start in seconds. Misses don't count during this time.
-        /// Default / Max: 0.083 (~5 frames at 60fps). Range: 0.000 to 0.083 (0-83ms)
-        /// </summary>
-        public float SafeFramesTime    { get; set; } = 0.083f;
+        // Input buffer / safe frames are no longer settings (fork): NoteRenderer's defaults always apply,
+        // and values saved by older versions are ignored.
+
+        /// <summary>Fork: global song offset in ms (notes later when positive).</summary>
+        public int GlobalOffsetMs { get; set; } = 0;
+        /// <summary>Fork: play the miss sound.</summary>
+        public bool MissSounds { get; set; } = true;
         
         /// <summary>
         /// Health icons: 0 = move with the health bar divider (FNF style), 1 = pinned to the bar ends.
@@ -164,8 +160,8 @@ public static class Settings
             NoteRenderer.GhostTapping      = d.GhostTapping;
             NoteRenderer.ShowKeyLabels     = d.ShowKeyLabels;
             NoteRenderer.LaneUnderlay      = Math.Clamp(d.LaneUnderlay, 0f, NoteRenderer.LaneUnderlayMax);
-            NoteRenderer.InputBuffer       = Math.Clamp(d.InputBuffer, 0f, 0.010f);
-            NoteRenderer.SafeFramesTime    = Math.Clamp(d.SafeFramesTime, 0f, 0.083f);
+            NoteRenderer.MissSounds        = d.MissSounds;
+            Game1.GlobalOffsetMs           = Math.Clamp(d.GlobalOffsetMs, -Game1.MaxOffsetMs, Game1.MaxOffsetMs);
             Game1.ShowTimer                = d.ShowTimer;
             Game1.TimeskipSeconds          = d.TimeskipEnabled == false || d.TimeskipSeconds <= 0f
                                                  ? 0f
@@ -243,8 +239,8 @@ public static class Settings
                 GhostTapping     = NoteRenderer.GhostTapping,
                 ShowKeyLabels    = NoteRenderer.ShowKeyLabels,
                 LaneUnderlay     = NoteRenderer.LaneUnderlay,
-                InputBuffer      = NoteRenderer.InputBuffer,
-                SafeFramesTime   = NoteRenderer.SafeFramesTime,
+                GlobalOffsetMs   = Game1.GlobalOffsetMs,
+                MissSounds       = NoteRenderer.MissSounds,
                 ShowTimer        = Game1.ShowTimer,
                 TimeskipSeconds  = Game1.TimeskipSeconds,
                 TimerColorPreset = Game1.TimerColorPreset,
