@@ -24,6 +24,22 @@
 > Ctrl+S / Ctrl+Z style ones, or actions with no button), but even there making them
 > rebindable is doubtful. If in doubt, don't add it (or ask the owner).
 
+> **Credits rule for agents** (owner's request, 2026-11-27)
+>
+> An AI agent that makes significant changes to the engine (new features, reworks, real fixes;
+> not typo fixes or docs only) adds its name to the in-game credits, under **"Built with"**
+> (`FreeplayMenu.cs`, the `creditData` list: one indented line such as `"  Claude (Anthropic)"`).
+> If its name is already there, nothing to do.
+
+> **Android 32-bit rule** (owner's request, 2026-11-27)
+>
+> Whenever a change is made to fix or optimize Android 32-bit (armeabi-v7a, Mono), the agent, once
+> it is done, adds everything relevant it learned to **§13.1 "Android 32-bit: rules for every
+> feature"**: the limit that was hit, the numbers, the code pattern that works, and what to avoid.
+> The goal is that future features are written with those limits in mind from the start and just
+> work on 32-bit phones, instead of needing a patch afterwards. Read §13.1 before writing any
+> feature that loads files, allocates big buffers, uses threads or textures, or touches audio.
+
 ---
 
 ## 1. What this project is
@@ -481,6 +497,73 @@ given away and switched off later.
 `FunkyMakerPlayer/obfuscar.xml` (Obfuscar) are present, but **none runs
 automatically**. The Obfuscar MSBuild target in the csproj is
 commented out. Do not claim builds are obfuscated unless you wire it up.
+
+### 4.1 ffmpeg for osu! videos: setting it up on a fresh clone (desktop)
+
+osu! background videos on desktop are decoded by an external **ffmpeg** program
+(`Osu/FfmpegVideoStream.cs`; Android doesn't need it, it uses MediaCodec). It is **not in git**
+(`.gitignore`: `Tools/ffmpeg/` and `Tools/.ffmpeg-build/`), so a fresh clone builds and runs fine but
+osu! songs only show their background image until ffmpeg is set up. Do this once per clone, and
+always before publishing a desktop release.
+
+**What the owner's workspace has** (reproduce exactly this):
+- `Tools/ffmpeg/ffmpeg.exe`: ffmpeg **8.0**, minimal **static LGPL** build, about 5.5 MB
+  (5,497,856 bytes), made by `Tools/build-ffmpeg-min.sh` with MSYS2's UCRT64 gcc. Its
+  configuration starts with `--disable-everything --disable-autodetect --disable-network` and enables
+  only the `file` / `pipe` protocols, the demuxers `mov, avi, flv, matroska, asf, mpegps, mpegts,
+  mpegvideo, ogg, m4v, h264, hevc`, the usual video decoders (h264, hevc, mpeg4, h263, msmpeg4 v1-3,
+  flv, vp6/vp6a/vp6f, vp8, vp9, mpeg1/2, wmv1-3, vc1, mjpeg, theora, rawvideo), the filters
+  `scale, pad, fps, format, null, buffer, buffersink` and the `rawvideo` encoder/muxer, linked with
+  `-static` (no DLLs next to it). That is all the game's pipe needs:
+  `ffmpeg -ss T -i video -an -vf scale+pad -r 30 -f rawvideo -pix_fmt rgba -`.
+- `Tools/ffmpeg/LICENSE.txt`: the LGPL licence text plus the build configuration (written by the
+  build script; it must ship with the exe).
+- `Tools/.ffmpeg-build/`: the build's work folder (ffmpeg 8.0 source). Not needed afterwards.
+
+**How to get it on another machine** (Windows; from the repo root):
+1. Same minimal build (recommended): install MSYS2 (https://www.msys2.org) in `C:\msys64` (or set
+   `MSYS2_ROOT` to where it is), then run
+   `powershell -NoProfile -ExecutionPolicy Bypass -File Tools\fetch-ffmpeg.ps1`.
+   It runs `Tools/build-ffmpeg-min.sh` in the UCRT64 shell, which installs make / diffutils / nasm /
+   gcc with pacman, downloads `ffmpeg-8.0.tar.xz` from ffmpeg.org, configures and builds it, and
+   copies `ffmpeg.exe` + `LICENSE.txt` into `Tools/ffmpeg/`. Takes several minutes.
+2. No MSYS2: the same script (or `... fetch-ffmpeg.ps1 -Full`) downloads the full LGPL build from
+   BtbN/FFmpeg-Builds instead (~130 MB). It works the same, it is just much bigger.
+3. Or simply copy `ffmpeg.exe` and `LICENSE.txt` from another copy of the project's
+   `Tools/ffmpeg/` (or from a release zip: they sit next to `FunkyMakerPlayer.exe` /
+   `licenses/ffmpeg-LICENSE.txt`) into `Tools/ffmpeg/`.
+4. Linux: `bash Tools/build-ffmpeg-min.sh` (needs gcc/clang, make, nasm) puts the binary at
+   `Tools/ffmpeg/ffmpeg`.
+
+Check it: `Tools\ffmpeg\ffmpeg.exe -hide_banner -version` must print `ffmpeg version 8.0` and the
+configuration line above (a full build prints a much longer list).
+
+**How it gets into the build**: `FunkyMakerPlayer.csproj` (the "bundled minimal ffmpeg" item
+groups) adds `../Tools/ffmpeg/ffmpeg.exe` as a `None` item with `Link="ffmpeg.exe"`,
+`CopyToOutputDirectory` / `CopyToPublishDirectory="PreserveNewest"` and
+`ExcludeFromSingleFile="true"`, and `LICENSE.txt` as `licenses/ffmpeg-LICENSE.txt`. The items only
+exist when the file exists (no ffmpeg = no error, just no videos) and are filtered by RID: Windows
+RIDs (or no RID on Windows) take `ffmpeg.exe`, Linux / macOS take `ffmpeg`, Android never takes
+either, so cross-publishing never ships the wrong one.
+
+**Where it ends up**:
+- `dotnet build` / Debug runs: `FunkyMakerPlayer/bin/<Configuration>/net10.0/ffmpeg.exe` and
+  `.../licenses/ffmpeg-LICENSE.txt`.
+- Releases made with `build.cmd` / `build.ps1` (`dotnet publish`):
+  `Builds/FunkyMakerPlayer-<version>-win-x64-release/ffmpeg.exe` next to `FunkyMakerPlayer.exe`, plus
+  `licenses/ffmpeg-LICENSE.txt`, and the same inside the `.zip`. Ship the whole folder.
+- At run time `FfmpegVideoStream.FindFfmpeg` looks next to the real exe first
+  (`PlatformPaths.GetAppBaseDirectory()`), then `AppContext.BaseDirectory`, `mods/tools/`, then PATH.
+
+**Why it is next to the .exe and not inside it**: the desktop Release is a single-file exe
+(`PublishSingleFile` + `IncludeAllContentForSelfExtract`), but ffmpeg is not a library the game
+loads: it is a separate program the game starts as a child process (`ProcessStartInfo`) and reads
+frames from through a pipe. Windows can only start a program from a real file on disk, not from
+inside another exe's bundle; bundled content would also be extracted to a temp folder
+(`AppContext.BaseDirectory`) on every new version instead of sitting in one known place. Keeping it a
+separate, unmodified file also keeps the LGPL simple: it is shipped with its licence and anybody can
+replace it with their own ffmpeg (any build with those decoders works). Hence
+`ExcludeFromSingleFile="true"` and the "next to the real exe first" lookup.
 
 ---
 
@@ -2527,6 +2610,41 @@ old clients never see a vote window (the vote then closes after 30 s and counts 
 in-game instructions (`ModsHelpScreen`) and `PlatformPaths` messages explain
 that content is **imported** by selecting a folder containing a `mods`
 subfolder (SAF), not read directly from `Documents`.
+
+### 13.1 Android 32-bit: rules for every feature (read before writing one)
+
+32-bit phones (armeabi-v7a) run a separate APK on **Mono** (CoreCLR has no android-arm runtime; build
+command in §2). They have a small virtual address space (big contiguous allocations fail long before
+the RAM is full), little RAM and weak GPUs. Every fix so far came from a feature written for 64-bit
+first; follow these from the start (`!Environment.Is64BitProcess` is the check; details in the
+sections linked):
+- **Runtime**: Mono, no AOT, **no IL interpreter** (`mono_ee_interp` crashes with SIGSEGV on worker
+  threads), `PublishTrimmed=false` (§4). `GCSettings.LargeObjectHeapCompactionMode` is unsupported:
+  call `FnmmSceneRenderer.ForceCompactingGc()`, which catches `PlatformNotSupportedException` (§7).
+- **No huge `byte[]` / `float[]`**: stream instead of loading whole files. Read levels straight from
+  the ZIP on disk and convert only the JSON (never unpack + re-zip a whole `.FNMM` in memory); copy
+  cached levels with `File.Copy`; hash files with the streaming `LevelHasher.CalculateHash(path)`
+  (§12.y). Audio decodes in 1 MB chunks into one exact-size array, and long songs drop to 22050 Hz /
+  mono above 24 MB / 64 MB of PCM; free `_level.MusicData` / sprite PNG bytes once decoded (§12.y).
+  Network chunk buffers are capped at 8 MB (`LevelTransferClient`).
+- **Textures**: max texture size 2048 on 32-bit GPUs; level texture budget about 96–128 MB and
+  8–12 MB per strip, strips over `AtlasPacker.GetDefaultStripVramBudgetBytes()` (20 MB) go through
+  `TryPackAtlas` (streams and downscales); the gameplay render target stays at logical 720p (§7).
+  Character Editor strips: 24 M px cap (§11).
+- **Threads**: fewer workers (one giant strip decode at a time, Spritemap rasterizing on 1 thread);
+  worker threads must not allocate big buffers in parallel.
+- **64-bit values shared between threads** (`long`, `double`, `DateTime` ticks) are not atomic on
+  32-bit ARM: use `Interlocked` / `Volatile` (e.g. `WsHubConnection._lastReceivedUtcTicks`).
+- **Low-memory modes exist and new content must respect them**: online Chart-Only mode
+  (`MultiplayerSettings.ChartOnlyMode`, `FnmmLoader.Load(..., chartOnly: true)`), osu! video queue
+  capped at 24 MB.
+- **Failures must reach the error screen**: an `OutOfMemoryException` during loading goes through
+  `HandleSetupLevelFailure` (never a silent black screen) (§12.y).
+- Test on a real 32-bit phone (or the 32-bit APK) with a long song (Yellow, Trinity Encore) and a
+  heavy level before calling a feature done.
+
+Add to this list (rule at the top of this file) whenever a 32-bit fix or optimization teaches
+something new.
 
 ---
 
