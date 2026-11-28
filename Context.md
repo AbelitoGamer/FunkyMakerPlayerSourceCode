@@ -74,6 +74,10 @@ multiplayer, and desktop (Windows/Linux) + Android builds.
   tool / preview letter keys (upstream's Ctrl+C / Ctrl+V kept), `CharacterEditor.cs` and the
   Character Editor part of this file took upstream's. Upstream's new Character Editor keys
   (I import, B backdrop, 1-3 in the import window, G) were left as they are.
+  2026-11-28: upstream `eaefac1` merged into fork `master` with no conflicts (Android touch: Game1's
+  single `TouchControls` shared with the online menu via `SetSharedTouchControls`, `PointerInput.RawTouches`
+  so TouchPanel isn't read twice, no click after a drag; Android mods folder rescan after picking it;
+  `AntiGravedad` default note style).
 - Main project: `FunkyMakerPlayer/FunkyMakerPlayer.csproj`
 - Target frameworks: `net10.0;net10.0-android`
 - Tested SDK at time of writing: **.NET SDK 10.0.404** (`dotnet --version`).
