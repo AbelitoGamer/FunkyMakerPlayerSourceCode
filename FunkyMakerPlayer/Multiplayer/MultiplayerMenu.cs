@@ -101,6 +101,8 @@ namespace FunkyMakerPlayer.Multiplayer
         private int _leaderboardSelection = 0;
         private int _leaderboardScrollOffset = 0;
         private const int MAX_LEADERBOARD_VISIBLE = 7;
+        /// <summary>Rows that fit in the current leaderboard list (set by its Draw; was always 7, fork 2026-11-28).</summary>
+        private int _leaderboardVisible = MAX_LEADERBOARD_VISIBLE;
         private bool _leaderboardSyncedOnline = false;
         private volatile bool _leaderboardSyncInFlight = false;
         private static readonly HttpClient _leaderboardHttpClient = new() { Timeout = TimeSpan.FromSeconds(10) };
@@ -147,6 +149,8 @@ namespace FunkyMakerPlayer.Multiplayer
         
         // Connection indicator, icons & typography
         private UI.ConnectionIndicator _connectionIndicator;
+        /// <summary>Where the identity chip was drawn this frame (empty = not drawn): the connection indicator keeps clear of it.</summary>
+        private Rectangle _identityChipRect;
         private FontRenderer? _fontRenderer;
         private Dictionary<string, Texture2D> _menuIcons = new();
         
@@ -1442,6 +1446,7 @@ namespace FunkyMakerPlayer.Multiplayer
         /// </summary>
         public void Draw(SpriteBatch sb, SpriteFont font, Texture2D pixel, int screenWidth, int screenHeight)
         {
+            _identityChipRect = Rectangle.Empty; // set again by DrawPlayerIdentityChip if this screen has it
             if (screenWidth <= 0 || screenHeight <= 0)
                 return;
 
@@ -1508,7 +1513,9 @@ namespace FunkyMakerPlayer.Multiplayer
                     topRightSafeY = Math.Max(topRightSafeY, _gameplaySettingsRect.Bottom + 8);
                 if (_refreshButtonRect != Rectangle.Empty && _refreshButtonRect.X >= screenWidth / 2)
                     topRightSafeY = Math.Max(topRightSafeY, _refreshButtonRect.Bottom + 8);
-                _connectionIndicator?.Draw(sb, font, pixel, screenWidth, screenHeight, topRightSafeY);
+                // Top-left: beside the identity chip, not over it (fork, 2026-11-28; the room browser had both there)
+                int topLeftSafeX = _identityChipRect != Rectangle.Empty ? _identityChipRect.Right + 8 : 0;
+                _connectionIndicator?.Draw(sb, font, pixel, screenWidth, screenHeight, topRightSafeY, topLeftSafeX);
             }
             
             // Draw error toast overlay if present
@@ -1549,8 +1556,21 @@ namespace FunkyMakerPlayer.Multiplayer
         /// </summary>
         private static int ClampUi(int value, int min, int max) => Math.Max(min, Math.Min(value, max));
 
-        private static int FontPx(float baseSize, float scale, int min = 11, int max = 128) =>
-            Math.Clamp((int)MathF.Round(baseSize * scale), min, max);
+        /// <summary>
+        /// Font size for a base size at a UI scale. Touch screens (fork, 2026-11-28): the small print
+        /// starts at base 13, and the <paramref name="max"/> caps (pixel sizes picked for a monitor, e.g.
+        /// 15) grow with the scale; on a 1080p phone the scale is about 2.2, so a cap of 15 px used to
+        /// make most of the online menu's text about half the size it was meant to be.
+        /// </summary>
+        private static int FontPx(float baseSize, float scale, int min = 11, int max = 128)
+        {
+            if (FunkyMakerPlayer.UI.UiScale.Touch > 1f)
+            {
+                baseSize = Math.Max(baseSize, 13f);
+                max = (int)(max * Math.Max(1f, scale));
+            }
+            return Math.Clamp((int)MathF.Round(baseSize * scale), min, Math.Max(min, max));
+        }
 
         private Vector2 MeasureText(SpriteFont? font, string text, int fontSize)
         {
@@ -1818,6 +1838,9 @@ namespace FunkyMakerPlayer.Multiplayer
         private void DrawBackButton(SpriteBatch sb, SpriteFont font, Texture2D pixel, int screenWidth, float uiScale, string? label = null)
         {
             label ??= FunkyMakerPlayer.UI.PointerInput.BackLabel;
+            // Touch (fork): there is no ESC key on a phone ("ESC  Leave" -> "<  Leave")
+            if (FunkyMakerPlayer.UI.PointerInput.IsTouch && label.StartsWith("ESC", StringComparison.Ordinal))
+                label = "<  " + label[3..].TrimStart();
             int fontSize = FontPx(14, uiScale, 11, 20);
             Vector2 sz = MeasureText(font, label, fontSize);
             int btnW = Math.Max(Px(120, uiScale), (int)sz.X + Px(28, uiScale));
@@ -1856,6 +1879,7 @@ namespace FunkyMakerPlayer.Multiplayer
             if (alignRight)
                 x -= chipW;
 
+            _identityChipRect = new Rectangle(x, y, chipW, chipH);
             DrawPanel(sb, pixel, x, y, chipW, chipH, BG_MEDIUM, BORDER_SUBTLE, 1, myColor);
 
             int swatchY = y + (chipH - swatchSize) / 2;
@@ -1906,6 +1930,9 @@ namespace FunkyMakerPlayer.Multiplayer
 
         private int DrawFooterBar(SpriteBatch sb, SpriteFont font, Texture2D pixel, int sw, int sh, float uiScale, string hintText)
         {
+            // Touch (fork, 2026-11-28): keyboard hints mean nothing on a phone; show how it works by touch
+            if (FunkyMakerPlayer.UI.PointerInput.IsTouch && System.Text.RegularExpressions.Regex.IsMatch(hintText, @"\b(ESC|ENTER|UP|DOWN|LEFT|RIGHT|CTRL|TAB|WHEEL)\b"))
+                hintText = "Tap to select  |  Swipe to scroll  |  Back gesture: return";
             int footerH = Px(36, uiScale, 28);
             int footerY = sh - footerH;
             sb.Draw(pixel, new Rectangle(0, footerY, sw, footerH), new Color(10, 10, 18) * (0.78f * _fadeAlpha));
@@ -2352,6 +2379,8 @@ namespace FunkyMakerPlayer.Multiplayer
                 "LEFT/RIGHT: Category  |  UP/DOWN: Navigate  |  ENTER/CLICK: Edit/Toggle/Focus  |  </> or L/R (Focused): Adjust  |  ESC: Save & Back");
 
             int panelW = ClampUi(Px(920, uiScale), 360, screenWidth - Px(60, uiScale));
+            // Touch (fork, 2026-11-28): narrower, so a row's label and its control aren't a screen apart
+            if (FunkyMakerPlayer.UI.PointerInput.IsTouch) panelW = ClampUi(Px(760, uiScale), 360, screenWidth - Px(60, uiScale));
             int panelX = screenWidth / 2 - panelW / 2;
             int panelY = tabY + tabH + Px(14, uiScale, 8);
             int descH = Px(74, uiScale, 58);
@@ -2843,8 +2872,8 @@ namespace FunkyMakerPlayer.Multiplayer
 
         private void AdjustLeaderboardScroll()
         {
-            if (_leaderboardSelection >= _leaderboardScrollOffset + MAX_LEADERBOARD_VISIBLE)
-                _leaderboardScrollOffset = _leaderboardSelection - MAX_LEADERBOARD_VISIBLE + 1;
+            if (_leaderboardSelection >= _leaderboardScrollOffset + _leaderboardVisible)
+                _leaderboardScrollOffset = _leaderboardSelection - _leaderboardVisible + 1;
             else if (_leaderboardSelection < _leaderboardScrollOffset)
                 _leaderboardScrollOffset = _leaderboardSelection;
         }
@@ -2972,13 +3001,20 @@ namespace FunkyMakerPlayer.Multiplayer
                 return;
             }
 
-            bool hasScroll = topPlayers.Count > MAX_LEADERBOARD_VISIBLE;
+            int headerY = panelY + Px(16, uiScale);
+            int headerFont = FontPx(13, uiScale, 10, 26);
+            int rowFont = FontPx(16, uiScale, 12, 30);
+            // Rows as tall as their text needs and as many as fit (fork, 2026-11-28; was always 7)
+            int rowH = Math.Max(Px(40, uiScale, 32), (int)MeasureText(font, "Ag", rowFont).Y + Px(14, uiScale, 8));
+            int rowGap = Px(6, uiScale, 4);
+            int listTopPre = headerY + Px(26, uiScale) + Px(10, uiScale);
+            int availHPre = Math.Max(rowH, panelY + panelH - Px(14, uiScale) - listTopPre);
+            _leaderboardVisible = Math.Max(1, (availHPre + rowGap) / (rowH + rowGap));
+            _leaderboardScrollOffset = Math.Clamp(_leaderboardScrollOffset, 0, Math.Max(0, topPlayers.Count - _leaderboardVisible));
+            AdjustLeaderboardScroll();
+            bool hasScroll = topPlayers.Count > _leaderboardVisible;
             int padX = Px(24, uiScale, 12);
             int usableW = panelW - padX * 2 - (hasScroll ? Px(18, uiScale, 12) : 0);
-
-            int headerY = panelY + Px(16, uiScale);
-            int headerFont = FontPx(13, uiScale, 10, 19);
-            int rowFont = FontPx(16, uiScale, 12, 23);
 
             int col1X = panelX + padX + Px(12, uiScale);
             int col2X = panelX + padX + Px(96, uiScale);
@@ -2998,12 +3034,10 @@ namespace FunkyMakerPlayer.Multiplayer
             sb.Draw(pixel, new Rectangle(panelX + padX, divY, usableW, 1), Color.White * (0.1f * _fadeAlpha));
 
             int listTop = divY + Px(10, uiScale);
-            int availH = Math.Max(140, panelY + panelH - Px(14, uiScale) - listTop);
-            int rowGap = Px(6, uiScale, 4);
-            int rowH = ClampUi((availH - rowGap * (MAX_LEADERBOARD_VISIBLE - 1)) / MAX_LEADERBOARD_VISIBLE, 36, Px(58, uiScale));
+            int availH = availHPre;
 
             int startIdx = _leaderboardScrollOffset;
-            int endIdx = Math.Min(startIdx + MAX_LEADERBOARD_VISIBLE, topPlayers.Count);
+            int endIdx = Math.Min(startIdx + _leaderboardVisible, topPlayers.Count);
             string localUser = MultiplayerSettings.Instance.Username;
 
             for (int i = startIdx; i < endIdx; i++)
@@ -3013,9 +3047,6 @@ namespace FunkyMakerPlayer.Multiplayer
                 bool isSelf = !string.IsNullOrWhiteSpace(localUser) && string.Equals(player.Username, localUser, StringComparison.OrdinalIgnoreCase);
                 int displayIdx = i - startIdx;
                 int currentY = listTop + displayIdx * (rowH + rowGap);
-
-                if (currentY + rowH > panelY + panelH - Px(10, uiScale))
-                    break;
 
                 var rowRect = new Rectangle(panelX + padX, currentY, usableW, rowH);
                 _clickableAreas.Add(rowRect);
@@ -3031,8 +3062,9 @@ namespace FunkyMakerPlayer.Multiplayer
                     3 => new Color(218, 138, 65),
                     _ => TEXT_SECONDARY
                 };
-                int badgeH = Px(24, uiScale, 18);
-                DrawPillBadge(sb, font, pixel, col1X, currentY + (rowH - badgeH) / 2, badgeH, $"#{player.Rank}", rankColor, FontPx(12, uiScale, 10, 17), 8, filledStrong: player.Rank <= 3);
+                int rankFont = FontPx(12, uiScale, 10, 24);
+                int badgeH = Math.Max(Px(24, uiScale, 18), (int)MeasureText(font, "Ag", rankFont).Y + Px(6, uiScale, 4));
+                DrawPillBadge(sb, font, pixel, col1X, currentY + (rowH - badgeH) / 2, badgeH, $"#{player.Rank}", rankColor, rankFont, 8, filledStrong: player.Rank <= 3);
 
                 Color playerColor = GetColorFromHue(player.ColorHue);
                 int swatchSz = Px(16, uiScale, 12);
@@ -3056,7 +3088,7 @@ namespace FunkyMakerPlayer.Multiplayer
 
             if (hasScroll)
             {
-                DrawScrollBar(sb, pixel, panelX + padX + usableW + Px(10, uiScale), listTop, availH, topPlayers.Count, MAX_LEADERBOARD_VISIBLE, _leaderboardScrollOffset, ACCENT_PRIMARY);
+                DrawScrollBar(sb, pixel, panelX + padX + usableW + Px(10, uiScale), listTop, availH, topPlayers.Count, _leaderboardVisible, _leaderboardScrollOffset, ACCENT_PRIMARY);
             }
         }
 
@@ -3132,13 +3164,17 @@ namespace FunkyMakerPlayer.Multiplayer
         private void DrawStatTile(SpriteBatch sb, SpriteFont font, Texture2D pixel, float uiScale, int x, int y, int w, int h, string label, string value, Color valueColor)
         {
             DrawPanel(sb, pixel, x, y, w, h, BG_DARK, BORDER_SUBTLE, 1, valueColor * 0.8f);
-            int labelFont = FontPx(12, uiScale, 10, 17);
-            int valFont = FontPx(22, uiScale, 15, 32);
-
+            // Label on the left, value on the right, both centred in the tile (fork, 2026-11-28): stacked,
+            // the value ran out of the bottom of the tile on short (phone) tiles
+            int labelFont = FontPx(12, uiScale, 10, 24);
+            int valFont = FontPx(22, uiScale, 15, 40);
             int padX = Px(18, uiScale);
-            int padTop = Px(10, uiScale);
-            DrawText(sb, font, label, new Vector2(x + padX, y + padTop), TEXT_DISABLED * _fadeAlpha, labelFont);
-            DrawText(sb, font, value, new Vector2(x + padX, y + padTop + Px(20, uiScale)), valueColor * _fadeAlpha, valFont, shadow: true);
+            Vector2 vsz = MeasureText(font, value, valFont);
+            while (valFont > 12 && vsz.Y > h - Px(6, uiScale)) { valFont--; vsz = MeasureText(font, value, valFont); }
+            string shownLabel = TruncateToWidth(font, label, Math.Max(20f, w - padX * 3 - vsz.X), labelFont);
+            Vector2 lsz = MeasureText(font, shownLabel, labelFont);
+            DrawText(sb, font, shownLabel, new Vector2(x + padX, y + (h - lsz.Y) / 2f), TEXT_SECONDARY * _fadeAlpha, labelFont);
+            DrawText(sb, font, value, new Vector2(x + w - padX - vsz.X, y + (h - vsz.Y) / 2f), valueColor * _fadeAlpha, valFont, shadow: true);
         }
         
         private Color GetColorFromHue(int hue)

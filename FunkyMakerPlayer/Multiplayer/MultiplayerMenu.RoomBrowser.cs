@@ -223,7 +223,7 @@ namespace FunkyMakerPlayer.Multiplayer
             {
                 string msg = Room.Rooms.Count == 0 ? "No rooms yet. Create the first one!" : "No rooms match your search.";
                 DrawCenteredTextInPanel(sb, font, msg, x, listY + listH / 2 - Px(14, uiScale), w, TEXT_SECONDARY, FontPx(18, uiScale, 13, 26));
-                DrawCenteredTextInPanel(sb, font, "Press C or click CREATE ROOM", x, listY + listH / 2 + Px(16, uiScale), w, TEXT_DISABLED, FontPx(14, uiScale, 11, 20));
+                DrawCenteredTextInPanel(sb, font, FunkyMakerPlayer.UI.PointerInput.IsTouch ? "Tap CREATE ROOM to make one" : "Press C or click CREATE ROOM", x, listY + listH / 2 + Px(16, uiScale), w, TEXT_DISABLED, FontPx(14, uiScale, 11, 20));
             }
             else
             {

@@ -74,7 +74,7 @@ namespace FunkyMakerPlayer.Multiplayer.UI
         /// <summary>
         /// Draw the connection indicator.
         /// </summary>
-        public void Draw(SpriteBatch sb, SpriteFont font, Texture2D pixel, int screenWidth, int screenHeight, int topRightOffsetY = 0)
+        public void Draw(SpriteBatch sb, SpriteFont font, Texture2D pixel, int screenWidth, int screenHeight, int topRightOffsetY = 0, int topLeftOffsetX = 0)
         {
             if (_mode == DisplayMode.Hidden)
                 return;
@@ -101,7 +101,7 @@ namespace FunkyMakerPlayer.Multiplayer.UI
             switch (_position)
             {
                 case IndicatorPosition.TopLeft:
-                    x = margin;
+                    x = Math.Max(margin, topLeftOffsetX);
                     y = margin;
                     break;
                 case IndicatorPosition.TopRight:

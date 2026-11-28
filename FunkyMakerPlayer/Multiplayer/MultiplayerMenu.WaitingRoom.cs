@@ -381,6 +381,12 @@ namespace FunkyMakerPlayer.Multiplayer
             // Math.Clamp threw (that closed the game when resizing the window in a room).
             int leftW = ClampUi(Px(300, uiScale), 220, sw / 4 + 40);
             int rightW = ClampUi(Px(330, uiScale), 230, sw / 4 + 60);
+            if (FunkyMakerPlayer.UI.PointerInput.IsTouch)
+            {
+                // Phones (fork, 2026-11-28): fixed shares, the song column gets the most
+                leftW = (int)(sw * 0.28f);
+                rightW = (int)(sw * 0.24f);
+            }
             int centerX = margin + leftW + gap;
             int centerW = sw - margin * 2 - leftW - rightW - gap * 2;
 
@@ -424,28 +430,46 @@ namespace FunkyMakerPlayer.Multiplayer
             string charBtnLbl = hasCustomChar ? $"CHAR: {GetEquippedCharacterLabel(eqSlug)}" : "CHAR: DEFAULT";
             buttons.Add(("mychar", charBtnLbl, hasCustomChar ? new Color(178, 102, 255) : TEXT_SECONDARY, true, hasCustomChar));
             buttons.Add(("settings", Room.IsHost ? "ROOM SETTINGS" : "VIEW SETTINGS", ACCENT_WARNING, true, false));
-            int btnH = buttons.Count >= 5 ? Px(30, uiScale, 22) : (buttons.Count >= 4 ? Px(34, uiScale, 25) : Px(38, uiScale, 28));
-            int by = p.Bottom - pad - buttons.Count * (btnH + btnGap) + btnGap;
-            foreach (var b in buttons)
+            // Touch (fork, 2026-11-28): the buttons go in two columns, so the player list keeps room for
+            // more than two players, and they keep a comfortable tap height.
+            bool twoColBtns = FunkyMakerPlayer.UI.PointerInput.IsTouch && buttons.Count >= 4;
+            int btnRows = twoColBtns ? (buttons.Count + 1) / 2 : buttons.Count;
+            int btnH = twoColBtns ? Px(40, uiScale, 32)
+                : buttons.Count >= 5 ? Px(30, uiScale, 22) : (buttons.Count >= 4 ? Px(34, uiScale, 25) : Px(38, uiScale, 28));
+            int btnF = FontPx(13, uiScale, 10, 18);
+            int btnCellW = twoColBtns ? (p.Width - pad * 2 - btnGap) / 2 : p.Width - pad * 2;
+            while (btnF > 10 && buttons.Any(b => MeasureText(font, b.Label, btnF).X > btnCellW - Px(12, uiScale))) btnF--;
+            int buttonsH = btnRows * (btnH + btnGap);
+            int by = p.Bottom - pad - buttonsH + btnGap;
+            for (int bi = 0; bi < buttons.Count; bi++)
             {
-                DrawRoomButton(sb, font, pixel, uiScale, b.Key, new Rectangle(p.X + pad, by, p.Width - pad * 2, btnH), b.Label, b.Accent, b.Enabled, b.Strong, FontPx(13, uiScale, 10, 18));
-                by += btnH + btnGap;
+                var b = buttons[bi];
+                // An odd last button spans both columns
+                bool full = !twoColBtns || (bi == buttons.Count - 1 && buttons.Count % 2 == 1);
+                int bx = p.X + pad + (twoColBtns ? bi % 2 : 0) * (btnCellW + btnGap);
+                int bw = full ? p.Width - pad * 2 : btnCellW;
+                int rowIdx = twoColBtns ? bi / 2 : bi;
+                DrawRoomButton(sb, font, pixel, uiScale, b.Key, new Rectangle(bx, by + rowIdx * (btnH + btnGap), bw, btnH), b.Label, b.Accent, b.Enabled, b.Strong, btnF);
             }
 
             // Player rows (scrollable: wheel / drag over the list; they used to be cut off).
             _playersPanelRect = p;
             int listTop = p.Y + pad + Px(24, uiScale);
-            int rowH = Px(50, uiScale, 40);
+            int nameF = FontPx(15, uiScale, 11, 21);
+            int smallF = FontPx(11, uiScale, 9, 15);
+            int pillH = Math.Max(Px(17, uiScale, 13), (int)MeasureText(font, "Ag", smallF).Y + Px(3, uiScale, 2));
+            // Two lines (name + status, then badges), as tall as they need (fork, 2026-11-28: a fixed
+            // 50 px made the status pill run into the badges with phone-sized text)
+            int rowH = Math.Max(Px(50, uiScale, 40),
+                Px(10, uiScale, 6) * 2 + Math.Max((int)MeasureText(font, "Ag", nameF).Y, pillH) + Px(4, uiScale, 3) + pillH);
+            int line1H = Math.Max((int)MeasureText(font, "Ag", nameF).Y, pillH);
             int rowGap = Px(4, uiScale, 3);
-            int limit = p.Bottom - pad - buttons.Count * (btnH + btnGap) - Px(6, uiScale);
+            int limit = p.Bottom - pad - buttonsH - Px(6, uiScale);
             int visibleRows = Math.Max(1, (limit - listTop + rowGap) / (rowH + rowGap));
             _playerScroll = Math.Clamp(_playerScroll, 0, Math.Max(0, st.Members.Count - visibleRows));
             bool scrollable = st.Members.Count > visibleRows;
             int barW = scrollable ? Px(8, uiScale, 6) : 0;
             int rowY = listTop;
-            int nameF = FontPx(15, uiScale, 11, 21);
-            int smallF = FontPx(11, uiScale, 9, 15);
-            int pillH = Px(17, uiScale, 13);
             if (scrollable)
                 DrawScrollBar(sb, pixel, p.Right - pad - barW + Px(2, uiScale), listTop, visibleRows * (rowH + rowGap) - rowGap,
                     st.Members.Count, visibleRows, _playerScroll, ACCENT_PRIMARY);
@@ -468,12 +492,12 @@ namespace FunkyMakerPlayer.Multiplayer
                 // Right side of line 1: status pill.
                 string status = StatusLabel(m.Status);
                 int statusW = (int)MathF.Ceiling(MeasureText(font, status, smallF).X) + Px(12, uiScale);
-                DrawPillBadge(sb, font, pixel, r.Right - ip - statusW, r.Y + ip, pillH, status, StatusColor(m.Status), smallF, Px(6, uiScale), filledStrong: m.Status == Protocol.StatusReady);
+                DrawPillBadge(sb, font, pixel, r.Right - ip - statusW, r.Y + ip + (line1H - pillH) / 2, pillH, status, StatusColor(m.Status), smallF, Px(6, uiScale), filledStrong: m.Status == Protocol.StatusReady);
                 int nameRight = r.Right - ip - statusW - Px(6, uiScale);
 
                 string name = m.Username + (isMe ? " (you)" : "");
                 name = TruncateToWidth(font, name, Math.Max(30, nameRight - nx), nameF);
-                DrawText(sb, font, name, new Vector2(nx, r.Y + ip - 2), Color.Lerp(c, Color.White, 0.45f) * _fadeAlpha, nameF, shadow: true);
+                DrawText(sb, font, name, new Vector2(nx, r.Y + ip + (line1H - MeasureText(font, "Ag", nameF).Y) / 2f), Color.Lerp(c, Color.White, 0.45f) * _fadeAlpha, nameF, shadow: true);
 
                 // Line 2: HOST / PICKING / vote / level state, and KICK for the host.
                 int lx = nx;
@@ -761,6 +785,7 @@ namespace FunkyMakerPlayer.Multiplayer
                 return r.X + pad;
             }
             int size = r.Height - pad * 3 - bottomRowH;
+            size = Math.Min(size, r.Width / 4); // leave the title room in a narrow (phone) column (fork)
             if (size < Px(48, uiScale, 36) || r.Width < size * 3) return r.X + pad; // too narrow: text only
             var box = new Rectangle(r.X + pad, r.Y + pad, size, size);
             sb.Draw(pixel, new Rectangle(box.X - 2, box.Y - 2, box.Width + 4, box.Height + 4), Color.Black * (0.45f * _fadeAlpha));
@@ -886,7 +911,7 @@ namespace FunkyMakerPlayer.Multiplayer
 
             int ty = y + pad + Px(70, uiScale);
             DrawStandingsTable(sb, font, pixel, uiScale, round, new Rectangle(x + pad, ty, w - pad * 2, y + h - pad - ty - Px(30, uiScale)), rowH);
-            DrawCenteredTextInPanel(sb, font, "ENTER / ESC / click: close", x, y + h - pad - Px(16, uiScale), w, TEXT_DISABLED, FontPx(12, uiScale, 10, 16));
+            DrawCenteredTextInPanel(sb, font, FunkyMakerPlayer.UI.PointerInput.IsTouch ? "Tap anywhere to close" : "ENTER / ESC / click: close", x, y + h - pad - Px(16, uiScale), w, TEXT_DISABLED, FontPx(12, uiScale, 10, 16));
             Hit("detail-close", new Rectangle(x, y, w, h));
         }
 

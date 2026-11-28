@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using FunkyMakerPlayer.Multiplayer.Rooms;
 using Microsoft.Xna.Framework;
 using Microsoft.Xna.Framework.Graphics;
@@ -240,35 +241,69 @@ namespace FunkyMakerPlayer.Multiplayer
                 ? "ESC: Back"
                 : "UP/DOWN: Select  |  LEFT/RIGHT: Change  |  ENTER: Edit text  |  CTRL+ENTER: Save  |  ESC: Back");
 
-            int w = Math.Min(Px(760, uiScale), sw - Px(40, uiScale));
-            int x = (sw - w) / 2;
+            // Layout (fork, 2026-11-28): the rows used to be one fixed-height column that ran under the
+            // buttons and off the screen on a phone. Now: one column when it fits, otherwise two
+            // columns (filled top to bottom, left column first) on a wider panel; the panel is always
+            // exactly as tall as its content and stays above the footer.
+            var rows = new List<int>();
+            for (int row = 0; row < RS_ROWS; row++)
+                if (row != RS_PASSWORD || _rsPrivate) rows.Add(row);
+
             int y = headerBottom + Px(10, uiScale);
-            int rowH = Px(48, uiScale, 34);
-            int gap = Px(6, uiScale, 4);
-            int buttonsH = Px(46, uiScale, 34);
-            int descH = Px(44, uiScale, 34);
-            int panelH = Math.Min(footerY - y - Px(12, uiScale), RS_ROWS * (rowH + gap) + descH + buttonsH + Px(40, uiScale));
+            int pad = Px(18, uiScale, 10);
+            int rowH = Px(50, uiScale, 40);
+            int gap = Px(8, uiScale, 5);
+            int buttonsH = Px(50, uiScale, 40);
+            int df = FontPx(14, uiScale, 11, 19);
+            float descLineH = MeasureText(font, "Ag", df).Y + Px(2, uiScale);
+            int descH = (int)(descLineH * 2) + Px(10, uiScale);
+            int maxPanelH = footerY - y - Px(10, uiScale);
+            int fixedH = pad + pad + descH + buttonsH + pad;
+
+            int cols = 1;
+            int perCol = rows.Count;
+            if (fixedH + perCol * (rowH + gap) > maxPanelH)
+            {
+                cols = 2;
+                perCol = (rows.Count + 1) / 2;
+            }
+            // Still too tall: shrink the rows (never below a comfortable tap size)
+            int fitRowH = (maxPanelH - fixedH) / Math.Max(1, perCol) - gap;
+            if (fitRowH < rowH) rowH = Math.Max(Px(36, uiScale, 30), fitRowH);
+
+            int w = cols == 1
+                ? Math.Min(Px(760, uiScale), sw - Px(40, uiScale))
+                : Math.Min(Px(1180, uiScale), sw - Px(32, uiScale));
+            int x = (sw - w) / 2;
+            int panelH = Math.Min(maxPanelH, fixedH + perCol * (rowH + gap) - gap);
             DrawPanel(sb, pixel, x, y, w, panelH, BG_MEDIUM, ACCENT_SUCCESS * 0.6f, 2);
 
-            int pad = Px(18, uiScale, 10);
-            int ry = y + pad;
+            int colGap = Px(14, uiScale, 8);
+            int cellW = (w - pad * 2 - colGap * (cols - 1)) / cols;
             int labelF = FontPx(16, uiScale, 12, 22);
-            for (int row = 0; row < RS_ROWS; row++)
+            int ry = y + pad;
+            for (int k = 0; k < rows.Count; k++)
             {
-                if (row == RS_PASSWORD && !_rsPrivate) continue;
-                var r = new Rectangle(x + pad, ry, w - pad * 2, rowH);
+                int row = rows[k];
+                int col = k / perCol;
+                var r = new Rectangle(x + pad + col * (cellW + colGap), y + pad + (k % perCol) * (rowH + gap), cellW, rowH);
+                ry = Math.Max(ry, r.Bottom + gap);
                 bool selected = row == _roomSettingsRow && _roomSettingsMode != RoomSettingsMode.View;
                 bool editable = RowEditable(row);
                 DrawPanel(sb, pixel, r.X, r.Y, r.Width, r.Height, selected ? BG_LIGHT : BG_DARK,
                     selected ? ACCENT_SUCCESS : BORDER_SUBTLE, selected ? 2 : 1, selected ? ACCENT_SUCCESS : null);
                 if (editable && row != RS_NAME && row != RS_PASSWORD) Hit($"rs:{row}", r);
 
-                string label = RowLabel(row);
-                Vector2 lsz = MeasureText(font, label, labelF);
-                DrawText(sb, font, label, new Vector2(r.X + pad, r.Y + (r.Height - lsz.Y) / 2f), (editable ? TEXT_PRIMARY : TEXT_SECONDARY) * _fadeAlpha, labelF);
+                // Value control: right-aligned and only as wide as it needs (it used to stretch over
+                // 58 % of the row, with the arrows far from the value)
+                int innerPad = Px(12, uiScale, 8);
+                bool textRow = row == RS_NAME || row == RS_PASSWORD;
+                int valueW = textRow ? (int)(r.Width * 0.58f) : Math.Min(Px(230, uiScale), (int)(r.Width * 0.58f));
+                int valueX = r.Right - innerPad - valueW;
 
-                int valueX = r.X + (int)(r.Width * 0.42f);
-                int valueW = r.Right - pad - valueX;
+                string label = TruncateToWidth(font, RowLabel(row), valueX - r.X - innerPad * 2, labelF);
+                Vector2 lsz = MeasureText(font, label, labelF);
+                DrawText(sb, font, label, new Vector2(r.X + innerPad + Px(4, uiScale), r.Y + (r.Height - lsz.Y) / 2f), (editable ? TEXT_PRIMARY : TEXT_SECONDARY) * _fadeAlpha, labelF);
                 if (row == RS_NAME || row == RS_PASSWORD)
                 {
                     int boxH = rowH - Px(12, uiScale, 6);
@@ -280,9 +315,9 @@ namespace FunkyMakerPlayer.Multiplayer
                 }
                 else
                 {
-                    string value = RowValue(row);
-                    int arrowW = Px(30, uiScale, 22);
+                    int arrowW = Px(38, uiScale, 30);
                     int vf = FontPx(16, uiScale, 12, 22);
+                    string value = TruncateToWidth(font, RowValue(row), valueW - arrowW * 2 - Px(8, uiScale), vf);
                     Vector2 vsz = MeasureText(font, value, vf);
                     float vx = valueX + (valueW - vsz.X) / 2f;
                     DrawText(sb, font, value, new Vector2(vx, r.Y + (r.Height - vsz.Y) / 2f),
@@ -295,14 +330,17 @@ namespace FunkyMakerPlayer.Multiplayer
                         DrawRoomButton(sb, font, pixel, uiScale, $"rs>{row}", right, ">", ACCENT_SUCCESS);
                     }
                 }
-                ry += rowH + gap;
             }
 
-            // Description of the selected row.
+            // Description of the selected row (two lines; smaller text if it needs more)
             string desc = RowDescription(_roomSettingsRow);
-            int df = FontPx(13, uiScale, 10, 18);
             string wrapped = WrapTextToWidth(font, desc, w - pad * 2, df);
-            DrawText(sb, font, wrapped, new Vector2(x + pad, ry + Px(4, uiScale)), TEXT_SECONDARY * _fadeAlpha, df);
+            while (df > 10 && MeasureText(font, wrapped, df).Y > descH - Px(6, uiScale))
+            {
+                df--;
+                wrapped = WrapTextToWidth(font, desc, w - pad * 2, df);
+            }
+            DrawText(sb, font, wrapped, new Vector2(x + pad, ry + Px(2, uiScale)), TEXT_SECONDARY * _fadeAlpha, df);
 
             int by = y + panelH - pad - buttonsH;
             int bw = (w - pad * 3) / 2;
