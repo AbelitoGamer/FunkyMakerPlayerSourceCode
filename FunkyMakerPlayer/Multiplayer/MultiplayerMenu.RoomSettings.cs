@@ -145,8 +145,8 @@ namespace FunkyMakerPlayer.Multiplayer
                 case RS_MODE:
                     int i = Array.IndexOf(ModeOrder, _rs.Mode);
                     _rs.Mode = ModeOrder[((i < 0 ? 0 : i) + dir + ModeOrder.Length) % ModeOrder.Length];
-                    // osu! songs have one strumline: only Mirror plays them.
-                    if (_rs.Mode != Protocol.ModeMirror && _rs.SongTypes == Protocol.SongTypesOsu)
+                    // osu! songs have one strumline: only Mirror and Teams play them.
+                    if (!Protocol.OsuModeAllowed(_rs.Mode) && _rs.SongTypes == Protocol.SongTypesOsu)
                         _rs.SongTypes = Protocol.SongTypesBoth;
                     break;
                 case RS_SELECT:
@@ -167,7 +167,7 @@ namespace FunkyMakerPlayer.Multiplayer
                 case RS_TYPES:
                     int ti = Array.IndexOf(SongTypesOrder, _rs.SongTypes);
                     _rs.SongTypes = SongTypesOrder[((ti < 0 ? 0 : ti) + dir + SongTypesOrder.Length) % SongTypesOrder.Length];
-                    if (_rs.SongTypes == Protocol.SongTypesOsu) _rs.Mode = Protocol.ModeMirror; // the only mode for osu!
+                    if (_rs.SongTypes == Protocol.SongTypesOsu && !Protocol.OsuModeAllowed(_rs.Mode)) _rs.Mode = Protocol.ModeMirror; // osu!: Mirror or Teams
                     break;
                 default:
                     return;
@@ -364,10 +364,10 @@ namespace FunkyMakerPlayer.Multiplayer
             RS_TYPES => _rs.SongTypes switch
             {
                 Protocol.SongTypesFnf => "FNF ONLY: official levels and Funky Maker levels (.fnmm / .zip / .rar).",
-                Protocol.SongTypesOsu => "OSU!MANIA ONLY: 4K osu!mania songs from the players' mods/osu folders. Mirror mode only (one strumline).",
-                _ => _rs.Mode == Protocol.ModeMirror
+                Protocol.SongTypesOsu => "OSU!MANIA ONLY: 4K osu!mania songs from the players' mods/osu folders. Mirror or Teams (one strumline: in Teams both teams play the same chart).",
+                _ => Protocol.OsuModeAllowed(_rs.Mode)
                     ? "FNF & OSU!: official levels, Funky Maker levels and 4K osu!mania songs."
-                    : "FNF & OSU!: official levels, Funky Maker levels and 4K osu!mania songs (osu! songs only in Mirror mode).",
+                    : "FNF & OSU!: official levels, Funky Maker levels and 4K osu!mania songs (osu! songs only in Mirror and Teams).",
             },
             _ => _rs.AllowGuestLocalLevels
                 ? "ALLOWED: anybody can pick a level that someone in the room has locally; it is sent to whoever lacks it."

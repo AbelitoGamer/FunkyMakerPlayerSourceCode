@@ -93,6 +93,7 @@ namespace FunkyMakerPlayer.Multiplayer
         public event Action<TransferUploadPacket>? TransferUploadReceived;
         public event Action<TransferDownloadPacket>? TransferDownloadReceived;
         public event Action<TransferFailedPacket>? TransferFailedReceived;
+        public event Action<SongRejectedPacket>? SongRejectedReceived;
         public event Action<MatchInfo>? MatchLoadingReceived;
         public event Action<MatchStartPacket>? MatchStartReceived;
         public event Action<RoundResult>? MatchResultsReceived;
@@ -357,6 +358,7 @@ namespace FunkyMakerPlayer.Multiplayer
                 On<TransferUploadPacket>(hub, generation, Protocol.TransferUpload, p => TransferUploadReceived?.Invoke(p));
                 On<TransferDownloadPacket>(hub, generation, Protocol.TransferDownload, p => TransferDownloadReceived?.Invoke(p));
                 On<TransferFailedPacket>(hub, generation, Protocol.TransferFailed, p => TransferFailedReceived?.Invoke(p));
+                On<SongRejectedPacket>(hub, generation, Protocol.SongRejected, p => SongRejectedReceived?.Invoke(p));
                 On<MatchInfo>(hub, generation, Protocol.MatchLoading, p => MatchLoadingReceived?.Invoke(p));
                 On<MatchStartPacket>(hub, generation, Protocol.MatchStart, p => MatchStartReceived?.Invoke(p));
                 On<RoundResult>(hub, generation, Protocol.MatchResults, p => MatchResultsReceived?.Invoke(p));

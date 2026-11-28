@@ -26,6 +26,7 @@ namespace FunkyMakerPlayer.Multiplayer
             Room.Error += OnRoomError;
             Room.LocalLevelsChanged += OnRoomLocalLevelsChanged;
             Room.RoundFinished += OnRoomRoundFinished;
+            Room.SongRejected += OnRoomSongRejected;
         }
 
         private void UnhookRoomEvents()
@@ -36,6 +37,7 @@ namespace FunkyMakerPlayer.Multiplayer
             Room.Error -= OnRoomError;
             Room.LocalLevelsChanged -= OnRoomLocalLevelsChanged;
             Room.RoundFinished -= OnRoomRoundFinished;
+            Room.SongRejected -= OnRoomSongRejected;
         }
 
         private void OnRoomKicked(string reason)

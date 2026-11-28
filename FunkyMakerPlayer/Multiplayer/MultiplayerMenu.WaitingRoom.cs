@@ -68,14 +68,37 @@ namespace FunkyMakerPlayer.Multiplayer
                 }
                 return;
             }
+            if (_rejected != null)
+            {
+                bool mine = _rejected.PickedBy == Room.YouId && Room.IsMyTurn;
+                if (mine && (clicked == "rejected-pick" || IsKeyPressed(kb, Keys.Enter)))
+                {
+                    _rejected = null;
+                    OpenSongSelect();
+                }
+                else if (clicked == "rejected-ok" || IsKeyPressed(kb, Keys.Escape) || (!mine && IsKeyPressed(kb, Keys.Enter))
+                         || (clicked == null && IsLeftClickReleased(mouse)))
+                {
+                    _rejected = null;
+                }
+                _inputCooldown = INPUT_COOLDOWN_TIME;
+                return;
+            }
+            if (MustVote(st))
+            {
+                if (clicked == "songvote-yes") { Room.VoteSong(true); _votedFor = st.SongVote!.EndsAt; _inputCooldown = INPUT_COOLDOWN_TIME; return; }
+                if (clicked == "songvote-no") { Room.VoteSong(false); _votedFor = st.SongVote!.EndsAt; _inputCooldown = INPUT_COOLDOWN_TIME; return; }
+                if (clicked == "chat" || IsKeyPressed(kb, Keys.T)) { BeginChat(); return; }
+                return; // the window waits for a vote (the chat stays usable)
+            }
             if (_kickConfirmId != null)
             {
-                if (clicked == "kick-yes" || IsKeyPressed(kb, Keys.Y))
+                if (clicked == "kick-yes" || IsKeyPressed(kb, Keys.Enter))
                 {
                     Room.Kick(_kickConfirmId);
                     _kickConfirmId = null;
                 }
-                else if (clicked == "kick-no" || IsKeyPressed(kb, Keys.Escape) || IsKeyPressed(kb, Keys.N))
+                else if (clicked == "kick-no" || IsKeyPressed(kb, Keys.Escape))
                 {
                     _kickConfirmId = null;
                 }
@@ -133,21 +156,11 @@ namespace FunkyMakerPlayer.Multiplayer
             }
 
             // ── Keys ─────────────────────────────────────────────────────
+            // Everything else here is a button; T opens the chat
             if (IsKeyPressed(kb, Keys.T)) { BeginChat(); return; }
-            if (IsKeyPressed(kb, Keys.R)) { ToggleReady(); return; }
-            if (IsKeyPressed(kb, Keys.S)) { SpectateOrWatch(); return; }
-            if (IsKeyPressed(kb, Keys.M)) { ToggleChartOnlyMode(); return; }
-            if (IsKeyPressed(kb, Keys.B)) { CycleWaitingRoomCharacter(); return; }
-            if (IsKeyPressed(kb, Keys.C)) { OpenRoomSettings(Room.IsHost ? RoomSettingsMode.Edit : RoomSettingsMode.View); return; }
-            if (IsKeyPressed(kb, Keys.W) && inMatch) { Room.WatchCurrentMatch(); return; }
-            if (st.Settings.Mode == Protocol.ModeMirror && st.Song != null)
+            if (IsKeyPressed(kb, Keys.Enter) || IsKeyPressed(kb, Keys.Space))
             {
-                if (IsKeyPressed(kb, Keys.D1)) VoteAndReady(Protocol.SidePlayer);
-                if (IsKeyPressed(kb, Keys.D2)) VoteAndReady(Protocol.SideEnemy);
-            }
-            if (IsKeyPressed(kb, Keys.Enter) || IsKeyPressed(kb, Keys.Space) || IsKeyPressed(kb, Keys.P))
-            {
-                if (_roundSelection >= 0 && _roundSelection < rounds.Count && !IsKeyPressed(kb, Keys.P))
+                if (_roundSelection >= 0 && _roundSelection < rounds.Count)
                     _roundDetail = rounds[_roundSelection];
                 else if (Room.IsMyTurn && !inMatch)
                     OpenSongSelect();
@@ -242,9 +255,89 @@ namespace FunkyMakerPlayer.Multiplayer
             _inputCooldown = INPUT_COOLDOWN_TIME;
         }
 
+        // ── Long-song vote / rejected pick (fork) ────────────────────────────
+
+        /// <summary>The last pick that was dropped (voted down / couldn't be sent), shown as a window.</summary>
+        private SongRejectedPacket? _rejected;
+        /// <summary>EndsAt of the vote this game already answered (the server's copy of the vote lags a little).</summary>
+        private long _votedFor = -1;
+
+        private void OnRoomSongRejected(SongRejectedPacket p)
+        {
+            // The picker gets a window with "pick another song"; everybody else sees it in the chat.
+            if (p.PickedBy != Room.YouId) return;
+            _rejected = p;
+            _pickConfirm = null;
+            if (_state == MenuState.SongSelect) TransitionToState(MenuState.WaitingRoom);
+            FunkyMakerPlayer.UI.UiSfx.Play(FunkyMakerPlayer.UI.UiSound.Back);
+        }
+
+        /// <summary>You were asked to vote on a long song and haven't answered yet.</summary>
+        private bool MustVote(RoomStatePacket st) =>
+            st.SongVote is { } v && v.Eligible.Contains(st.YouId) && v.YourVote < 0 && _votedFor != v.EndsAt;
+
+        private static string Clock(float seconds)
+        {
+            int s = (int)MathF.Round(seconds);
+            return $"{s / 60}:{s % 60:00}";
+        }
+
+        private int VoteSecondsLeft(SongVoteInfo v) =>
+            (int)Math.Max(0, Math.Ceiling((v.EndsAt - TimeSyncManager.Instance.GetServerTime()) / 1000.0));
+
+        private void DrawSongVoteWindow(SpriteBatch sb, SpriteFont font, Texture2D pixel, float uiScale, int sw, int sh, RoomStatePacket st)
+        {
+            var v = st.SongVote!;
+            sb.Draw(pixel, new Rectangle(0, 0, sw, sh), Color.Black * 0.6f);
+            int w = Math.Min(Px(600, uiScale), sw - 32), h = Px(250, uiScale, 180);
+            int x = (sw - w) / 2, y = (sh - h) / 2;
+            DrawPanel(sb, pixel, x, y, w, h, BG_MEDIUM, ACCENT_WARNING, 2, ACCENT_WARNING);
+            int pad = Px(20, uiScale, 12);
+            int titleF = FontPx(20, uiScale, 14, 28), textF = FontPx(14, uiScale, 11, 20), smallF = FontPx(12, uiScale, 10, 16);
+            var (title, _) = SongLines(v.Song);
+            DrawCenteredTextInPanel(sb, font, "Play this long song?", x, y + Px(16, uiScale), w, TEXT_PRIMARY, titleF, shadow: true);
+            DrawCenteredTextInPanel(sb, font, TruncateToWidth(font, title, w - pad * 2, textF), x, y + Px(54, uiScale), w, ACCENT_WARNING, textF);
+            string len = v.Song.Duration > 0 ? $"{Clock(v.Song.Duration)} long" : "a long song";
+            DrawCenteredTextInPanel(sb, font, TruncateToWidth(font, $"{Room.NameOf(v.Song.PickedBy)} picked it  |  {len}", w - pad * 2, smallF),
+                x, y + Px(84, uiScale), w, TEXT_SECONDARY, smallF);
+            DrawCenteredTextInPanel(sb, font, $"Yes {v.Yes}  -  No {v.No}   ({v.Voted.Count}/{v.Eligible.Count} voted, {VoteSecondsLeft(v)} s left)",
+                x, y + Px(110, uiScale), w, TEXT_DISABLED, smallF);
+            int bh = Px(40, uiScale, 30), bw = (w - pad * 3) / 2, by = y + h - pad - bh;
+            DrawRoomButton(sb, font, pixel, uiScale, "songvote-no", new Rectangle(x + pad, by, bw, bh), "NO, ANOTHER ONE", ACCENT_ERROR);
+            DrawRoomButton(sb, font, pixel, uiScale, "songvote-yes", new Rectangle(x + pad * 2 + bw, by, bw, bh), "YES, PLAY IT", ACCENT_SUCCESS, strong: true);
+        }
+
+        private void DrawRejectedWindow(SpriteBatch sb, SpriteFont font, Texture2D pixel, float uiScale, int sw, int sh)
+        {
+            var p = _rejected!;
+            sb.Draw(pixel, new Rectangle(0, 0, sw, sh), Color.Black * 0.6f);
+            int w = Math.Min(Px(600, uiScale), sw - 32), h = Px(220, uiScale, 160);
+            int x = (sw - w) / 2, y = (sh - h) / 2;
+            DrawPanel(sb, pixel, x, y, w, h, BG_MEDIUM, ACCENT_ERROR, 2, ACCENT_ERROR);
+            int pad = Px(20, uiScale, 12);
+            int titleF = FontPx(20, uiScale, 14, 28), textF = FontPx(13, uiScale, 10, 18);
+            DrawCenteredTextInPanel(sb, font, "Your song was dropped", x, y + Px(16, uiScale), w, ACCENT_ERROR, titleF, shadow: true);
+            var lines = WrapTextToWidth(font, p.Reason, w - pad * 2, textF).Split('\n');
+            for (int i = 0; i < lines.Length && i < 3; i++)
+                DrawCenteredTextInPanel(sb, font, lines[i], x, y + Px(54, uiScale) + i * Px(20, uiScale), w, TEXT_PRIMARY, textF);
+            DrawCenteredTextInPanel(sb, font, "Pick another song for this turn.", x, y + Px(120, uiScale), w, TEXT_SECONDARY, textF);
+            int bh = Px(36, uiScale, 28), bw = (w - pad * 3) / 2, by = y + h - pad - bh;
+            bool mine = Room.IsMyTurn;
+            if (mine)
+            {
+                DrawRoomButton(sb, font, pixel, uiScale, "rejected-ok", new Rectangle(x + pad, by, bw, bh), "ESC  Later", TEXT_SECONDARY);
+                DrawRoomButton(sb, font, pixel, uiScale, "rejected-pick", new Rectangle(x + pad * 2 + bw, by, bw, bh), "PICK ANOTHER", ACCENT_SUCCESS, strong: true);
+            }
+            else
+            {
+                DrawRoomButton(sb, font, pixel, uiScale, "rejected-ok", new Rectangle(x + (w - bw) / 2, by, bw, bh), "OK", ACCENT_WARNING, strong: true);
+            }
+        }
+
         private void OpenSongSelect()
         {
             if (!Room.IsMyTurn) { ShowError("It's not your turn to pick."); return; }
+            if (Room.State?.SongVote != null) { ShowError("The lobby is still voting on your pick."); return; }
             // A pick is final (server rule): no song select once one was picked.
             if (Room.State?.Song != null) { ShowError("The song for this round was already picked."); return; }
             _selectedSource = LevelSource.Official;
@@ -274,8 +367,11 @@ namespace FunkyMakerPlayer.Multiplayer
             string privacy = st.HasPassword ? "Password" : "Open";
             string subtitle = $"ID {st.RoomId}   •   {RoomClient.ModeName(st.Settings.Mode)}   •   {RoomClient.SelectionName(st.Settings.SongSelection)}   •   {st.Members.Count}/{st.Settings.MaxPlayers} players   •   {privacy}";
             int headerBottom = DrawScreenHeader(sb, font, pixel, sw, uiScale, st.Name.ToUpperInvariant(), subtitle, ModeColor(st.Settings.Mode), "ESC  Leave");
+            // Game settings without leaving the room
+            DrawGameplaySettingsButtonTopRight(sb, font, pixel, sw, uiScale);
+            if (_gameplaySettingsRect != Rectangle.Empty) headerBottom = Math.Max(headerBottom, _gameplaySettingsRect.Bottom + Px(4, uiScale));
             int footerY = DrawFooterBar(sb, font, pixel, sw, sh, uiScale,
-                "T: Chat  |  R: Ready  |  S: Spectate  |  M: Chart Only  |  B: My Char  |  P: Pick song  |  C: Room settings");
+                "T: Chat  |  UP/DOWN: Rounds  |  ENTER: Round details / Pick song  |  ESC: Leave");
 
             int margin = Px(22, uiScale, 12);
             int gap = Px(14, uiScale, 8);
@@ -294,6 +390,8 @@ namespace FunkyMakerPlayer.Multiplayer
 
             if (_roundDetail != null) DrawRoundDetail(sb, font, pixel, uiScale, sw, sh, _roundDetail);
             if (_kickConfirmId != null) DrawKickConfirm(sb, font, pixel, uiScale, sw, sh);
+            if (_rejected != null) DrawRejectedWindow(sb, font, pixel, uiScale, sw, sh);
+            else if (MustVote(st)) DrawSongVoteWindow(sb, font, pixel, uiScale, sw, sh, st);
             DrawHolderTooltip(sb, font, pixel, uiScale, sw, sh);
         }
 
@@ -313,19 +411,19 @@ namespace FunkyMakerPlayer.Multiplayer
             {
                 bool ready = me.Status == Protocol.StatusReady;
                 bool canReady = Room.LevelState == Protocol.LevelReady;
-                buttons.Add(("ready", ready ? "R  UNREADY" : "R  I'M READY", ACCENT_SUCCESS, canReady, !ready && canReady));
+                buttons.Add(("ready", ready ? "UNREADY" : "I'M READY", ACCENT_SUCCESS, canReady, !ready && canReady));
             }
             if (CanWatchMatch(st))
-                buttons.Add(("spectate", "S  WATCH MATCH", ACCENT_PRIMARY, true, true));
+                buttons.Add(("spectate", "WATCH MATCH", ACCENT_PRIMARY, true, true));
             else
-                buttons.Add(("spectate", me?.Spectate == true ? "S  SPECTATING (ON)" : "S  SPECTATE", ACCENT_SECONDARY, true, me?.Spectate == true));
+                buttons.Add(("spectate", me?.Spectate == true ? "SPECTATING (ON)" : "SPECTATE", ACCENT_SECONDARY, true, me?.Spectate == true));
             bool chartOnlyOn = MultiplayerSettings.Instance.ChartOnlyMode;
-            buttons.Add(("chartonly", chartOnlyOn ? "M  CHART ONLY (ON)" : "M  CHART ONLY (OFF)", chartOnlyOn ? ACCENT_SUCCESS : TEXT_SECONDARY, true, chartOnlyOn));
+            buttons.Add(("chartonly", chartOnlyOn ? "CHART ONLY (ON)" : "CHART ONLY (OFF)", chartOnlyOn ? ACCENT_SUCCESS : TEXT_SECONDARY, true, chartOnlyOn));
             string eqSlug = MultiplayerSettings.Instance.EquippedCharacter;
             bool hasCustomChar = !string.IsNullOrWhiteSpace(eqSlug);
-            string charBtnLbl = hasCustomChar ? $"B  CHAR: {GetEquippedCharacterLabel(eqSlug)}" : "B  CHAR: DEFAULT";
+            string charBtnLbl = hasCustomChar ? $"CHAR: {GetEquippedCharacterLabel(eqSlug)}" : "CHAR: DEFAULT";
             buttons.Add(("mychar", charBtnLbl, hasCustomChar ? new Color(178, 102, 255) : TEXT_SECONDARY, true, hasCustomChar));
-            buttons.Add(("settings", Room.IsHost ? "C  ROOM SETTINGS" : "C  VIEW SETTINGS", ACCENT_WARNING, true, false));
+            buttons.Add(("settings", Room.IsHost ? "ROOM SETTINGS" : "VIEW SETTINGS", ACCENT_WARNING, true, false));
             int btnH = buttons.Count >= 5 ? Px(30, uiScale, 22) : (buttons.Count >= 4 ? Px(34, uiScale, 25) : Px(38, uiScale, 28));
             int by = p.Bottom - pad - buttons.Count * (btnH + btnGap) + btnGap;
             foreach (var b in buttons)
@@ -486,7 +584,7 @@ namespace FunkyMakerPlayer.Multiplayer
                 if (!Room.IsParticipant && Room.ActiveMatchId.Length == 0)
                 {
                     int bw = Px(190, uiScale, 140), bh = Px(36, uiScale, 28);
-                    DrawRoomButton(sb, font, pixel, uiScale, "watch", new Rectangle(r.Right - pad - bw, r.Bottom - pad - bh, bw, bh), "W  WATCH MATCH", ACCENT_PRIMARY, strong: true);
+                    DrawRoomButton(sb, font, pixel, uiScale, "watch", new Rectangle(r.Right - pad - bw, r.Bottom - pad - bh, bw, bh), "WATCH MATCH", ACCENT_PRIMARY, strong: true);
                 }
                 else if (Room.ActiveMatchId.Length > 0)
                 {
@@ -567,9 +665,9 @@ namespace FunkyMakerPlayer.Multiplayer
                     int votesE = st.Members.Count(m => m.Vote == Protocol.SideEnemy);
                     int vw = Px(136, uiScale, 96);
                     int myVote = Room.Me?.Vote ?? -1;
-                    DrawRoomButton(sb, font, pixel, uiScale, "vote0", new Rectangle(bxx, byy, vw, bh), $"1  PLAYER ({votesP})", ACCENT_PRIMARY, strong: myVote == 0, fontSize: smallF);
+                    DrawRoomButton(sb, font, pixel, uiScale, "vote0", new Rectangle(bxx, byy, vw, bh), $"PLAYER ({votesP})", ACCENT_PRIMARY, strong: myVote == 0, fontSize: smallF);
                     bxx += vw + Px(6, uiScale);
-                    DrawRoomButton(sb, font, pixel, uiScale, "vote1", new Rectangle(bxx, byy, vw, bh), $"2  ENEMY ({votesE})", ACCENT_ERROR, strong: myVote == 1, fontSize: smallF);
+                    DrawRoomButton(sb, font, pixel, uiScale, "vote1", new Rectangle(bxx, byy, vw, bh), $"ENEMY ({votesE})", ACCENT_ERROR, strong: myVote == 1, fontSize: smallF);
                     bxx += vw + Px(6, uiScale);
                     bool co = MultiplayerSettings.Instance.ChartOnlyMode;
                     int cw = Math.Min(Px(160, uiScale, 110), Math.Max(Px(90, uiScale, 76), r.Right - pad - bxx));
@@ -580,11 +678,29 @@ namespace FunkyMakerPlayer.Multiplayer
                 return;
             }
 
+            if (st.SongVote is { } vote)
+            {
+                // A long song waiting for the lobby's OK.
+                DrawPanel(sb, pixel, r.X, r.Y, r.Width, r.Height, BG_DARK, ACCENT_WARNING, 2, ACCENT_WARNING);
+                int vx = DrawSongArt(sb, pixel, uiScale, vote.Song, r, pad, Px(34, uiScale, 26));
+                int vw = r.Right - pad - vx;
+                DrawPillBadge(sb, font, pixel, vx, r.Y + pad, Px(22, uiScale, 18), "LOBBY VOTE", ACCENT_WARNING, smallF, Px(8, uiScale), true);
+                var (vTitle, _) = SongLines(vote.Song);
+                DrawText(sb, font, TruncateToWidth(font, vTitle, vw, titleF), new Vector2(vx, r.Y + pad + Px(28, uiScale)), TEXT_PRIMARY * _fadeAlpha, titleF, shadow: true);
+                string len = vote.Song.Duration > 0 ? $"{Clock(vote.Song.Duration)} long, " : "";
+                DrawText(sb, font, TruncateToWidth(font, $"picked by {Room.NameOf(vote.Song.PickedBy)}  |  {len}the lobby decides", vw, smallF),
+                    new Vector2(vx, r.Y + pad + Px(58, uiScale)), TEXT_SECONDARY * _fadeAlpha, smallF);
+                string mineText = vote.YourVote == 1 ? "  |  you: yes" : vote.YourVote == 0 ? "  |  you: no" : "";
+                DrawText(sb, font, TruncateToWidth(font, $"Yes {vote.Yes}  -  No {vote.No}   ({vote.Voted.Count}/{vote.Eligible.Count} voted, {VoteSecondsLeft(vote)} s left){mineText}", vw, textF),
+                    new Vector2(vx, r.Y + pad + Px(82, uiScale)), ACCENT_WARNING * _fadeAlpha, textF);
+                return;
+            }
+
             if (Room.IsMyTurn)
             {
                 float pulse = (float)Math.Sin(_pulseTimer * 1.6f) * 0.5f + 0.5f;
                 sb.Draw(pixel, new Rectangle(r.X - 4, r.Y - 4, r.Width + 8, r.Height + 8), ACCENT_SUCCESS * (0.10f + 0.10f * pulse) * _fadeAlpha);
-                DrawRoomButton(sb, font, pixel, uiScale, "pick", r, "P  SELECT SONG", ACCENT_SUCCESS, strong: true, fontSize: FontPx(24, uiScale, 16, 34));
+                DrawRoomButton(sb, font, pixel, uiScale, "pick", r, "SELECT SONG", ACCENT_SUCCESS, strong: true, fontSize: FontPx(24, uiScale, 16, 34));
                 DrawCenteredTextInPanel(sb, font, "It's your turn to pick!", r.X, r.Bottom - Px(26, uiScale), r.Width, ACCENT_SUCCESS, smallF);
                 return;
             }
@@ -816,8 +932,8 @@ namespace FunkyMakerPlayer.Multiplayer
             DrawCenteredTextInPanel(sb, font, $"Kick {name}?", x, y + Px(22, uiScale), w, TEXT_PRIMARY, FontPx(20, uiScale, 14, 28), shadow: true);
             DrawCenteredTextInPanel(sb, font, "They can't rejoin for 5 minutes.", x, y + Px(56, uiScale), w, TEXT_SECONDARY, FontPx(13, uiScale, 10, 18));
             int pad = Px(20, uiScale, 12), bh = Px(36, uiScale, 28), bw = (w - pad * 3) / 2, by = y + h - pad - bh;
-            DrawRoomButton(sb, font, pixel, uiScale, "kick-no", new Rectangle(x + pad, by, bw, bh), "N  Cancel", TEXT_SECONDARY);
-            DrawRoomButton(sb, font, pixel, uiScale, "kick-yes", new Rectangle(x + pad * 2 + bw, by, bw, bh), "Y  KICK", ACCENT_ERROR, strong: true);
+            DrawRoomButton(sb, font, pixel, uiScale, "kick-no", new Rectangle(x + pad, by, bw, bh), "Cancel", TEXT_SECONDARY);
+            DrawRoomButton(sb, font, pixel, uiScale, "kick-yes", new Rectangle(x + pad * 2 + bw, by, bw, bh), "KICK", ACCENT_ERROR, strong: true);
         }
     }
 }

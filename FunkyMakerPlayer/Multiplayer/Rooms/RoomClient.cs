@@ -36,6 +36,7 @@ namespace FunkyMakerPlayer.Multiplayer.Rooms
                 if (CurrentSong?.Hash == p.Hash) { LevelError = p.Reason; LevelState = Protocol.LevelFailed; }
                 Error?.Invoke(p.Reason);
             };
+            Net.SongRejectedReceived += p => { if (InRoom) SongRejected?.Invoke(p); };
             Net.MatchLoadingReceived += OnMatchLoading;
             Net.MatchStartReceived += OnMatchStart;
             Net.MatchResultsReceived += OnMatchResults;
@@ -68,6 +69,8 @@ namespace FunkyMakerPlayer.Multiplayer.Rooms
         public event Action<MatchInfo, string, MatchAssignment?>? MatchReadyToLoad;
         public event Action<MatchStartPacket>? MatchStarting;
         public event Action<RoundResult>? RoundFinished;
+        /// <summary>A pick was dropped for this turn (lobby voted no / couldn't be sent); the picker picks again.</summary>
+        public event Action<SongRejectedPacket>? SongRejected;
 
         // ══════════════════════════════════════════════════════════════════
         // Room browser
@@ -236,6 +239,25 @@ namespace FunkyMakerPlayer.Multiplayer.Rooms
         public void SetReady(bool ready) =>
             Net.Call<OpResult>("SetReady", new object?[] { ready }, r => { if (!r.Ok) Error?.Invoke(r.Error); });
 
+        /// <summary>Long-song vote: play it (true) or not.</summary>
+        public void VoteSong(bool yes) =>
+            Net.Call<OpResult>("VoteSong", new object?[] { yes }, r => { if (!r.Ok) Error?.Invoke(r.Error); });
+
+        /// <summary>The song can't be picked again this turn (voted down / couldn't be sent).</summary>
+        public bool IsBlocked(string hash) => State?.BlockedHashes?.Contains(hash) == true;
+
+        /// <summary>
+        /// The level is bigger than the server accepts (its smallest variant: osu! without video), so the
+        /// server leaves it out of the room's list. The song select shows it greyed out instead of hiding it.
+        /// </summary>
+        public bool TooHeavy(LocalLevel l)
+        {
+            long max = Net.MaxUploadBytes;
+            if (max <= 0) return false;
+            long smallest = l.Kind == Protocol.KindOsu && l.SizeNoVideo > 0 && l.SizeNoVideo < l.Size ? l.SizeNoVideo : l.Size;
+            return smallest > max;
+        }
+
         /// <param name="then">Runs after the server accepted the vote (Mirror: then READY, in that order).</param>
         public void VoteSide(int side, Action? then = null) =>
             Net.Call<OpResult>("VoteSide", new object?[] { side }, r =>
@@ -324,6 +346,7 @@ namespace FunkyMakerPlayer.Multiplayer.Rooms
 
         private readonly ConcurrentDictionary<string, LocalLevel> _localByHash = new(StringComparer.Ordinal);
         private readonly ConcurrentDictionary<string, float> _starsByHash = new(StringComparer.Ordinal);
+        private readonly ConcurrentDictionary<string, float> _durationByHash = new(StringComparer.Ordinal);
         private int _scanSession;
         public bool Scanning { get; private set; }
         public int ScanDone, ScanTotal;
@@ -333,6 +356,19 @@ namespace FunkyMakerPlayer.Multiplayer.Rooms
         public bool HasLocal(string hash) => _localByHash.ContainsKey(hash);
         public LocalLevel? LocalByHash(string hash) => _localByHash.TryGetValue(hash, out var l) ? l : null;
         public float StarsFor(string hash) => _starsByHash.TryGetValue(hash, out var s) ? s : 0f;
+        /// <summary>Song length (s) of one of your levels, 0 until it was analysed.</summary>
+        public float DurationFor(string hash) => _durationByHash.TryGetValue(hash, out var d) ? d : 0f;
+
+        /// <summary>End of the last note in seconds (what the Freeplay details call the song length).</summary>
+        public static float ChartLength(FnmmData data)
+        {
+            double last = 0;
+            foreach (var strum in data.Strumlines)
+                foreach (var lane in strum)
+                    foreach (var n in lane)
+                        last = Math.Max(last, data.ToSeconds(n.Start) + Math.Max(0, data.ToSeconds(n.Duration)));
+            return double.IsFinite(last) ? (float)last : 0f;
+        }
 
         /// <summary>Hashes the level files (cached on disk), then sends the list to the room and rates them.</summary>
         public void ScanLocalLevels(string levelsFolder, IReadOnlyList<string> relativePaths)
@@ -361,13 +397,18 @@ namespace FunkyMakerPlayer.Multiplayer.Rooms
                 {
                     if (session != _scanSession) return;
                     if (_starsByHash.ContainsKey(l.Hash)) continue;
-                    float stars = 0f;
+                    float stars = 0f, length = 0f;
                     try
                     {
                         var data = FnmmLoader.TryLoadChartData(l.FullPath);
-                        if (data != null) stars = (float)ChartDifficulty.Calculate(data, 0);
+                        if (data != null)
+                        {
+                            stars = (float)ChartDifficulty.Calculate(data, 0);
+                            length = ChartLength(data);
+                        }
                     }
                     catch { }
+                    _durationByHash[l.Hash] = length;
                     _starsByHash[l.Hash] = float.IsFinite(stars) ? stars : 0f;
                     any = true;
                 }
@@ -410,6 +451,7 @@ namespace FunkyMakerPlayer.Multiplayer.Rooms
         {
             Hash = l.Hash, Name = l.Name, FileName = l.FileName, Size = l.Size, Stars = StarsFor(l.Hash),
             Kind = l.Kind, SetId = l.SetId, SetName = l.SetName, Difficulty = l.Difficulty, SizeNoVideo = l.SizeNoVideo,
+            Duration = DurationFor(l.Hash),
         }).ToList();
 
         private void PushLevels()

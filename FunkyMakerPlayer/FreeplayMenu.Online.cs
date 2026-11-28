@@ -44,6 +44,17 @@ public sealed class OnlineSong
     /// </summary>
     public string Group { get; init; } = "";
     public int GroupOrder { get; init; }
+    /// <summary>Song length in seconds the room knows (0 = unknown).</summary>
+    public float Duration { get; init; }
+    /// <summary>
+    /// Why it can't be picked (shown greyed out; picking it explains why), empty = pickable:
+    /// too big for the server, or refused for this turn.
+    /// </summary>
+    public string DisabledTitle { get; init; } = "";
+    public string DisabledReason { get; init; } = "";
+    /// <summary>Short tag on the row ("TOO BIG", "REFUSED").</summary>
+    public string DisabledTag { get; init; } = "";
+    public bool Disabled => DisabledReason.Length > 0;
 }
 
 /// <summary>
@@ -67,7 +78,8 @@ public interface IOnlineSongSource
     (string Main, string Sub) EmptyText(FreeplayTab tab);
     /// <summary>Room facts for the info card (mode, song types…).</summary>
     string RoomInfo { get; }
-    void Pick(OnlineSong song, float stars);
+    /// <param name="seconds">Song length as this device measured it (0 = unknown); long songs go to a lobby vote.</param>
+    void Pick(OnlineSong song, float stars, float seconds);
     void Back();
     void Import();
     void Refresh();
@@ -215,8 +227,9 @@ public partial class FreeplayMenu
         if (song == null) return;
         _options.Close();
         StopSearchTyping();
-        UI.UiSfx.Play(UI.UiSound.StartSong);
-        _online.Pick(song, (float)(StarsOf(_paths[index]) ?? song.Stars));
+        UI.UiSfx.Play(song.Disabled ? UI.UiSound.Back : UI.UiSound.StartSong);
+        float seconds = GetInfo(_paths[index])?.LengthSec ?? 0f;
+        _online.Pick(song, (float)(StarsOf(_paths[index]) ?? song.Stars), seconds > 0f ? seconds : song.Duration);
     }
 
     /// <summary>Q / E online: the previous / next tab the room allows.</summary>
@@ -250,11 +263,35 @@ public partial class FreeplayMenu
     private readonly List<string> _rowGroups = new();
     private readonly List<int> _headersThrough = new();
 
-    /// <summary>Online: puts the rows in their sections (keeping the chosen sort inside each one).</summary>
+    /// <summary>
+    /// Puts the rows in their sections, keeping the chosen sort inside each one. Online: shared / yours /
+    /// downloaded / each player's. Offline: your levels, then the ones downloaded in online rooms.
+    /// </summary>
     private IEnumerable<int> GroupOnline(IEnumerable<int> ordered)
     {
-        if (_online == null || _tab == FreeplayTab.Official) return ordered;
+        if (_online == null) return ordered.OrderBy(i => OfflineGroup(_allPaths[i]).Order); // stable
+        if (_tab == FreeplayTab.Official) return ordered;
         return ordered.OrderBy(i => OnlineSongOf(_allPaths[i])?.GroupOrder ?? int.MaxValue); // stable
+    }
+
+    /// <summary>
+    /// Offline section of a level: downloaded in an online room (FNF levels under levels/Received/, osu!
+    /// sets listed by <see cref="Osu.OsuLibrary.MarkReceived"/>) or yours.
+    /// </summary>
+    private (string Label, int Order) OfflineGroup(string path)
+    {
+        bool osu = Osu.OsuLibrary.IsOsuChart(path);
+        bool received;
+        try
+        {
+            received = osu
+                ? Osu.OsuLibrary.IsReceived(System.IO.Path.GetDirectoryName(path) ?? "")
+                : System.IO.Path.GetRelativePath(_levelsFolder, path).Replace('\\', '/')
+                    .StartsWith("Received/", StringComparison.OrdinalIgnoreCase);
+        }
+        catch { received = false; }
+        string what = osu ? "SONGS" : "LEVELS";
+        return received ? ($"DOWNLOADED {what}", 1) : ($"YOUR {what}", 0);
     }
 
     /// <summary>After the visible list is rebuilt: where the section headers go.</summary>
@@ -262,12 +299,13 @@ public partial class FreeplayMenu
     {
         _rowGroups.Clear();
         _headersThrough.Clear();
-        bool grouped = _online != null && _tab != FreeplayTab.Official;
+        bool online = _online != null;
+        bool grouped = !online || _tab != FreeplayTab.Official;
         int headers = 0;
         string prev = "\0";
         foreach (var p in _paths)
         {
-            string g = grouped ? OnlineSongOf(p)?.Group ?? "" : "";
+            string g = !grouped ? "" : online ? OnlineSongOf(p)?.Group ?? "" : OfflineGroup(p).Label;
             if (g.Length > 0 && g != prev) headers++;
             prev = g;
             _rowGroups.Add(g);
@@ -301,6 +339,8 @@ public partial class FreeplayMenu
         float y = rowTop - h + (h - sz.Y) / 2f + UiScale.Px(2, s);
         Color acc = label.StartsWith("SHARED", StringComparison.Ordinal) ? new Color(46, 224, 150)
             : label.StartsWith("YOUR", StringComparison.Ordinal) ? new Color(255, 215, 0)
+            : label.StartsWith("DOWNLOADED", StringComparison.Ordinal) ? new Color(190, 140, 255)
+            : label.StartsWith("TOO BIG", StringComparison.Ordinal) ? new Color(255, 90, 90)
             : new Color(0, 200, 255);
         DrawRect(sb, x, (int)(y + sz.Y / 2f) - UiScale.Px(5, s), UiScale.Px(4, s, 3), UiScale.Px(10, s, 8), acc * alpha);
         float tx = x + UiScale.Px(10, s);
@@ -342,6 +382,17 @@ public partial class FreeplayMenu
     {
         var song = OnlineSongOf(path);
         if (song == null) return right;
+        if (song.Disabled && song.DisabledTag.Length > 0)
+        {
+            var tsz = MeasureText(song.DisabledTag, pillFont);
+            int tw = (int)tsz.X + UiScale.Px(12, s);
+            var tr = new Rectangle(right - tw, rowY + (rowH - pillH) / 2, tw, pillH);
+            Color red = new(255, 90, 90);
+            DrawRect(sb, tr.X, tr.Y, tr.Width, tr.Height, new Color(40, 14, 20) * (0.9f * alpha));
+            DrawRect(sb, tr.X, tr.Bottom - 2, tr.Width, 2, red * alpha);
+            DrawText(sb, song.DisabledTag, new Vector2(tr.X + (tw - tsz.X) / 2f, tr.Y + (pillH - tsz.Y) / 2f), red * alpha, pillFont);
+            right = tr.X - UiScale.Px(6, s);
+        }
         if (song.Official)
         {
             string tag = song.OnDevice ? "OFFICIAL" : "OFFICIAL  +DL";
@@ -366,16 +417,22 @@ public partial class FreeplayMenu
     private void DrawOnlineAvailability(SpriteBatch sb, Rectangle r, string path, float s, float alpha)
     {
         var song = OnlineSongOf(path);
-        Color acc = song?.Official == true ? TabAccent(FreeplayTab.Official) : new Color(46, 224, 150);
+        Color acc = song?.Disabled == true ? new Color(255, 90, 90)
+            : song?.Official == true ? TabAccent(FreeplayTab.Official) : new Color(46, 224, 150);
         DrawCard(sb, r, alpha, acc);
         int lp = UiScale.Px(12, s);
-        DrawCardLabel(sb, song?.Official == true ? "OFFICIAL LEVEL" : "IN THIS ROOM", r.X + lp, r.Y + UiScale.Px(6, s), alpha, s);
+        DrawCardLabel(sb, song?.Disabled == true ? "CAN'T BE PICKED" : song?.Official == true ? "OFFICIAL LEVEL" : "IN THIS ROOM", r.X + lp, r.Y + UiScale.Px(6, s), alpha, s);
         if (song == null) return;
 
         int f = UiScale.FontPx(14, s);
         float y = r.Y + UiScale.Px(26, s);
         string line1, line2;
-        if (song.Official)
+        if (song.Disabled)
+        {
+            line1 = song.DisabledTitle;
+            line2 = song.DisabledReason;
+        }
+        else if (song.Official)
         {
             line1 = song.OnDevice ? "Already on this device." : "Not downloaded yet.";
             line2 = "Everybody gets it from the server when it's picked.";
