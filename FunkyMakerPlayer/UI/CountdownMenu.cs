@@ -236,7 +236,7 @@ public class CountdownMenu : IScreenOverlay
             
             Color textColor = sel ? Color.White : Color.White * 0.7f;
             string displayName = _packs[i];
-            if (displayName == "default") displayName = "Default (Built-in)";
+            displayName = DefaultMods.CountdownLabel(displayName);
             
             if (_fontRenderer != null)
             {

@@ -594,7 +594,7 @@ public class SettingsManager
             "The burst that appears on your arrow when you hit a note perfectly (Sick!). Add your own in mods/notesplashes/.",
             () => new SettingsActionResult { OpenSplashMenu = true }));
 
-        Add(entries, OpenRow("Countdown Style", Game1.SelectedCountdown,
+        Add(entries, OpenRow("Countdown Style", DefaultMods.CountdownLabel(Game1.SelectedCountdown),
             "The 3, 2, 1, GO! shown before a song starts. Add your own in mods/countdowns/.",
             () => new SettingsActionResult { OpenCountdownMenu = true }));
 
