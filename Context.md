@@ -69,6 +69,11 @@ multiplayer, and desktop (Windows/Linux) + Android builds.
   (`CreatePrivateRoom` / `CheckPrivateRoom` / `LeavePrivateRoom` for the old 6-char code flow) was
   **not** taken: conflicts in `MultiplayerMenu.cs` / `NetworkManager.cs` kept the fork's room system.
   Fork `master` was not moved (still `5d0f9e0`).
+  2026-11-27: upstream `841fffd` (Android fixes, spritemaps, Character Editor rework) merged into
+  fork `master` (merge `8dded1b`). Conflicts: `ChartEditor.cs` kept the fork's version without the
+  tool / preview letter keys (upstream's Ctrl+C / Ctrl+V kept), `CharacterEditor.cs` and the
+  Character Editor part of this file took upstream's. Upstream's new Character Editor keys
+  (I import, B backdrop, 1-3 in the import window, G) were left as they are.
 - Main project: `FunkyMakerPlayer/FunkyMakerPlayer.csproj`
 - Target frameworks: `net10.0;net10.0-android`
 - Tested SDK at time of writing: **.NET SDK 10.0.404** (`dotnet --version`).
@@ -135,8 +140,8 @@ Notes:
   Upstream has re-added the missing `_inspect_tool` reference before; if a sync
   brings it back, remove it again (see §18.1).
 - Put custom levels in `%AppData%\FunkyMakerPlayer\mods\levels\` (the default), or
-  in `mods\levels\` next to the executable (`ModsStorage` "Next to game" location; the Settings row
-  to move it was removed on 2026-11-27 and will move somewhere else; §13). Freeplay
+  in `mods\levels\` next to the executable after title screen → MODS FOLDER button → MOVE
+  (§10.1, §13). Freeplay
   scans `.fnmm`, `.zip`, and `.rar` recursively (case-insensitive), skips any
   `Backups\` folder, and also lists top-level folders containing `meta.json` or
   `data.json` (unpacked levels).
@@ -163,6 +168,9 @@ Notes:
 │   ├── Game1.Window.cs          partial: FPS cap, fullscreen, render target, letterbox, present
 │   ├── Game1.Discord.cs         partial: Rich Presence + display names
 │   ├── Game1.SettingsMenu.cs    partial: in-game settings overlay results
+│   ├── Game1.BreakSkip.cs       (fork) partial: Skip Breaks (Space skips intro / intermission / outro)
+│   ├── Game1.DevShot.cs         (fork) partial, desktop: dev harness (FMP_* env vars: window, touch sim, screenshot)
+│   ├── FreeplayMenu.TitleButtons.cs (fork) title screen secondary buttons + move-mods-folder window
 │   ├── Game1.Android.cs         partial (Android): touch guard, APK assets, SAF / mods picker
 │   ├── Game1.Touch.cs           partial (Android): back gesture, shared touch pointer, menu-button auto-hide (§13)
 │   ├── Game1.Osu.cs             partial: osu! background, .osz / .osk import, replay lookup (§14.2)
@@ -969,7 +977,9 @@ containing `"notes"` and not `"strumlines"`. It converts in memory
   order). Old types: `camera` → `CameraSet` (`auto` or 0-based index copied as-is,
   `focus`, always `transitionTime=0.83` s), `changeanim`/`changesprite`/`changetype`/
   `visible` (`yes`/`true`) → Object* actions, `flash` → fixed `ScreenFlash`,
-  `shake` (no args) → `CameraShake` delay 0.10 s / 2 shakes / strength 12. Args are
+  `shake` (no args) → `CameraShake` delay 0.10 s / 2 shakes / strength 12.
+  `icon1` / `icon2` (arg = sprite name) → `BarIconChange` target 0 (opponent) / 1 (player) (fork,
+  2026-11-27; before, they were dropped as unknown and e.g. Yellow's icons never changed). Args are
   read as strings (bare JSON numbers/bools tolerated) and parsed culture-invariant.
 - scene `type` (`0=bg,1=player,2=enemy`) → `strumLine`
 - sprite `type 0` → treated like `type 2`
@@ -1381,6 +1391,33 @@ Editor stage preview); `Game1` delegates to it.
   else D; SFC / GFC / FC labels. Files of the first version (best only, `Player` / `Enemy`
   fields) are moved into `Attempts` on load.
 
+### Song length, timeskip rollback, Skip Breaks (fork, 2026-11-27)
+
+- **Song length**: `_songEndTime` is the music length when there is music (else the end of the
+  last note); `_chartEndTime` is the end of the last note (start + hold). The timer and the seek
+  clamp use the song length (before, the timer reached 0 at the last arrow and a timeskip past it
+  jumped back); a failed attempt's `Progress` uses the chart end.
+- **Timeskip backwards undoes stats**: `NoteRenderer` keeps a stat history (`StatSnapshot`: score,
+  combo, max combo, misses, judgements, hit-error count), recorded at the start of each `Update`
+  when something changed. `SeekTo` to an earlier time restores the last snapshot at or before
+  `target - HIT_WINDOW` (the notes that come back into play are given back); `Game1._playerMaxCombo`
+  follows `MaxCombo`. Health is not rolled back.
+- **Skip Breaks** (`Game1.BreakSkip.cs`, setting GAMEPLAY → *Breaks* → Skip Breaks, saved
+  `SkipBreaks`, default OFF): `PrepareBreakSkips` (after the end times in SetupLevel) sorts every
+  note of every strumline. A *break* is more than 3 s (`BreakMinGap`) with no arrows: before the
+  first one (Intro), between two (Intermission) or from the last one to the song end (Outro). It is
+  offered once the previous arrow is `HIT_WINDOW + 0.1` s behind (so a skip can't drop a pending
+  miss) and when it saves at least 0.5 s. Space (`UpdateBreakSkip`, after the timeskip keys) jumps
+  to 1 s before the next arrow or to the song end via `SeekSong(target, breakSkip: true)`, which
+  doesn't invalidate the replay, doesn't set `_runAssisted` and keeps the safe-frames start
+  (`NoteRenderer.SeekTo(.., keepStartTime)`). Each skip is saved in the replay
+  (`ReplayTrack.Skips`, `ReplaySkip(From, To)`) and repeated by playback when the song reaches
+  `From`. Solo only (not online / spectating), not paused, not with menus open. Prompt
+  (`DrawBreakSkipPrompt`): "Press Space to Skip the Intro / Intermission / Outro" ("Tap here ..."
+  on Android), centred above the health bar's default place (y 650 of 720; below y 50 with
+  downscroll). Android: `TouchControls.SkipButtonBounds` (set every frame from the prompt) claims
+  touches that start on it and sends Space, so they never press a lane.
+
 ---
 
 ## 9. Events and action packs
@@ -1440,14 +1477,36 @@ sends Esc) and PgUp/PgDn speed. Key letters were removed from button labels and 
 Kept on purpose: Esc everywhere, T = chat in the online waiting room, and the few rebindable
 hotkeys of §10.3 ("Rebindable hotkeys"). Editors: §11 / §10.4.
 
+### 10.0b Phone-sized UI (fork, 2026-11-27)
+
+Menus scale with the screen height (1280x720 = 1.0), so on a phone they took the same share of the
+screen as on a monitor but were physically tiny. `UI/UiScale.Touch` is an extra factor on touch
+screens: `InitTouchFromScreen` (Game1.Initialize, Android: `DisplayMetrics` short side in inches)
+sets it to `4.2 / inches` clamped to 1..1.6 (about 1.5 on a phone, 1 on tablets; always 1 on
+desktop). It is applied through:
+- `UiScale.FromScreen` (multiplied, but never past what keeps an 853x480 layout on screen;
+  `UiScale.Proportional` is the old formula without it) and `UiScale.FontPx` (on touch, base sizes
+  under 15 start at 15): title screen, Freeplay, replays, options / modifiers windows, Editor Hub.
+- `SettingsManager.Draw` (`scaleFactor` × the boost, at most 1.2x so enough rows fit) and
+  `MultiplayerMenu.GetUiScale` (all the online screens).
+- Touch-only layouts: the title screen cards become a 2-column grid; the credits use two columns;
+  the Editor Hub shrinks its cards to fit instead of running under the footer.
+Not boosted (fixed full-screen layouts): the solo results screen and the gameplay HUD. **New menus
+must take their scale from `UiScale.FromScreen` (or multiply by `FromScreen / Proportional`)** and
+be checked at phone proportions with the dev harness (§20).
+
 ### 10.1 Main menu (`FreeplayMenu`)
 
 Main menu cards (mouse hover/click or keyboard):
-- Desktop: `FREEPLAY`, `MULTIPLAYER`, `REPLAYS`, `EDITORS`, `SETTINGS`, `CREDITS`.
-- Android: `FREEPLAY`, `MULTIPLAYER`, `REPLAYS`, `EDITORS`, `SETTINGS`, `OPEN MODS`,
-  `IMPORT FILE`, `GRANT FOLDER ACCESS`, `CREDITS`.
-- (fork) `REPLAYS` (index 2, `MenuAction = 7`) opens `UI/ReplayBrowser` (§12.4). Indices of
-  the later cards moved by one (`ExecuteMainMenuSelection`, `menuCount` 6 / 9).
+- Every platform: `FREEPLAY`, `MULTIPLAYER`, `REPLAYS`, `EDITORS`, `SETTINGS`, `CREDITS`
+  (`menuCount` 6, `ExecuteMainMenuSelection`).
+- (fork) `REPLAYS` (index 2, `MenuAction = 7`) opens `UI/ReplayBrowser` (§12.4).
+- **Secondary buttons** (fork, 2026-11-27, `FreeplayMenu.TitleButtons.cs`): a row of smaller
+  buttons between the cards and the hint, mouse / touch only. Desktop: **MODS FOLDER: APPDATA /
+  NEXT TO GAME** (opens the "Move the mods folder?" window, see §13). Android: **OPEN MODS**
+  (`MenuAction` 5), **IMPORT FILE** (4), **FOLDER ACCESS** (6, SAF grant): they used to be three
+  extra main cards, which made the phone title screen crowded. New actions that aren't a place to
+  go belong in this row, not in the main cards.
 
 `HUD EDITOR` is **no longer a main-menu item**; it is reached from `EDITORS`,
 from Settings → GRAPHICS → "HUD Editor", or from the pause menu (desktop).
@@ -1499,7 +1558,8 @@ into partial files (`FreeplayMenu.Browse/LevelPanel/Details/Preview/Icons/Diffic
   `FreeplayMenu.Browse.cs`): the personal best expanded in the middle (the best finished run when
   nothing is ranked), every other attempt of the side as capsules around it. Differences: the
   backdrop only dims Freeplay, no RETRY, the best compares against the next best and the others
-  against the best, no timing graph (only avg. error / UR are saved), stars at 1.00x and the
+  against the best, no timing graph and no space for it (the capsule is shorter, `MainH` 522; only
+  the avg. error / UR line, which is saved), stars at 1.00x and the
   chart's note count from the Freeplay info cache. WATCH REPLAY sets
   `FreeplayMenu.ReplayRequested`; `Game1` loads it with `ReplayStore.Load` + `StartReplay`.
   DELETE ATTEMPT (the button, twice within 3 s) removes it (the replay file is kept) and
@@ -1593,7 +1653,7 @@ Opened from the main menu (Esc or `SETTINGS`), the pause menu, and the online me
 
 | Tab | Rows (*Section*; indented rows depend on the row above) |
 |---|---|
-| `GAMEPLAY` | *Scrolling*: Downscroll, Middlescroll, Scroll Speed (0.25–5.00x); *Input*: Ghost Tapping; *Practice*: Botplay, Timeskip (OFF / 5–60 s) → Jump in This Song (needs Timeskip on and a loaded song) |
+| `GAMEPLAY` | *Scrolling*: Downscroll, Middlescroll, Scroll Speed (0.25–5.00x); *Input*: Ghost Tapping; *Breaks*: Skip Breaks (§8); *Practice*: Botplay, Timeskip (OFF / 5–60 s) → Jump in This Song (needs Timeskip on and a loaded song) |
 | `APPEARANCE` | *Style*: Note Style, Note Splash, Countdown Style; *Readability*: Lane Underlay, Show Key Labels; *Effects*: Arrow Effects → Effect Type |
 | `HUD` | HUD Editor (desktop), Show HUD → (*Arrows & Notes*: Strumlines → Your Arrows, Opponent's Arrows → Opponent Opacity (Online) = `MultiplayerSettings.GhostTransparency`, Extra Arrows; *On Screen*: Combo & Judgements, Score & Stats, Health Bar → Health Icons, Song Title, Status Line; *Song Timer*: Song Timer → Position, Color, Text, Always on Top (= `TimerForceTop`, only the Top position uses it)); *Debug* (not under Show HUD): FPS Counter, Debug Info |
 | `AUDIO` | *Volume*: Master Volume → Music, Menu Music, Sound Effects; *Sync*: Audio Offset; *Sounds*: Miss Sound |
@@ -1601,9 +1661,13 @@ Opened from the main menu (Esc or `SETTINGS`), the pause menu, and the online me
 | `osu!` | *Gameplay*: Scroll Speed Changes, Note Skin; *Hitsounds*: Hitsounds → Hitsound Volume; *Background*: Background Dim, Video → Video Quality, Background Behind Video; Storyboard |
 | `CONTROLS` | *Keyboard*: Note Keys (desktop, opens `KeyBindingOverlay`) / *Touch* (Android): Touch Hitbox Colors → Hitbox Opacity, Menu Buttons; hotkeys grouped by `Controls.Info.Group` (Anywhere, During a song); *Reset*: Reset Hotkeys |
 
+VSync (fork fix, 2026-11-27): `ApplyChanges` re-centres and re-borders the SDL window, which used to
+drop the borderless fullscreen; the toggle now calls `SetFullscreen(true)` again afterwards (keeping
+the saved windowed position).
+
 Removed on 2026-11-27: Advanced Timing (Input Buffer / Safe Frames: the `NoteRenderer` defaults
 10 ms / 83 ms always apply; values in old settings.json are ignored and no longer saved), Move
-Mods Folder (`ModsStorage` still exists, to be exposed somewhere else), and the timer position
+Mods Folder (now the title screen's MODS FOLDER button, §10.1), and the timer position
 "Legacy" (it drew exactly like "HUD Editor"; a saved "Legacy" shows as HUD Editor). Tab
 constants: `GameplayTab` 0, `AppearanceTab` 1, `HudTab` 2, `AudioTab` 3, `VideoTab` 4,
 `OsuTab` 5, `ControlsTab` 6. Solo games always show the opponent's notes at full opacity
@@ -1624,7 +1688,10 @@ via `HandleEscape`; the X button clears). Android / touch: tapping it opens the 
 dialog. Results = every row of every tab whose label, section, tab name or description contains
 all the typed words (accent-insensitive `Fold`), grouped under "TAB - SECTION" headers.
 Left/Right don't switch tabs while searching; clicking a tab leaves the search. `Game1` skips
-the volume hotkeys while `IsSearching`; closing the settings clears the search.
+the volume hotkeys while `IsSearching`; closing the settings clears the search. Keys pressed to
+rebind (a CONTROLS hotkey or the Note Keys screen) never reach the search: `UpdateSearch(...,
+discardTyping: _keyCaptureHoldoff)` drops typed text until every key is released, the Note Keys
+overlay clears `TextEntry` while open and arms the hold-off when it closes (fork, 2026-11-27).
 
 **Layout**: sizes scale with the screen height and are clamped; the SpriteFont fallback uses the
 same pixel sizes (`size / 36`). The description box has a fixed height (three lines at the
@@ -1664,7 +1731,7 @@ unknown actions are dropped.
 |---|---|---|
 | Toggle Fullscreen (desktop only) | F11 | Game1 (then keys withheld until released) |
 | Volume Up / Down | = / - | Game1 global (not while typing / searching, not in editors) |
-| Slower / Faster Notes | F3 / F4 | Game1, in a song incl. paused (±0.10x, "SCROLL SPEED" toast) |
+| Slower / Faster Notes | F3 / F4 | Game1, in a song incl. paused (±0.25x, "SCROLL SPEED" toast) |
 | Skip Forward / Backward | T / Shift+T | Game1 (hold repeats; unmodified lane keys ignored; not online; Timeskip not OFF) |
 | Open Chart Editor | 7 | Game1 in a song (or back from a playtest), main menu → Editor Hub, `EditorPicker` closes |
 
@@ -1725,6 +1792,14 @@ copies values into static bridges:
 
 `Settings.Save(vsync)` writes all values back. Key bindings are stored as
 `Keys` names and require an array of length 4.
+
+**Defaults (owner's setup, 2026-11-27).** The defaults are the owner's own settings: scroll speed
+2.50x, Timeskip OFF, Ghost Tapping OFF, Show Key Labels ON, note keys A / S / K / L, extra
+strumlines hidden, timer colour preset 1 (cyan), master volume 50 %, SFX and menu music 100 %,
+osu! hitsound volume 100 % and background dim 0 %; online: opponent notes opacity 100 % and update
+rate High (120). Both the `Settings.Data` initializers and the static fields they load into
+(`NoteRenderer`, `Game1`, `UiSfx`, `OnlineMenuMusic`, `OsuSettings`, `MultiplayerSettings` +
+`ResetToDefaults`) carry them: change both together.
 
 ### 10.4 HUD editor
 
@@ -1802,7 +1877,7 @@ Menus and editors play short sound effects through `UI/UiSfx.cs`.
   Failures are logged once (`[UiSfx]`) and cached.
 - **Volume:** `Game1.MasterVolume` (the "Master Volume" row / `-` `+` hotkeys)
   × `UiSfx.Volume` (**Sound Effects** row in Settings → AUDIO; `SoundFiles` (countdown/miss sounds) uses it too, persisted as
-  `SfxVolume`, default 0.8) × a per-sound gain in `UiSfx.Defs`.
+  `SfxVolume`, default 1.0) × a per-sound gain in `UiSfx.Defs`.
 - **How sounds are triggered** — mostly by *state diffs*, not by input paths,
   so keyboard, mouse and touch behave the same:
   - `Game1.UiSfx.cs`: snapshot before `UpdateInternal`, compare after. Screen
@@ -1854,7 +1929,7 @@ Menus and editors play short sound effects through `UI/UiSfx.cs`.
   fades everything out (0.35 s); Portraits resumes where it was next time.
 - **Volume:** `Game1.MasterVolume` (master) × `OnlineMenuMusic.Volume` ×
   fade. `OnlineMenuMusic.Volume` is the **Menu Music Volume** row in Settings →
-  AUDIO, row "Menu Music" (default 70%, step 5%, persisted as `MenuMusicVolume`). Applied live
+  AUDIO, row "Menu Music" (default 100%, step 5%, persisted as `MenuMusicVolume`). Applied live
   every frame, so slider/hotkey changes are heard immediately.
 
 ---
@@ -2475,10 +2550,10 @@ old clients never see a vote window (the vote then closes after 30 s and counts 
   NextToGame only if `<exe dir>\mods` already holds the player's own content
   (`HasPlayerContent`: anything not `IsShippedDefault`), else AppData, and saves the
   choice. `PlatformPaths.GetModsBasePath()` returns `ModsStorage.CurrentPath`.
-  (Removed from Settings on 2026-11-27, to be exposed elsewhere; `ModsStorage.MoveToAsync` remains.) It used to be **Move Mods Folder** (desktop only; opens a
-  "Move mods folder?" window with from/to paths and the trade-off of each location,
-  Y/Enter or click to move, N/Esc to cancel; it takes input via the key-capture path,
-  `IsCapturingKey`; blocked while a level is loaded, `Game1.HasActiveLevel`) runs
+  The title screen's **MODS FOLDER** button (desktop only, `FreeplayMenu.TitleButtons.cs`; it was a
+  Settings row until 2026-11-27) opens a "Move the mods folder?" window with from/to paths and the
+  trade-off of each location (MOVE / CANCEL buttons, Left/Right + Enter, Esc or a click outside
+  cancels). MOVE runs
   `ModsStorage.MoveToAsync` on a background thread. It moves per item: a level file,
   an unpacked level folder (has meta.json/data.json; other folders under `levels`, e.g.
   `Received/`, are walked into), each entry of notestyles/notesplashes/countdowns/fonts,
@@ -2764,7 +2839,8 @@ The first beat (step 3) draws nothing (the old text "3" fallback was removed).
 Folder with exactly `ready.png`, `set.png`, `go.png`; selected in settings
 (Countdown Style). The setting value for the default is the legacy lowercase
 `"default"`, which maps to `mods/countdowns/Default/`; scans skip a folder
-named Default (case-insensitive). Both `SettingsManager` and `CountdownMenu`
+named Default (case-insensitive). Menus show the default as **"FMM (Default)"**
+(`DefaultMods.CountdownLabel`; folder and setting value are unchanged, 2026-11-27). Both `SettingsManager` and `CountdownMenu`
 scan `PlatformPaths.GetCountdownsPath()` (the settings scan used
 `AppContext.BaseDirectory\mods` before, which is wrong for single-file/Android).
 
@@ -3115,10 +3191,11 @@ buttons, or arrows + Enter/Space + Esc.
 
 | Key | Action |
 |---|---|
-| D/F/J/K (default, rebindable) | lanes left/down/up/right |
+| A/S/K/L (default since 2026-11-27, rebindable) | lanes left/down/up/right |
 | Esc (touch: pause button) | pause (solo) / non-pausing overlay (multiplayer) |
 | T / Shift+T (rebindable, hold repeats) | timeskip forward/backward by `TimeskipSeconds` (not OFF, not online, ignored if it is a lane key) |
-| F3 / F4 (rebindable) | scroll speed -/+ 0.10x (also paused) |
+| Space (Skip Breaks on, in a break) | skip the intro / intermission / outro (not penalised) |
+| F3 / F4 (rebindable) | scroll speed -/+ 0.25x (also paused) |
 | `-` / `=` (rebindable) | master volume (global) |
 | F11 (rebindable, desktop) | fullscreen (global) |
 | 7 (rebindable) | open Chart Editor (solo) / return to editor during playtest |
@@ -3316,6 +3393,17 @@ Status key: **[fixed]** resolved in the current tree; **[open]** still applies
 ## 20. Verification checklist
 
 After any change:
+
+**Dev harness** (`Game1.DevShot.cs`, desktop only, environment variables, nothing happens without
+them): `FMP_WINDOW=1200x540` (window size; 1200x540 = a 2400x1080 phone at half size),
+`FMP_TOUCH_SIM=1.5` (act as a touch screen with that `UiScale.Touch`; `PointerInput.IsTouch` is
+true), `FMP_OPEN=settings[:tab] | freeplay | editors | credits | replays | online | modsfolder |
+level | pause` (`level` / `pause` load `FMP_LEVEL=<path>`), `FMP_SHOT=out.png` + `FMP_SHOT_DELAY=4`
+(save the window as a PNG after that many seconds and quit). Example (Git Bash, from
+`FunkyMakerPlayer/bin/Debug/net10.0`):
+`FMP_WINDOW=1200x540 FMP_TOUCH_SIM=1.5 FMP_OPEN=settings:2 FMP_SHOT=shot.png ./FunkyMakerPlayer.exe`.
+Use it to check any menu change at phone proportions (and at 1280x720 without `FMP_TOUCH_SIM`).
+
 
 - [ ] `dotnet build FunkyMakerPlayer\FunkyMakerPlayer.csproj -c Debug -f net10.0 /p:TargetFrameworks=net10.0`
       succeeds (or Android workload is installed).
