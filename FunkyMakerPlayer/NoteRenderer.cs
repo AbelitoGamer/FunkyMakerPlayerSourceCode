@@ -294,7 +294,8 @@ public class NoteRenderer
     /// Discards all notes before targetTime without firing miss/hit callbacks.
     /// Used for timeskip so the chart stays in sync with the new song position.
     /// </summary>
-    public void SeekTo(float targetTime)
+    /// <param name="keepStartTime">Keep the safe-frames start (Skip Breaks: the replay must judge the same way).</param>
+    public void SeekTo(float targetTime, bool keepStartTime = false)
     {
         // Seeking back (fork): give back the score / combo / judgements of the notes that come
         // back into play, so a rewind can't be used to collect the same points twice.
@@ -319,7 +320,7 @@ public class NoteRenderer
         }
         
         // Reset song start time for safe frames recalculation
-        _songStartTime = targetTime > 0f ? targetTime : -1f;
+        if (!keepStartTime) _songStartTime = targetTime > 0f ? targetTime : -1f;
     }
 
     private float ScreenH => _rtHeight;

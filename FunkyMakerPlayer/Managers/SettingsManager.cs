@@ -531,6 +531,12 @@ public class SettingsManager
             "ON: pressing a key when there is no note to hit does nothing. OFF: every press that doesn't hit a note counts as a miss.",
             () => NoteRenderer.GhostTapping = !NoteRenderer.GhostTapping));
 
+        Add(entries, Header("Breaks"));
+
+        Add(entries, Toggle("Skip Breaks", Game1.SkipBreaks,
+            "When a song has more than 3 seconds without arrows (intro, a pause in the middle, the end after the last arrow), press Space (on a phone: tap the message above the health bar) to jump to 1 second before the next arrow, or to the end of the song. Unlike the Timeskip, your score and replay still count. Not in online matches.",
+            () => Game1.SkipBreaks = !Game1.SkipBreaks));
+
         Add(entries, Header("Practice"));
 
         if (InMultiplayerMatch)

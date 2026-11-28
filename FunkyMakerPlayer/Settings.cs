@@ -91,6 +91,8 @@ public static class Settings
         public int GlobalOffsetMs { get; set; } = 0;
         /// <summary>Fork: play the miss sound.</summary>
         public bool MissSounds { get; set; } = true;
+        /// <summary>Fork: Skip Breaks (Space skips long stretches without arrows; Game1.BreakSkip.cs).</summary>
+        public bool SkipBreaks { get; set; } = false;
         
         /// <summary>
         /// Health icons: 0 = move with the health bar divider (FNF style), 1 = pinned to the bar ends.
@@ -161,6 +163,7 @@ public static class Settings
             NoteRenderer.ShowKeyLabels     = d.ShowKeyLabels;
             NoteRenderer.LaneUnderlay      = Math.Clamp(d.LaneUnderlay, 0f, NoteRenderer.LaneUnderlayMax);
             NoteRenderer.MissSounds        = d.MissSounds;
+            Game1.SkipBreaks               = d.SkipBreaks;
             Game1.GlobalOffsetMs           = Math.Clamp(d.GlobalOffsetMs, -Game1.MaxOffsetMs, Game1.MaxOffsetMs);
             Game1.ShowTimer                = d.ShowTimer;
             Game1.TimeskipSeconds          = d.TimeskipEnabled == false || d.TimeskipSeconds <= 0f
@@ -241,6 +244,7 @@ public static class Settings
                 LaneUnderlay     = NoteRenderer.LaneUnderlay,
                 GlobalOffsetMs   = Game1.GlobalOffsetMs,
                 MissSounds       = NoteRenderer.MissSounds,
+                SkipBreaks       = Game1.SkipBreaks,
                 ShowTimer        = Game1.ShowTimer,
                 TimeskipSeconds  = Game1.TimeskipSeconds,
                 TimerColorPreset = Game1.TimerColorPreset,

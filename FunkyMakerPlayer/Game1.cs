@@ -2165,6 +2165,9 @@ public partial class Game1 : Game
             }
         }
 
+        // Skip Breaks (fork): Space skips a long stretch without arrows; replays repeat recorded skips
+        UpdateBreakSkip(kb, dt);
+
         // Key binding: delegate to overlay
         _keyBindOverlay.Update(kb, _prevKb);
         if (_keyBindOverlay.IsActive)
@@ -3213,6 +3216,7 @@ public partial class Game1 : Game
         DrawCountdown(sw, sh);
         DrawJudgement(sw, sh);
         DrawReplayBanner(sw, sh);
+        DrawBreakSkipPrompt(sw, sh);
         
         // Draw game over overlay using extracted UI component
         if (_gameOverOverlay != null && _gameOverOverlay.IsActive && _noteRenderers.Count > 0)

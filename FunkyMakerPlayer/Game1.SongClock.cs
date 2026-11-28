@@ -141,13 +141,20 @@ public partial class Game1
     /// audio and chart stay in sync. Events already fired before the seek point
     /// are skipped by the EventProcessor's next-event index.
     /// </summary>
-    private void SeekSong(float targetTime)
+    /// <param name="breakSkip">
+    /// Skip Breaks jump (Game1.BreakSkip.cs): not a timeskip, so the run and its replay stay valid,
+    /// it works while watching a replay (that's how playback repeats it) and safe frames keep their start.
+    /// </param>
+    private void SeekSong(float targetTime, bool breakSkip = false)
     {
         if (_level == null) return;
-        // Replays (fork): seeking would desync the recording / the playback.
-        if (IsWatchingReplay) return;
-        InvalidateReplayRecording("timeskip");
-        _runAssisted = true; // no personal best after a timeskip (fork)
+        if (!breakSkip)
+        {
+            // Replays (fork): seeking would desync the recording / the playback.
+            if (IsWatchingReplay) return;
+            InvalidateReplayRecording("timeskip");
+            _runAssisted = true; // no personal best after a timeskip (fork)
+        }
         targetTime = Math.Clamp(targetTime, 0f, _songEndTime - 0.1f);
 
         // ── Advance chart timing ─────────────────────────────────────────────
@@ -159,7 +166,7 @@ public partial class Game1
 
         // ── Seek note renderers (skip notes before targetTime) ───────────────
         foreach (var r in _noteRenderers)
-            r.SeekTo(targetTime);
+            r.SeekTo(targetTime, keepStartTime: breakSkip);
         // A backward seek rolls the player's stats back (NoteRenderer.SeekTo); max combo follows
         if (_noteRenderers.Count > 0) _playerMaxCombo = _noteRenderers[0].MaxCombo;
 

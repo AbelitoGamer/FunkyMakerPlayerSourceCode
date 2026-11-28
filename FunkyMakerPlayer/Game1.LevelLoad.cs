@@ -1003,6 +1003,7 @@ public partial class Game1
         if (_chartEndTime < 1f)
             _chartEndTime = hasMusicLength ? _musicDurationSeconds : 30f;
         _songEndTime = hasMusicLength ? Math.Max(_chartEndTime, _musicDurationSeconds) : _chartEndTime;
+        PrepareBreakSkips(); // Skip Breaks (fork): where the stretches without arrows are
 
         // Mark setup complete
         if (_loadingScreen != null)
