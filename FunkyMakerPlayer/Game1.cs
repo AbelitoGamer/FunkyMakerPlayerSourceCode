@@ -1268,6 +1268,16 @@ public partial class Game1 : Game
         bool suppressUserInput = !windowActive || _focusRegainGrace > 0f || _waitMouseReleaseAfterFocus;
         var kb = suppressUserInput ? default : rawKb;
 
+        // Notice window (fork, UI/NoticeWindow.cs): takes every input while open, and for the frames
+        // until the closing tap / key is released, so the screen underneath doesn't get it.
+        if (UI.NoticeWindow.IsOpen || UI.NoticeWindow.SwallowInput())
+        {
+            UI.NoticeWindow.Update(dt);
+            _prevKb = kb;
+            base.Update(gameTime);
+            return;
+        }
+
         // Settings → CONTROLS key capture (fork): the capture gets the raw keys; the rest of the game
         // sees no keyboard until every key is released, so the captured key doesn't also act.
         if (_settingsManager != null)
@@ -1515,7 +1525,7 @@ public partial class Game1 : Game
                     break;
 
                 case PauseMenu.PauseAction.OpenHudEditor:
-                    if (!_isMultiplayerMatch)
+                    if (!_isMultiplayerMatch && !BlockEditorOnMobile("HUD Editor"))
                     {
                         _inPauseMenu = false;
                         _hudEditorReturnTarget = HudEditorReturnTarget.PauseMenu;
@@ -1811,10 +1821,13 @@ public partial class Game1 : Game
             if (_freeplay.NewChartRequested)
             {
                 _freeplay.ConsumeNewChartRequest();
-                _inFreeplay = false;
-                _inLevelSelector = true;
-                _levelSelectorReturnTarget = ChartEditorReturnTarget.Freeplay;
-                _levelSelector = new Editors.Chart.LevelSelector(_pixel!, _font!, _fontRenderer, startCreateModal: true);
+                if (!BlockEditorOnMobile("Chart Editor"))
+                {
+                    _inFreeplay = false;
+                    _inLevelSelector = true;
+                    _levelSelectorReturnTarget = ChartEditorReturnTarget.Freeplay;
+                    _levelSelector = new Editors.Chart.LevelSelector(_pixel!, _font!, _fontRenderer, startCreateModal: true);
+                }
             }
             
             // Check if user requested editing a chart from Freeplay panel ("7" or EDIT button)
@@ -2986,6 +2999,7 @@ public partial class Game1 : Game
         {
             if (DrawTestGate()) return;  // test build still gated (fork)
             DrawInternal(gameTime);
+            DrawNoticeWindow();
 #if !ANDROID
             DevShotAfterDraw();
 #endif

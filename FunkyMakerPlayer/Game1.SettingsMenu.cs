@@ -88,6 +88,9 @@ public partial class Game1
         if (result.OpenFontMenu)
             _fontMenu?.Open(GraphicsDevice);
 
+        if (result.OpenHudEditor && BlockEditorOnMobile("HUD Editor"))
+            result.OpenHudEditor = false; // phones: stay in Settings, the notice window explains why
+
         if (result.OpenHudEditor)
         {
 #if ANDROID
