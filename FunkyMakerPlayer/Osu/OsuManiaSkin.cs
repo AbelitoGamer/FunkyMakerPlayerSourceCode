@@ -107,10 +107,13 @@ public static class OsuManiaSkin
         try
         {
             if (!Directory.Exists(folder)) return false;
-            if (File.Exists(Path.Combine(folder, "skin.json"))) return false; // FNF / FMM style
-            bool hasIni = Directory.GetFiles(folder, "skin.ini").Length > 0;
-            bool hasManiaNote = Directory.EnumerateFiles(folder, "mania-note*.*", SearchOption.TopDirectoryOnly).Any();
-            return hasManiaNote || (hasIni && Directory.GetFiles(folder, "*.png").Length > 0);
+            if (CaseInsensitivePaths.ResolveFile(folder, "skin.json") != null) return false; // FNF / FMM style
+            bool hasIni = CaseInsensitivePaths.ResolveFile(folder, "skin.ini") != null;
+            bool hasManiaNote = Directory.EnumerateFiles(folder, "*", SearchOption.TopDirectoryOnly)
+                .Any(f => Path.GetFileName(f).StartsWith("mania-note", StringComparison.OrdinalIgnoreCase));
+            bool hasPng = Directory.EnumerateFiles(folder, "*", SearchOption.TopDirectoryOnly)
+                .Any(f => f.EndsWith(".png", StringComparison.OrdinalIgnoreCase));
+            return hasManiaNote || (hasIni && hasPng);
         }
         catch { return false; }
     }
@@ -123,13 +126,13 @@ public static class OsuManiaSkin
     {
         try
         {
-            var files = Directory.EnumerateFiles(folder, "*.*", SearchOption.AllDirectories)
+            var files = Directory.EnumerateFiles(folder, "*", SearchOption.AllDirectories)
                 .Where(f => f.EndsWith(".png", StringComparison.OrdinalIgnoreCase) || f.EndsWith(".jpg", StringComparison.OrdinalIgnoreCase))
                 .GroupBy(f => Path.ChangeExtension(Path.GetRelativePath(folder, f), null)!.Replace('\\', '/').ToLowerInvariant())
                 .ToDictionary(g => g.Key, g => g.First());
 
-            string iniPath = Path.Combine(folder, "skin.ini");
-            var ini = !beatmapSkin && File.Exists(iniPath) ? OsuSkinIni.Parse(File.ReadAllText(iniPath)) : new OsuSkinIni();
+            string? iniPath = CaseInsensitivePaths.ResolveFile(folder, "skin.ini");
+            var ini = !beatmapSkin && iniPath != null ? OsuSkinIni.Parse(File.ReadAllText(iniPath)) : new OsuSkinIni();
             ini.Mania.TryGetValue(4, out var cfg);
             cfg ??= new Dictionary<string, string>();
 

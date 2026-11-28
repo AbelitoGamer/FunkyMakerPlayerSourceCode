@@ -18,9 +18,16 @@ namespace FunkyMakerPlayer.Editors.Chart
         private bool _charModalUpdateIcon = true;
         private bool _charModalAutoScale = false;
         private List<CharacterSummary> _charModalLibrary = new();
-        private readonly List<(Rectangle Rect, Action OnClick)> _charModalClicks = new();
+        private readonly List<(Rectangle Rect, Action OnClick, bool Repeatable)> _charModalClicks = new();
         private readonly Dictionary<string, Texture2D?> _charModalIcons = new(StringComparer.OrdinalIgnoreCase);
         private Rectangle _charsBtnRect;
+
+        // Hold-to-repeat state for Pos X / Pos Y / Scale buttons (mouse + Android touch)
+        private Rectangle _charModalHoldRect;
+        private Action? _charModalHoldAction;
+        private double _charModalHoldNextTick;
+        private bool _charModalPrevRawLeftDown;
+        private bool _charModalSuppressRelease;
 
         private void DisposeCharacterModalIcons()
         {
@@ -83,6 +90,9 @@ namespace FunkyMakerPlayer.Editors.Chart
         private void ToggleCharacterModal()
         {
             _charModalOpen = !_charModalOpen;
+            _charModalHoldAction = null;
+            _charModalSuppressRelease = false;
+            _charModalPrevRawLeftDown = PointerInput.GetRawState().LeftButton == ButtonState.Pressed;
             if (_charModalOpen)
             {
                 PausePlayback();
@@ -130,7 +140,57 @@ namespace FunkyMakerPlayer.Editors.Chart
                 _charModalScroll = Math.Clamp(_charModalScroll + step, 0, Math.Max(0, _charModalLibrary.Count - 5));
             }
 
+            var rawMs = PointerInput.GetRawState();
+            bool rawLeftDown = rawMs.LeftButton == ButtonState.Pressed;
+            bool rawJustPressed = rawLeftDown && !_charModalPrevRawLeftDown;
+            _charModalPrevRawLeftDown = rawLeftDown;
+
+            double nowSec = System.Diagnostics.Stopwatch.GetTimestamp() / (double)System.Diagnostics.Stopwatch.Frequency;
+
+            // Hold-to-repeat on repeatable buttons (Pos X / Pos Y / Scale +/-)
+            if (rawJustPressed)
+            {
+                for (int i = _charModalClicks.Count - 1; i >= 0; i--)
+                {
+                    if (_charModalClicks[i].Repeatable && _charModalClicks[i].Rect.Contains(rawMs.Position))
+                    {
+                        _charModalHoldRect = _charModalClicks[i].Rect;
+                        _charModalHoldAction = _charModalClicks[i].OnClick;
+                        _charModalHoldNextTick = nowSec + 0.28;
+                        _charModalSuppressRelease = PointerInput.IsTouch;
+                        _charModalHoldAction();
+                        return;
+                    }
+                }
+            }
+
+            if (_charModalHoldAction != null)
+            {
+                if (rawLeftDown)
+                {
+                    var tol = _charModalHoldRect;
+                    tol.Inflate(8, 8);
+                    if (tol.Contains(rawMs.Position) && nowSec >= _charModalHoldNextTick)
+                    {
+                        _charModalHoldAction();
+                        _charModalHoldNextTick = nowSec + 0.055;
+                    }
+                    return;
+                }
+                _charModalHoldAction = null;
+            }
+
             bool leftJustPressed = ms.LeftButton == ButtonState.Pressed && _prevMouse.LeftButton == ButtonState.Released;
+            if (_charModalSuppressRelease)
+            {
+                if (leftJustPressed)
+                {
+                    _charModalSuppressRelease = false;
+                    return;
+                }
+                if (!rawLeftDown)
+                    _charModalSuppressRelease = false;
+            }
             if (!leftJustPressed) return;
 
             for (int i = _charModalClicks.Count - 1; i >= 0; i--)
@@ -191,7 +251,19 @@ namespace FunkyMakerPlayer.Editors.Chart
             var pos = obj.GetPosition();
             var sc = obj.GetScale();
             float signX = sc.X < 0 ? -1f : 1f;
-            if (flipX) signX = -signX;
+            if (flipX)
+            {
+                signX = -signX;
+                // Keep Sing Left (1) <-> Sing Right (4) visually consistent when mirroring horizontally!
+                if (!string.IsNullOrEmpty(obj.Spr) &&
+                    _level.Sprites.TryGetValue(obj.Spr, out var sprPair) &&
+                    sprPair.Def.Data.Count >= 5 && sprPair.Frames.Count >= 5)
+                {
+                    (sprPair.Def.Data[1], sprPair.Def.Data[4]) = (sprPair.Def.Data[4], sprPair.Def.Data[1]);
+                    (sprPair.Frames[1], sprPair.Frames[4]) = (sprPair.Frames[4], sprPair.Frames[1]);
+                    InvalidateSpritePreviewCache(obj.Spr);
+                }
+            }
 
             float absX = Math.Clamp(MathF.Round(MathF.Abs(sc.X) + dScale, 2), 0.10f, 8.0f);
             float absY = Math.Clamp(MathF.Round(MathF.Abs(sc.Y) + dScale, 2), 0.10f, 8.0f);
@@ -260,32 +332,38 @@ namespace FunkyMakerPlayer.Editors.Chart
             var mr = new Rectangle((sw - mw) / 2, (sh - mh) / 2, mw, mh);
 
             // Register outside-click close first (lowest priority)
-            _charModalClicks.Add((fullRect, () => _charModalOpen = false));
+            _charModalClicks.Add((fullRect, () => _charModalOpen = false, false));
             // Swallow clicks inside modal body unless a button handles them
-            _charModalClicks.Add((mr, () => { }));
+            _charModalClicks.Add((mr, () => { }, false));
 
             sb.Draw(_pixel, mr, BG_PANEL);
             DrawBorder(sb, mr, new Color(178, 102, 255));
 
             int pad = UiScale.Px(14, s);
+            int hdrH = UiScale.Px(46, s);
+            sb.Draw(_pixel, new Rectangle(mr.X + 1, mr.Y + 1, mr.Width - 2, hdrH), new Color(19, 18, 29));
+            sb.Draw(_pixel, new Rectangle(mr.X + 1, mr.Y + hdrH, mr.Width - 2, 1), Color.White * 0.10f);
+
             int x = mr.X + pad;
             int w = mw - pad * 2;
-            int y = mr.Y + pad;
+            int y = mr.Y + UiScale.Px(12, s);
 
-            int titleFont = UiScale.FontPx(16, s);
-            int hdrFont = UiScale.FontPx(12, s);
+            int titleFont = UiScale.FontPx(15, s);
+            int hdrFont = UiScale.FontPx(11, s);
             int smallFont = UiScale.FontPx(12, s);
             int tinyFont = UiScale.FontPx(11, s);
+            int microFont = UiScale.FontPx(10, s);
 
-            DrawText(sb, "SCENE CHARACTERS & ICONS", new Vector2(x, y), ACCENT_GOLD, titleFont);
+            DrawText(sb, "SCENE CHARACTERS & ICONS", new Vector2(x, y + UiScale.Px(2, s)), ACCENT_GOLD, titleFont);
 
-            int closeW = UiScale.Px(72, s);
-            int openEdW = UiScale.Px(168, s);
+            int closeW = UiScale.Px(82, s);
+            int openEdW = UiScale.Px(172, s);
             int topBtnH = UiScale.Px(28, s);
-            DrawModalBtn(sb, new Rectangle(mr.Right - pad - closeW, y - 2, closeW, topBtnH), "CLOSE",
+            int topBtnY = mr.Y + (hdrH - topBtnH) / 2;
+            DrawModalBtn(sb, new Rectangle(mr.Right - pad - closeW, topBtnY, closeW, topBtnH), "CLOSE",
                 BG_CARD, Color.White, tinyFont, Color.White * 0.2f, () => _charModalOpen = false);
 
-            DrawModalBtn(sb, new Rectangle(mr.Right - pad - closeW - UiScale.Px(8, s) - openEdW, y - 2, openEdW, topBtnH),
+            DrawModalBtn(sb, new Rectangle(mr.Right - pad - closeW - UiScale.Px(8, s) - openEdW, topBtnY, openEdW, topBtnH),
                 "+ CHARACTER EDITOR",
                 new Color(52, 34, 78), new Color(210, 165, 255), tinyFont, new Color(178, 102, 255),
                 () =>
@@ -296,15 +374,16 @@ namespace FunkyMakerPlayer.Editors.Chart
                     OpenCharacterEditorRequested = true;
                 });
 
-            y += UiScale.Px(34, s);
+            y = mr.Y + hdrH + UiScale.Px(12, s);
 
-            // Role / Strumline Target Tabs
+            // Role / Strumline Target Tabs — distributed cleanly across the full modal width
             int tabGap = UiScale.Px(6, s);
             int tabH = UiScale.Px(30, s);
-            int bfW = UiScale.Px(150, s);
-            int foeW = UiScale.Px(160, s);
-            int extraW = UiScale.Px(135, s);
             int addSlW = UiScale.Px(96, s);
+            int tabGroupW = w - addSlW - tabGap * 3;
+            int bfW = (int)(tabGroupW * 0.34f);
+            int foeW = (int)(tabGroupW * 0.36f);
+            int extraW = tabGroupW - bfW - foeW;
 
             bool isBf = _charModalTargetStrumline == 0;
             bool isFoe = _charModalTargetStrumline == 1;
@@ -319,7 +398,7 @@ namespace FunkyMakerPlayer.Editors.Chart
                 isFoe ? ACCENT_PINK : Color.White * 0.12f, () => _charModalTargetStrumline = 1);
 
             string extraLbl = _level.Data.Strumlines.Count > 2
-                ? (isExtra ? $"EXTRA: SL{_charModalTargetStrumline} (cycle)" : $"EXTRA (SL2..{_level.Data.Strumlines.Count - 1})")
+                ? (isExtra ? $"EXTRA: SL{_charModalTargetStrumline}" : $"EXTRA (SL2..{_level.Data.Strumlines.Count - 1})")
                 : "NO EXTRA SL";
             DrawModalBtn(sb, new Rectangle(x + bfW + foeW + tabGap * 2, y, extraW, tabH), extraLbl,
                 isExtra ? ACCENT_GOLD * 0.26f : BG_CARD,
@@ -333,23 +412,20 @@ namespace FunkyMakerPlayer.Editors.Chart
                     }
                 });
 
-            if (x + bfW + foeW + extraW + tabGap * 3 + addSlW <= mr.Right - pad)
-            {
-                DrawModalBtn(sb, new Rectangle(x + bfW + foeW + extraW + tabGap * 3, y, addSlW, tabH), "+ NEW SL",
-                    BG_CARD, ACCENT_GREEN, tinyFont, ACCENT_GREEN * 0.45f, AddExtraStrumlineFromModal);
-            }
+            DrawModalBtn(sb, new Rectangle(x + bfW + foeW + extraW + tabGap * 3, y, addSlW, tabH), "+ NEW SL",
+                BG_CARD, ACCENT_GREEN, tinyFont, ACCENT_GREEN * 0.45f, AddExtraStrumlineFromModal);
             y += tabH + UiScale.Px(12, s);
 
             // Split body: Left = mods/characters list; Right = Current Strumline Scene Object Transform + Apply options
-            int leftW = (int)(w * 0.54f);
+            int leftW = (int)(w * 0.48f);
             int rightX = x + leftW + UiScale.Px(12, s);
             int rightW = x + w - rightX;
             int bodyH = mr.Bottom - pad - y;
 
             // Left: Character Library List
             DrawText(sb, $"MODS/CHARACTERS ({_charModalLibrary.Count})", new Vector2(x, y), ACCENT_GOLD, hdrFont);
-            int listTop = y + UiScale.Px(20, s);
-            int listH = bodyH - UiScale.Px(20, s);
+            int listTop = y + UiScale.Px(18, s);
+            int listH = bodyH - UiScale.Px(18, s);
             var listRect = new Rectangle(x, listTop, leftW, listH);
             sb.Draw(_pixel, listRect, BG_DARK);
             DrawBorder(sb, listRect, Color.White * 0.12f);
@@ -364,33 +440,64 @@ namespace FunkyMakerPlayer.Editors.Chart
                 int rowH = UiScale.Px(34, s);
                 int maxVis = Math.Max(3, (listH - 8) / (rowH + 3));
                 _charModalScroll = Math.Clamp(_charModalScroll, 0, Math.Max(0, _charModalLibrary.Count - maxVis));
+                bool needsScroll = _charModalLibrary.Count > maxVis;
+                int scrollW = needsScroll ? UiScale.Px(9, s) : 0;
 
                 for (int i = 0; i < maxVis && (_charModalScroll + i) < _charModalLibrary.Count; i++)
                 {
                     int idx = _charModalScroll + i;
                     var item = _charModalLibrary[idx];
-                    var rr = new Rectangle(listRect.X + 4, listRect.Y + 4 + i * (rowH + 3), listRect.Width - 8, rowH);
+                    var rr = new Rectangle(listRect.X + 4, listRect.Y + 4 + i * (rowH + 3), listRect.Width - 8 - scrollW, rowH);
                     bool sel = idx == _charModalSelectedIdx;
-                    string badge = item.IsRawSourceFolder ? $" [{item.RawSourceHint}]" : (item.HasIcon ? " [ICON]" : "");
+                    string badge = item.IsRawSourceFolder ? $" [{item.RawSourceHint}]" : (item.HasIcon ? " [ICO]" : "");
                     DrawModalBtn(sb, rr, item.Name + badge,
                         sel ? new Color(178, 102, 255) * 0.30f : BG_CARD,
                         sel ? Color.White : Color.White * 0.85f, smallFont,
                         sel ? new Color(178, 102, 255) : Color.White * 0.08f,
                         () => _charModalSelectedIdx = idx, leftAlign: true);
                 }
+
+                if (needsScroll)
+                {
+                    var track = new Rectangle(listRect.Right - scrollW, listRect.Y + 4, scrollW - 3, listRect.Height - 8);
+                    sb.Draw(_pixel, track, Color.White * 0.06f);
+                    int thumbH = Math.Max(14, (int)(track.Height * Math.Clamp(maxVis / (float)_charModalLibrary.Count, 0.12f, 1f)));
+                    int thumbY = track.Y + (int)((track.Height - thumbH) * (_charModalScroll / (float)Math.Max(1, _charModalLibrary.Count - maxVis)));
+                    sb.Draw(_pixel, new Rectangle(track.X, thumbY, track.Width, thumbH), new Color(178, 102, 255) * 0.7f);
+                }
             }
 
-            // Right: Current Scene Object Info + Placement Controls + Apply Button
+            // Right: Selected Character Summary + Apply Options + Transform Controls
             int ry = y;
             DrawText(sb, "ASSIGN & STAGE TRANSFORM", new Vector2(rightX, ry), ACCENT_CYAN, hdrFont);
-            ry += UiScale.Px(22, s);
+            ry += UiScale.Px(18, s);
 
             var curObj = _level.Scene.Objects.FirstOrDefault(o => (int)o.StrumLine == _charModalTargetStrumline && o.Visible)
                       ?? _level.Scene.Objects.FirstOrDefault(o => (int)o.StrumLine == _charModalTargetStrumline);
 
+            // Summary card for current target + selected character
+            int sumH = UiScale.Px(46, s);
+            var sumCard = new Rectangle(rightX, ry, rightW, sumH);
+            sb.Draw(_pixel, sumCard, new Color(19, 18, 29));
+            DrawBorder(sb, sumCard, Color.White * 0.10f);
+
             string curSpr = curObj != null ? curObj.Spr : "(none in scene)";
-            DrawText(sb, $"Current Sprite: {curSpr}", new Vector2(rightX, ry), Color.White * 0.9f, tinyFont);
-            ry += UiScale.Px(20, s);
+            string sprLine = TruncateModalText($"Current: {curSpr}", rightW - UiScale.Px(14, s), microFont);
+            DrawText(sb, sprLine, new Vector2(sumCard.X + UiScale.Px(8, s), sumCard.Y + UiScale.Px(6, s)), Color.White * 0.88f, microFont);
+
+            if (_charModalSelectedIdx >= 0 && _charModalSelectedIdx < _charModalLibrary.Count)
+            {
+                var selChar = _charModalLibrary[_charModalSelectedIdx];
+                string facing = selChar.NativeFacing == CharacterFacing.Left ? "Faces Left (BF)" : "Faces Right (FOE)";
+                string icoStr = selChar.HasIcon ? "Icon: Yes" : "Icon: No";
+                string selInfo = TruncateModalText($"Selected: {selChar.Scale:F2}x  •  {facing}  •  {icoStr}", rightW - UiScale.Px(14, s), microFont);
+                DrawText(sb, selInfo, new Vector2(sumCard.X + UiScale.Px(8, s), sumCard.Y + UiScale.Px(24, s)), ACCENT_CYAN * 0.9f, microFont);
+            }
+            else
+            {
+                DrawText(sb, "Select a character on the left to assign.", new Vector2(sumCard.X + UiScale.Px(8, s), sumCard.Y + UiScale.Px(24, s)), Color.White * 0.45f, microFont);
+            }
+            ry += sumH + UiScale.Px(8, s);
 
             int chkH = UiScale.Px(28, s);
             DrawModalBtn(sb, new Rectangle(rightX, ry, rightW, chkH),
@@ -407,10 +514,10 @@ namespace FunkyMakerPlayer.Editors.Chart
                 _charModalAutoScale ? ACCENT_CYAN : Color.White * 0.85f, tinyFont,
                 _charModalAutoScale ? ACCENT_CYAN * 0.5f : Color.White * 0.12f,
                 () => _charModalAutoScale = !_charModalAutoScale);
-            ry += chkH + UiScale.Px(10, s);
+            ry += chkH + UiScale.Px(8, s);
 
             // Big APPLY button
-            int applyH = UiScale.Px(36, s);
+            int applyH = UiScale.Px(34, s);
             bool canApply = _charModalLibrary.Count > 0;
             DrawModalBtn(sb, new Rectangle(rightX, ry, rightW, applyH),
                 "APPLY CHARACTER TO TRACK",
@@ -418,38 +525,57 @@ namespace FunkyMakerPlayer.Editors.Chart
                 canApply ? Color.White : Color.Gray, smallFont,
                 canApply ? ACCENT_GREEN : Color.White * 0.1f,
                 ApplySelectedModalCharacter);
-            ry += applyH + UiScale.Px(14, s);
+            ry += applyH + UiScale.Px(12, s);
 
-            // Live Scene Object Position / Scale / Flip controls
-            if (curObj != null && ry + UiScale.Px(110, s) <= mr.Bottom - pad)
+            // Live Scene Object Position / Scale / Flip controls (with ±25 and ±5 fine step!)
+            if (curObj != null && ry + UiScale.Px(106, s) <= mr.Bottom - pad)
             {
                 var pos = curObj.GetPosition();
                 var sc = curObj.GetScale();
                 DrawText(sb, "SCENE OBJECT FINE-TUNE", new Vector2(rightX, ry), ACCENT_GOLD, hdrFont);
-                ry += UiScale.Px(20, s);
+                ry += UiScale.Px(18, s);
 
-                int stepBtnW = UiScale.Px(36, s);
+                int coarseW = UiScale.Px(34, s);
+                int fineW = UiScale.Px(30, s);
                 int rowBtnH = UiScale.Px(26, s);
-                int g = UiScale.Px(4, s);
+                int g = UiScale.Px(3, s);
 
                 DrawText(sb, $"Pos X: {pos.X:F0}", new Vector2(rightX, ry + 4), Color.White, tinyFont);
-                DrawModalBtn(sb, new Rectangle(rightX + rightW - stepBtnW * 2 - g, ry, stepBtnW, rowBtnH), "-25", BG_CARD, Color.White, tinyFont, Color.White * 0.15f, () => AdjustAssignedSceneObject(-25f, 0f, 0f));
-                DrawModalBtn(sb, new Rectangle(rightX + rightW - stepBtnW, ry, stepBtnW, rowBtnH), "+25", BG_CARD, Color.White, tinyFont, Color.White * 0.15f, () => AdjustAssignedSceneObject(25f, 0f, 0f));
+                int pxEnd = rightX + rightW;
+                DrawModalBtn(sb, new Rectangle(pxEnd - coarseW, ry, coarseW, rowBtnH), "+25", BG_CARD, Color.White, microFont, Color.White * 0.15f, () => AdjustAssignedSceneObject(25f, 0f, 0f), repeatable: true);
+                DrawModalBtn(sb, new Rectangle(pxEnd - coarseW - fineW - g, ry, fineW, rowBtnH), "+5", BG_CARD, ACCENT_CYAN, microFont, ACCENT_CYAN * 0.35f, () => AdjustAssignedSceneObject(5f, 0f, 0f), repeatable: true);
+                DrawModalBtn(sb, new Rectangle(pxEnd - coarseW - fineW * 2 - g * 2, ry, fineW, rowBtnH), "-5", BG_CARD, ACCENT_CYAN, microFont, ACCENT_CYAN * 0.35f, () => AdjustAssignedSceneObject(-5f, 0f, 0f), repeatable: true);
+                DrawModalBtn(sb, new Rectangle(pxEnd - coarseW * 2 - fineW * 2 - g * 3, ry, coarseW, rowBtnH), "-25", BG_CARD, Color.White, microFont, Color.White * 0.15f, () => AdjustAssignedSceneObject(-25f, 0f, 0f), repeatable: true);
                 ry += rowBtnH + UiScale.Px(5, s);
 
                 DrawText(sb, $"Pos Y: {pos.Y:F0}", new Vector2(rightX, ry + 4), Color.White, tinyFont);
-                DrawModalBtn(sb, new Rectangle(rightX + rightW - stepBtnW * 2 - g, ry, stepBtnW, rowBtnH), "-25", BG_CARD, Color.White, tinyFont, Color.White * 0.15f, () => AdjustAssignedSceneObject(0f, -25f, 0f));
-                DrawModalBtn(sb, new Rectangle(rightX + rightW - stepBtnW, ry, stepBtnW, rowBtnH), "+25", BG_CARD, Color.White, tinyFont, Color.White * 0.15f, () => AdjustAssignedSceneObject(0f, 25f, 0f));
+                DrawModalBtn(sb, new Rectangle(pxEnd - coarseW, ry, coarseW, rowBtnH), "+25", BG_CARD, Color.White, microFont, Color.White * 0.15f, () => AdjustAssignedSceneObject(0f, 25f, 0f), repeatable: true);
+                DrawModalBtn(sb, new Rectangle(pxEnd - coarseW - fineW - g, ry, fineW, rowBtnH), "+5", BG_CARD, ACCENT_CYAN, microFont, ACCENT_CYAN * 0.35f, () => AdjustAssignedSceneObject(0f, 5f, 0f), repeatable: true);
+                DrawModalBtn(sb, new Rectangle(pxEnd - coarseW - fineW * 2 - g * 2, ry, fineW, rowBtnH), "-5", BG_CARD, ACCENT_CYAN, microFont, ACCENT_CYAN * 0.35f, () => AdjustAssignedSceneObject(0f, -5f, 0f), repeatable: true);
+                DrawModalBtn(sb, new Rectangle(pxEnd - coarseW * 2 - fineW * 2 - g * 3, ry, coarseW, rowBtnH), "-25", BG_CARD, Color.White, microFont, Color.White * 0.15f, () => AdjustAssignedSceneObject(0f, -25f, 0f), repeatable: true);
                 ry += rowBtnH + UiScale.Px(5, s);
 
+                int flipW = UiScale.Px(68, s);
                 DrawText(sb, $"Scale: {MathF.Abs(sc.X):F2}x", new Vector2(rightX, ry + 4), Color.White, tinyFont);
-                DrawModalBtn(sb, new Rectangle(rightX + rightW - stepBtnW * 3 - g * 2 - UiScale.Px(14, s), ry, stepBtnW + UiScale.Px(14, s), rowBtnH), "FLIP", BG_CARD, ACCENT_CYAN, tinyFont, ACCENT_CYAN * 0.4f, () => AdjustAssignedSceneObject(0f, 0f, 0f, flipX: true));
-                DrawModalBtn(sb, new Rectangle(rightX + rightW - stepBtnW * 2 - g, ry, stepBtnW, rowBtnH), "-", BG_CARD, Color.White, tinyFont, Color.White * 0.15f, () => AdjustAssignedSceneObject(0f, 0f, -0.05f));
-                DrawModalBtn(sb, new Rectangle(rightX + rightW - stepBtnW, ry, stepBtnW, rowBtnH), "+", BG_CARD, Color.White, tinyFont, Color.White * 0.15f, () => AdjustAssignedSceneObject(0f, 0f, 0.05f));
+                DrawModalBtn(sb, new Rectangle(pxEnd - coarseW, ry, coarseW, rowBtnH), "+", BG_CARD, Color.White, tinyFont, Color.White * 0.15f, () => AdjustAssignedSceneObject(0f, 0f, 0.05f), repeatable: true);
+                DrawModalBtn(sb, new Rectangle(pxEnd - coarseW * 2 - g, ry, coarseW, rowBtnH), "-", BG_CARD, Color.White, tinyFont, Color.White * 0.15f, () => AdjustAssignedSceneObject(0f, 0f, -0.05f), repeatable: true);
+                DrawModalBtn(sb, new Rectangle(pxEnd - coarseW * 2 - flipW - g * 2, ry, flipW, rowBtnH), "FLIP", BG_CARD, ACCENT_CYAN, microFont, ACCENT_CYAN * 0.45f, () => AdjustAssignedSceneObject(0f, 0f, 0f, flipX: true));
             }
         }
 
-        private void DrawModalBtn(SpriteBatch sb, Rectangle r, string text, Color bg, Color fg, int fontSize, Color border, Action onClick, bool leftAlign = false)
+        private string TruncateModalText(string text, int maxW, int fontSize)
+        {
+            if (maxW <= 12 || string.IsNullOrEmpty(text)) return text;
+            if (MeasureText(text, fontSize).X <= maxW) return text;
+            for (int len = text.Length - 1; len > 2; len--)
+            {
+                string sub = text.Substring(0, len) + "..";
+                if (MeasureText(sub, fontSize).X <= maxW) return sub;
+            }
+            return text.Length > 2 ? text.Substring(0, 2) + ".." : text;
+        }
+
+        private void DrawModalBtn(SpriteBatch sb, Rectangle r, string text, Color bg, Color fg, int fontSize, Color border, Action onClick, bool leftAlign = false, bool repeatable = false)
         {
             bool hov = r.Contains(_prevMouse.Position);
             sb.Draw(_pixel, r, hov ? Color.Lerp(bg, Color.White, 0.12f) : bg);
@@ -461,20 +587,27 @@ namespace FunkyMakerPlayer.Editors.Chart
 
             if (icon != null && leftAlign)
             {
-                int isz = Math.Clamp((int)(r.Height * 0.58f), 12, 28);
+                int isz = Math.Clamp((int)(r.Height * 0.56f), 12, 26);
                 int padX = UiScale.Px(8, _uiScale, 4);
                 var iconRect = new Rectangle(r.X + padX, r.Y + (r.Height - isz) / 2, isz, isz);
                 sb.Draw(icon, iconRect, fg);
-                var sz = MeasureText(label, fontSize);
-                DrawText(sb, label, new Vector2(iconRect.Right + UiScale.Px(6, _uiScale, 4), r.Y + (r.Height - sz.Y) / 2f), fg, fontSize);
+                int textX = iconRect.Right + UiScale.Px(6, _uiScale, 4);
+                string clipped = TruncateModalText(label, Math.Max(24, r.Right - textX - UiScale.Px(6, _uiScale)), fontSize);
+                var sz = MeasureText(clipped, fontSize);
+                DrawText(sb, clipped, new Vector2(textX, r.Y + (r.Height - sz.Y) / 2f), fg, fontSize);
             }
             else if (icon != null)
             {
-                int isz = Math.Clamp((int)(r.Height * 0.60f), 12, 32);
+                int isz = Math.Clamp((int)(r.Height * 0.58f), 12, 30);
                 int gap = label.Length > 0 ? UiScale.Px(5, _uiScale, 3) : 0;
                 float textW = label.Length > 0 ? MeasureText(label, fontSize).X : 0f;
                 float total = isz + gap + textW;
-                if (total > r.Width - 4 && label.Length > 0) { label = ""; gap = 0; textW = 0; total = isz; }
+                if (total > r.Width - 6 && label.Length > 0)
+                {
+                    isz = Math.Max(11, (int)(r.Height * 0.46f));
+                    total = isz + gap + textW;
+                    if (total > r.Width - 6) { label = ""; gap = 0; total = isz; }
+                }
                 float sx = r.X + (r.Width - total) / 2f;
                 var iconRect = new Rectangle((int)sx, r.Y + (r.Height - isz) / 2, isz, isz);
                 sb.Draw(icon, iconRect, fg);
@@ -486,14 +619,15 @@ namespace FunkyMakerPlayer.Editors.Chart
             }
             else if (leftAlign)
             {
-                var sz = MeasureText(text, fontSize);
-                DrawText(sb, text, new Vector2(r.X + UiScale.Px(8, _uiScale), r.Y + (r.Height - sz.Y) / 2f), fg, fontSize);
+                string clipped = TruncateModalText(text, Math.Max(24, r.Width - UiScale.Px(14, _uiScale)), fontSize);
+                var sz = MeasureText(clipped, fontSize);
+                DrawText(sb, clipped, new Vector2(r.X + UiScale.Px(8, _uiScale), r.Y + (r.Height - sz.Y) / 2f), fg, fontSize);
             }
             else
             {
                 DrawTextCenteredInBox(sb, text, r, fg, fontSize);
             }
-            _charModalClicks.Add((r, onClick));
+            _charModalClicks.Add((r, onClick, repeatable));
         }
 
         private void DrawModalCenteredMultiline(SpriteBatch sb, string text, Rectangle box, Color color, int fontSize)

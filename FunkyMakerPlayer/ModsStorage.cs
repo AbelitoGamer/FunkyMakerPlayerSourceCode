@@ -104,9 +104,12 @@ public static class ModsStorage
             {
                 _status = "Moving...";
                 var result = Move(from, to);
-                Save(target);
-                _current = target;
-                Interlocked.Increment(ref _generation);
+                if (result.Failed == 0 || result.Moved > 0 || result.Renamed > 0 || result.Duplicates > 0)
+                {
+                    Save(target);
+                    _current = target;
+                    Interlocked.Increment(ref _generation);
+                }
                 _status = result.Failed > 0
                     ? $"Moved, {result.Failed} item(s) could not be moved"
                     : result.Renamed > 0
@@ -270,8 +273,16 @@ public static class ModsStorage
         }
         if (SameVolume(src, dst))
         {
-            Directory.Move(src, dst);
-            return;
+            try
+            {
+                Directory.Move(src, dst);
+                return;
+            }
+            catch (IOException)
+            {
+                // Cross-device link (EXDEV on Linux mount points like /home vs /run/media,
+                // or NTFS volume mount points on Windows) — fall back cleanly to copy + delete!
+            }
         }
         CopyDirectory(src, dst);
         Directory.Delete(src, recursive: true);
@@ -305,7 +316,12 @@ public static class ModsStorage
             var fa = Directory.GetFiles(a, "*", SearchOption.AllDirectories).Select(f => Path.GetRelativePath(a, f)).OrderBy(f => f, StringComparer.OrdinalIgnoreCase).ToList();
             var fb = Directory.GetFiles(b, "*", SearchOption.AllDirectories).Select(f => Path.GetRelativePath(b, f)).OrderBy(f => f, StringComparer.OrdinalIgnoreCase).ToList();
             if (!fa.SequenceEqual(fb, StringComparer.OrdinalIgnoreCase)) return false;
-            return fa.All(rel => SameFile(Path.Combine(a, rel), Path.Combine(b, rel)));
+            for (int i = 0; i < fa.Count; i++)
+            {
+                if (!SameFile(Path.Combine(a, fa[i]), Path.Combine(b, fb[i])))
+                    return false;
+            }
+            return true;
         }
         return false;
     }

@@ -82,7 +82,7 @@ public class LevelSelector : FunkyMakerPlayer.UI.IDirectScreen
         _font = font;
         _fontRenderer = fontRenderer;
         _prevKb = LayoutKeyboard.GetState();
-        _prevMs = Mouse.GetState();
+        _prevMs = UI.PointerInput.GetState();
         _createModalOpen = startCreateModal;
         LoadLevelList();
     }
@@ -95,7 +95,7 @@ public class LevelSelector : FunkyMakerPlayer.UI.IDirectScreen
         BackPressed = false;
         LevelSelected = false;
         _prevKb = LayoutKeyboard.GetState();
-        _prevMs = Mouse.GetState();
+        _prevMs = UI.PointerInput.GetState();
         _lastMousePos = _prevMs.Position;
     }
 
@@ -103,7 +103,7 @@ public class LevelSelector : FunkyMakerPlayer.UI.IDirectScreen
     {
         _inputCooldown = Math.Max(_inputCooldown, 0.08f);
         _prevKb = LayoutKeyboard.GetState();
-        _prevMs = Mouse.GetState();
+        _prevMs = UI.PointerInput.GetState();
         _lastMousePos = _prevMs.Position;
     }
 
@@ -176,7 +176,7 @@ public class LevelSelector : FunkyMakerPlayer.UI.IDirectScreen
         LevelSelected = false;
         _caretBlink += dt * 2.5f;
 
-        var ms = Mouse.GetState();
+        var ms = UI.PointerInput.GetState();
         if (!Game1.CanAcceptInput)
         {
             _prevKb = default;

@@ -40,10 +40,11 @@ public static class PlatformShare
     {
         try
         {
+            string fullPath = Path.GetFullPath(path);
             if (OperatingSystem.IsWindows())
             {
-                // explorer.exe wants the classic form: /select,"C:\path with spaces\file"
-                var psi = new ProcessStartInfo("explorer.exe", $"/select,\"{path}\"") { UseShellExecute = false };
+                // explorer.exe wants the classic form with normalized backslashes: /select,"C:\path with spaces\file"
+                var psi = new ProcessStartInfo("explorer.exe", $"/select,\"{fullPath}\"") { UseShellExecute = false };
                 Process.Start(psi)?.Dispose();
                 return true;
             }
@@ -51,15 +52,16 @@ public static class PlatformShare
             {
                 var psi = new ProcessStartInfo("open") { UseShellExecute = false };
                 psi.ArgumentList.Add("-R");
-                psi.ArgumentList.Add(path);
+                psi.ArgumentList.Add(fullPath);
                 Process.Start(psi)?.Dispose();
                 return true;
             }
 
             // Linux: try to highlight the file; fall back to opening its folder. Runs off the
             // game thread because dbus-send can take a moment (or hang if no file manager answers).
-            string uri = new Uri(path).AbsoluteUri;
-            string dir = Path.GetDirectoryName(path) ?? path;
+            // Encode commas as %2C because dbus-send splits array:string elements on ','.
+            string uri = new Uri(fullPath).AbsoluteUri.Replace(",", "%2C");
+            string dir = Path.GetDirectoryName(fullPath) ?? fullPath;
             Task.Run(() =>
             {
                 if (RunAndWait("dbus-send", 3000, "--session", "--print-reply", "--dest=org.freedesktop.FileManager1",
@@ -82,17 +84,22 @@ public static class PlatformShare
     {
         try
         {
+            bool wait = timeoutMs > 0;
             var psi = new ProcessStartInfo(tool)
             {
                 UseShellExecute = false,
-                RedirectStandardOutput = true,
-                RedirectStandardError = true,
+                RedirectStandardOutput = wait,
+                RedirectStandardError = wait,
                 CreateNoWindow = true,
             };
             foreach (var a in args) psi.ArgumentList.Add(a);
             using var proc = Process.Start(psi);
             if (proc == null) return false;
-            if (timeoutMs <= 0) return true;
+            if (!wait) return true;
+            proc.OutputDataReceived += (_, _) => { };
+            proc.ErrorDataReceived += (_, _) => { };
+            proc.BeginOutputReadLine();
+            proc.BeginErrorReadLine();
             if (!proc.WaitForExit(timeoutMs)) { try { proc.Kill(); } catch { } return false; }
             return proc.ExitCode == 0;
         }

@@ -130,12 +130,17 @@ public partial class Game1
                 return sourceDir;
 
             foreach (var dirPath in Directory.GetDirectories(sourceDir, "*", SearchOption.AllDirectories))
-                Directory.CreateDirectory(dirPath.Replace(sourceDir, destDir));
-
-            foreach (var filePath in Directory.GetFiles(sourceDir, "*.*", SearchOption.AllDirectories))
             {
-                string targetFile = filePath.Replace(sourceDir, destDir);
-                Directory.CreateDirectory(Path.GetDirectoryName(targetFile)!);
+                string relDir = Path.GetRelativePath(sourceDir, dirPath);
+                Directory.CreateDirectory(Path.Combine(destDir, relDir));
+            }
+
+            foreach (var filePath in Directory.GetFiles(sourceDir, "*", SearchOption.AllDirectories))
+            {
+                string relFile = Path.GetRelativePath(sourceDir, filePath);
+                string targetFile = Path.Combine(destDir, relFile);
+                string? parent = Path.GetDirectoryName(targetFile);
+                if (!string.IsNullOrEmpty(parent)) Directory.CreateDirectory(parent);
                 File.Copy(filePath, targetFile, overwrite: true);
             }
 

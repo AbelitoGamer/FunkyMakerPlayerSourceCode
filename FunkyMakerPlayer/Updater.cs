@@ -337,26 +337,24 @@ public static class Updater
         // Try zenity (GNOME/GTK)
         if (CommandExists("zenity"))
         {
-            var p = System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
+            using var p = System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
             {
                 FileName  = "zenity",
                 Arguments = $"--question --title=\"Funky Maker Player - Update\" --text=\"{msg}\" --ok-label=\"Update\" --cancel-label=\"Skip\"",
                 UseShellExecute = false,
             });
-            p?.WaitForExit(15000);
-            return p?.ExitCode == 0;
+            return p != null && p.WaitForExit(15000) && p.ExitCode == 0;
         }
         // Try kdialog (KDE)
         if (CommandExists("kdialog"))
         {
-            var p = System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
+            using var p = System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
             {
                 FileName  = "kdialog",
                 Arguments = $"--yesno \"{msg}\" --title \"Funky Maker Player - Update\"",
                 UseShellExecute = false,
             });
-            p?.WaitForExit(15000);
-            return p?.ExitCode == 0;
+            return p != null && p.WaitForExit(15000) && p.ExitCode == 0;
         }
         // No GUI available — skip update silently, user can update manually later
         Console.WriteLine($"[Updater] {msg}");
@@ -369,16 +367,26 @@ public static class Updater
     {
         try
         {
-            var p = System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
+            var psi = new System.Diagnostics.ProcessStartInfo
             {
-                FileName = "which", Arguments = cmd,
-                UseShellExecute = false, RedirectStandardOutput = true,
-            });
-            p?.WaitForExit(2000);
-            return p?.ExitCode == 0;
+                FileName = "/usr/bin/env",
+                UseShellExecute = false, RedirectStandardOutput = true, RedirectStandardError = true,
+            };
+            psi.ArgumentList.Add("sh");
+            psi.ArgumentList.Add("-c");
+            psi.ArgumentList.Add("command -v -- \"$1\" >/dev/null 2>&1");
+            psi.ArgumentList.Add("_");
+            psi.ArgumentList.Add(cmd);
+            using var p = System.Diagnostics.Process.Start(psi);
+            if (p == null) return false;
+            if (!p.WaitForExit(2000)) { try { p.Kill(); } catch { } return false; }
+            return p.ExitCode == 0;
         }
         catch { return false; }
     }
+
+    private static string ShSingleQuote(string value) =>
+        "'" + value.Replace("'", "'\\''") + "'";
 
     // ── Windows update ────────────────────────────────────────────────────────
     private static bool UpdateWindows(string url, string version)
@@ -387,7 +395,7 @@ public static class Updater
         _logWin?.SetProgress(0);
 #endif
 
-        string exeDir = AppContext.BaseDirectory;
+        string exeDir = PlatformPaths.GetAppBaseDirectory().TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
         string updaterPath = Path.Combine(exeDir, "Assets", "updater", "FunkyMakerUpdater.exe");
 
         // Check if external updater exists
@@ -452,63 +460,60 @@ public static class Updater
         string exePath = Path.Combine(exeDir, "FunkyMakerPlayer.exe");
         string batPath = Path.Combine(Path.GetTempPath(), "fmp_update_" + Path.GetRandomFileName() + ".bat");
         string logPath = Path.Combine(exeDir, "update.log");
+        string cleanTmp = tmpDir.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+        string cleanExeDir = exeDir.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
 
         string bat =
             "@echo off\r\n" +
+            "chcp 65001 >nul\r\n" +
             "title Funky Maker Player - Updating...\r\n" +
-            $"set LOGFILE=\"{logPath}\"\r\n" +
-            $"set EXEPATH=\"{exePath}\"\r\n" +
-            $"set TMPDIR=\"{tmpDir}\"\r\n" +
-            $"set EXEDIR=\"{exeDir}\"\r\n" +
-            "echo [update.bat] Waiting for game to exit... > %LOGFILE%\r\n" +
+            $"set \"LOGFILE={logPath}\"\r\n" +
+            $"set \"EXEPATH={exePath}\"\r\n" +
+            $"set \"TMPDIR={cleanTmp}\"\r\n" +
+            $"set \"EXEDIR={cleanExeDir}\"\r\n" +
+            "echo [update.bat] Waiting for game to exit... > \"%LOGFILE%\"\r\n" +
             "echo Waiting for game to close...\r\n" +
             "timeout /t 3 /nobreak >nul\r\n" +
-            "echo [update.bat] Copying files (excluding mods folder)... >> %LOGFILE%\r\n" +
+            "echo [update.bat] Copying files (excluding mods folder)... >> \"%LOGFILE%\"\r\n" +
             "echo Copying update files (preserving mods)...\r\n" +
-            // Save old exe size for comparison
-            "for %%F in (%EXEPATH%) do set OLD_SIZE=%%~zF\r\n" +
-            // Exclude mods folder to preserve user content
-            $"robocopy \"%TMPDIR%\" \"%EXEDIR%\" /E /IS /IT /NP /XD mods >> %LOGFILE% 2>&1\r\n" +
+            "for %%F in (\"%EXEPATH%\") do set \"OLD_SIZE=%%~zF\"\r\n" +
+            "robocopy \"%TMPDIR%\" \"%EXEDIR%\" /E /IS /IT /NP /XD mods >> \"%LOGFILE%\" 2>&1\r\n" +
             "set ROBO_ERR=%ERRORLEVEL%\r\n" +
             "if %ROBO_ERR% GEQ 8 (\r\n" +
-            "  echo [update.bat] robocopy failed ^(exit %ROBO_ERR%^), trying manual copy... >> %LOGFILE%\r\n" +
+            "  echo [update.bat] robocopy failed ^(exit %ROBO_ERR%^), trying manual copy... >> \"%LOGFILE%\"\r\n" +
             "  echo robocopy failed, trying manual copy...\r\n" +
-            // Manual copy excluding mods folder
-            $"  for /D %%D in (\"%TMPDIR%\\*\") do (\r\n" +
+            "  for /D %%D in (\"%TMPDIR%\\*\") do (\r\n" +
             "    if /I not \"%%~nxD\"==\"mods\" (\r\n" +
-            $"      xcopy /E /Y /I \"%%D\" \"%EXEDIR%\\%%~nxD\\\" >> %LOGFILE% 2>&1\r\n" +
+            "      xcopy /E /Y /I \"%%D\" \"%EXEDIR%\\%%~nxD\\\" >> \"%LOGFILE%\" 2>&1\r\n" +
             "    )\r\n" +
             "  )\r\n" +
-            $"  for %%F in (\"%TMPDIR%\\*\") do (\r\n" +
-            "    if not \"%%~xF\"==\"\" (\r\n" +
-            $"      copy /Y \"%%F\" \"%EXEDIR%\\\" >> %LOGFILE% 2>&1\r\n" +
-            "    )\r\n" +
+            "  for %%F in (\"%TMPDIR%\\*\") do (\r\n" +
+            "    copy /Y \"%%F\" \"%EXEDIR%\\\" >> \"%LOGFILE%\" 2>&1\r\n" +
             "  )\r\n" +
             ")\r\n" +
-            // Verify exe was actually replaced
-            "for %%F in (%EXEPATH%) do set NEW_SIZE=%%~zF\r\n" +
-            "echo [update.bat] Old exe size: %OLD_SIZE% bytes >> %LOGFILE%\r\n" +
-            "echo [update.bat] New exe size: %NEW_SIZE% bytes >> %LOGFILE%\r\n" +
+            "for %%F in (\"%EXEPATH%\") do set \"NEW_SIZE=%%~zF\"\r\n" +
+            "echo [update.bat] Old exe size: %OLD_SIZE% bytes >> \"%LOGFILE%\"\r\n" +
+            "echo [update.bat] New exe size: %NEW_SIZE% bytes >> \"%LOGFILE%\"\r\n" +
             "echo Old exe: %OLD_SIZE% bytes\r\n" +
             "echo New exe: %NEW_SIZE% bytes\r\n" +
             "if \"%OLD_SIZE%\"==\"%NEW_SIZE%\" (\r\n" +
-            "  echo [update.bat] WARNING: exe size unchanged - update may not have applied >> %LOGFILE%\r\n" +
+            "  echo [update.bat] WARNING: exe size unchanged - update may not have applied >> \"%LOGFILE%\"\r\n" +
             "  echo WARNING: exe size unchanged. Update may not have applied.\r\n" +
             "  echo Check update.log for details.\r\n" +
             "  pause\r\n" +
             ") else (\r\n" +
-            "  echo [update.bat] SUCCESS: exe replaced successfully >> %LOGFILE%\r\n" +
-            "  echo [update.bat] User mods folder preserved >> %LOGFILE%\r\n" +
+            "  echo [update.bat] SUCCESS: exe replaced successfully >> \"%LOGFILE%\"\r\n" +
+            "  echo [update.bat] User mods folder preserved >> \"%LOGFILE%\"\r\n" +
             "  echo Update applied successfully! (mods preserved)\r\n" +
             ")\r\n" +
-            $"rmdir /S /Q \"{tmpDir}\"\r\n" +
-            "echo [update.bat] Relaunching... >> %LOGFILE%\r\n" +
+            "rmdir /S /Q \"%TMPDIR%\"\r\n" +
+            "echo [update.bat] Relaunching... >> \"%LOGFILE%\"\r\n" +
             "echo Relaunching game...\r\n" +
             "timeout /t 2 /nobreak >nul\r\n" +
-            $"start \"\" \"{exePath}\"\r\n" +
+            "start \"\" \"%EXEPATH%\"\r\n" +
             "del \"%~f0\"\r\n";
 
-        File.WriteAllText(batPath, bat);
+        File.WriteAllText(batPath, bat, new System.Text.UTF8Encoding(false));
         Log($"[Updater] Update script: {batPath}");
 
 #if !DEBUG
@@ -538,7 +543,7 @@ public static class Updater
     // ── Linux update ──────────────────────────────────────────────────────────
     private static bool UpdateLinux(string url, string version)
     {
-        string exeDir  = AppContext.BaseDirectory;
+        string exeDir  = PlatformPaths.GetAppBaseDirectory().TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
         string tmpDir  = Path.Combine(exeDir, ".fmp_update_" + Path.GetRandomFileName());
         string zipPath = tmpDir + ".zip";
         Directory.CreateDirectory(tmpDir);
@@ -550,49 +555,8 @@ public static class Updater
         ZipFile.ExtractToDirectory(zipPath, tmpDir, overwriteFiles: true);
         File.Delete(zipPath);
 
-        string exePath = Path.Combine(exeDir, "FunkyMakerPlayer");
-        string shPath  = Path.Combine(exeDir, "update.sh");
-        string logPath = Path.Combine(exeDir, "update.log");
-
-        string sh =
-            "#!/bin/bash\n" +
-            $"exec > \"{logPath}\" 2>&1\n" +
-            "echo \"[update.sh] Waiting for game to exit...\"\n" +
-            "sleep 3\n" +
-            "echo \"[update.sh] Copying files (excluding mods folder)...\"\n" +
-            // Copy everything except mods folder
-            $"rsync -av --exclude='mods' \"{tmpDir}/\" \"{exeDir}/\" || " +
-            $"(find \"{tmpDir}\" -mindepth 1 -maxdepth 1 ! -name 'mods' -exec cp -r {{}} \"{exeDir}/\" \\;)\n" +
-            $"chmod +x \"{exePath}\"\n" +
-            $"rm -rf \"{tmpDir}\"\n" +
-            "echo \"[update.sh] User mods folder preserved\"\n" +
-            $"export DOTNET_BUNDLE_EXTRACT_BASE_DIR=\"{exeDir}/.fmp_runtime\"\n" +
-            $"mkdir -p \"$DOTNET_BUNDLE_EXTRACT_BASE_DIR\"\n" +
-            $"nohup \"{exePath}\" </dev/null >>\"{logPath}\" 2>&1 &\n" +
-            "echo \"[update.sh] Done.\"\n" +
-            "rm -- \"$0\"\n";
-
-        File.WriteAllText(shPath, sh);
-        try { Process.Start("chmod", $"+x \"{shPath}\"")?.WaitForExit(2000); } catch { }
-
-        string launcher = File.Exists("/usr/bin/setsid") ? "/usr/bin/setsid"
-                        : File.Exists("/bin/setsid")     ? "/bin/setsid"
-                        : "/bin/bash";
-        string launcherArgs = launcher.EndsWith("setsid")
-            ? $"/bin/bash \"{shPath}\""
-            : $"\"{shPath}\"";
-
-        Process.Start(new ProcessStartInfo
-        {
-            FileName        = launcher,
-            Arguments       = launcherArgs,
-            UseShellExecute = false,
-            CreateNoWindow  = true,
-        });
-
-        Log($"[Updater] Update script launched. Log: {logPath}");
-        
-        // Exit immediately so the update script can replace the binary
+        LaunchLinuxShellUpdater(exeDir, tmpDir);
+        Log($"[Updater] Update script launched. Log: {Path.Combine(exeDir, "update.log")}");
         Environment.Exit(0);
         return true;
     }
@@ -617,7 +581,7 @@ public static class Updater
 
             if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
             {
-                string exeDir = AppContext.BaseDirectory;
+                string exeDir = PlatformPaths.GetAppBaseDirectory().TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
                 string updaterPath = Path.Combine(exeDir, "Assets", "updater", "FunkyMakerUpdater.exe");
 
                 if (File.Exists(updaterPath))
@@ -657,7 +621,7 @@ public static class Updater
             }
             else
             {
-                string exeDir = AppContext.BaseDirectory;
+                string exeDir = PlatformPaths.GetAppBaseDirectory().TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
                 string tmpDir = Path.Combine(exeDir, ".fmp_update_" + Path.GetRandomFileName());
                 string zipPath = tmpDir + ".zip";
                 Directory.CreateDirectory(tmpDir);
@@ -685,40 +649,41 @@ public static class Updater
 
     private static void LaunchWindowsBatchUpdater(string exeDir, string tmpDir)
     {
-        string exePath = Path.Combine(exeDir, "FunkyMakerPlayer.exe");
+        string cleanExeDir = exeDir.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+        string cleanTmp = tmpDir.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+        string exePath = Path.Combine(cleanExeDir, "FunkyMakerPlayer.exe");
         string batPath = Path.Combine(Path.GetTempPath(), "fmp_update_" + Path.GetRandomFileName() + ".bat");
-        string logPath = Path.Combine(exeDir, "update.log");
+        string logPath = Path.Combine(cleanExeDir, "update.log");
 
         string bat =
             "@echo off\r\n" +
+            "chcp 65001 >nul\r\n" +
             "title Funky Maker Player - Updating...\r\n" +
-            $"set LOGFILE=\"{logPath}\"\r\n" +
-            $"set EXEPATH=\"{exePath}\"\r\n" +
-            $"set TMPDIR=\"{tmpDir}\"\r\n" +
-            $"set EXEDIR=\"{exeDir}\"\r\n" +
-            "echo [update.bat] Waiting for game to exit... > %LOGFILE%\r\n" +
+            $"set \"LOGFILE={logPath}\"\r\n" +
+            $"set \"EXEPATH={exePath}\"\r\n" +
+            $"set \"TMPDIR={cleanTmp}\"\r\n" +
+            $"set \"EXEDIR={cleanExeDir}\"\r\n" +
+            "echo [update.bat] Waiting for game to exit... > \"%LOGFILE%\"\r\n" +
             "timeout /t 3 /nobreak >nul\r\n" +
-            "for %%F in (%EXEPATH%) do set OLD_SIZE=%%~zF\r\n" +
-            $"robocopy \"%TMPDIR%\" \"%EXEDIR%\" /E /IS /IT /NP /XD mods >> %LOGFILE% 2>&1\r\n" +
+            "for %%F in (\"%EXEPATH%\") do set \"OLD_SIZE=%%~zF\"\r\n" +
+            "robocopy \"%TMPDIR%\" \"%EXEDIR%\" /E /IS /IT /NP /XD mods >> \"%LOGFILE%\" 2>&1\r\n" +
             "set ROBO_ERR=%ERRORLEVEL%\r\n" +
             "if %ROBO_ERR% GEQ 8 (\r\n" +
-            $"  for /D %%D in (\"%TMPDIR%\\*\") do (\r\n" +
+            "  for /D %%D in (\"%TMPDIR%\\*\") do (\r\n" +
             "    if /I not \"%%~nxD\"==\"mods\" (\r\n" +
-            $"      xcopy /E /Y /I \"%%D\" \"%EXEDIR%\\%%~nxD\\\" >> %LOGFILE% 2>&1\r\n" +
+            "      xcopy /E /Y /I \"%%D\" \"%EXEDIR%\\%%~nxD\\\" >> \"%LOGFILE%\" 2>&1\r\n" +
             "    )\r\n" +
             "  )\r\n" +
-            $"  for %%F in (\"%TMPDIR%\\*\") do (\r\n" +
-            "    if not \"%%~xF\"==\"\" (\r\n" +
-            $"      copy /Y \"%%F\" \"%EXEDIR%\\\" >> %LOGFILE% 2>&1\r\n" +
-            "    )\r\n" +
+            "  for %%F in (\"%TMPDIR%\\*\") do (\r\n" +
+            "    copy /Y \"%%F\" \"%EXEDIR%\\\" >> \"%LOGFILE%\" 2>&1\r\n" +
             "  )\r\n" +
             ")\r\n" +
-            $"rmdir /S /Q \"{tmpDir}\"\r\n" +
+            "rmdir /S /Q \"%TMPDIR%\"\r\n" +
             "timeout /t 2 /nobreak >nul\r\n" +
-            $"start \"\" \"{exePath}\"\r\n" +
+            "start \"\" \"%EXEPATH%\"\r\n" +
             "del \"%~f0\"\r\n";
 
-        File.WriteAllText(batPath, bat);
+        File.WriteAllText(batPath, bat, new System.Text.UTF8Encoding(false));
         Process.Start(new ProcessStartInfo
         {
             FileName = "cmd.exe",
@@ -730,40 +695,67 @@ public static class Updater
 
     private static void LaunchLinuxShellUpdater(string exeDir, string tmpDir)
     {
-        string exePath = Path.Combine(exeDir, "FunkyMakerPlayer");
-        string shPath = Path.Combine(exeDir, "update.sh");
-        string logPath = Path.Combine(exeDir, "update.log");
+        string cleanExeDir = exeDir.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+        string cleanTmp = tmpDir.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+        string exePath = Path.Combine(cleanExeDir, "FunkyMakerPlayer");
+        string ffmpegPath = Path.Combine(cleanExeDir, "ffmpeg");
+        string shPath = Path.Combine(cleanExeDir, "update.sh");
+        string logPath = Path.Combine(cleanExeDir, "update.log");
 
         string sh =
-            "#!/bin/bash\n" +
-            $"exec > \"{logPath}\" 2>&1\n" +
+            "#!/usr/bin/env sh\n" +
+            $"LOGFILE={ShSingleQuote(logPath)}\n" +
+            $"TMPDIR={ShSingleQuote(cleanTmp)}\n" +
+            $"EXEDIR={ShSingleQuote(cleanExeDir)}\n" +
+            $"EXEPATH={ShSingleQuote(exePath)}\n" +
+            $"FFMPEG={ShSingleQuote(ffmpegPath)}\n" +
+            "exec > \"$LOGFILE\" 2>&1\n" +
             "sleep 3\n" +
-            $"rsync -av --exclude='mods' \"{tmpDir}/\" \"{exeDir}/\" || " +
-            $"(find \"{tmpDir}\" -mindepth 1 -maxdepth 1 ! -name 'mods' -exec cp -r {{}} \"{exeDir}/\" \\;)\n" +
-            $"chmod +x \"{exePath}\"\n" +
-            $"rm -rf \"{tmpDir}\"\n" +
-            $"export DOTNET_BUNDLE_EXTRACT_BASE_DIR=\"{exeDir}/.fmp_runtime\"\n" +
-            $"mkdir -p \"$DOTNET_BUNDLE_EXTRACT_BASE_DIR\"\n" +
-            $"nohup \"{exePath}\" </dev/null >>\"{logPath}\" 2>&1 &\n" +
+            "if command -v rsync >/dev/null 2>&1; then\n" +
+            "  rsync -av --exclude='mods' \"$TMPDIR/\" \"$EXEDIR/\"\n" +
+            "else\n" +
+            "  find \"$TMPDIR\" -mindepth 1 -maxdepth 1 ! -name 'mods' -exec cp -rf --remove-destination {} \"$EXEDIR/\" \\;\n" +
+            "fi\n" +
+            "chmod +x \"$EXEPATH\"\n" +
+            "[ -f \"$FFMPEG\" ] && chmod +x \"$FFMPEG\"\n" +
+            "rm -rf \"$TMPDIR\"\n" +
+            "export DOTNET_BUNDLE_EXTRACT_BASE_DIR=\"$EXEDIR/.fmp_runtime\"\n" +
+            "mkdir -p \"$DOTNET_BUNDLE_EXTRACT_BASE_DIR\"\n" +
+            "nohup \"$EXEPATH\" </dev/null >>\"$LOGFILE\" 2>&1 &\n" +
             "rm -- \"$0\"\n";
 
-        File.WriteAllText(shPath, sh);
-        try { Process.Start("chmod", $"+x \"{shPath}\"")?.WaitForExit(2000); } catch { }
-
-        string launcher = File.Exists("/usr/bin/setsid") ? "/usr/bin/setsid"
-                        : File.Exists("/bin/setsid")     ? "/bin/setsid"
-                        : "/bin/bash";
-        string launcherArgs = launcher.EndsWith("setsid")
-            ? $"/bin/bash \"{shPath}\""
-            : $"\"{shPath}\"";
-
-        Process.Start(new ProcessStartInfo
+        File.WriteAllText(shPath, sh, new System.Text.UTF8Encoding(false));
+        try
         {
-            FileName = launcher,
-            Arguments = launcherArgs,
+            var chmodPsi = new ProcessStartInfo("chmod") { UseShellExecute = false, CreateNoWindow = true };
+            chmodPsi.ArgumentList.Add("+x");
+            chmodPsi.ArgumentList.Add(shPath);
+            using var cp = Process.Start(chmodPsi);
+            cp?.WaitForExit(2000);
+        }
+        catch { }
+
+        string? setsid = File.Exists("/usr/bin/setsid") ? "/usr/bin/setsid"
+                       : File.Exists("/bin/setsid")     ? "/bin/setsid"
+                       : null;
+
+        var launchPsi = new ProcessStartInfo
+        {
+            FileName = setsid ?? "/usr/bin/env",
             UseShellExecute = false,
             CreateNoWindow = true,
-        });
+        };
+        if (setsid != null)
+        {
+            launchPsi.ArgumentList.Add("sh");
+            launchPsi.ArgumentList.Add(shPath);
+        }
+        else
+        {
+            launchPsi.ArgumentList.Add("sh");
+            launchPsi.ArgumentList.Add(shPath);
+        }
+        Process.Start(launchPsi);
     }
 
     // ── Download helper ───────────────────────────────────────────────────────
@@ -906,25 +898,15 @@ public class UpdateLogWindow
         if (_hwnd == IntPtr.Zero) return;
         CenterWindow(_hwnd);
 
-        // Create a nicer background color (dark theme)
-        IntPtr brush = CreateSolidBrush(0x1E1E1E); // Dark gray
-        SetClassLongPtr(_hwnd, -10, brush); // GCL_HBRBACKGROUND
-
-        // Title/header label with larger font
+        // Title/header label
         _statusLabel = CreateWindowEx(0, "STATIC", "Checking for updates...",
             WS_CHILD | WS_VISIBLE | SS_LEFT,
             16, 12, W - 32, 24, _hwnd, IntPtr.Zero, hInst, IntPtr.Zero);
-        
-        // Set white text color for dark background
-        SendMessage(_statusLabel, WM_CTLCOLORSTATIC, IntPtr.Zero, IntPtr.Zero);
 
-        // Log text box with dark theme - larger to fit all content
+        // Log text box (avoid EM_GETLINE=0x00C4 or mutating global #32770 class brush!)
         _edit = CreateWindowEx(0x00000200, "EDIT", "", // WS_EX_CLIENTEDGE
             WS_CHILD | WS_VISIBLE | WS_VSCROLL | ES_MULTILINE | ES_AUTOVSCROLL | ES_READONLY,
             16, 44, W - 32, H - 140, _hwnd, IntPtr.Zero, hInst, IntPtr.Zero);
-        
-        // Set dark background and light text for edit control
-        SendMessage(_edit, 0x00C4, IntPtr.Zero, new IntPtr(0xD4D4D4)); // EM_SETBKGNDCOLOR
 
         // Status label above progress bar
         IntPtr statusTextLabel = CreateWindowEx(0, "STATIC", "Initializing...",

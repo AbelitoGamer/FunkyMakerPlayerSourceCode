@@ -107,9 +107,21 @@ public static class SparrowCharacterImporter
             throw new InvalidOperationException("No Sparrow v2 .xml TextureAtlas found for this character.");
 
         string xmlStem = Path.GetFileNameWithoutExtension(xmlPath);
+        if (string.IsNullOrEmpty(pngPath))
+        {
+            string? xmlImageAttr = PeekXmlImagePath(xmlPath);
+            if (!string.IsNullOrWhiteSpace(xmlImageAttr))
+            {
+                string attrLeaf = Path.GetFileName(xmlImageAttr.Replace('\\', '/'));
+                if (!string.IsNullOrWhiteSpace(attrLeaf))
+                    pngPath = FindNearbyFile(dir, attrLeaf);
+            }
+        }
         pngPath ??= FindNearbyFile(dir, xmlStem + ".png")
-                 ?? Directory.EnumerateFiles(dir, "*.png", SearchOption.TopDirectoryOnly)
-                        .FirstOrDefault(p => !Path.GetFileName(p).StartsWith("icon-", StringComparison.OrdinalIgnoreCase));
+                 ?? Directory.EnumerateFiles(dir, "*", SearchOption.TopDirectoryOnly)
+                        .FirstOrDefault(p =>
+                            string.Equals(Path.GetExtension(p), ".png", StringComparison.OrdinalIgnoreCase) &&
+                            !Path.GetFileName(p).StartsWith("icon-", StringComparison.OrdinalIgnoreCase));
 
         if (string.IsNullOrEmpty(pngPath) || !File.Exists(pngPath))
             throw new InvalidOperationException($"Matching PNG atlas not found for '{Path.GetFileName(xmlPath)}'.");
@@ -145,56 +157,64 @@ public static class SparrowCharacterImporter
 
         // Build clips: if external character definition exists, build clips for its animations first,
         // plus any remaining XML prefixes so user can still pick any prefix in the editor!
-        var usedPrefixes = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-
-        if (extDef != null && extDef.Animations.Count > 0)
+        try
         {
-            foreach (var anim in extDef.Animations)
+            var usedPrefixes = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+            if (extDef != null && extDef.Animations.Count > 0)
             {
-                var matchedFrames = MatchSubTexturesForDef(subTextures, anim.Prefix, anim.Indices);
-                if (matchedFrames.Count == 0) continue;
-
-                string clipName = string.IsNullOrWhiteSpace(anim.AnimRoleName) ? anim.Prefix : anim.AnimRoleName;
-                // Ensure unique clip name
-                string uniqueName = clipName;
-                int dup = 2;
-                while (project.FindClip(uniqueName) != null)
-                    uniqueName = $"{clipName}_{dup++}";
-
-                var clip = BuildClipFromSubTextures(sheet, uniqueName, matchedFrames);
-                if (clip != null)
+                foreach (var anim in extDef.Animations)
                 {
-                    clip.SuggestedFps = Math.Clamp(anim.Fps > 0 ? anim.Fps : 24f, 1f, 120f);
-                    clip.SuggestedLoop = anim.Loop;
-                    clip.ImportedOffset = anim.Offset;
-                    clip.HasImportedOffset = anim.HasOffset;
-                    project.AvailableClips.Add(clip);
-                    usedPrefixes.Add(anim.Prefix);
+                    var matchedFrames = MatchSubTexturesForDef(subTextures, anim.Prefix, anim.Indices);
+                    if (matchedFrames.Count == 0) continue;
+
+                    string clipName = string.IsNullOrWhiteSpace(anim.AnimRoleName) ? anim.Prefix : anim.AnimRoleName;
+                    // Ensure unique clip name
+                    string uniqueName = clipName;
+                    int dup = 2;
+                    while (project.FindClip(uniqueName) != null)
+                        uniqueName = $"{clipName}_{dup++}";
+
+                    var clip = BuildClipFromSubTextures(sheet, uniqueName, matchedFrames);
+                    if (clip != null)
+                    {
+                        clip.SuggestedFps = Math.Clamp(anim.Fps > 0 ? anim.Fps : 24f, 1f, 120f);
+                        clip.SuggestedLoop = anim.Loop;
+                        clip.ImportedOffset = anim.Offset;
+                        clip.HasImportedOffset = anim.HasOffset;
+                        project.AvailableClips.Add(clip);
+                        usedPrefixes.Add(anim.Prefix);
+                    }
                 }
             }
-        }
 
-        // Also group all XML prefixes so raw XML+PNG imports (and unmapped prefixes) are all selectable
-        var groupedByPrefix = GroupSubTexturesByPrefix(subTextures);
-        foreach (var (prefix, entries) in groupedByPrefix)
+            // Also group all XML prefixes so raw XML+PNG imports (and unmapped prefixes) are all selectable
+            var groupedByPrefix = GroupSubTexturesByPrefix(subTextures);
+            foreach (var (prefix, entries) in groupedByPrefix)
+            {
+                if (usedPrefixes.Contains(prefix) && project.AvailableClips.Count > 0)
+                    continue;
+                if (project.FindClip(prefix) != null)
+                    continue;
+
+                var clip = BuildClipFromSubTextures(sheet, prefix, entries);
+                if (clip != null)
+                    project.AvailableClips.Add(clip);
+            }
+
+            if (project.AvailableClips.Count == 0)
+                throw new InvalidOperationException("Could not decode any valid animation frames from the Sparrow atlas.");
+
+            AutoMapCharacterSlots(project);
+            TryAutoLoadNearbyIcon(project, dir, extDef?.HealthIcon, xmlStem);
+
+            return project;
+        }
+        catch
         {
-            if (usedPrefixes.Contains(prefix) && project.AvailableClips.Count > 0)
-                continue;
-            if (project.FindClip(prefix) != null)
-                continue;
-
-            var clip = BuildClipFromSubTextures(sheet, prefix, entries);
-            if (clip != null)
-                project.AvailableClips.Add(clip);
+            project.Dispose();
+            throw;
         }
-
-        if (project.AvailableClips.Count == 0)
-            throw new InvalidOperationException("Could not decode any valid animation frames from the Sparrow atlas.");
-
-        AutoMapCharacterSlots(project);
-        TryAutoLoadNearbyIcon(project, dir, extDef?.HealthIcon, xmlStem);
-
-        return project;
     }
 
     public static void AutoMapCharacterSlots(CharacterProject project)
@@ -699,20 +719,39 @@ public static class SparrowCharacterImporter
             if (string.IsNullOrEmpty(baseDir) || !Directory.Exists(baseDir)) return;
             if (!string.IsNullOrWhiteSpace(iconHint))
             {
-                candidates.Add(Path.Combine(baseDir, $"icon-{iconHint}.png"));
-                candidates.Add(Path.Combine(baseDir, $"{iconHint}.png"));
+                var h1 = FindNearbyFile(baseDir, $"icon-{iconHint}.png");
+                if (h1 != null) candidates.Add(h1);
+                var h2 = FindNearbyFile(baseDir, $"{iconHint}.png");
+                if (h2 != null) candidates.Add(h2);
             }
-            candidates.Add(Path.Combine(baseDir, $"icon-{stem}.png"));
-            candidates.Add(Path.Combine(baseDir, "icon.png"));
-            foreach (var f in Directory.EnumerateFiles(baseDir, "icon-*.png", SearchOption.TopDirectoryOnly))
-                candidates.Add(f);
+            var s1 = FindNearbyFile(baseDir, $"icon-{stem}.png");
+            if (s1 != null) candidates.Add(s1);
+            var s2 = FindNearbyFile(baseDir, "icon.png");
+            if (s2 != null) candidates.Add(s2);
+            foreach (var f in Directory.EnumerateFiles(baseDir, "*", SearchOption.TopDirectoryOnly))
+            {
+                string fn = Path.GetFileName(f);
+                if (fn.StartsWith("icon-", StringComparison.OrdinalIgnoreCase) &&
+                    fn.EndsWith(".png", StringComparison.OrdinalIgnoreCase))
+                    candidates.Add(f);
+            }
         }
 
+        static string? FindSubdirIgnoreCase(string parentDir, string name) =>
+            !string.IsNullOrEmpty(parentDir) && Directory.Exists(parentDir)
+                ? Directory.EnumerateDirectories(parentDir, "*", SearchOption.TopDirectoryOnly)
+                    .FirstOrDefault(d => string.Equals(Path.GetFileName(d), name, StringComparison.OrdinalIgnoreCase))
+                : null;
+
         AddIconCandidates(dir);
-        AddIconCandidates(Path.Combine(dir, "icons"));
+        var iconsSub = FindSubdirIgnoreCase(dir, "icons");
+        if (iconsSub != null) AddIconCandidates(iconsSub);
         string? parent = Path.GetDirectoryName(dir);
         if (!string.IsNullOrEmpty(parent))
-            AddIconCandidates(Path.Combine(parent, "icons"));
+        {
+            var parentIcons = FindSubdirIgnoreCase(parent, "icons");
+            if (parentIcons != null) AddIconCandidates(parentIcons);
+        }
 
         foreach (var path in candidates)
         {
@@ -733,15 +772,18 @@ public static class SparrowCharacterImporter
     {
         if (string.IsNullOrEmpty(dir) || !Directory.Exists(dir)) return null;
 
-        // Direct stem match first
-        string directJson = Path.Combine(dir, xmlStem + ".json");
-        if (File.Exists(directJson) && TryParseExternalDef(directJson) != null)
+        // Direct stem match first (case-insensitive on Linux/Android)
+        string? directJson = FindNearbyFile(dir, xmlStem + ".json");
+        if (directJson != null && TryParseExternalDef(directJson) != null)
             return directJson;
 
         // Any JSON in the same folder or parent characters/ folder whose "image" matches xmlStem (or if only 1 char json exists)
-        var jsonFiles = Directory.EnumerateFiles(dir, "*.json", SearchOption.TopDirectoryOnly)
-            .Where(p => !Path.GetFileName(p).StartsWith("spritemap", StringComparison.OrdinalIgnoreCase)
+        var jsonFiles = Directory.EnumerateFiles(dir, "*", SearchOption.TopDirectoryOnly)
+            .Where(p => string.Equals(Path.GetExtension(p), ".json", StringComparison.OrdinalIgnoreCase)
+                     && !Path.GetFileName(p).StartsWith("spritemap", StringComparison.OrdinalIgnoreCase)
                      && !string.Equals(Path.GetFileName(p), "Animation.json", StringComparison.OrdinalIgnoreCase)
+                     && !string.Equals(Path.GetFileName(p), "animations.json", StringComparison.OrdinalIgnoreCase)
+                     && !string.Equals(Path.GetFileName(p), "metadata.json", StringComparison.OrdinalIgnoreCase)
                      && !string.Equals(Path.GetFileName(p), "sprite.json", StringComparison.OrdinalIgnoreCase)
                      && !string.Equals(Path.GetFileName(p), "character.json", StringComparison.OrdinalIgnoreCase))
             .ToList();
@@ -777,14 +819,31 @@ public static class SparrowCharacterImporter
     private static string? FindFirstSparrowXml(string dir, string? excludePath = null)
     {
         if (string.IsNullOrEmpty(dir) || !Directory.Exists(dir)) return null;
-        foreach (var xp in Directory.EnumerateFiles(dir, "*.xml", SearchOption.TopDirectoryOnly))
+        foreach (var xp in Directory.EnumerateFiles(dir, "*", SearchOption.TopDirectoryOnly))
         {
+            if (!string.Equals(Path.GetExtension(xp), ".xml", StringComparison.OrdinalIgnoreCase))
+                continue;
             if (excludePath != null && string.Equals(xp, excludePath, StringComparison.OrdinalIgnoreCase))
                 continue;
             if (string.Equals(PeekXmlRootName(xp), "TextureAtlas", StringComparison.OrdinalIgnoreCase))
                 return xp;
         }
         return null;
+    }
+
+    private static string? PeekXmlImagePath(string xmlPath)
+    {
+        try
+        {
+            string raw = File.ReadAllText(xmlPath);
+            if (raw.Length > 0 && raw[0] == '\uFEFF') raw = raw.Substring(1);
+            var doc = XDocument.Parse(raw);
+            return (string?)doc.Root?.Attribute("imagePath");
+        }
+        catch
+        {
+            return null;
+        }
     }
 
     private static string? PeekXmlRootName(string xmlPath)

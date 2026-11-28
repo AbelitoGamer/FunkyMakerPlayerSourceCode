@@ -42,8 +42,9 @@ internal static class Program
     {
         try
         {
-            // Create crash folder if it doesn't exist
-            string crashFolder = Path.Combine(AppContext.BaseDirectory, "crash");
+            // Create crash folder next to the real executable (not single-file temp dir)
+            string baseDir = PlatformPaths.GetAppBaseDirectory();
+            string crashFolder = Path.Combine(baseDir, "crash");
             Directory.CreateDirectory(crashFolder);
             
             // Generate timestamped log filename
@@ -55,7 +56,7 @@ internal static class Program
             File.WriteAllText(logPath, crashReport);
             
             // Also keep latest crash in root for backward compatibility
-            string latestLog = Path.Combine(AppContext.BaseDirectory, "crash.log");
+            string latestLog = Path.Combine(baseDir, "crash.log");
             File.WriteAllText(latestLog, crashReport);
             
             // Show crash dialog (platform-specific)
@@ -299,39 +300,43 @@ internal static class Program
     /// </summary>
     private static void ShowConsoleCrashMessage(string logPath, string crashFolder)
     {
-        Console.ForegroundColor = ConsoleColor.Red;
+        bool canColor = !OperatingSystem.IsAndroid();
+        if (canColor) try { Console.ForegroundColor = ConsoleColor.Red; } catch { }
         Console.WriteLine();
         Console.WriteLine("═══════════════════════════════════════════════════════════════");
         Console.WriteLine("  ❌ FUNKYMAKER PLAYER CRASHED");
         Console.WriteLine("═══════════════════════════════════════════════════════════════");
-        Console.ResetColor();
+        if (canColor) try { Console.ResetColor(); } catch { }
         Console.WriteLine();
         Console.WriteLine("The application has encountered a critical error and must close.");
         Console.WriteLine();
-        Console.ForegroundColor = ConsoleColor.Yellow;
+        if (canColor) try { Console.ForegroundColor = ConsoleColor.Yellow; } catch { }
         Console.WriteLine("[!] Crash logs saved to:");
-        Console.ResetColor();
+        if (canColor) try { Console.ResetColor(); } catch { }
         Console.WriteLine($"   {logPath}");
         Console.WriteLine();
         Console.WriteLine($"📂 All crash logs folder:");
         Console.WriteLine($"   {crashFolder}");
         Console.WriteLine();
-        Console.ForegroundColor = ConsoleColor.Cyan;
+        if (canColor) try { Console.ForegroundColor = ConsoleColor.Cyan; } catch { }
         Console.WriteLine("💡 What to do:");
-        Console.ResetColor();
+        if (canColor) try { Console.ResetColor(); } catch { }
         Console.WriteLine("   1. Check the crash log for details");
         Console.WriteLine("   2. Report the issue on GitHub with the crash log");
         Console.WriteLine("   3. Try restarting the application");
         Console.WriteLine();
         Console.WriteLine("Press any key to exit...");
         
-        try
+        if (!OperatingSystem.IsAndroid())
         {
-            Console.ReadKey(true);
-        }
-        catch
-        {
-            // Ignore if console input not available
+            try
+            {
+                Console.ReadKey(true);
+            }
+            catch
+            {
+                // Ignore if console input not available
+            }
         }
     }
 }

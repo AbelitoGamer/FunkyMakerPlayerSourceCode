@@ -51,7 +51,12 @@ namespace FunkyMakerPlayer.Platforms.Android
 
                 var chooser = Intent.CreateChooser(send, "Share level")!;
                 chooser.AddFlags(ActivityFlags.GrantReadUriPermission);
-                activity.RunOnUiThread(() => activity.StartActivity(chooser));
+                activity.RunOnUiThread(() =>
+                {
+                    if (activity.IsFinishing || activity.IsDestroyed) return;
+                    try { activity.StartActivity(chooser); }
+                    catch (Exception ex) { Console.WriteLine($"[LevelShareProvider] StartActivity failed: {ex.Message}"); }
+                });
                 return true;
             }
             catch (Exception ex)
@@ -68,10 +73,10 @@ namespace FunkyMakerPlayer.Platforms.Android
         {
             string? name = uri?.LastPathSegment;
             var cacheDir = Context?.CacheDir;
-            if (string.IsNullOrEmpty(name) || cacheDir == null || name.Contains('/') || name.Contains('\\') || name == "..")
+            if (string.IsNullOrEmpty(name) || cacheDir == null || name.Contains('/') || name.Contains('\\') || name == "." || name == "..")
                 return null;
             var file = new Java.IO.File(new Java.IO.File(cacheDir, SHARE_DIR), name);
-            return file.Exists() ? file : null;
+            return file.Exists() && file.IsFile ? file : null;
         }
 
         public override ParcelFileDescriptor? OpenFile(global::Android.Net.Uri uri, string mode)

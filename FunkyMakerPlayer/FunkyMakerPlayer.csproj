@@ -13,11 +13,12 @@
          /api/testing says testing is open (needs internet). Set it here, or per build with
          -p:FunkyTestBuild=true. Keep false for normal releases. -->
     <FunkyTestBuild Condition="'$(FunkyTestBuild)' == ''">false</FunkyTestBuild>
-    <!-- Disable Mono runtime requirement to use CoreCLR instead -->
-    <UseMonoRuntime>false</UseMonoRuntime>
+    <!-- Use CoreCLR on 64-bit targets; 32-bit android-arm requires Mono JIT -->
+    <UseMonoRuntime Condition="'$(UseMonoRuntime)' == '' And $(TargetFramework.Contains('android')) And ('$(RuntimeIdentifier)' == 'android-arm' Or '$(RuntimeIdentifiers)' == 'android-arm')">true</UseMonoRuntime>
+    <UseMonoRuntime Condition="'$(UseMonoRuntime)' == ''">false</UseMonoRuntime>
     <!-- Icon and manifest only apply on Windows builds -->
-    <ApplicationManifest Condition="'$(RuntimeIdentifier)' != 'linux-x64' And !$(TargetFramework.Contains('android'))">app.manifest</ApplicationManifest>
-    <ApplicationIcon Condition="'$(RuntimeIdentifier)' != 'linux-x64' And !$(TargetFramework.Contains('android'))">Icon.ico</ApplicationIcon>
+    <ApplicationManifest Condition="!$(TargetFramework.Contains('android')) And ($(RuntimeIdentifier.StartsWith('win-')) Or ('$(RuntimeIdentifier)' == '' And '$(OS)' == 'Windows_NT'))">app.manifest</ApplicationManifest>
+    <ApplicationIcon Condition="!$(TargetFramework.Contains('android')) And ($(RuntimeIdentifier.StartsWith('win-')) Or ('$(RuntimeIdentifier)' == '' And '$(OS)' == 'Windows_NT'))">Icon.ico</ApplicationIcon>
   </PropertyGroup>
 
   <PropertyGroup Condition="'$(FunkyTestBuild)' == 'true'">
@@ -39,8 +40,9 @@
     <ApplicationDisplayVersion>0.5.0</ApplicationDisplayVersion>
     <AndroidVersionCode>8</AndroidVersionCode>
     <AndroidManifest>Platforms\Android\AndroidManifest.xml</AndroidManifest>
-    <!-- Disable AOT for now to avoid trimming issues -->
+    <!-- Disable AOT; disable trimming by default on Mono (32-bit) to keep reflection safe while keeping CoreCLR 64-bit APKs compact (~40 MB) -->
     <RunAOTCompilation>false</RunAOTCompilation>
+    <PublishTrimmed Condition="'$(PublishTrimmed)' == '' And '$(UseMonoRuntime)' == 'true'">false</PublishTrimmed>
     <!-- Never use the Mono IL interpreter (fixes 32-bit Mono SIGSEGV SI_KERNEL in Debug builds) -->
     <UseInterpreter>false</UseInterpreter>
     <!-- Disable Fast Deployment to fix native library loading -->
@@ -82,15 +84,15 @@
   </PropertyGroup>
 
   <!-- Windows-specific: WinExe hides the console, app.manifest, icon.
-       Applies to `publish -r win-x64` AND to a plain `build -c Release` on Windows (no RID). -->
-  <PropertyGroup Condition="'$(Configuration)' == 'Release' And !$(TargetFramework.Contains('android')) And ('$(RuntimeIdentifier)' == 'win-x64' Or ('$(RuntimeIdentifier)' == '' And '$(OS)' == 'Windows_NT'))">
+       Applies to `publish -r win-*` AND to a plain `build -c Release` on Windows (no RID). -->
+  <PropertyGroup Condition="'$(Configuration)' == 'Release' And !$(TargetFramework.Contains('android')) And ($(RuntimeIdentifier.StartsWith('win-')) Or ('$(RuntimeIdentifier)' == '' And '$(OS)' == 'Windows_NT'))">
     <OutputType>WinExe</OutputType>
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <ApplicationIcon>Icon.ico</ApplicationIcon>
   </PropertyGroup>
 
   <!-- Linux-specific: keep Exe (no WinExe on Linux) -->
-  <PropertyGroup Condition="'$(Configuration)' == 'Release' And '$(RuntimeIdentifier)' == 'linux-x64'">
+  <PropertyGroup Condition="'$(Configuration)' == 'Release' And !$(TargetFramework.Contains('android')) And ($(RuntimeIdentifier.StartsWith('linux-')) Or ('$(RuntimeIdentifier)' == '' And '$(OS)' != 'Windows_NT'))">
     <OutputType>Exe</OutputType>
   </PropertyGroup>
   
@@ -156,16 +158,15 @@
     <AndroidResource Include="Platforms\Android\Resources\mipmap-xxxhdpi\icon.png" />
   </ItemGroup>
 
-  <!-- Fork: bundled minimal ffmpeg for osu! background videos (Osu/FfmpegVideoStream.cs). Built by
-       Tools/fetch-ffmpeg.ps1 / Tools/build-ffmpeg-min.sh into Tools/ffmpeg/ (gitignored); copied next
-       to the exe when present. Android decodes with MediaCodec instead (nothing bundled). -->
-  <ItemGroup Condition="!$(TargetFramework.Contains('android')) And Exists('../Tools/ffmpeg/ffmpeg.exe')">
+  <!-- Fork: bundled minimal ffmpeg for osu! background videos (Osu/FfmpegVideoStream.cs). Filter by OS/RID so
+       cross-publishing Linux from Windows never bundles ffmpeg.exe and vice versa. -->
+  <ItemGroup Condition="!$(TargetFramework.Contains('android')) And ($(RuntimeIdentifier.StartsWith('win-')) Or ('$(RuntimeIdentifier)' == '' And '$(OS)' == 'Windows_NT')) And Exists('../Tools/ffmpeg/ffmpeg.exe')">
     <None Include="../Tools/ffmpeg/ffmpeg.exe" Link="ffmpeg.exe" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" ExcludeFromSingleFile="true" />
     <None Include="../Tools/ffmpeg/LICENSE.txt" Link="licenses/ffmpeg-LICENSE.txt" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" ExcludeFromSingleFile="true" Condition="Exists('../Tools/ffmpeg/LICENSE.txt')" />
   </ItemGroup>
-  <ItemGroup Condition="!$(TargetFramework.Contains('android')) And Exists('../Tools/ffmpeg/ffmpeg')">
+  <ItemGroup Condition="!$(TargetFramework.Contains('android')) And ($(RuntimeIdentifier.StartsWith('linux-')) Or $(RuntimeIdentifier.StartsWith('osx-')) Or ('$(RuntimeIdentifier)' == '' And '$(OS)' != 'Windows_NT')) And Exists('../Tools/ffmpeg/ffmpeg')">
     <None Include="../Tools/ffmpeg/ffmpeg" Link="ffmpeg" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" ExcludeFromSingleFile="true" />
-    <None Include="../Tools/ffmpeg/LICENSE.txt" Link="licenses/ffmpeg-LICENSE.txt" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" ExcludeFromSingleFile="true" Condition="Exists('../Tools/ffmpeg/LICENSE.txt') And !Exists('../Tools/ffmpeg/ffmpeg.exe')" />
+    <None Include="../Tools/ffmpeg/LICENSE.txt" Link="licenses/ffmpeg-LICENSE.txt" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" ExcludeFromSingleFile="true" Condition="Exists('../Tools/ffmpeg/LICENSE.txt')" />
   </ItemGroup>
 
   <!-- Copy Icon.ico next to the exe (like FNF does) -->
@@ -203,12 +204,14 @@
   
   <!-- Native libraries not needed for WindowsDX (DirectX is built into Windows) -->
 
-  <!-- Ensure native libraries (SDL2.dll, etc.) are included in single-file publish -->
-  <Target Name="IncludeNativeLibraries" AfterTargets="Publish">
+  <!-- Ensure RID-matched native libraries (SDL2.dll on Windows, libSDL2*.so* on Linux) are copied in publish -->
+  <Target Name="IncludeNativeLibraries" AfterTargets="Publish" Condition="!$(TargetFramework.Contains('android')) And '$(RuntimeIdentifier)' != ''">
     <ItemGroup>
-      <NativeLibs Include="$(PublishDir)runtimes\**\*.dll" />
+      <NativeLibs Include="$(PublishDir)runtimes\$(RuntimeIdentifier)\native\*.dll" Condition="$(RuntimeIdentifier.StartsWith('win-'))" />
+      <NativeLibs Include="$(PublishDir)runtimes\$(RuntimeIdentifier)\native\*.so*" Condition="$(RuntimeIdentifier.StartsWith('linux-'))" />
+      <NativeLibs Include="$(PublishDir)runtimes\$(RuntimeIdentifier)\native\*.dylib" Condition="$(RuntimeIdentifier.StartsWith('osx-'))" />
     </ItemGroup>
-    <Copy SourceFiles="@(NativeLibs)" DestinationFolder="$(PublishDir)" SkipUnchangedFiles="true" />
+    <Copy SourceFiles="@(NativeLibs)" DestinationFolder="$(PublishDir)" SkipUnchangedFiles="true" Condition="'@(NativeLibs)' != ''" />
   </Target>
 
   <!-- Obfuscar: Solo en Release y solo para .NET (no Android) -->

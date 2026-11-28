@@ -85,9 +85,11 @@ public sealed class CharacterProject : IDisposable
     public CharacterSourceKind SourceKind { get; set; } = CharacterSourceKind.SparrowXml;
     public float Scale { get; set; } = 1.0f;
     public bool Bilinear { get; set; } = true;
-    /// <summary>When true, horizontally flips all baked frames when previewing and saving.</summary>
+    /// <summary>When true, horizontally flips all baked character frames when previewing and saving.</summary>
     public bool BakeFlipX { get; set; }
-    /// <summary>Direction the character faces AFTER BakeFlipX is applied.</summary>
+    /// <summary>When true, horizontally flips the health bar icon when previewing and saving (independent of BakeFlipX).</summary>
+    public bool IconFlipX { get; set; }
+    /// <summary>Direction the character (and its icon) faces AFTER flip is applied.</summary>
     public CharacterFacing NativeFacing { get; set; } = CharacterFacing.Left;
 
     public List<ImportedAnimClip> AvailableClips { get; set; } = new();

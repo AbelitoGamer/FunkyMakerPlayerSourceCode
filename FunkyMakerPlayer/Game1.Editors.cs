@@ -343,6 +343,10 @@ public partial class Game1
             _spriteTextureCache = null;
             _levelTextures.Clear(); // the editor's textures: never ours to free
         }
+        else
+        {
+            DisposeLevelTextures();
+        }
         _spriteCacheOwnedByEditor = false;
         _playtestingFromEditor = false;
         _playtestStartSeconds = 0f;

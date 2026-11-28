@@ -18,6 +18,9 @@ public static class GameModeHelper
     /// </summary>
     public static void EnableGameMode()
     {
+        if (!OperatingSystem.IsWindows())
+            return;
+
         try
         {
             // Set DPI awareness (helps with detection)

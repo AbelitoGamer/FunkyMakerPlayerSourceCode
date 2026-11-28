@@ -192,8 +192,11 @@ public class HudSettings
             };
 
             string json = JsonSerializer.Serialize(this, options);
-            File.WriteAllText(SettingsPath, json);
-            Console.WriteLine($"[HudSettings] Saved to {SettingsPath}");
+            string path = SettingsPath;
+            string tmp = path + ".tmp";
+            File.WriteAllText(tmp, json);
+            File.Move(tmp, path, overwrite: true);
+            Console.WriteLine($"[HudSettings] Saved to {path}");
         }
         catch (Exception ex)
         {

@@ -274,8 +274,12 @@ public static class OsuLibrary
     private static ImportResult ImportBeatmapSet(string oszPath)
     {
         using var zip = ZipFile.OpenRead(oszPath);
-        // osu! only reads .osu files at the archive root.
-        var osuEntries = zip.Entries.Where(e => !e.FullName.Contains('/') && e.Name.EndsWith(".osu", StringComparison.OrdinalIgnoreCase)).ToList();
+        // osu! only reads .osu files at the archive root (normalize Windows '\' separators too).
+        var osuEntries = zip.Entries.Where(e =>
+        {
+            string norm = e.FullName.Replace('\\', '/');
+            return !norm.Contains('/') && norm.EndsWith(".osu", StringComparison.OrdinalIgnoreCase);
+        }).ToList();
         if (osuEntries.Count == 0)
             return new ImportResult(false, $"{Path.GetFileName(oszPath)}: no tiene ninguna dificultad (.osu)", null, false);
 
@@ -322,9 +326,14 @@ public static class OsuLibrary
     {
         using var zip = ZipFile.OpenRead(oskPath);
         // skin.ini at the root (osu! reads it there); some archives wrap everything in one folder.
-        var ini = zip.Entries.FirstOrDefault(e => e.FullName.Equals("skin.ini", StringComparison.OrdinalIgnoreCase))
-                  ?? zip.Entries.FirstOrDefault(e => e.Name.Equals("skin.ini", StringComparison.OrdinalIgnoreCase) && e.FullName.Count(c => c == '/') == 1);
-        string prefix = ini != null ? ini.FullName[..^ini.Name.Length] : "";
+        var ini = zip.Entries.FirstOrDefault(e => e.FullName.Replace('\\', '/').Equals("skin.ini", StringComparison.OrdinalIgnoreCase))
+                  ?? zip.Entries.FirstOrDefault(e =>
+                  {
+                      string norm = e.FullName.Replace('\\', '/');
+                      return Path.GetFileName(norm).Equals("skin.ini", StringComparison.OrdinalIgnoreCase) && norm.Count(c => c == '/') == 1;
+                  });
+        string normIni = ini != null ? ini.FullName.Replace('\\', '/') : "";
+        string prefix = ini != null ? normIni[..^Path.GetFileName(normIni).Length] : "";
         string name = Path.GetFileNameWithoutExtension(oskPath);
         if (ini != null)
         {
@@ -332,8 +341,12 @@ public static class OsuLibrary
             var skinIni = OsuSkinIni.Parse(sr.ReadToEnd());
             if (!string.IsNullOrWhiteSpace(skinIni.Name)) name = skinIni.Name;
         }
-        bool hasManiaArt = zip.Entries.Any(e => e.Name.StartsWith("mania-note", StringComparison.OrdinalIgnoreCase) ||
-                                                e.Name.StartsWith("mania-key", StringComparison.OrdinalIgnoreCase));
+        bool hasManiaArt = zip.Entries.Any(e =>
+        {
+            string leaf = Path.GetFileName(e.FullName.Replace('\\', '/'));
+            return leaf.StartsWith("mania-note", StringComparison.OrdinalIgnoreCase) ||
+                   leaf.StartsWith("mania-key", StringComparison.OrdinalIgnoreCase);
+        });
         if (!hasManiaArt && (ini == null || !OsuSkinIni.HasManiaSection(zip, ini)))
             return new ImportResult(false, $"{name}: la skin no tiene elementos de osu!mania", null, true);
 
@@ -346,19 +359,23 @@ public static class OsuLibrary
     private static void ExtractAll(ZipArchive zip, string dest, string prefix = "")
     {
         Directory.CreateDirectory(dest);
-        string root = Path.GetFullPath(dest) + Path.DirectorySeparatorChar;
+        string root = Path.GetFullPath(dest).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)
+                      + Path.DirectorySeparatorChar;
+        string normPrefix = prefix.Replace('\\', '/');
         foreach (var e in zip.Entries)
         {
-            if (string.IsNullOrEmpty(e.Name)) continue; // directory entry
-            string rel = e.FullName;
-            if (prefix.Length > 0)
+            string rel = e.FullName.Replace('\\', '/');
+            if (string.IsNullOrEmpty(rel) || rel.EndsWith('/')) continue; // directory entry (both '/' and '\')
+            if (normPrefix.Length > 0)
             {
-                if (!rel.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)) continue;
-                rel = rel[prefix.Length..];
+                if (!rel.StartsWith(normPrefix, StringComparison.OrdinalIgnoreCase)) continue;
+                rel = rel[normPrefix.Length..];
             }
+            if (string.IsNullOrEmpty(rel) || rel.EndsWith('/')) continue;
             string target = Path.GetFullPath(Path.Combine(dest, rel.Replace('/', Path.DirectorySeparatorChar)));
             if (!target.StartsWith(root, StringComparison.OrdinalIgnoreCase)) continue; // zip-slip guard
-            Directory.CreateDirectory(Path.GetDirectoryName(target)!);
+            string? parentDir = Path.GetDirectoryName(target);
+            if (!string.IsNullOrEmpty(parentDir)) Directory.CreateDirectory(parentDir);
             e.ExtractToFile(target, overwrite: true);
         }
         // Touch the folder so the set cache notices a re-import.
@@ -375,7 +392,11 @@ public static class OsuLibrary
     /// <summary>True when a set folder ships its own mania note images (a "beatmap skin").</summary>
     public static bool HasBeatmapSkin(string folder)
     {
-        try { return Directory.EnumerateFiles(folder, "mania-note*.*", SearchOption.TopDirectoryOnly).Any(); }
+        try
+        {
+            return Directory.EnumerateFiles(folder, "*", SearchOption.TopDirectoryOnly)
+                .Any(f => Path.GetFileName(f).StartsWith("mania-note", StringComparison.OrdinalIgnoreCase));
+        }
         catch { return false; }
     }
 
@@ -383,9 +404,9 @@ public static class OsuLibrary
     public static string? FindFile(string folder, string? relative)
     {
         if (string.IsNullOrWhiteSpace(relative)) return null;
-        string direct = Path.Combine(folder, relative.Replace('/', Path.DirectorySeparatorChar));
+        string want = relative.Replace('\\', '/').TrimStart('/');
+        string direct = Path.Combine(folder, want.Replace('/', Path.DirectorySeparatorChar));
         if (File.Exists(direct)) return direct;
-        string want = relative.Replace('\\', '/');
         try
         {
             foreach (var f in Directory.EnumerateFiles(folder, "*", SearchOption.AllDirectories))

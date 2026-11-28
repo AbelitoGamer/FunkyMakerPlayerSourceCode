@@ -119,8 +119,7 @@ public static class CharacterLibrary
                         RawSourceHint = "SPRITEMAP (RAW)",
                     });
                 }
-                else if (Directory.EnumerateFiles(dir, "*.xml", SearchOption.TopDirectoryOnly).Any() &&
-                         Directory.EnumerateFiles(dir, "*.png", SearchOption.TopDirectoryOnly).Any())
+                else if (HasFileWithExtension(dir, ".xml") && HasFileWithExtension(dir, ".png"))
                 {
                     list.Add(new CharacterSummary
                     {
@@ -151,7 +150,7 @@ public static class CharacterLibrary
             if (SpritemapCharacterImporter.IsSpritemapFolder(path))
                 return SpritemapCharacterImporter.ImportFromPath(path);
 
-            var xml = Directory.EnumerateFiles(path, "*.xml", SearchOption.TopDirectoryOnly).FirstOrDefault();
+            var xml = FindFirstFileWithExtension(path, ".xml");
             if (xml != null)
                 return SparrowCharacterImporter.ImportFromFiles(xml);
 
@@ -171,6 +170,8 @@ public static class CharacterLibrary
             return ImportFromZipArchive(path);
 
         if (string.Equals(fileName, "Animation.json", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(fileName, "animations.json", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(fileName, "metadata.json", StringComparison.OrdinalIgnoreCase) ||
             fileName.StartsWith("spritemap", StringComparison.OrdinalIgnoreCase))
         {
             return SpritemapCharacterImporter.ImportFromPath(path);
@@ -182,10 +183,13 @@ public static class CharacterLibrary
             return ImportFromBakedFolder(Path.GetDirectoryName(path)!);
         }
 
-        // Check if a .json in a Spritemap folder was picked (e.g., V-Slice character.json next to Animation.json)
-        string dir = Path.GetDirectoryName(path) ?? "";
-        if (ext == ".json" && SpritemapCharacterImporter.IsSpritemapFolder(dir))
-            return SpritemapCharacterImporter.ImportFromPath(dir);
+        // Check if any .json inside a Spritemap folder or its LIBRARY/ subfolder was picked
+        if (ext == ".json")
+        {
+            string? atlasRoot = SpritemapCharacterImporter.FindSpritemapRoot(path);
+            if (atlasRoot != null)
+                return SpritemapCharacterImporter.ImportFromPath(atlasRoot);
+        }
 
         return SparrowCharacterImporter.ImportFromFiles(path);
     }
@@ -222,11 +226,21 @@ public static class CharacterLibrary
         }
     }
 
+    private static bool HasFileWithExtension(string dir, string ext) =>
+        FindFirstFileWithExtension(dir, ext) != null;
+
+    private static string? FindFirstFileWithExtension(string dir, string ext)
+    {
+        if (!Directory.Exists(dir)) return null;
+        return Directory.EnumerateFiles(dir, "*", SearchOption.TopDirectoryOnly)
+            .FirstOrDefault(f => string.Equals(Path.GetExtension(f), ext, StringComparison.OrdinalIgnoreCase));
+    }
+
     private static string FindBestCharacterSubdirectory(string rootDir)
     {
         if (SpritemapCharacterImporter.IsSpritemapFolder(rootDir) ||
             File.Exists(Path.Combine(rootDir, "sprite.json")) ||
-            Directory.EnumerateFiles(rootDir, "*.xml", SearchOption.TopDirectoryOnly).Any())
+            HasFileWithExtension(rootDir, ".xml"))
         {
             return rootDir;
         }
@@ -235,7 +249,7 @@ public static class CharacterLibrary
         {
             if (SpritemapCharacterImporter.IsSpritemapFolder(sub) ||
                 File.Exists(Path.Combine(sub, "sprite.json")) ||
-                Directory.EnumerateFiles(sub, "*.xml", SearchOption.TopDirectoryOnly).Any())
+                HasFileWithExtension(sub, ".xml"))
             {
                 return sub;
             }
@@ -347,6 +361,8 @@ public static class CharacterLibrary
         };
 
         int count = Math.Min(def.Data.Count, stripPngs.Count);
+        var usedClipNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var savedOffsets = new List<Vec2>(count);
         for (int i = 0; i < count; i++)
         {
             if (stripPngs[i] == null || stripPngs[i].Length == 0) continue;
@@ -357,24 +373,32 @@ public static class CharacterLibrary
             int fw = Math.Max(1, strip.Width / fc);
             int fh = Math.Max(1, strip.Height);
 
+            var slotMeta = (meta != null && i < meta.Slots.Count) ? meta.Slots[i] : null;
             string slotLabel = i < CharacterProject.CoreSlotNames.Length
                 ? CharacterProject.CoreSlotNames[i]
-                : (meta != null && i < meta.Slots.Count && !string.IsNullOrWhiteSpace(meta.Slots[i].Label)
-                    ? meta.Slots[i].Label
+                : (slotMeta != null && !string.IsNullOrWhiteSpace(slotMeta.Label)
+                    ? slotMeta.Label
                     : $"EXTRA {i - 4}");
 
-            string clipName = meta != null && i < meta.Slots.Count && !string.IsNullOrWhiteSpace(meta.Slots[i].ClipName)
-                ? $"{i}: {slotLabel}"
+            string baseClipName = slotMeta != null && !string.IsNullOrWhiteSpace(slotMeta.ClipName)
+                ? slotMeta.ClipName.Trim()
                 : $"{i}: {slotLabel}";
+            string clipName = baseClipName;
+            int suffix = 2;
+            while (!usedClipNames.Add(clipName))
+                clipName = $"{baseClipName} ({suffix++})";
+
+            float uox = slotMeta?.UserOffsetX ?? 0f;
+            float uoy = slotMeta?.UserOffsetY ?? 0f;
 
             var clip = new ImportedAnimClip
             {
                 Name = clipName,
                 CanvasWidth = fw,
                 CanvasHeight = fh,
-                // Place WorldMin so that NaturalAnchor (Idle bottom-center) reproduces animData.Offset!
-                WorldMinX = -animData.Offset.X,
-                WorldMinY = -animData.Offset.Y,
+                // Place WorldMin so that with Idle world anchor = (0, 0), ComputeFnmmOffset reproduces animData.Offset exactly!
+                WorldMinX = -(animData.Offset.X + uox),
+                WorldMinY = -(animData.Offset.Y + uoy),
                 SuggestedFps = animData.SpdFps && animData.Spd > 0 ? animData.Spd : 24f,
                 SuggestedLoop = animData.Loop,
             };
@@ -387,29 +411,28 @@ public static class CharacterLibrary
             }
 
             proj.AvailableClips.Add(clip);
+            savedOffsets.Add(animData.Offset);
             proj.Slots.Add(new CharacterAnimSlot
             {
                 SlotIndex = i,
                 Label = slotLabel,
                 ClipName = clipName,
                 Fps = clip.SuggestedFps,
-                Loop = i < 5 || animData.Loop,
-                UserOffsetX = 0f,
-                UserOffsetY = 0f,
+                Loop = animData.Loop,
+                UserOffsetX = uox,
+                UserOffsetY = uoy,
             });
         }
 
-        // Normalize WorldMin relative to Idle's bottom-center so ComputeFnmmOffset reproduces exact offsets!
-        if (proj.AvailableClips.Count > 0)
+        // Normalize Idle's WorldMin so GetIdleWorldFootAnchor() sits at (0, 0), preserving exact
+        // saved Idle offset in Slot 0's UserOffsetX/Y AND exact saved offsets for every other slot!
+        if (proj.AvailableClips.Count > 0 && proj.Slots.Count > 0)
         {
             var idle = proj.AvailableClips[0];
-            float shiftX = -idle.WorldMinX - idle.CanvasWidth * 0.5f;
-            float shiftY = -idle.WorldMinY - idle.CanvasHeight;
-            foreach (var c in proj.AvailableClips)
-            {
-                c.WorldMinX += shiftX;
-                c.WorldMinY += shiftY;
-            }
+            idle.WorldMinX = -idle.CanvasWidth * 0.5f;
+            idle.WorldMinY = -idle.CanvasHeight;
+            proj.Slots[0].UserOffsetX = MathF.Round(idle.CanvasWidth * 0.5f - savedOffsets[0].X, 2);
+            proj.Slots[0].UserOffsetY = MathF.Round(idle.CanvasHeight - savedOffsets[0].Y, 2);
         }
 
         proj.EnsureCoreSlots();
@@ -466,11 +489,16 @@ public static class CharacterLibrary
         string outDir = !string.IsNullOrWhiteSpace(targetDirectoryOverride)
             ? targetDirectoryOverride!
             : Path.Combine(PlatformPaths.GetCharactersPath(), slug);
+
+        // Bake in memory FIRST so a baking failure (e.g. OOM) never deletes an existing saved character on disk!
+        var baked = BakeInMemory(project);
+
         if (Directory.Exists(outDir))
         {
-            foreach (var oldPng in Directory.EnumerateFiles(outDir, "*.png", SearchOption.TopDirectoryOnly))
+            foreach (var oldPng in Directory.EnumerateFiles(outDir, "*", SearchOption.TopDirectoryOnly))
             {
-                if (int.TryParse(Path.GetFileNameWithoutExtension(oldPng), out _))
+                if (string.Equals(Path.GetExtension(oldPng), ".png", StringComparison.OrdinalIgnoreCase) &&
+                    int.TryParse(Path.GetFileNameWithoutExtension(oldPng), out _))
                     try { File.Delete(oldPng); } catch { }
             }
         }
@@ -478,8 +506,6 @@ public static class CharacterLibrary
         {
             Directory.CreateDirectory(outDir);
         }
-
-        var baked = BakeInMemory(project);
 
         File.WriteAllText(Path.Combine(outDir, "sprite.json"), JsonSerializer.Serialize(baked.Sprite, _json), Encoding.UTF8);
         for (int i = 0; i < baked.Frames.Count; i++)
@@ -525,7 +551,16 @@ public static class CharacterLibrary
             int fh = Math.Max(1, clip.CanvasHeight);
             if (i == 0) { idleW = fw; idleH = fh; }
 
-            // Build horizontal strip (fw * fc) x fh
+            // Build horizontal strip (fw * fc) x fh with overflow/32-bit OOM guard
+            long stripPixels = (long)fw * fc * fh;
+            long maxStripPixels = OperatingSystem.IsAndroid() && !Environment.Is64BitProcess
+                ? 24L * 1024 * 1024 // ~96 MB RGBA max single strip on 32-bit Android
+                : 128L * 1024 * 1024;
+            if ((long)fw * fc > int.MaxValue / 4 || stripPixels > maxStripPixels)
+            {
+                throw new InvalidOperationException(
+                    $"Animation '{slot.Label}' ({fc} frames of {fw}x{fh}) exceeds safe strip memory limit ({stripPixels * 4 / (1024 * 1024)} MB).");
+            }
             using var stripImg = new Image<Rgba32>(fw * fc, fh);
             for (int f = 0; f < fc; f++)
             {
@@ -576,9 +611,9 @@ public static class CharacterLibrary
             iconDef = new FnmmSprite { Type = 3f };
             iconBytes = new List<byte[]>(2);
 
-            byte[] normPng = EncodeIconFrame(project.IconNormal, project.BakeFlipX);
+            byte[] normPng = EncodeIconFrame(project.IconNormal, project.IconFlipX);
             byte[] losePng = project.IconLosing != null
-                ? EncodeIconFrame(project.IconLosing, project.BakeFlipX)
+                ? EncodeIconFrame(project.IconLosing, project.IconFlipX)
                 : normPng;
 
             iconBytes.Add(normPng);
@@ -747,9 +782,10 @@ public static class CharacterLibrary
         float? scaleOverride = null,
         bool updateIcon = true,
         bool autoScaleToReplaced = false,
-        string? spriteKeyOverride = null)
+        string? spriteKeyOverride = null,
+        BakedCharacterPackage? preloadedPackage = null)
     {
-        var pkg = LoadPackage(slug);
+        var pkg = preloadedPackage ?? LoadPackage(slug);
         if (pkg == null) return null;
 
         // Ensure strumline exists in chart data
@@ -893,11 +929,18 @@ public static class CharacterLibrary
             level.Scene.Objects.Add(targetObj);
         }
 
-        // Update health icon if available (icons[0] = opponent SL1, icons[1] = player SL0)
+        // Update health icon if available (icons[0] = opponent SL1 facing Right, icons[1] = player SL0 facing Left)
         if (updateIcon && pkg.IconSprite != null && pkg.IconFrames != null && pkg.IconFrames.Count > 0 && (targetStrumline == 0 || targetStrumline == 1))
         {
+            CharacterFacing desiredIconFacing = targetStrumline == 0 ? CharacterFacing.Left : CharacterFacing.Right;
+            bool needIconMirror = nativeFacing != desiredIconFacing;
+
+            var iconFrames = new List<byte[]>(pkg.IconFrames.Count);
+            foreach (var rawIcon in pkg.IconFrames)
+                iconFrames.Add(needIconMirror ? FlipPngBytesHorizontally(rawIcon) : rawIcon);
+
             string iconKey = $"{sprKey}_icon";
-            level.Sprites[iconKey] = (CloneSpriteDef(pkg.IconSprite), new List<byte[]>(pkg.IconFrames));
+            level.Sprites[iconKey] = (CloneSpriteDef(pkg.IconSprite), iconFrames);
             while (level.Scene.Icons.Count < 2)
                 level.Scene.Icons.Add("");
             int iconSlot = targetStrumline == 0 ? 1 : 0;
@@ -905,6 +948,23 @@ public static class CharacterLibrary
         }
 
         return targetObj;
+    }
+
+    private static byte[] FlipPngBytesHorizontally(byte[] pngBytes)
+    {
+        if (pngBytes == null || pngBytes.Length == 0) return pngBytes ?? Array.Empty<byte>();
+        try
+        {
+            using var img = Image.Load<Rgba32>(pngBytes);
+            img.Mutate(ctx => ctx.Flip(FlipMode.Horizontal));
+            using var ms = new MemoryStream();
+            img.Save(ms, _pngEncoder);
+            return ms.ToArray();
+        }
+        catch
+        {
+            return pngBytes;
+        }
     }
 
     public static bool TryComputeObjectWorldFootAndHeight(FnmmLevel level, SceneObject obj, out Vec2 worldFoot, out float worldHeight)

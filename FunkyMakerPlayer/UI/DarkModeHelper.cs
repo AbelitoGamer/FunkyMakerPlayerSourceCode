@@ -10,7 +10,7 @@ internal static class DarkMode
     private static extern int DwmSetWindowAttribute(IntPtr hwnd, int attr, ref int attrValue, int attrSize);
 
     [DllImport("SDL2", CallingConvention = CallingConvention.Cdecl)]
-    private static extern IntPtr SDL_GetWindowWMInfo(IntPtr window, ref SDL_SysWMinfo info);
+    private static extern int SDL_GetWindowWMInfo(IntPtr window, ref SDL_SysWMinfo info);
 
     [StructLayout(LayoutKind.Sequential)]
     private struct SDL_version
@@ -20,12 +20,16 @@ internal static class DarkMode
         public byte patch;
     }
 
+    // Matches native SDL_SysWMinfo (version + subsystem + 64-byte info union) so sdl2-compat / newer SDL never overflows stack
     [StructLayout(LayoutKind.Sequential)]
     private struct SDL_SysWMinfo
     {
         public SDL_version version;
         public SDL_SYSWM_TYPE subsystem;
-        public IntPtr win_window; // HWND on Windows
+        public IntPtr win_window;    // HWND on Windows
+        public IntPtr win_hdc;       // HDC
+        public IntPtr win_hinstance; // HINSTANCE
+        private long _pad0, _pad1, _pad2, _pad3, _pad4;
     }
 
     private enum SDL_SYSWM_TYPE
@@ -52,9 +56,8 @@ internal static class DarkMode
             wmInfo.version.minor = 0;
             wmInfo.version.patch = 0;
 
-            SDL_GetWindowWMInfo(sdlWindowHandle, ref wmInfo);
-
-            if (wmInfo.subsystem == SDL_SYSWM_TYPE.SDL_SYSWM_WINDOWS)
+            if (SDL_GetWindowWMInfo(sdlWindowHandle, ref wmInfo) != 0 &&
+                wmInfo.subsystem == SDL_SYSWM_TYPE.SDL_SYSWM_WINDOWS)
                 return wmInfo.win_window;
         }
         catch

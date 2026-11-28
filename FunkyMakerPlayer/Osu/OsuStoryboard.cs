@@ -328,7 +328,17 @@ public sealed class OsuStoryboard
     private static Texture2D? LoadExact(GraphicsDevice gd, byte[] bytes)
     {
         using var img = SixLabors.ImageSharp.Image.Load<SixLabors.ImageSharp.PixelFormats.Rgba32>(bytes);
+        int maxDim = Math.Min(FnmmSceneRenderer.GetGpuMaxTextureSize(),
+            (OperatingSystem.IsAndroid() && !Environment.Is64BitProcess) ? 2048 : 8192);
         if (img.Width <= 0 || img.Height <= 0 || img.Width > 8192 || img.Height > 8192) return null;
+        if (img.Width > maxDim || img.Height > maxDim)
+        {
+            float scale = Math.Min((float)maxDim / img.Width, (float)maxDim / img.Height);
+            int nw = Math.Max(1, (int)MathF.Round(img.Width * scale));
+            int nh = Math.Max(1, (int)MathF.Round(img.Height * scale));
+            SixLabors.ImageSharp.Processing.ProcessingExtensions.Mutate(img, ctx =>
+                SixLabors.ImageSharp.Processing.ResizeExtensions.Resize(ctx, nw, nh));
+        }
         var pixels = new Color[img.Width * img.Height];
         img.ProcessPixelRows(acc =>
         {

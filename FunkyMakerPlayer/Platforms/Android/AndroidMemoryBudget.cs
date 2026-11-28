@@ -50,7 +50,7 @@ public static class AndroidMemoryBudget
             var ctx = Application.Context;
             if (ctx?.GetSystemService(Context.ActivityService) is ActivityManager am)
             {
-                var memInfo = new ActivityManager.MemoryInfo();
+                using var memInfo = new ActivityManager.MemoryInfo();
                 am.GetMemoryInfo(memInfo);
                 totalBytes = memInfo.TotalMem;
                 availBytes = memInfo.AvailMem;

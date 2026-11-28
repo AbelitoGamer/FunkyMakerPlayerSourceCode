@@ -1125,24 +1125,37 @@ public class NoteStyle
             string[] holdCandidates = { "NOTE_hold_FMM.png", "NOTE_hold_assets.png", "hold.png" };
             foreach (var c in holdCandidates)
             {
-                string p = Path.Combine(folderPath, c);
-                if (!File.Exists(p)) p = Path.Combine(folderPath, "shared", "images", c);
-                
+                string? p = CaseInsensitivePaths.ResolveFile(folderPath, c)
+                         ?? CaseInsensitivePaths.ResolveFile(folderPath, "shared", "images", c);
+
                 // FALLBACK: skin has no hold texture → engine fallback in Assets/images/
-                if (!File.Exists(p))
+                if (p == null)
                 {
-                    string assetsPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "Assets", "images", c);
-                    if (File.Exists(assetsPath))
-                        p = assetsPath;
+#if ANDROID
+                    string? filesDir = global::Android.App.Application.Context.FilesDir?.AbsolutePath;
+                    if (!string.IsNullOrEmpty(filesDir))
+                        p = CaseInsensitivePaths.ResolveFile(Path.Combine(filesDir, "Assets"), "images", c);
+#else
+                    p = CaseInsensitivePaths.ResolveFile(PlatformPaths.GetAssetsPath(), "images", c);
+#endif
                 }
-                
-                if (File.Exists(p))
+
+                if (p != null && File.Exists(p))
                 {
                     Console.WriteLine($"[NoteStyle] Loading hold texture from: {p}");
                     using var fs = File.OpenRead(p);
                     style.HoldTexture = Texture2D.FromStream(gd, fs);
                     break;
                 }
+#if ANDROID
+                try
+                {
+                    using var apkStream = TitleContainer.OpenStream($"images/{c}");
+                    style.HoldTexture = Texture2D.FromStream(gd, apkStream);
+                    break;
+                }
+                catch { }
+#endif
             }
             
             // Load hold frames from atlas (use config if available)

@@ -16,8 +16,10 @@ public static class CrashDialog
     /// </summary>
     public static void Show(Activity activity, string crashReport)
     {
+        if (activity == null || activity.IsFinishing || activity.IsDestroyed) return;
         activity.RunOnUiThread(() =>
         {
+            if (activity.IsFinishing || activity.IsDestroyed) return;
             try
             {
                 var builder = new AlertDialog.Builder(activity);
