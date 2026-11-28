@@ -974,6 +974,9 @@ public class NoteRenderer
         }
     }
 
+    private int _touchHoldDbgPrevHeld = -1;
+    private float _touchHoldDbgLastLogTime = -10f;
+
     private void UpdatePlayer(float songTime, KeyboardState kb, KeyboardState prevKb)
     {
         // Check both keyboard and touch controls (Android)
@@ -983,6 +986,25 @@ public class NoteRenderer
             if (IsLaneDown(kb, lane)) heldMask |= 1 << lane;
             if (WasLaneDown(prevKb, lane)) prevMask |= 1 << lane;
             if (IsLaneJustPressed(kb, prevKb, lane)) pressedMask |= 1 << lane;
+        }
+
+        if (_touchControls != null)
+        {
+            var touches = _touchControls.LastTouches;
+            bool anyActiveHold = _holdEndTime[0] > 0f || _holdEndTime[1] > 0f || _holdEndTime[2] > 0f || _holdEndTime[3] > 0f;
+            if (touches.Count > 0 || heldMask != _touchHoldDbgPrevHeld || pressedMask != 0 || anyActiveHold)
+            {
+                if (heldMask != _touchHoldDbgPrevHeld || pressedMask != 0 || Math.Abs(songTime - _touchHoldDbgLastLogTime) >= 0.15f)
+                {
+                    _touchHoldDbgLastLogTime = songTime;
+                    string tSummary = touches.Count == 0
+                        ? "none"
+                        : string.Join(",", System.Linq.Enumerable.Select(touches, t => $"{t.Id}:{t.State}@({t.Position.X:F0},{t.Position.Y:F0})"));
+                    Console.WriteLine(
+                        $"[TouchHoldDbg] t={songTime:F3} held={heldMask} prev={prevMask} press={pressedMask} holdEnd=[{_holdEndTime[0]:F2},{_holdEndTime[1]:F2},{_holdEndTime[2]:F2},{_holdEndTime[3]:F2}] rec=[{_recState[0]},{_recState[1]},{_recState[2]},{_recState[3]}] touches=[{tSummary}]");
+                }
+                _touchHoldDbgPrevHeld = heldMask;
+            }
         }
 
         // Replays (fork): record every frame whose input differs from "nothing changed".
@@ -1038,6 +1060,7 @@ public class NoteRenderer
 
                     if (holdNaturallyEnded)
                     {
+                        Console.WriteLine($"[TouchHoldDbg] HOLD COMPLETE lane={lane} t={songTime:F3} end={holdEnd:F3} held={held}");
                         // Completed! Award bonus based on initial hit quality
                         int bonus = HoldBonus(_holdHitDist[lane]);
                         AddScore(bonus);
@@ -1055,6 +1078,7 @@ public class NoteRenderer
                 }
                 else if (releasedEarly)
                 {
+                    Console.WriteLine($"[TouchHoldDbg] HOLD RELEASED EARLY lane={lane} t={songTime:F3} start={_holdStart[lane]:F3} end={holdEnd:F3} dur={duration:F3} rel={_holdReleaseTime[lane]:F3} held={held}");
                     // Released before the end (measure progress at the actual release time, not after grace)
                     float releaseRef = _holdReleaseTime[lane] >= 0f ? _holdReleaseTime[lane] : songTime;
                     float elapsed    = Math.Max(0f, releaseRef - _holdStart[lane]);
@@ -1164,6 +1188,7 @@ public class NoteRenderer
 
                 if (best.Duration > 0)
                 {
+                    Console.WriteLine($"[TouchHoldDbg] HOLD START lane={lane} t={songTime:F3} noteStart={best.Start:F3} dur={best.Duration:F3} end={holdEnd:F3}");
                     _holdEndTime[lane]     = holdEnd;
                     _holdHitDist[lane]     = bestDist;
                     _holdStart[lane]       = songTime;

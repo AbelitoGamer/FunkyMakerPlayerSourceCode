@@ -30,6 +30,10 @@ public static class PointerInput
     public static string BackLabel => IsTouch ? "<  Back" : "ESC  Back";
 
 #if ANDROID
+    /// <summary>The touches captured once per frame by Game1 so other screens never drain TouchPanel twice.</summary>
+    public static TouchCollection RawTouches { get; private set; }
+    public static bool HasRawTouches { get; private set; }
+
     private static MouseState _state;
     private static int _touchId = -1;
     private static Vector2 _start, _last;
@@ -50,6 +54,8 @@ public static class PointerInput
 
     public static void Update(TouchCollection touches, Func<Point, bool>? ownedByButton, int screenHeight, float dt)
     {
+        RawTouches = touches;
+        HasRawTouches = true;
         DragDeltaY = 0f;
         bool left = false, right = false;
 
@@ -135,6 +141,8 @@ public static class PointerInput
         _touchId >= 0 ? ButtonState.Pressed : ButtonState.Released,
         ButtonState.Released, ButtonState.Released, ButtonState.Released, ButtonState.Released);
 #else
+    public static TouchCollection RawTouches => default;
+    public static bool HasRawTouches => false;
     public static MouseState GetRawState() => Mouse.GetState();
     public static float DragDeltaY => 0f;
     public static bool IsDragging => false;

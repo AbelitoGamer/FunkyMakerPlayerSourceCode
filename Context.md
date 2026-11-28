@@ -339,6 +339,8 @@ Notes:
 │   │                            good/badnote, holdtrail/holdend, skin.json)
 │   ├── notestyles/FMM (XML)/    same look as an XML atlas (fmmnoteskin.png/.xml,
 │   │                            skin.json); both skin.json list every option
+│   ├── notestyles/Antropicas/   Claude/Anthropic-inspired FMM note style (260×260 PNGs)
+│   ├── notestyles/AntiGravedad/ Gemini/Antigravity-inspired FMM note style (260×260 PNGs + skin.json)
 │   ├── countdowns/Default/      default ready/set/go
 │   ├── fonts/MilkyNice.otf      default UI font
 │   └── notesplashes/            README + FMM (Default)/ (default splash atlas,
@@ -2711,6 +2713,14 @@ old clients never see a vote window (the vote then closes after 30 s and counts 
     footer / buttons (`Controls.Tag(action)` = "[key] " or nothing), Settings, pause, pickers,
     attempts, replays, Editor Hub, online main menu, loading / opponent-disconnected / online
     results prompts, "ESC  Back" → `PointerInput.BackLabel` ("<  Back").
+  - **Touch hardening (2026-11-28)**: `PointerInput.RawTouches` shares `Game1`'s single
+    `TouchPanel.GetState()` read per frame with `FreeplayMenu`, `MultiplayerMenu.TouchAsMouse`,
+    `GameOverOverlay`, and `SoloResultsScreen` so touches are never aged twice; `MultiplayerMenu`
+    shares `Game1`'s `TouchControls` (with `IgnorePoint = IsPointOverRoomControl`, avoiding
+    double-draw and stale bounds), clears `_touchId` on lift, and ignores drag-release in
+    `IsLeftClickReleased` so scrolling doesn't dismiss popups; `IsAtAndroidRootScreen` checks
+    `NoticeWindow.IsOpen` / sub-pickers / pause; `PickAndroidModsFolder` triggers a live mod list
+    rescan on return; `FreeplayMenu` detects horizontal as well as vertical swipes as drags.
   - Not done: HUD editor touch buttons (save/reset/grid/toggle), Chart Editor / Level Selector
     by touch, the online menu's other keyboard hints (room browser footer, "ESC Disconnect"). (Footer hints and "ESC" back labels done 2026-11-28, §10.0b.)
 
