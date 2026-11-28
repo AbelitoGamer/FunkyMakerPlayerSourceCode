@@ -1211,8 +1211,8 @@ Editor stage preview); `Game1` delegates to it.
   extra strumlines fill to the right (index 2+ are hidden when idle).
 - `Midlescroll` centers the player and splits the opponent around them.
 - Android touch hitboxes: invisible at rest; while pressed they show at `Game1.TouchHitboxOpacity`
-  (Settings → CONTROLS → Touch Hitbox Opacity, 0-100 %, default 30 %, saved as `TouchHitboxOpacity`;
-  was a fixed 40 %). Touch Hitbox Colors OFF still hides them completely.
+  (Settings → CONTROLS → Touch Hitbox Opacity, 0-100 %, default 10 % since 2026-11-28 (was 30 %), saved as
+  `TouchHitboxOpacity`, so phones that already saved 30 % keep it; was a fixed 40 % before that). Touch Hitbox Colors OFF still hides them completely.
   - **Mobile touch & hold fixes (`TouchControls.cs`, `NoteRenderer.cs`, `Game1.cs`, 2026-11-24):**
     - `TouchControls` now tracks active gameplay touches by `touch.Id` (`_fingerLane`), locks a finger to its
       starting lane while a hold note is active (`IsLaneHolding`, else 35 % lane-width hysteresis before
@@ -1491,6 +1491,17 @@ desktop). It is applied through:
   `MultiplayerMenu.GetUiScale` (all the online screens).
 - Touch-only layouts: the title screen cards become a 2-column grid; the credits use two columns;
   the Editor Hub shrinks its cards to fit instead of running under the footer.
+- Online menu (2026-11-28): `MultiplayerMenu.FontPx` on touch starts base sizes at 13 and **grows
+  the `max` caps with the scale** (the caps are monitor pixel sizes, e.g. 15; at a 1080p phone's
+  scale of about 2.2 they halved most of the online text; the half-size simulation at 1200x540
+  didn't show it, so check online screens at about 1920x886 too). Layouts that changed: Create /
+  Room Settings (one column if it fits, else two columns filled top-down, panel as tall as its
+  content, compact value controls), Leaderboard (Top Players / Recent Matches rows sized from
+  their fonts, `_leaderboardVisible` = rows that fit, replacing the fixed 7), My Stats tiles
+  (label left, value right), waiting room (player rows sized from their fonts, action buttons in
+  two columns on touch, column shares 28 / 48 / 24 %, song art at most 1/4 of the slot), Settings
+  panel narrower on touch. `DrawFooterBar` replaces keyboard hints with a touch hint on touch, and
+  `DrawBackButton` turns "ESC  X" into "<  X".
 Not boosted (fixed full-screen layouts): the solo results screen and the gameplay HUD. **New menus
 must take their scale from `UiScale.FromScreen` (or multiply by `FromScreen / Proportional`)** and
 be checked at phone proportions with the dev harness (§20).
@@ -1854,7 +1865,29 @@ rows on a 1080 px phone), each row drawn is registered for hit tests, the header
 APPLY buttons, and `Poll(Selection)` turns clicks / taps into: a row = preview it, the previewed
 row again or APPLY = apply (same as Enter), BACK = cancel (same as Esc). Works with the mouse
 on desktop too. `KeyBindingOverlay`
-handles rebinding the four lane keys. `ModsHelpScreen` is Android-only.
+handles rebinding the four lane keys. `ModsHelpScreen` (FOLDER ACCESS guide) is shown on Android only
+(desktop builds it for the dev harness, `FMP_OPEN=folderaccess`). Rewritten 2026-11-28: one
+screen (Back button, three step cards, CHOOSE FOLDER = `LaunchFolderPicker`, IMPORT FILE tip)
+instead of seven swipe pages of tiny text with no back button; it works by `PointerInput` taps.
+
+### 10.5b Notice window and editors on phones (fork, 2026-11-28)
+
+`UI/NoticeWindow` is a one-button message box Game1 draws over every screen (`DrawNoticeWindow`,
+after `DrawInternal`). While open, and until the closing tap / key is released, `UpdateInternal`
+returns right after reading input, so the screen underneath is untouched. Use
+`UI.NoticeWindow.Show(title, body)` for any short message that needs an OK.
+`Game1.BlockEditorOnMobile(name)` (Game1.Editors.cs) shows "WORK IN PROGRESS … use the PC version"
+and returns true on touch (`PointerInput.IsTouch`, so also with `FMP_TOUCH_SIM`). It guards every
+way into the Chart Editor (Editor Hub NEW CHART / CHART EDITOR, Freeplay EDIT / NEW CHART,
+`OpenChartEditor`, so also `7` in a song) and the HUD Editor (Editor Hub, Settings → HUD Editor,
+pause menu). The Editor Hub tags those cards "PC ONLY" on touch. The Character Editor is not
+blocked (it works by touch). Remove the guard for an editor once it works by touch.
+Found on the phone (2026-11-28): never wait for "every key released" on Android (a key can read as
+held all the time, so the window never took a tap); the window only waits for the pointer and its
+own keys. A screen that sets a "chosen" flag must clear it when the choice is blocked
+(`EditorPicker.ResetInputCooldown`), or it reopens the window every frame. The online
+`ConnectionIndicator` (top-left) now starts right of the identity chip (`_identityChipRect`) instead
+of covering it in the room browser.
 
 ### 10.6 UI sound effects (fork)
 
@@ -2679,7 +2712,7 @@ old clients never see a vote window (the vote then closes after 30 s and counts 
     attempts, replays, Editor Hub, online main menu, loading / opponent-disconnected / online
     results prompts, "ESC  Back" → `PointerInput.BackLabel` ("<  Back").
   - Not done: HUD editor touch buttons (save/reset/grid/toggle), Chart Editor / Level Selector
-    by touch, the online menu's other keyboard hints (room browser footer, "ESC Disconnect").
+    by touch, the online menu's other keyboard hints (room browser footer, "ESC Disconnect"). (Footer hints and "ESC" back labels done 2026-11-28, §10.0b.)
 
 **Note:** the app's default mods path is its external files directory. The
 in-game instructions (`ModsHelpScreen`) and `PlatformPaths` messages explain
@@ -3397,8 +3430,12 @@ After any change:
 **Dev harness** (`Game1.DevShot.cs`, desktop only, environment variables, nothing happens without
 them): `FMP_WINDOW=1200x540` (window size; 1200x540 = a 2400x1080 phone at half size),
 `FMP_TOUCH_SIM=1.5` (act as a touch screen with that `UiScale.Touch`; `PointerInput.IsTouch` is
-true), `FMP_OPEN=settings[:tab] | freeplay | editors | credits | replays | online | modsfolder |
-level | pause` (`level` / `pause` load `FMP_LEVEL=<path>`), `FMP_SHOT=out.png` + `FMP_SHOT_DELAY=4`
+true), `FMP_OPEN=settings[:tab] | freeplay | editors | credits | replays | online[:screen] | modsfolder |
+folderaccess | notice | level | pause` (`level` / `pause` load `FMP_LEVEL=<path>`; `online:` takes
+`create`, `browser`, `settings`, `top`, `recent`, `stats`, `detail` (first recent match), and
+`rooms` / `room`, which fill `RoomClient` with a made-up room list / waiting room,
+`RoomClient.Dev.cs`, so those screens can be checked without the server; `notice` shows the
+`NoticeWindow`), `FMP_SHOT=out.png` + `FMP_SHOT_DELAY=4`
 (save the window as a PNG after that many seconds and quit). Example (Git Bash, from
 `FunkyMakerPlayer/bin/Debug/net10.0`):
 `FMP_WINDOW=1200x540 FMP_TOUCH_SIM=1.5 FMP_OPEN=settings:2 FMP_SHOT=shot.png ./FunkyMakerPlayer.exe`.
