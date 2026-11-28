@@ -1593,6 +1593,7 @@ public partial class FreeplayMenu
                 ("Built with", null),
                 ("  MonoGame  MonoGame.Extended  FontStashSharp  NVorbis  NLayer", null),
                 ("  ImageSharp  SharpCompress  DiscordRichPresence", null),
+                ("  Claude (Anthropic)", null),
                 ("", null),
                 ("Special Thanks", null),
                 ("  AnnaHolOl (Ideas & Testing)", null),
