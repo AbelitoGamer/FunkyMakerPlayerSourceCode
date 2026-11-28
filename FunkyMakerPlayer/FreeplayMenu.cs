@@ -948,6 +948,16 @@ public partial class FreeplayMenu
             return;
         }
 
+#if !ANDROID
+        // Move mods folder window (opened by the MODS FOLDER button, FreeplayMenu.TitleButtons.cs)
+        if (UpdateModsMoveWindow(kb, rtMouse, mouseClicked, mouseMoved, enter, esc))
+        {
+            _prevKb = kb;
+            _prevMs = mouse;
+            return;
+        }
+#endif
+
         // ── Psych Engine-style Update Modal (non-blocking, main menu only) ────
         if (_updateAvailable && _updateModalOpen && !_panelOpen && !_importModalOpen)
         {
@@ -1014,11 +1024,15 @@ public partial class FreeplayMenu
         }
         else
         {
-            #if ANDROID
-            const int menuCount = 9;
-            #else
             const int menuCount = 6;
-            #endif
+
+            // Secondary buttons under the main options (mods folder / Android import)
+            if (UpdateTitleButtons(rtMouse, mouseClicked))
+            {
+                _prevKb = kb;
+                _prevMs = mouse;
+                return;
+            }
 
             if (up)
             {
@@ -1091,33 +1105,12 @@ public partial class FreeplayMenu
         {
             SettingsRequested = true;
         }
-        #if ANDROID
-        else if (sel == 5)  // OPEN MODS (Android only)
-        {
-            MenuAction = 5;  // Signal to open mods folder
-        }
-        else if (sel == 6)  // IMPORT FILE (Android only)
-        {
-            MenuAction = 4;  // Signal to open file picker for mods
-        }
-        else if (sel == 7)  // GRANT FOLDER ACCESS (Android only)
-        {
-            MenuAction = 6;  // Signal to open SAF folder picker
-        }
-        else if (sel == 8)  // Credits — fade in
-        {
-            _transition   = TransitionState.CreditsIn;
-            _transTimer   = 0f;
-            _creditsAlpha = 0f;
-        }
-        #else
         else if (sel == 5)  // Credits — fade in
         {
             _transition   = TransitionState.CreditsIn;
             _transTimer   = 0f;
             _creditsAlpha = 0f;
         }
-        #endif
     }
 
     /// <summary>Consumes and returns the current main menu selection action, or -1 if none.</summary>
@@ -1185,11 +1178,9 @@ public partial class FreeplayMenu
         if ((_font != null || _fontRenderer != null) && !showDetails)
         {
             // Menu items — play modes & Editors clearly accessible on main menu
-            #if ANDROID
-            string[] items = { "FREEPLAY", "MULTIPLAYER", "REPLAYS", "EDITORS", "SETTINGS", "OPEN MODS", "IMPORT FILE", "GRANT FOLDER ACCESS", "CREDITS" };
-            #else
+            // The same six on every platform; the extra actions (mods folder, Android import / folder
+            // access) are the smaller buttons under them (FreeplayMenu.TitleButtons.cs)
             string[] items = { "FREEPLAY", "MULTIPLAYER", "REPLAYS", "EDITORS", "SETTINGS", "CREDITS" };
-            #endif
 
             // Title with glow effect - scaled cleanly across 720p .. 4K
             int maxLeftTitleW = Math.Max(140, leftW - UiScale.Px(36, s));
@@ -1262,7 +1253,10 @@ public partial class FreeplayMenu
             #endif
 
             float topBoundary = subY + subSz.Y + UiScale.Px(20, s);
-            float bottomBoundary = hintY - UiScale.Px(18, s);
+            // Secondary buttons row just above the hint
+            int titleRowH = TitleButtonsRowHeight(s);
+            int titleRowY = (int)(hintY - UiScale.Px(14, s) - titleRowH);
+            float bottomBoundary = titleRowY - UiScale.Px(16, s);
             float availableCardH = Math.Max(100f, bottomBoundary - topBoundary);
             int totalMenuH = items.Length * cardHeight + (items.Length - 1) * cardSpacing;
             if (totalMenuH > availableCardH && items.Length > 0)
@@ -1342,6 +1336,8 @@ public partial class FreeplayMenu
                 float textY = cardY + (cardHeight - sz.Y) / 2f;
                 DrawText(sb, items[i], new Vector2(textX, textY), textCol, itemSize);
             }
+
+            DrawTitleButtons(sb, leftW, titleRowY, s);
 
             DrawText(sb, hint, new Vector2(leftW / 2f - hintSz.X / 2f, hintY),
                 Color.White * 0.35f, hintSize);
@@ -1682,6 +1678,9 @@ public partial class FreeplayMenu
             _updateLaterBounds = Rectangle.Empty;
             _updateBadgeBounds = Rectangle.Empty;
         }
+#if !ANDROID
+        DrawModsMoveWindow(sb, sw, sh);
+#endif
     }
 
     private void DrawUpdateCornerBadge(SpriteBatch sb, int sw, int sh)
