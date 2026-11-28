@@ -65,7 +65,7 @@ public enum UiSound
 public static class UiSfx
 {
     /// <summary>SFX volume (0..1), persisted in settings.json as <c>SfxVolume</c>.</summary>
-    public static float Volume = 0.8f;
+    public static float Volume = 1.0f;
 
     private readonly record struct SoundDef(string[] Files, int Priority, float Gain);
 

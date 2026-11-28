@@ -350,7 +350,7 @@ public partial class Game1 : Game
     // ── HUD options ───────────────────────────────────────────────────────────
     public static bool  ShowTimer       = true;   // song timer bar above strumline
     public static bool  ShowCombo       = true;   // combo counter popup (on/off)
-    public static float TimeskipSeconds = 10f;    // seconds per timeskip step (0 = Timeskip off)
+    public static float TimeskipSeconds = 0f;     // seconds per timeskip step (0 = Timeskip off)
     /// <summary>
     /// Fork: audio offset in ms for every song (Settings → GAMEPLAY), like FNF's note offset.
     /// Positive = the notes come later (for audio that reaches you late, e.g. Bluetooth).
@@ -371,16 +371,16 @@ public partial class Game1 : Game
     public static bool   TimerForceTop  = false;         // Ignore downscroll (only for Top/Left/Middle/Right/Strumline presets)
     
 
-    public static bool  HideExtraStrumlines = false;  // hide strumlines beyond player+opponent
+    public static bool  HideExtraStrumlines = true;   // hide strumlines beyond player+opponent
     public static bool  HideOpponentStrumline = false; // hide opponent strumline (index 1)
 
     /// <summary>Tint of a non-player character's "miss" (sing animation in dark purple).</summary>
     private static readonly Color NonPlayerMissTint = new Color(0x5B, 0x3A, 0x8C);
     // Timer color presets: 0=white, 1=cyan, 2=pink, 3=yellow, 4=green, 5=custom
-    public static int   TimerColorPreset = 0;
+    public static int   TimerColorPreset = 1;
     public static Color TimerColorCustom = new Color(0xE0, 0xE0, 0xFF);
     // Master volume (0..1): scales every sound — song, menu music and sound effects.
-    public static float MasterVolume = 0.85f;
+    public static float MasterVolume = 0.5f;
     // Song music volume (0..1), scaled by MasterVolume.
     public static float SongVolume = 1.0f;
     /// <summary>Volume the playing song's music instance uses.</summary>

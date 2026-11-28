@@ -36,14 +36,14 @@ public static class Settings
         public bool? Autoplay          { get; set; }
         public bool  Downscroll        { get; set; } = false;
         public bool  VSync             { get; set; } = true;
-        public float ScrollMultiplier  { get; set; } = 1.0f;
+        public float ScrollMultiplier  { get; set; } = 2.5f;
         public bool  ShowTimer         { get; set; } = true;
         /// <summary>Seconds per Timeskip step; 0 = Timeskip off.</summary>
-        public float TimeskipSeconds   { get; set; } = 10f;
+        public float TimeskipSeconds   { get; set; } = 0f;
         /// <summary>Legacy on/off switch (read from old files only): false meant Timeskip off.</summary>
         [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
         public bool? TimeskipEnabled   { get; set; }
-        public int   TimerColorPreset  { get; set; } = 0;
+        public int   TimerColorPreset  { get; set; } = 1;
         
         // ── Timer Bar Options (V-Slice style with Legacy support) ─────────────
         public string TimerPreset      { get; set; } = "HUD Editor";  // Legacy, HUD Editor ("Custom HUD" in old files), Top, Left, Middle, Right, Strumline
@@ -60,8 +60,8 @@ public static class Settings
         [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
         public float? MusicVolume      { get; set; }
         public float SongVolume        { get; set; } = 1.0f;   // song music, scaled by master
-        public float SfxVolume         { get; set; } = 0.8f;   // UI sound effects (UiSfx)
-        public float MenuMusicVolume   { get; set; } = 0.7f;   // menu background music (OnlineMenuMusic)
+        public float SfxVolume         { get; set; } = 1.0f;   // UI sound effects (UiSfx)
+        public float MenuMusicVolume   { get; set; } = 1.0f;   // menu background music (OnlineMenuMusic)
         /// <summary>Fork: settings for osu! songs (Osu/OsuSettings.cs).</summary>
         public Osu.OsuSettings.Data? Osu { get; set; }
         public string NoteStyleName    { get; set; } = DefaultMods.NoteStyleName;
@@ -71,7 +71,7 @@ public static class Settings
         public string? UiFontFile { get; set; }
         public bool  ShowStrumlines       { get; set; } = true;
         public bool  HidePlayerStrumline  { get; set; } = false;
-        public bool  HideExtraStrumlines { get; set; } = false;
+        public bool  HideExtraStrumlines { get; set; } = true;
         public bool  HideOpponentStrumline { get; set; } = false;
         public bool  ShowCombo         { get; set; } = true;
         
@@ -80,8 +80,8 @@ public static class Settings
         /// Ghost Tapping: When true, pressing keys without notes has no penalty.
         /// When false, ghost taps break combo and count as miss (competitive mode).
         /// </summary>
-        public bool  GhostTapping      { get; set; } = true;
-        public bool  ShowKeyLabels     { get; set; } = false;
+        public bool  GhostTapping      { get; set; } = false;
+        public bool  ShowKeyLabels     { get; set; } = true;
         public float LaneUnderlay      { get; set; } = 0f;
         
         // Input buffer / safe frames are no longer settings (fork): NoteRenderer's defaults always apply,
@@ -134,9 +134,9 @@ public static class Settings
         /// <summary>
         /// Custom key bindings for gameplay (4 lanes: Left, Down, Up, Right).
         /// Stored as key names (e.g., "D", "F", "J", "K").
-        /// Default: D, F, J, K
+        /// Default: A, S, K, L
         /// </summary>
-        public string[] PlayerKeyBindings { get; set; } = { "D", "F", "J", "K" };
+        public string[] PlayerKeyBindings { get; set; } = { "A", "S", "K", "L" };
 
         /// <summary>Fork: rebindable hotkeys (Settings → CONTROLS), action → [primary, alternate].</summary>
         public System.Collections.Generic.Dictionary<string, string[]>? Hotkeys { get; set; }
@@ -173,7 +173,7 @@ public static class Settings
             Game1.ShowDebugInfo            = d.ShowDebugInfo;
             Game1.ShowFpsCounter           = d.ShowFpsCounter;
             Game1.NativeRenderResolution   = d.NativeRenderResolution;
-            Game1.MasterVolume             = Math.Clamp(d.MasterVolume ?? d.MusicVolume ?? 0.85f, 0f, 1f);
+            Game1.MasterVolume             = Math.Clamp(d.MasterVolume ?? d.MusicVolume ?? 0.5f, 0f, 1f);
             Game1.SongVolume               = Math.Clamp(d.SongVolume, 0f, 1f);
             UI.UiSfx.Volume                = Math.Clamp(d.SfxVolume, 0f, 1f);
             Managers.OnlineMenuMusic.Volume = Math.Clamp(d.MenuMusicVolume, 0f, 1f);

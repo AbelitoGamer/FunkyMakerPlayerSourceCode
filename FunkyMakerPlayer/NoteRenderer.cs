@@ -71,20 +71,20 @@ public class NoteRenderer
     /// Visual scroll speed multiplier. 1.0 = normal, 2.0 = 2x faster visually.
     /// Only affects how fast notes move on screen — does NOT affect timing or audio sync.
     /// </summary>
-    public static float ScrollMultiplier = 1.0f;
+    public static float ScrollMultiplier = 2.5f;
     /// <summary>Configurable key bindings: left, down, up, right.</summary>
-    public static Keys[] PlayerKeys = { Keys.D, Keys.F, Keys.J, Keys.K };
+    public static Keys[] PlayerKeys = { Keys.A, Keys.S, Keys.K, Keys.L };
     
     /// <summary>
     /// Ghost Tapping: When false, pressing keys without notes nearby breaks combo and counts as miss.
     /// When true (default), ghost taps have no penalty.
     /// </summary>
-    public static bool GhostTapping = true;
+    public static bool GhostTapping = false;
     /// <summary>Fork: play the note style's miss sound when a note is missed (Settings → AUDIO &amp; VIDEO).</summary>
     public static bool MissSounds = true;
 
     /// <summary>Draw each lane's key name on the player's strums (Settings → Gameplay). Off by default.</summary>
-    public static bool ShowKeyLabels = false;
+    public static bool ShowKeyLabels = true;
 
     /// <summary>Opacity (0–0.75) of the black lane underlay behind the player strumline. 0 = off.</summary>
     public static float LaneUnderlay = 0f;

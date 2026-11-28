@@ -18,7 +18,7 @@ public static class OsuSettings
     public static bool ScrollSpeedChanges = true;
     public static bool Hitsounds = true;
     /// <summary>Hitsound volume 0..1 (scaled by master volume).</summary>
-    public static float HitsoundVolume = 0.8f;
+    public static float HitsoundVolume = 1.0f;
     /// <summary>Background videos (desktop: ffmpeg, Android: MediaCodec).</summary>
     public static bool Video = true;
     /// <summary>
@@ -30,7 +30,7 @@ public static class OsuSettings
     public static bool BackgroundBehindVideo = false;
     public static bool Storyboard = true;
     /// <summary>How much the background / video / storyboard is darkened, 0..1 (osu!'s background dim).</summary>
-    public static float BackgroundDim = 0.7f;
+    public static float BackgroundDim = 0f;
 
     /// <summary>settings.json form.</summary>
     public sealed class Data
@@ -38,12 +38,12 @@ public static class OsuSettings
         public bool PreferBeatmapSkins { get; set; } = true;
         public bool ScrollSpeedChanges { get; set; } = true;
         public bool Hitsounds { get; set; } = true;
-        public float HitsoundVolume { get; set; } = 0.8f;
+        public float HitsoundVolume { get; set; } = 1.0f;
         public bool Video { get; set; } = true;
         public bool VideoFullQuality { get; set; } = false;
         public bool BackgroundBehindVideo { get; set; } = false;
         public bool Storyboard { get; set; } = true;
-        public float BackgroundDim { get; set; } = 0.7f;
+        public float BackgroundDim { get; set; } = 0f;
     }
 
     public static Data Export() => new()
