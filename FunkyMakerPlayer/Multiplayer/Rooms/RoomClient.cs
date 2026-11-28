@@ -18,7 +18,7 @@ namespace FunkyMakerPlayer.Multiplayer.Rooms
     /// The menu (<see cref="MultiplayerMenu"/>) draws from this; <see cref="Game1"/> starts / watches
     /// matches when <see cref="MatchReadyToLoad"/> fires.
     /// </summary>
-    public sealed class RoomClient
+    public sealed partial class RoomClient
     {
         public static RoomClient Instance { get; } = new();
 

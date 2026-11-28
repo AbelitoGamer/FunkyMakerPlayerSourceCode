@@ -13,8 +13,8 @@ namespace FunkyMakerPlayer;
 /// <item><c>FMP_WINDOW=1200x540</c>: window size at startup (e.g. a 2400×1080 phone at half size).</item>
 /// <item><c>FMP_TOUCH_SIM=1.5</c>: pretend to be a touch device with that <see cref="UI.UiScale.Touch"/>
 /// factor (menus get bigger exactly as on a phone; <see cref="UI.PointerInput.IsTouch"/> is true).</item>
-/// <item><c>FMP_OPEN=settings[:tab] | freeplay | editors | credits | replays | online | modsfolder | level | pause</c>:
-/// screen to open after start (<c>level</c> / <c>pause</c> load <c>FMP_LEVEL</c>; <c>pause</c> pauses 6 s in).</item>| freeplay | editors | credits</c>: screen to open after start.</item>
+/// <item><c>FMP_OPEN=settings[:tab] | freeplay | editors | credits | replays | online[:create/browser/settings/top/recent/stats/detail] | modsfolder | folderaccess | notice | level | pause</c>:
+/// screen to open after start (<c>level</c> / <c>pause</c> load <c>FMP_LEVEL</c>; <c>pause</c> pauses 6 s in).</item>
 /// <item><c>FMP_SHOT=path.png</c> (+ <c>FMP_SHOT_DELAY</c> seconds, default 4): save the window to a
 /// PNG and quit.</item>
 /// </list>
@@ -47,6 +47,7 @@ public partial class Game1
 
     private Point? _devForcedWindow;
     private float _devPauseAt = -1f;
+    private string? _devOnlineSub;
 
     /// <summary>Every update: opens the requested screen once.</summary>
     private void UpdateDevHarness(float dt)
@@ -65,6 +66,11 @@ public partial class Game1
             _devPauseAt = -1f;
             _inPauseMenu = true;
             PauseSong();
+        }
+        if (_devOnlineSub != null && _inMultiplayer && _multiplayerMenu != null && _devTime >= 2.5f)
+        {
+            _multiplayerMenu.DevOpen(_devOnlineSub); // FMP_OPEN=online:<screen>
+            _devOnlineSub = null;
         }
         if (_devOpened || DevOpen == null || _devTime < 1.5f || _freeplay == null) return;
         _devOpened = true;
@@ -86,6 +92,16 @@ public partial class Game1
                     _settingsManager.IsActive = true;
                     if (parts.Length > 1 && int.TryParse(parts[1], out int tab)) _settingsManager.CurrentTab = tab;
                 }
+                break;
+            case "online" when parts.Length > 1:
+                _freeplay.DevOpen("online");
+                _devOnlineSub = parts[1].ToLowerInvariant();
+                break;
+            case "folderaccess":
+                _modsHelpScreen?.Show();
+                break;
+            case "notice":
+                BlockEditorOnMobile("Chart Editor");
                 break;
             default:
                 _freeplay.DevOpen(parts[0].ToLowerInvariant());
