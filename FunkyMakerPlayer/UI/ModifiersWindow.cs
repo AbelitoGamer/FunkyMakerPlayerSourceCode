@@ -70,8 +70,8 @@ public sealed class ModifiersWindow
         UiSfx.Play(dir > 0 ? UiSound.SliderUp : UiSound.SliderDown);
     }
 
-    /// <summary>Input while open; returns true when it used it. <paramref name="closeKey"/>: the key that opened it also closes it.</summary>
-    public bool Update(float dt, KeyboardState kb, Point mouse, bool clicked, bool mouseMoved, Func<KeyboardState, KeyboardState, bool>? closeKey = null)
+    /// <summary>Input while open; returns true when it used it.</summary>
+    public bool Update(float dt, KeyboardState kb, Point mouse, bool clicked, bool mouseMoved)
     {
         _anim = MathHelper.Lerp(_anim, IsOpen ? 1f : 0f, Math.Min(1f, dt * 16f));
         _mouse = mouse;
@@ -83,9 +83,9 @@ public sealed class ModifiersWindow
         int hover = _rows.FindIndex(r => r.Row.Contains(mouse));
         if (hover >= 0 && mouseMoved && hover != _sel) { _sel = hover; UiSfx.Play(UiSound.Move); }
 
-        if (Pressed(Keys.Escape) || Pressed(Keys.Back) || (closeKey?.Invoke(kb, _prevKb) ?? false))
+        if (Pressed(Keys.Escape) || Pressed(Keys.Back))   // Back = Android back button
             Close();
-        else if (mods.Count > 0 && (Pressed(Keys.Up) || Pressed(Keys.Down) || Pressed(Keys.Tab)))
+        else if (mods.Count > 0 && (Pressed(Keys.Up) || Pressed(Keys.Down)))
         {
             int dir = Pressed(Keys.Up) ? -1 : 1;
             _sel = (_sel + dir + mods.Count) % mods.Count;
@@ -98,11 +98,6 @@ public sealed class ModifiersWindow
             var m = mods[Math.Clamp(_sel, 0, mods.Count - 1)];
             if (m.HasValue && m.IsOn()) Step(m, Pressed(Keys.Right) ? 1 : -1);
             else if (Pressed(Keys.Right) != m.IsOn()) Toggle(m); // Right = on, Left = off
-        }
-        else if (Pressed(Keys.R))
-        {
-            PlayModifiers.ResetAll();
-            UiSfx.Play(UiSound.Confirm);
         }
         else if (clicked)
         {
@@ -228,10 +223,10 @@ public sealed class ModifiersWindow
         int bh = UiScale.Px(36, s, 30);
         int btnF = UiScale.FontPx(14, s);
         int cw = (int)_ui.Measure("CLOSE", btnF).X + UiScale.Px(36, s);
-        int rw = (int)_ui.Measure("RESET ALL  [R]", btnF).X + UiScale.Px(28, s);
+        int rw = (int)_ui.Measure("RESET ALL", btnF).X + UiScale.Px(28, s);
         _closeBtn = new Rectangle(_panel.Right - pad - cw, fy, cw, bh);
         _resetBtn = new Rectangle(_closeBtn.X - UiScale.Px(10, s) - rw, fy, rw, bh);
-        foreach (var (r, label, acc) in new[] { (_resetBtn, "RESET ALL  [R]", new Color(255, 110, 120)), (_closeBtn, "CLOSE", new Color(255, 68, 136)) })
+        foreach (var (r, label, acc) in new[] { (_resetBtn, "RESET ALL", new Color(255, 110, 120)), (_closeBtn, "CLOSE", new Color(255, 68, 136)) })
         {
             bool hv = r.Contains(_mouse);
             _ui.Rect(sb, r, (hv ? Color.Lerp(new Color(36, 34, 56), acc, 0.3f) : new Color(36, 34, 56)) * a);

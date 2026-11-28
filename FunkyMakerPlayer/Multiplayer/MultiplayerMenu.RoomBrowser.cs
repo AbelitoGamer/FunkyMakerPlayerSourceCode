@@ -62,19 +62,19 @@ namespace FunkyMakerPlayer.Multiplayer
             AdjustRoomListScroll(rooms.Count);
 
             string? clicked = ClickedHit(mouse);
-            if (clicked == "search" || IsKeyPressed(kb, Keys.F) || IsKeyPressed(kb, Keys.OemQuestion))
+            if (clicked == "search")
             {
                 BeginTextField("search", _roomSearch, 32, v => { _roomSearch = v.Trim(); _roomListSelection = 0; }, title: "Search rooms");
                 return;
             }
-            if (clicked == "hidepw" || IsKeyPressed(kb, Keys.H))
+            if (clicked == "hidepw")
             {
                 _hidePasswordRooms = !_hidePasswordRooms;
                 _roomListSelection = 0;
                 _inputCooldown = INPUT_COOLDOWN_TIME;
                 return;
             }
-            if (clicked == "refresh" || IsKeyPressed(kb, HotkeyAction.Refresh))
+            if (clicked == "refresh")
             {
                 Room.RefreshRooms();
                 RefreshLevelList();
@@ -83,7 +83,7 @@ namespace FunkyMakerPlayer.Multiplayer
                 _inputCooldown = INPUT_COOLDOWN_TIME;
                 return;
             }
-            if (clicked == "create" || IsKeyPressed(kb, Keys.C))
+            if (clicked == "create")
             {
                 OpenRoomSettings(RoomSettingsMode.Create);
                 return;
@@ -185,7 +185,7 @@ namespace FunkyMakerPlayer.Multiplayer
                 "Join a room, or create your own", ACCENT_PRIMARY, "ESC  Disconnect");
             DrawPlayerIdentityChip(sb, font, pixel, Px(24, uiScale, 12), Px(18, uiScale, 10), uiScale);
             int footerY = DrawFooterBar(sb, font, pixel, sw, sh, uiScale,
-                "UP/DOWN: Select  |  ENTER: Join  |  F: Search  |  H: Hide password rooms  |  C: Create room  |  R: Refresh");
+                "UP/DOWN: Select  |  ENTER: Join  |  ESC: Disconnect");
 
             int margin = Px(28, uiScale, 14);
             int barY = headerBottom + Px(8, uiScale);
@@ -198,11 +198,11 @@ namespace FunkyMakerPlayer.Multiplayer
             DrawRoomButton(sb, font, pixel, uiScale, "create", createRect, "+  CREATE ROOM", ACCENT_SUCCESS, strong: true);
             int refreshW = Px(110, uiScale, 84);
             var refreshRect = new Rectangle(createRect.X - Px(10, uiScale) - refreshW, barY, refreshW, barH);
-            DrawRoomButton(sb, font, pixel, uiScale, "refresh", refreshRect, "R  Refresh", ACCENT_WARNING);
+            DrawRoomButton(sb, font, pixel, uiScale, "refresh", refreshRect, "Refresh", ACCENT_WARNING);
             var cb = DrawCheckbox(sb, font, pixel, uiScale, "hidepw", x, barY, barH, "Hide password rooms", _hidePasswordRooms);
             int searchX = cb.Right + Px(16, uiScale);
             var searchRect = new Rectangle(searchX, barY, Math.Max(Px(160, uiScale), refreshRect.X - Px(16, uiScale) - searchX), barH);
-            DrawTextBox(sb, font, pixel, uiScale, "search", searchRect, _roomSearch, "Search rooms by name...  (F)");
+            DrawTextBox(sb, font, pixel, uiScale, "search", searchRect, _roomSearch, "Search rooms by name...");
 
             // List
             int listY = barY + barH + Px(14, uiScale);

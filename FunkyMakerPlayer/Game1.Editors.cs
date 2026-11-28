@@ -330,7 +330,6 @@ public partial class Game1
         _level = null;
         _objAnimators = Array.Empty<SpriteAnimator?>();
         _events = null;
-        _corneredEvents = null;
         _noteRenderers.Clear();
         if (_healthBar != null)
         {

@@ -640,6 +640,7 @@ public partial class FreeplayMenu
         Point rtMouse = TransformMouseToRenderTarget(mouse.Position, windowWidth, windowHeight, screenWidth, screenHeight);
         bool mouseClicked = mouse.LeftButton == ButtonState.Pressed && 
                            _prevMs.LeftButton == ButtonState.Released;
+        _pointerDown = mouse.LeftButton == ButtonState.Pressed;
 
         #if ANDROID
         var touches = Microsoft.Xna.Framework.Input.Touch.TouchPanel.GetState();
@@ -680,7 +681,7 @@ public partial class FreeplayMenu
                 _touchLongPressed = true;
                 touchLongPress = true;
             }
-            if (_touchDragging && _panelOpen)
+            if (_touchDragging && _panelOpen && _attemptsView == null) // the attempts row drags itself
             {
                 _manualScroll = true;
                 _targetScrollY += _touchLast.Y - rtMouse.Y;
@@ -694,6 +695,7 @@ public partial class FreeplayMenu
             mouseClicked = !_touchDragging && !_touchLongPressed;
         }
         _prevTouchDown = touchDown;
+        _pointerDown = touchDown;
         if (touchLongPress)
             mouse = new MouseState(mouse.X, mouse.Y, mouse.ScrollWheelValue, ButtonState.Released,
                 ButtonState.Released, ButtonState.Pressed, ButtonState.Released, ButtonState.Released);
@@ -796,14 +798,12 @@ public partial class FreeplayMenu
             bool mRight = (kb.IsKeyDown(Keys.Right) && !_prevKb.IsKeyDown(Keys.Right)) || (kb.IsKeyDown(Keys.Down) && !_prevKb.IsKeyDown(Keys.Down));
             bool mEnter = (kb.IsKeyDown(Keys.Enter) && !_prevKb.IsKeyDown(Keys.Enter)) || (kb.IsKeyDown(Keys.Space) && !_prevKb.IsKeyDown(Keys.Space));
             bool mEsc   = kb.IsKeyDown(Keys.Escape) && !_prevKb.IsKeyDown(Keys.Escape);
-            bool mYes   = (kb.IsKeyDown(Keys.Y) && !_prevKb.IsKeyDown(Keys.Y)) || (!_modalIsDelete && kb.IsKeyDown(Keys.S) && !_prevKb.IsKeyDown(Keys.S));
-            bool mNo    = kb.IsKeyDown(Keys.N) && !_prevKb.IsKeyDown(Keys.N);
 
             if (mLeft || mRight)
             {
                 _importModalSelection = 1 - _importModalSelection;
             }
-            else if (mYes || (mEnter && _importModalSelection == 0))
+            else if (mEnter && _importModalSelection == 0)
             {
                 _importModalOpen = false;
                 if (_modalIsDelete)
@@ -814,7 +814,7 @@ public partial class FreeplayMenu
                     LevelChosen = true;
                 }
             }
-            else if (mNo || mEsc || (mEnter && _importModalSelection == 1))
+            else if (mEsc || (mEnter && _importModalSelection == 1))
             {
                 _importModalOpen = false;
             }
@@ -988,12 +988,11 @@ public partial class FreeplayMenu
             return;
         }
 
-        // Corner badge or [U] key re-opens update prompt when dismissed
+        // The corner badge re-opens the update prompt when dismissed
         if (_updateAvailable && !_panelOpen)
         {
             _updateBadgeHover = _updateBadgeBounds != Rectangle.Empty && _updateBadgeBounds.Contains(rtMouse);
-            bool uPressed = Controls.Pressed(HotkeyAction.ShowUpdatePrompt, kb, _prevKb);
-            if ((_updateBadgeHover && mouseClicked) || uPressed)
+            if (_updateBadgeHover && mouseClicked)
             {
                 _updateModalOpen = true;
                 _updateDismissed = false;
@@ -1242,7 +1241,7 @@ public partial class FreeplayMenu
             string mainMenuHint = $"UP/DOWN Navigate  |  ENTER / Click Select  |  [{Controls.Hint(HotkeyAction.OpenChartEditor)}] Editors  |  ESC Settings";
             #endif
             string hint = _inPanel 
-                ? "< ESC Back  |  7 Edit  |  N New Chart  |  I Import  |  R Refresh" 
+                ? "< ESC Back" 
                 : mainMenuHint;
             int hintSize = FitFontSize(hint, UiScale.FontPx(17, s), 11, leftW - UiScale.Px(24, s));
             var hintSz = MeasureText(hint, hintSize);
@@ -1365,13 +1364,10 @@ public partial class FreeplayMenu
                 : _searchTyping
                 ? "Type to search  |  UP/DOWN Results  |  ENTER / ESC Done  |  Ctrl+Backspace Clear"
                 : _online != null
-                    ? $"ENTER Pick  |  [{Controls.Hint(HotkeyAction.PrevTab)}]/[{Controls.Hint(HotkeyAction.NextTab)}] Tabs  |  " +
-                      (OsuTab ? "LEFT/RIGHT Difficulty  |  " : "") +
-                      $"[{Controls.Hint(HotkeyAction.FreeplayOptions)}] Options  |  [{Controls.Hint(HotkeyAction.FreeplayFavorite)}] Favorite  |  " +
-                      $"[{Controls.Hint(HotkeyAction.FreeplaySort)}] Sort  |  ESC Back"
-                : $"ENTER Play  |  [{Controls.Hint(HotkeyAction.FreeplayOptions)}] Options  |  [{Controls.Hint(HotkeyAction.FreeplayModifiers)}] Modifiers  |  " +
-                  $"[{Controls.Hint(HotkeyAction.FreeplayAttempts)}] Attempts  |  [{Controls.Hint(HotkeyAction.FreeplayFavorite)}] Favorite  |  " +
-                  $"[{Controls.Hint(HotkeyAction.FreeplaySort)}] Sort  |  ESC Back";
+                    ? "UP/DOWN Select  |  ENTER Pick  |  " + (OsuTab ? "LEFT/RIGHT Difficulty  |  " : "") +
+                      "\"...\" or right click: Options  |  ESC Back"
+                : "UP/DOWN Select  |  ENTER Play  |  " + (OsuTab ? "LEFT/RIGHT Difficulty" : "LEFT/RIGHT Song Speed") +
+                  "  |  \"...\" or right click: Options  |  ESC Back";
             int phSize = FitFontSize(panelHint, UiScale.FontPx(14, s), 9, leftW - UiScale.Px(24, s));
             var phSz = MeasureText(panelHint, phSize);
             DrawText(sb, panelHint, new Vector2(leftW / 2f - phSz.X / 2f, sh - UiScale.Px(30, s)),
@@ -1691,7 +1687,7 @@ public partial class FreeplayMenu
     private void DrawUpdateCornerBadge(SpriteBatch sb, int sw, int sh)
     {
         float s = UiScale.FromScreen(sw, sh);
-        string text = UI.PointerInput.IsTouch ? $"UPDATE {_updateTag} AVAILABLE" : $"UPDATE {_updateTag} AVAILABLE  [{Controls.Hint(HotkeyAction.ShowUpdatePrompt)}]";
+        string text = $"UPDATE {_updateTag} AVAILABLE";
         int fontSize = UiScale.FontPx(15, s);
         var sz = MeasureText(text, fontSize);
         int padX = UiScale.Px(14, s);
@@ -1852,7 +1848,7 @@ public partial class FreeplayMenu
         {
             // Fallback to bitmap font with scale
             float scale = fontSize / 32f;  // Assuming base font is ~32px
-            sb.DrawString(_font, text, position, color, 0f, Vector2.Zero, scale, SpriteEffects.None, 0f);
+            sb.DrawUiString(_font, text, position, color, 0f, Vector2.Zero, scale, SpriteEffects.None, 0f);
         }
     }
     
@@ -1868,7 +1864,7 @@ public partial class FreeplayMenu
         else if (_font != null)
         {
             float scale = fontSize / 32f;
-            return _font.MeasureString(text) * scale;
+            return _font.MeasureUi(text) * scale;
         }
         return Vector2.Zero;
     }
@@ -1954,7 +1950,7 @@ public partial class FreeplayMenu
         #if ANDROID
         return "Tap here to pick a file";
         #else
-        return $"Click here or press [{Controls.Hint(HotkeyAction.ImportLevel)}] to browse files";
+        return "Click here to browse files";
         #endif
         #endif
     }
@@ -1975,8 +1971,8 @@ public partial class FreeplayMenu
         return OsuTab ? "Use IMPORT to add .OSZ songs / .OSK skins" : "Use IMPORT to add .FNMM / .ZIP / .RAR levels";
         #else
         return OsuTab
-            ? $"Drop .OSZ (songs) / .OSK (skins)  |  [{Controls.Hint(HotkeyAction.ImportLevel)}] Import"
-            : $"Drop .FNMM / .ZIP / .RAR  |  [{Controls.Hint(HotkeyAction.ImportLevel)}] Import File";
+            ? "Drop .OSZ songs / .OSK skins here, or use IMPORT"
+            : "Drop .FNMM / .ZIP / .RAR levels here, or use IMPORT";
         #endif
         #endif
     }

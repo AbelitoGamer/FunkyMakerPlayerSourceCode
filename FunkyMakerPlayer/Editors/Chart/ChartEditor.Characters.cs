@@ -95,7 +95,7 @@ namespace FunkyMakerPlayer.Editors.Chart
 
         private void HandleCharacterModalKeyboard(KeyboardState kb)
         {
-            if (JustPressed(kb, Keys.Escape) || JustPressed(kb, Keys.B))
+            if (JustPressed(kb, Keys.Escape))
             {
                 _charModalOpen = false;
                 UiSfx.Play(UiSound.Back);

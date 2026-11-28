@@ -358,22 +358,13 @@ public sealed class CharacterEditor : IEditor, IDisposable
             return;
         }
 
-        if (JustPressed(kb, Keys.G))
-        {
-            _onionSkin = !_onionSkin;
-            UiSfx.Play(UiSound.Toggle);
-            ShowToast(_onionSkin ? "Onion Skin (Ghost) ON" : "Onion Skin OFF", ACCENT_CYAN);
-            return;
-        }
-
-        // Quick pose testing with 1..5 or gameplay lane keys D F J K
+        // Quick pose testing with the gameplay lane keys D F J K (the GHOST button toggles the onion skin)
         if (_project != null)
         {
-            if (JustPressed(kb, Keys.D1)) SelectSlot(0, replay: true);
-            if (JustPressed(kb, Keys.D2) || (!ctrl && JustPressed(kb, Keys.D))) SelectSlot(1, replay: true);
-            if (JustPressed(kb, Keys.D3) || (!ctrl && JustPressed(kb, Keys.F))) SelectSlot(2, replay: true);
-            if (JustPressed(kb, Keys.D4) || (!ctrl && JustPressed(kb, Keys.J))) SelectSlot(3, replay: true);
-            if (JustPressed(kb, Keys.D5) || (!ctrl && JustPressed(kb, Keys.K))) SelectSlot(4, replay: true);
+            if (!ctrl && JustPressed(kb, Keys.D)) SelectSlot(1, replay: true);
+            if (!ctrl && JustPressed(kb, Keys.F)) SelectSlot(2, replay: true);
+            if (!ctrl && JustPressed(kb, Keys.J)) SelectSlot(3, replay: true);
+            if (!ctrl && JustPressed(kb, Keys.K)) SelectSlot(4, replay: true);
 
             // Pixel nudge active slot offset with Arrow keys (Shift = 5px)
             float step = shift ? 5f : 1f;
@@ -843,7 +834,7 @@ public sealed class CharacterEditor : IEditor, IDisposable
 
         int ghostW = UiScale.Px(106, s);
         DrawBtn(sb, new Rectangle(bx, barY, ghostW, bh),
-            _onionSkin ? "GHOST: ON (G)" : "GHOST: OFF (G)",
+            _onionSkin ? "GHOST: ON" : "GHOST: OFF",
             _onionSkin ? new Color(18, 68, 86) : BG_CARD,
             _onionSkin ? ACCENT_CYAN : Color.Gray, bf,
             _onionSkin ? ACCENT_CYAN : Color.White * 0.15f,
@@ -1550,8 +1541,8 @@ public sealed class CharacterEditor : IEditor, IDisposable
             case "SAVE CHAR *": return ("save", "SAVE *");
         }
         if (text.StartsWith("FLIP X")) return ("flip", text.Replace("FLIP X: ", "FLIP "));
-        if (text.StartsWith("GHOST: ON")) return ("ghost_on", "GHOST (G)");
-        if (text.StartsWith("GHOST: OFF")) return ("ghost_off", "GHOST (G)");
+        if (text.StartsWith("GHOST: ON")) return ("ghost_on", "GHOST");
+        if (text.StartsWith("GHOST: OFF")) return ("ghost_off", "GHOST");
         if (text.StartsWith("FACES: <-")) return ("face_left", "FACES LEFT (BF)");
         if (text.StartsWith("FACES:")) return ("face_right", "FACES RIGHT (FOE)");
         if (text.StartsWith("FILTER: SMOOTH")) return ("filter_smooth", "SMOOTH (HD)");
@@ -1629,14 +1620,14 @@ public sealed class CharacterEditor : IEditor, IDisposable
     private Vector2 MeasureText(string text, int size)
     {
         if (_fontRenderer != null) return _fontRenderer.MeasureString(text, size);
-        if (_font != null) return _font.MeasureString(text) * (size / 32f);
+        if (_font != null) return _font.MeasureUi(text) * (size / 32f);
         return new Vector2(text.Length * size * 0.5f, size);
     }
 
     private void DrawText(SpriteBatch sb, string text, Vector2 pos, Color color, int size)
     {
         if (_fontRenderer != null) _fontRenderer.DrawString(sb, text, pos, color, size);
-        else if (_font != null) sb.DrawString(_font, text, pos, color, 0f, Vector2.Zero, size / 32f, SpriteEffects.None, 0f);
+        else if (_font != null) sb.DrawUiString(_font, text, pos, color, 0f, Vector2.Zero, size / 32f, SpriteEffects.None, 0f);
     }
 
     private void DrawTextCentered(SpriteBatch sb, string text, Rectangle box, Color color, int size)

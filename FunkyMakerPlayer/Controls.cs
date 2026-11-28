@@ -5,38 +5,19 @@ using Microsoft.Xna.Framework.Input;
 
 namespace FunkyMakerPlayer;
 
-/// <summary>Rebindable non-lane hotkeys (fork: Settings → CONTROLS).</summary>
+/// <summary>
+/// Rebindable non-lane hotkeys (fork: Settings → CONTROLS). Only actions with no on-screen button
+/// get a hotkey: anything a menu already shows as a button is used by clicking / selecting it.
+/// </summary>
 public enum HotkeyAction
 {
     VolumeUp,
     VolumeDown,
     ScrollSpeedDown,
     ScrollSpeedUp,
-    ScrollSpeedDownBig,
-    ScrollSpeedUpBig,
-    Pause,
     TimeskipForward,
     TimeskipBackward,
-    Retry,
     OpenChartEditor,
-    PrevTab,
-    NextTab,
-    Refresh,
-    NewChart,
-    ImportLevel,
-    ShareLevel,
-    DeleteItem,
-    ShowUpdatePrompt,
-    FreeplaySearch,
-    FreeplayFavorite,
-    FreeplayFavoritesOnly,
-    FreeplaySort,
-    FreeplayRandom,
-    FreeplayModifiers,
-    FreeplayOptions,
-    FreeplayAttempts,
-    MultiplayerSettings,
-    ResetOnlineSettings,
     ToggleFullscreen,
 }
 
@@ -79,90 +60,57 @@ public readonly record struct KeyBinding(Keys Key, bool Ctrl = false, bool Shift
 }
 
 /// <summary>
-/// Rebindable hotkeys (fork). Each action has two slots (primary / alternate). A binding matches
-/// when its key is pressed and its modifiers are held; extra held modifiers are allowed unless a
-/// more specific binding on the same key also matches (so Shift+T wins over T, Ctrl+Right over Right).
+/// Rebindable hotkeys (fork). Each action has exactly one binding. A binding matches when its key is
+/// pressed and its modifiers are held; extra held modifiers are allowed unless a more specific
+/// binding on the same key also matches (so Shift+T wins over T).
 /// </summary>
 public static class Controls
 {
-    public sealed record Info(HotkeyAction Action, string Label, string Description, KeyBinding Primary, KeyBinding Alternate, string Group);
+    public sealed record Info(HotkeyAction Action, string Label, string Description, KeyBinding Default, string Group);
 
     // Section headers in Settings → CONTROLS (rows of a group are listed together, in this order)
     public const string GroupGlobal = "Anywhere";
-    public const string GroupSong   = "In a song";
-    public const string GroupMenus  = "Menus";
-    public const string GroupOnline = "Online";
+    public const string GroupSong   = "During a song";
 
     public static readonly Info[] All =
     {
-        new(HotkeyAction.ToggleFullscreen,    "Toggle Fullscreen",       "Switches between windowed and borderless fullscreen (desktop, anywhere outside text boxes).", new(Keys.Enter, Alt: true), new(Keys.F11), GroupGlobal),
-        new(HotkeyAction.VolumeUp,           "Volume Up",               "Raises the master volume by 5% (anywhere outside text boxes and the Chart Editor).", new(Keys.OemPlus), new(Keys.Add), GroupGlobal),
-        new(HotkeyAction.VolumeDown,          "Volume Down",             "Lowers the master volume by 5% (anywhere outside text boxes and the Chart Editor).", new(Keys.OemMinus), new(Keys.Subtract), GroupGlobal),
-        new(HotkeyAction.ScrollSpeedDown,     "Scroll Speed -0.10",      "In a song (also paused): lowers the scroll speed by 0.10x.", new(Keys.F3), KeyBinding.None, GroupSong),
-        new(HotkeyAction.ScrollSpeedUp,       "Scroll Speed +0.10",      "In a song (also paused): raises the scroll speed by 0.10x.", new(Keys.F4), KeyBinding.None, GroupSong),
-        new(HotkeyAction.ScrollSpeedDownBig,  "Scroll Speed -0.25",      "While playing: lowers the scroll speed by 0.25x.", new(Keys.PageDown), KeyBinding.None, GroupSong),
-        new(HotkeyAction.ScrollSpeedUpBig,    "Scroll Speed +0.25",      "While playing: raises the scroll speed by 0.25x.", new(Keys.PageUp), KeyBinding.None, GroupSong),
-        new(HotkeyAction.Pause,               "Pause / Resume",          "Pauses or resumes the song (Esc always opens the pause menu too). Also dismisses error screens.", new(Keys.P), KeyBinding.None, GroupSong),
-        new(HotkeyAction.TimeskipForward,     "Timeskip Forward",        "Skips forward by the Timeskip setting (hold to repeat). Needs Timeskip set above Off (GAMEPLAY tab); not in multiplayer. Ignored if it is a note lane key.", new(Keys.T), new(Keys.Right, Ctrl: true), GroupSong),
-        new(HotkeyAction.TimeskipBackward,    "Timeskip Backward",       "Skips backward by the Timeskip setting (hold to repeat). Needs Timeskip set above Off (GAMEPLAY tab); not in multiplayer.", new(Keys.T, Shift: true), new(Keys.Left, Ctrl: true), GroupSong),
-        new(HotkeyAction.Retry,               "Retry (Game Over)",       "Game over screen: restarts the song.", new(Keys.R), KeyBinding.None, GroupSong),
-        new(HotkeyAction.OpenChartEditor,     "Open Chart Editor",       "In a song: opens the Chart Editor on it (or returns from a playtest). Freeplay list: edits the selected level. Main menu / Editor Hub: opens or closes the Editor Hub.", new(Keys.D7), KeyBinding.None, GroupSong),
-        new(HotkeyAction.PrevTab,             "Previous Tab",            "Settings, online menu and replay browser: previous tab / category.", new(Keys.Q), KeyBinding.None, GroupMenus),
-        new(HotkeyAction.NextTab,             "Next Tab",                "Settings, online menu and replay browser: next tab / category.", new(Keys.E), KeyBinding.None, GroupMenus),
-        new(HotkeyAction.Refresh,             "Refresh",                 "Freeplay and online level lists: rescan levels. Online leaderboard: refresh.", new(Keys.R), new(Keys.F5), GroupMenus),
-        new(HotkeyAction.NewChart,            "New Chart",               "Freeplay list: opens the New Chart wizard.", new(Keys.N), KeyBinding.None, GroupMenus),
-        new(HotkeyAction.ImportLevel,         "Import Level",            "Freeplay and online level lists: import a level file.", new(Keys.I), new(Keys.O), GroupMenus),
-        new(HotkeyAction.ShareLevel,          "Share Level",             "Online level list: shares the selected local level.", new(Keys.S), KeyBinding.None, GroupMenus),
-        new(HotkeyAction.DeleteItem,          "Delete",                  "Freeplay / online level lists and replay browser: deletes the selected item (asks first).", new(Keys.Delete), KeyBinding.None, GroupMenus),
-        new(HotkeyAction.ShowUpdatePrompt,    "Show Update Prompt",      "Main menu: re-opens a dismissed update prompt.", new(Keys.U), KeyBinding.None, GroupMenus),
-        new(HotkeyAction.FreeplaySearch,      "Freeplay: Search",        "Freeplay list: type to filter the levels by name (Enter / Esc stop typing).", new(Keys.F, Ctrl: true), new(Keys.F3), GroupMenus),
-        new(HotkeyAction.FreeplayFavorite,    "Freeplay: Favorite",      "Freeplay list: marks / unmarks the selected level as a favorite.", new(Keys.F), KeyBinding.None, GroupMenus),
-        new(HotkeyAction.FreeplayFavoritesOnly, "Freeplay: Favorites Only", "Freeplay list: shows only favorite levels, or all of them again.", new(Keys.F, Shift: true), KeyBinding.None, GroupMenus),
-        new(HotkeyAction.FreeplaySort,        "Freeplay: Sort",          "Freeplay list: next order (A-Z, stars, recently played, most played, newest).", new(Keys.Tab), KeyBinding.None, GroupMenus),
-        new(HotkeyAction.FreeplayRandom,      "Freeplay: Random Level",  "Freeplay list: selects a random level of the list.", new(Keys.R, Shift: true), KeyBinding.None, GroupMenus),
-        new(HotkeyAction.FreeplayModifiers,   "Freeplay: Modifiers",     "Freeplay list: opens the modifiers window (also from other screens later).", new(Keys.M), KeyBinding.None, GroupMenus),
-        new(HotkeyAction.FreeplayOptions,     "Options Menu (...)",      "Lists with a \"...\" button (Freeplay levels, attempts, replays): opens the selected row's options. Right click a row does the same.", new(Keys.C), new(Keys.Apps), GroupMenus),
-        new(HotkeyAction.FreeplayAttempts,    "Freeplay: Attempts",      "Freeplay list: every attempt at the selected level, with stats and replays.", new(Keys.H), KeyBinding.None, GroupMenus),
-        new(HotkeyAction.MultiplayerSettings, "Online: Open Settings",   "Online menu: opens the game settings without leaving the online menu.", new(Keys.F1), KeyBinding.None, GroupOnline),
-        new(HotkeyAction.ResetOnlineSettings, "Online: Reset Settings",  "Online settings screen: resets them to defaults.", new(Keys.R), KeyBinding.None, GroupOnline),
+#if !ANDROID
+        new(HotkeyAction.ToggleFullscreen, "Toggle Fullscreen", "Switches between window and fullscreen.", new(Keys.F11), GroupGlobal),
+#endif
+        new(HotkeyAction.VolumeUp,         "Volume Up",         "Turns the master volume up by 5%. Works in menus and during songs (not while typing or in the editors).", new(Keys.OemPlus), GroupGlobal),
+        new(HotkeyAction.VolumeDown,       "Volume Down",       "Turns the master volume down by 5%. Works in menus and during songs (not while typing or in the editors).", new(Keys.OemMinus), GroupGlobal),
+        new(HotkeyAction.ScrollSpeedDown,  "Slower Notes",      "Lowers the scroll speed by 0.10x without leaving the song (also while paused).", new(Keys.F3), GroupSong),
+        new(HotkeyAction.ScrollSpeedUp,    "Faster Notes",      "Raises the scroll speed by 0.10x without leaving the song (also while paused).", new(Keys.F4), GroupSong),
+        new(HotkeyAction.TimeskipForward,  "Skip Forward",      "Jumps ahead in the song by the Timeskip amount (GAMEPLAY tab). Hold it to keep skipping. Not in online matches.", new(Keys.T), GroupSong),
+        new(HotkeyAction.TimeskipBackward, "Skip Backward",     "Jumps back in the song by the Timeskip amount (GAMEPLAY tab). Hold it to keep skipping. Not in online matches.", new(Keys.T, Shift: true), GroupSong),
+        new(HotkeyAction.OpenChartEditor,  "Open Chart Editor", "Opens the song you are playing in the Chart Editor (or returns to it after a playtest). In the main menu it opens the editors.", new(Keys.D7), GroupSong),
     };
 
-    private static readonly Dictionary<HotkeyAction, KeyBinding[]> _bindings = new();
+    private static readonly Dictionary<HotkeyAction, KeyBinding> _bindings = new();
 
     static Controls() => ResetToDefaults();
 
     public static void ResetToDefaults()
     {
+        _bindings.Clear();
         foreach (var i in All)
-            _bindings[i.Action] = new[] { i.Primary, i.Alternate };
+            _bindings[i.Action] = i.Default;
     }
 
-    public static KeyBinding Get(HotkeyAction action, int slot) => _bindings[action][slot];
+    public static KeyBinding Get(HotkeyAction action)
+        => _bindings.TryGetValue(action, out var b) ? b : KeyBinding.None;
 
-    public static void Set(HotkeyAction action, int slot, KeyBinding binding) => _bindings[action][slot] = binding;
+    public static void Set(HotkeyAction action, KeyBinding binding) => _bindings[action] = binding;
 
-    /// <summary>"T / Ctrl+Right" style text for a settings row or description.</summary>
+    /// <summary>"Shift+T" style text for a settings row or description ("Unbound" when none).</summary>
     public static string Describe(HotkeyAction action)
     {
-        var b = _bindings[action];
-        if (b[0].IsNone && b[1].IsNone) return "Unbound";
-        if (b[1].IsNone) return b[0].ToString();
-        if (b[0].IsNone) return b[1].ToString();
-        return $"{b[0]} / {b[1]}";
+        var b = Get(action);
+        return b.IsNone ? "Unbound" : b.ToString();
     }
 
-    /// <summary>Primary binding (or the alternate if there is none) for on-screen hints like "[R] REFRESH".</summary>
-    public static string Hint(HotkeyAction action)
-    {
-        var b = _bindings[action];
-        return (!b[0].IsNone ? b[0] : b[1]).ToString();
-    }
-
-    /// <summary>
-    /// "[key] " in front of a button label, or nothing on touch screens (fork: phones showed
-    /// keyboard keys on every button).
-    /// </summary>
-    public static string Tag(HotkeyAction action) => UI.PointerInput.IsTouch ? "" : $"[{Hint(action)}] ";
+    /// <summary>The binding for on-screen hints like "ESC / 7: Back" ("-" when unbound).</summary>
+    public static string Hint(HotkeyAction action) => Get(action).ToString();
 
     // ── Matching ─────────────────────────────────────────────────────────────
 
@@ -177,11 +125,10 @@ public static class Controls
     /// <summary>True when a more specific binding (any action) on the same key is also held.</summary>
     private static bool Shadowed(KeyBinding b, KeyboardState kb)
     {
-        foreach (var slots in _bindings.Values)
-            foreach (var o in slots)
-                if (!o.IsNone && o.Key == b.Key && o.ModifierCount > b.ModifierCount &&
-                    (!b.Ctrl || o.Ctrl) && (!b.Shift || o.Shift) && (!b.Alt || o.Alt) && ModsHeld(o, kb))
-                    return true;
+        foreach (var o in _bindings.Values)
+            if (!o.IsNone && o.Key == b.Key && o.ModifierCount > b.ModifierCount &&
+                (!b.Ctrl || o.Ctrl) && (!b.Shift || o.Shift) && (!b.Alt || o.Alt) && ModsHeld(o, kb))
+                return true;
         return false;
     }
 
@@ -191,17 +138,20 @@ public static class Controls
 
     /// <summary>Action key held this frame.</summary>
     public static bool Down(HotkeyAction action, KeyboardState kb, Func<Keys, bool>? ignoreKey = null)
-        => _bindings[action].Any(b => Matches(b, kb, ignoreKey));
+        => Matches(Get(action), kb, ignoreKey);
 
     /// <summary>Action key went down this frame.</summary>
     public static bool Pressed(HotkeyAction action, KeyboardState kb, KeyboardState prev, Func<Keys, bool>? ignoreKey = null)
-        => _bindings[action].Any(b => Matches(b, kb, ignoreKey) && !prev.IsKeyDown(b.Key));
+    {
+        var b = Get(action);
+        return Matches(b, kb, ignoreKey) && !prev.IsKeyDown(b.Key);
+    }
 
     // ── Persistence ──────────────────────────────────────────────────────────
 
-    /// <summary>action name → [primary, alternate] for settings.json.</summary>
+    /// <summary>action name → [binding] for settings.json (an array: older versions saved two slots).</summary>
     public static Dictionary<string, string[]> Export()
-        => _bindings.ToDictionary(kv => kv.Key.ToString(), kv => kv.Value.Select(b => b.Serialize()).ToArray());
+        => _bindings.ToDictionary(kv => kv.Key.ToString(), kv => new[] { kv.Value.Serialize() });
 
     public static void Import(Dictionary<string, string[]>? data)
     {
@@ -209,9 +159,13 @@ public static class Controls
         if (data == null) return;
         foreach (var (name, slots) in data)
         {
-            if (!Enum.TryParse(name, out HotkeyAction action) || slots == null) continue;
-            for (int i = 0; i < 2 && i < slots.Length; i++)
-                _bindings[action][i] = KeyBinding.Parse(slots[i]);
+            // Actions that no longer exist (or don't exist on this platform) are dropped.
+            if (!Enum.TryParse(name, out HotkeyAction action) || !_bindings.ContainsKey(action) ||
+                slots == null || slots.Length == 0) continue;
+            // Older versions saved [primary, alternate] and a rebind cleared the alternate, so a filled
+            // alternate means the player never changed it: keep the new default instead.
+            if (slots.Length > 1 && !KeyBinding.Parse(slots[1]).IsNone) continue;
+            _bindings[action] = KeyBinding.Parse(slots[0]);
         }
     }
 

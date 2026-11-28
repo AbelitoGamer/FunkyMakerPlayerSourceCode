@@ -698,68 +698,19 @@ namespace FunkyMakerPlayer.Editors.Chart
                 return;
             }
 
-            if (JustPressed(kb, Keys.V))
-            {
-                _showPreview = !_showPreview;
-                UI.UiSfx.Play(UI.UiSound.Toggle);
-                ShowToast(_showPreview ? "Stage Preview shown" : "Stage Preview hidden");
-            }
-
-            // Tools 1-4
-            if (JustPressed(kb, Keys.D1)) SetTool(EditorTool.Select);
-            if (JustPressed(kb, Keys.D2)) SetTool(EditorTool.PlaceNote);
-            if (JustPressed(kb, Keys.D3)) SetTool(EditorTool.PlaceHold);
-            if (JustPressed(kb, Keys.D4)) SetTool(EditorTool.Delete);
+            // Tools, side focus, tracks, preview, camera, hitsounds, metronome, characters, snap,
+            // hold length, note preset, zoom and chart speed are all toolbar buttons: no letter
+            // hotkeys for them (fork). Kept: the usual editor shortcuts and actions with no button.
 
             // Clipboard Copy / Paste (Ctrl+C / Ctrl+V)
             if (ctrl && JustPressed(kb, Keys.C)) { CopyCurrentMeasure(); return; }
             if (ctrl && JustPressed(kb, Keys.V)) { PasteClipboardAtPlayhead(); return; }
 
-            // Focus Strumlines Q=BF (Right), W=Left Track, Tab=Cycle Extra Strumlines (3+)
-            if (JustPressed(kb, Keys.Q)) SwitchStrumline(_rightStrumline);
-            if (JustPressed(kb, Keys.W)) SwitchStrumline(_leftStrumline);
-            if (JustPressed(kb, Keys.Tab)) CycleLeftStrumline(shift ? -1 : 1);
-
-            // Stage Preview Cam / Audio Cues / Mirror shortcuts (when Ctrl not held)
-            if (!ctrl && JustPressed(kb, Keys.C)) CyclePreviewCamera();
-            if (!ctrl && JustPressed(kb, Keys.H))
-            {
-                _hitsoundsEnabled = !_hitsoundsEnabled; UI.UiSfx.Play(UI.UiSound.Toggle);
-                ShowToast(_hitsoundsEnabled ? "Hitsounds ON" : "Hitsounds OFF");
-            }
-            if (!ctrl && JustPressed(kb, Keys.N))
-            {
-                _metronomeEnabled = !_metronomeEnabled; UI.UiSfx.Play(UI.UiSound.Toggle);
-                ShowToast(_metronomeEnabled ? "Metronome ON" : "Metronome OFF");
-            }
+            // Mirror the current measure (no button for it)
             if (!ctrl && JustPressed(kb, Keys.M)) MirrorCurrentMeasure();
-            if (!ctrl && JustPressed(kb, Keys.B)) { ToggleCharacterModal(); return; }
-
-            // Snap cycle Z/X
-            if (JustPressed(kb, Keys.Z)) CycleSnap(-1);
-            if (JustPressed(kb, Keys.X)) CycleSnap(1);
-
-            // Hold duration [ / ]
-            if (JustPressed(kb, Keys.OemOpenBrackets)) AdjustHoldDuration(-1);
-            if (JustPressed(kb, Keys.OemCloseBrackets)) AdjustHoldDuration(1);
-
-            // Note preset cycle T (Normal → Hurt → Instakill → Heal)
-            if (JustPressed(kb, Keys.T))
-            {
-                if (_selectedNote != null)
-                {
-                    CycleSelectedNotePreset();
-                }
-                else
-                {
-                    _activePreset = NextPreset(_activePreset);
-                    UI.UiSfx.Play(UI.UiSound.Toggle);
-                    ShowToast($"Brush: {PresetName(_activePreset)}");
-                }
-            }
 
             // Delete selected note
-            if ((JustPressed(kb, Keys.Delete) || JustPressed(kb, Keys.Back)) && _selectedNote != null)
+            if (JustPressed(kb, Keys.Delete) && _selectedNote != null)
             {
                 DeleteSpecificNote(_selectedNoteStrumline, _selectedNoteLane, _selectedNote);
                 _selectedNote = null;
@@ -803,16 +754,6 @@ namespace FunkyMakerPlayer.Editors.Chart
                     MoveNote(_selectedNote, _selectedNoteStrumline, _selectedNoteLane, dstStrum, dstLane, _selectedNote.Start);
                 }
             }
-
-            // Grid Zoom +/-
-            if (JustPressed(kb, Keys.OemPlus) || JustPressed(kb, Keys.Add))
-                ChangeZoom(0.25f);
-            if (JustPressed(kb, Keys.OemMinus) || JustPressed(kb, Keys.Subtract))
-                ChangeZoom(-0.25f);
-
-            // Gameplay Note Scroll Speed O/P
-            if (JustPressed(kb, Keys.O)) ChangeChartSpeed(-0.1f);
-            if (JustPressed(kb, Keys.P)) ChangeChartSpeed(0.1f);
         }
 
         // ── Audio Cues, Step Input, Multi-Strumline & Clipboard ──────────────
@@ -2317,7 +2258,7 @@ namespace FunkyMakerPlayer.Editors.Chart
             DrawButton(sb, _undoBtnRect, "UNDO", _undoManager.CanUndo ? BG_CARD : new Color(24, 24, 34), _undoManager.CanUndo ? Color.White : Color.Gray, smallBtnFont, Color.White * 0.2f, Undo);
             DrawButton(sb, _redoBtnRect, "REDO", _undoManager.CanRedo ? BG_CARD : new Color(24, 24, 34), _undoManager.CanRedo ? Color.White : Color.Gray, smallBtnFont, Color.White * 0.2f, Redo);
             DrawButton(sb, _previewToggleRect, _showPreview ? "PREV ON" : "PREV OFF", _showPreview ? new Color(46, 54, 88) : BG_CARD, _showPreview ? ACCENT_GOLD : Color.Gray, smallBtnFont, _showPreview ? ACCENT_GOLD * 0.6f : Color.White * 0.15f, () => { _showPreview = !_showPreview; UI.UiSfx.Play(UI.UiSound.Toggle); });
-            DrawButton(sb, _charsBtnRect, "CHARS (B)", _charModalOpen ? new Color(78, 46, 112) : new Color(42, 30, 64), new Color(215, 175, 255), smallBtnFont, new Color(178, 102, 255), ToggleCharacterModal);
+            DrawButton(sb, _charsBtnRect, "CHARS", _charModalOpen ? new Color(78, 46, 112) : new Color(42, 30, 64), new Color(215, 175, 255), smallBtnFont, new Color(178, 102, 255), ToggleCharacterModal);
             DrawButton(sb, _saveBtnRect, IsModified ? "SAVE*" : "SAVE", IsModified ? new Color(150, 50, 88) : BG_CARD, Color.White, btnFont, IsModified ? ACCENT_PINK : Color.White * 0.2f, SaveLevel);
         }
 
@@ -2340,18 +2281,16 @@ namespace FunkyMakerPlayer.Editors.Chart
             DrawText(sb, "TOOLS", new Vector2(_toolbarRect.X + padX, y), ACCENT_GOLD, hdrFont);
             y += hdrStep;
 
-            (EditorTool tool, string num, string name, Color accent)[] tools =
+            (EditorTool tool, string name, Color accent)[] tools =
             {
-                (EditorTool.Select,    "1", "SELECT", ACCENT_CYAN),
-                (EditorTool.PlaceNote, "2", "NOTE",   ACCENT_GREEN),
-                (EditorTool.PlaceHold, "3", "HOLD",   ACCENT_GOLD),
-                (EditorTool.Delete,    "4", "DELETE", ACCENT_PINK),
+                (EditorTool.Select,    "SELECT", ACCENT_CYAN),
+                (EditorTool.PlaceNote, "NOTE",   ACCENT_GREEN),
+                (EditorTool.PlaceHold, "HOLD",   ACCENT_GOLD),
+                (EditorTool.Delete,    "DELETE", ACCENT_PINK),
             };
 
             int toolH = UiScale.Px(42, s);
             int toolStep = UiScale.Px(47, s);
-            int numW = UiScale.Px(22, s);
-            int numH = UiScale.Px(24, s);
 
             for (int i = 0; i < tools.Length; i++)
             {
@@ -2367,11 +2306,12 @@ namespace FunkyMakerPlayer.Editors.Chart
                 if (active)
                     sb.Draw(_pixel, new Rectangle(r.X, r.Y, Math.Max(3, UiScale.Px(4, s)), r.Height), t.accent);
 
-                var numBox = new Rectangle(r.X + UiScale.Px(8, s), r.Y + (r.Height - numH) / 2, numW, numH);
-                sb.Draw(_pixel, numBox, active ? t.accent : new Color(24, 24, 34));
-                DrawTextCenteredInBox(sb, t.num, numBox, active ? BG_DARK : Color.White, labelFont);
+                // Small colour swatch of the tool (the 1-4 hotkey numbers are gone)
+                int dot = UiScale.Px(10, s);
+                var swatch = new Rectangle(r.X + UiScale.Px(12, s), r.Y + (r.Height - dot) / 2, dot, dot);
+                sb.Draw(_pixel, swatch, active ? t.accent : t.accent * 0.45f);
 
-                var labelX = numBox.Right + UiScale.Px(8, s);
+                var labelX = swatch.Right + UiScale.Px(10, s);
                 DrawText(sb, t.name, new Vector2(labelX, r.Y + (r.Height - MeasureText(t.name, labelFont).Y) / 2f), active ? Color.White : new Color(205, 205, 225), labelFont);
 
                 var capturedTool = t.tool;
@@ -2388,11 +2328,11 @@ namespace FunkyMakerPlayer.Editors.Chart
             int ctrlH = UiScale.Px(28, s);
             _strumEnemyBtn = new Rectangle(_toolbarRect.X + padX, y, halfW, ctrlH);
             _strumPlayerBtn = new Rectangle(_toolbarRect.X + padX + halfW + halfGap, y, halfW, ctrlH);
-            string leftFocusLabel = (_level != null && _level.Data.Strumlines.Count > 2) ? $"SL{_leftStrumline} (W)" : "FOE (W)";
+            string leftFocusLabel = (_level != null && _level.Data.Strumlines.Count > 2) ? $"SL{_leftStrumline}" : "FOE";
             bool leftFocused = _selectedStrumline == _leftStrumline;
             bool rightFocused = _selectedStrumline == _rightStrumline;
             DrawButton(sb, _strumEnemyBtn, leftFocusLabel, leftFocused ? new Color(115, 38, 66) : BG_CARD, Color.White, smallFont, leftFocused ? ACCENT_PINK : Color.White * 0.12f, () => SwitchStrumline(_leftStrumline));
-            DrawButton(sb, _strumPlayerBtn, "BF (Q)", rightFocused ? new Color(30, 88, 125) : BG_CARD, Color.White, smallFont, rightFocused ? ACCENT_CYAN : Color.White * 0.12f, () => SwitchStrumline(_rightStrumline));
+            DrawButton(sb, _strumPlayerBtn, "BF", rightFocused ? new Color(30, 88, 125) : BG_CARD, Color.White, smallFont, rightFocused ? ACCENT_CYAN : Color.White * 0.12f, () => SwitchStrumline(_rightStrumline));
             y += ctrlH + UiScale.Px(10, s);
 
             // Snap divisor
@@ -2451,10 +2391,10 @@ namespace FunkyMakerPlayer.Editors.Chart
                 y += hdrStep;
                 _hitsoundBtnRect = new Rectangle(_toolbarRect.X + padX, y, halfW, ctrlH);
                 _metronomeBtnRect = new Rectangle(_toolbarRect.X + padX + halfW + halfGap, y, halfW, ctrlH);
-                DrawButton(sb, _hitsoundBtnRect, "SND (H)", _hitsoundsEnabled ? new Color(24, 88, 62) : BG_CARD,
+                DrawButton(sb, _hitsoundBtnRect, "SND", _hitsoundsEnabled ? new Color(24, 88, 62) : BG_CARD,
                     _hitsoundsEnabled ? Color.White : Color.Gray, smallFont, _hitsoundsEnabled ? ACCENT_GREEN : Color.White * 0.12f,
                     () => { _hitsoundsEnabled = !_hitsoundsEnabled; UI.UiSfx.Play(UI.UiSound.Toggle); ShowToast(_hitsoundsEnabled ? "Hitsounds ON" : "Hitsounds OFF"); });
-                DrawButton(sb, _metronomeBtnRect, "MET (N)", _metronomeEnabled ? new Color(92, 72, 22) : BG_CARD,
+                DrawButton(sb, _metronomeBtnRect, "MET", _metronomeEnabled ? new Color(92, 72, 22) : BG_CARD,
                     _metronomeEnabled ? Color.White : Color.Gray, smallFont, _metronomeEnabled ? ACCENT_GOLD : Color.White * 0.12f,
                     () => { _metronomeEnabled = !_metronomeEnabled; UI.UiSfx.Play(UI.UiSound.Toggle); ShowToast(_metronomeEnabled ? "Metronome ON" : "Metronome OFF"); });
             }
@@ -3060,7 +3000,7 @@ namespace FunkyMakerPlayer.Editors.Chart
                 _inspDeleteBtn = new Rectangle(x + (bw + actionGap) * 2, y, bw, actH);
                 string leftSwapTag = _level.Data.Strumlines.Count > 2 ? $"-> SL{_leftStrumline}" : "-> FOE";
                 string swapLbl = _selectedNoteStrumline == _rightStrumline ? leftSwapTag : "-> BF";
-                DrawButton(sb, _inspSkinBtn, "PRESET (T)", BG_CARD, Color.White, smallFont, ACCENT_CYAN * 0.5f, CycleSelectedNotePreset);
+                DrawButton(sb, _inspSkinBtn, "PRESET", BG_CARD, Color.White, smallFont, ACCENT_CYAN * 0.5f, CycleSelectedNotePreset);
                 DrawButton(sb, _inspSwapStrumBtn, swapLbl, BG_CARD, ACCENT_GOLD, smallFont, ACCENT_GOLD * 0.5f, SwapSelectedNoteStrumline);
                 DrawButton(sb, _inspDeleteBtn, "DEL", new Color(110, 32, 48), Color.White, smallFont, ACCENT_PINK, () =>
                 {
@@ -3148,8 +3088,7 @@ namespace FunkyMakerPlayer.Editors.Chart
                     "D/F/J/K: Step Input | M: Mirror Bar",
                     "Space: Play | Enter: Playtest",
                     "Ctrl+C/V: Copy/Paste Measure",
-                    "Tab: Track | C: Cam | H: Snd | N: Met",
-                    "Ctrl+Wheel/+/-: Zoom | O/P: Spd",
+                    "Ctrl+Wheel: Zoom | Del: Delete note",
                     "Ctrl+Z/Y: Undo/Redo | Ctrl+S: Save",
                 };
                 int tipStep = UiScale.Px(16, s);
@@ -3378,7 +3317,7 @@ namespace FunkyMakerPlayer.Editors.Chart
             if (_fontRenderer != null)
                 return _fontRenderer.MeasureString(text, fontSize);
             if (_font != null)
-                return _font.MeasureString(text) * (fontSize / 32f);
+                return _font.MeasureUi(text) * (fontSize / 32f);
             return new Vector2(text.Length * fontSize * 0.55f, fontSize);
         }
 
@@ -3393,7 +3332,7 @@ namespace FunkyMakerPlayer.Editors.Chart
             if (_fontRenderer != null)
                 _fontRenderer.DrawString(sb, text, pos, color, fontSize);
             else if (_font != null)
-                sb.DrawString(_font, text, pos, color, 0f, Vector2.Zero, fontSize / 32f, SpriteEffects.None, 0f);
+                sb.DrawUiString(_font, text, pos, color, 0f, Vector2.Zero, fontSize / 32f, SpriteEffects.None, 0f);
         }
 
         private void DrawTextCenteredInBox(SpriteBatch sb, string text, Rectangle box, Color color, int fontSize)

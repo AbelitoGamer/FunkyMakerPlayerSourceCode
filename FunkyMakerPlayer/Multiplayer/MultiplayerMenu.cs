@@ -72,6 +72,9 @@ namespace FunkyMakerPlayer.Multiplayer
         private List<Rectangle> _tabHitboxes = new();
         private Rectangle _backButtonRect = Rectangle.Empty;
         private Rectangle _refreshButtonRect = Rectangle.Empty;
+        // Online settings: "RESET TO DEFAULTS" button; the first click arms it for a few seconds, the second resets
+        private Rectangle _resetSettingsRect = Rectangle.Empty;
+        private float _resetSettingsArmed;
         private Rectangle _gameplaySettingsRect = Rectangle.Empty;
         private Rectangle _shareButtonRect = Rectangle.Empty;
         private int _hoveredButton = -1;
@@ -535,10 +538,9 @@ namespace FunkyMakerPlayer.Multiplayer
             // Update mouse hover detection
             UpdateMouseHover(mouse);
 
-            // Global shortcut: F1 or clicking "Keybinds & Settings" pill opens Gameplay Settings without leaving Multiplayer
+            // The "Settings" pill opens the game settings without leaving Multiplayer
             if (!_isEditingText && !TextFieldActive && _state != MenuState.Connecting &&
-                _inputCooldown <= 0f &&
-                (IsKeyPressed(kb, HotkeyAction.MultiplayerSettings) || IsRectClicked(mouse, _gameplaySettingsRect)))
+                _inputCooldown <= 0f && IsRectClicked(mouse, _gameplaySettingsRect))
             {
                 GameplaySettingsRequested = true;
                 _inputCooldown = INPUT_COOLDOWN_TIME;
@@ -599,6 +601,7 @@ namespace FunkyMakerPlayer.Multiplayer
             _tabHitboxes.Clear();
             _backButtonRect = Rectangle.Empty;
             _refreshButtonRect = Rectangle.Empty;
+            _resetSettingsRect = Rectangle.Empty;
             _gameplaySettingsRect = Rectangle.Empty;
             _shareButtonRect = Rectangle.Empty;
             _hoveredButton = -1;
@@ -782,6 +785,7 @@ namespace FunkyMakerPlayer.Multiplayer
             // Handle text editing BEFORE cooldown so typed characters are never dropped
             if (UpdateTextField(kb, dt)) return;
 
+            _resetSettingsArmed = Math.Max(0f, _resetSettingsArmed - dt);
             if (_inputCooldown > 0f) return;
 
             // Clicking top-right ESC: Back saves & exits
@@ -789,6 +793,27 @@ namespace FunkyMakerPlayer.Multiplayer
             {
                 SaveSettings();
                 TransitionToState(MenuState.MainMenu);
+                return;
+            }
+
+            // RESET TO DEFAULTS: first click asks, a second click within 3 s resets every online setting
+            if (IsRectClicked(mouse, _resetSettingsRect))
+            {
+                if (_resetSettingsArmed > 0f)
+                {
+                    settings.ResetToDefaults();
+                    SaveSettings();
+                    Game1.SaveSettings();   // Show Opponent Notes lives in settings.json
+                    _resetSettingsArmed = 0f;
+                    _isSettingFocused = false;
+                    FunkyMakerPlayer.UI.UiSfx.Play(FunkyMakerPlayer.UI.UiSound.Undo);
+                }
+                else
+                {
+                    _resetSettingsArmed = 3f;
+                    FunkyMakerPlayer.UI.UiSfx.Play(FunkyMakerPlayer.UI.UiSound.Notice);
+                }
+                _inputCooldown = INPUT_COOLDOWN_TIME;
                 return;
             }
 
@@ -885,25 +910,6 @@ namespace FunkyMakerPlayer.Multiplayer
                 }
             }
 
-            // Q / E always switch categories (matching SettingsManager)
-            if (IsKeyPressed(kb, HotkeyAction.PrevTab))
-            {
-                _settingsCategory = (_settingsCategory - 1 + 4) % 4;
-                _settingsSelection = 0;
-                _settingsScrollOffset = 0;
-                _isSettingFocused = false;
-                _inputCooldown = INPUT_COOLDOWN_TIME;
-                return;
-            }
-            if (IsKeyPressed(kb, HotkeyAction.NextTab))
-            {
-                _settingsCategory = (_settingsCategory + 1) % 4;
-                _settingsSelection = 0;
-                _settingsScrollOffset = 0;
-                _isSettingFocused = false;
-                _inputCooldown = INPUT_COOLDOWN_TIME;
-                return;
-            }
 
             // LEFT / RIGHT: adjust value if focused, else switch category (matching SettingsManager!)
             if (IsKeyPressed(kb, Keys.Left))
@@ -982,14 +988,6 @@ namespace FunkyMakerPlayer.Multiplayer
                     }
                     _inputCooldown = INPUT_COOLDOWN_TIME;
                 }
-            }
-
-            // R to reset to defaults
-            if (IsKeyPressed(kb, HotkeyAction.ResetOnlineSettings))
-            {
-                settings.ResetToDefaults();
-                SaveSettings();
-                _inputCooldown = INPUT_COOLDOWN_TIME;
             }
 
             // ESC unfocuses first, then saves & exits to MainMenu
@@ -1454,6 +1452,7 @@ namespace FunkyMakerPlayer.Multiplayer
             _tabHitboxes.Clear();
             _backButtonRect = Rectangle.Empty;
             _refreshButtonRect = Rectangle.Empty;
+            _resetSettingsRect = Rectangle.Empty;
             _gameplaySettingsRect = Rectangle.Empty;
             _shareButtonRect = Rectangle.Empty;
             _importButtonRect = Rectangle.Empty;
@@ -1562,7 +1561,7 @@ namespace FunkyMakerPlayer.Multiplayer
             if (font != null)
             {
                 string safe = SanitizeText(font, text);
-                return font.MeasureString(safe) * (fontSize / 26f);
+                return font.MeasureUi(safe) * (fontSize / 26f);
             }
 
             return Vector2.Zero;
@@ -1584,7 +1583,7 @@ namespace FunkyMakerPlayer.Multiplayer
                 }
                 else if (font != null)
                 {
-                    sb.DrawString(font, SanitizeText(font, text), sPos, shadowColor, 0f, Vector2.Zero, fontSize / 26f, SpriteEffects.None, 0f);
+                    sb.DrawUiString(font, SanitizeText(font, text), sPos, shadowColor, 0f, Vector2.Zero, fontSize / 26f, SpriteEffects.None, 0f);
                 }
             }
 
@@ -1594,7 +1593,7 @@ namespace FunkyMakerPlayer.Multiplayer
             }
             else if (font != null)
             {
-                sb.DrawString(font, SanitizeText(font, text), pos, color, 0f, Vector2.Zero, fontSize / 26f, SpriteEffects.None, 0f);
+                sb.DrawUiString(font, SanitizeText(font, text), pos, color, 0f, Vector2.Zero, fontSize / 26f, SpriteEffects.None, 0f);
             }
         }
 
@@ -1772,8 +1771,7 @@ namespace FunkyMakerPlayer.Multiplayer
 
         private void DrawGameplaySettingsButton(SpriteBatch sb, SpriteFont font, Texture2D pixel, int x, int y, float uiScale)
         {
-            string key = Controls.Hint(HotkeyAction.MultiplayerSettings);
-            string label = key == "-" || FunkyMakerPlayer.UI.PointerInput.IsTouch ? "Settings" : $"{key}  Settings";
+            const string label = "Settings";
             int fontSize = FontPx(13, uiScale, 10, 18);
             Vector2 sz = MeasureText(font, label, fontSize);
             int btnW = (int)MathF.Ceiling(sz.X) + Px(24, uiScale);
@@ -1791,8 +1789,7 @@ namespace FunkyMakerPlayer.Multiplayer
 
         private void DrawGameplaySettingsButtonTopRight(SpriteBatch sb, SpriteFont font, Texture2D pixel, int screenWidth, float uiScale)
         {
-            string key = Controls.Hint(HotkeyAction.MultiplayerSettings);
-            string label = key == "-" || FunkyMakerPlayer.UI.PointerInput.IsTouch ? "Settings" : $"{key}  Settings";
+            const string label = "Settings";
             int fontSize = FontPx(13, uiScale, 10, 18);
             Vector2 sz = MeasureText(font, label, fontSize);
             int btnW = (int)MathF.Ceiling(sz.X) + Px(24, uiScale);
@@ -2350,7 +2347,7 @@ namespace FunkyMakerPlayer.Multiplayer
             }
 
             int footerY = DrawFooterBar(sb, font, pixel, screenWidth, screenHeight, uiScale,
-                "Q/E or LEFT/RIGHT: Category  |  UP/DOWN: Navigate  |  ENTER/CLICK: Edit/Toggle/Focus  |  </> or L/R (Focused): Adjust  |  R: Reset  |  ESC: Save & Back");
+                "LEFT/RIGHT: Category  |  UP/DOWN: Navigate  |  ENTER/CLICK: Edit/Toggle/Focus  |  </> or L/R (Focused): Adjust  |  ESC: Save & Back");
 
             int panelW = ClampUi(Px(920, uiScale), 360, screenWidth - Px(60, uiScale));
             int panelX = screenWidth / 2 - panelW / 2;
@@ -2358,9 +2355,27 @@ namespace FunkyMakerPlayer.Multiplayer
             int descH = Px(74, uiScale, 58);
             int descGap = Px(10, uiScale, 6);
             int descY = footerY - Px(10, uiScale, 6) - descH;
-            int panelH = Math.Max(180, descY - descGap - panelY);
+            int resetH = Px(30, uiScale, 24);
+            int panelH = Math.Max(180, descY - descGap - panelY - resetH - descGap);
 
             DrawPanel(sb, pixel, panelX, panelY, panelW, panelH, BG_MEDIUM, ACCENT_PRIMARY * 0.7f, 2);
+
+            // RESET TO DEFAULTS (right-aligned under the list; asks for a second click)
+            {
+                bool armed = _resetSettingsArmed > 0f;
+                string resetLabel = armed ? "CLICK AGAIN TO RESET EVERYTHING" : "RESET TO DEFAULTS";
+                int resetFont = FontPx(12, uiScale, 10, 17);
+                Vector2 rSz = MeasureText(font, resetLabel, resetFont);
+                int resetW = (int)MathF.Ceiling(rSz.X) + Px(28, uiScale);
+                int resetY = panelY + panelH + descGap;
+                _resetSettingsRect = new Rectangle(panelX + panelW - resetW, resetY, resetW, resetH);
+                bool rHover = _resetSettingsRect.Contains(_lastMousePos);
+                Color rAccent = armed ? ACCENT_ERROR : TEXT_SECONDARY;
+                DrawPanel(sb, pixel, _resetSettingsRect.X, resetY, resetW, resetH, rHover || armed ? BG_LIGHT : BG_MEDIUM,
+                    rHover || armed ? ACCENT_ERROR : BORDER_SUBTLE, rHover || armed ? 2 : 1);
+                DrawText(sb, font, resetLabel, new Vector2(_resetSettingsRect.X + resetW / 2f - rSz.X / 2f, resetY + resetH / 2f - rSz.Y / 2f),
+                    (rHover ? Color.White : rAccent) * _fadeAlpha, resetFont);
+            }
 
             var categorySettings = GetCategorySettings(_settingsCategory, settings);
             DrawSettingsCategory(sb, font, pixel, uiScale, panelX, panelY, panelW, panelH, settings, categorySettings);
@@ -2463,7 +2478,7 @@ namespace FunkyMakerPlayer.Multiplayer
                         Value = settings.ShowOpponentNotes ? "ON" : "OFF",
                         IsToggle = true,
                         IsAdjustable = true,
-                        Description = "Show or hide the opponent's notes. Same setting as Opponent Strumline in the main Settings (NOTES tab)."
+                        Description = "Show or hide the opponent's notes. Same setting as Opponent's Arrows in the main Settings (HUD tab)."
                     });
                     list.Add(new SettingInfo
                     {
@@ -2752,7 +2767,7 @@ namespace FunkyMakerPlayer.Multiplayer
             }
 
             // Refresh / Sync global leaderboard (SignalR when connected, HTTP fallback otherwise)
-            if (IsKeyPressed(kb, HotkeyAction.Refresh) || IsRectClicked(mouse, _refreshButtonRect))
+            if (IsRectClicked(mouse, _refreshButtonRect))
             {
                 RequestLeaderboardRefresh();
                 _inputCooldown = INPUT_COOLDOWN_TIME;
@@ -2772,8 +2787,8 @@ namespace FunkyMakerPlayer.Multiplayer
                 }
             }
 
-            // Switch tabs with LEFT/RIGHT or Q/E
-            if (IsKeyPressed(kb, Keys.Left) || IsKeyPressed(kb, HotkeyAction.PrevTab))
+            // Switch tabs with LEFT/RIGHT
+            if (IsKeyPressed(kb, Keys.Left))
             {
                 _leaderboardTab = (_leaderboardTab - 1 + 3) % 3;
                 _leaderboardSelection = 0;
@@ -2781,7 +2796,7 @@ namespace FunkyMakerPlayer.Multiplayer
                 _inputCooldown = INPUT_COOLDOWN_TIME;
                 return;
             }
-            if (IsKeyPressed(kb, Keys.Right) || IsKeyPressed(kb, HotkeyAction.NextTab))
+            if (IsKeyPressed(kb, Keys.Right))
             {
                 _leaderboardTab = (_leaderboardTab + 1) % 3;
                 _leaderboardSelection = 0;
@@ -2855,7 +2870,7 @@ namespace FunkyMakerPlayer.Multiplayer
             {
                 string syncLabel = _leaderboardSyncInFlight
                     ? "Syncing..."
-                    : (_leaderboardSyncedOnline ? "F5  Online Synced" : "F5  Sync Online");
+                    : (_leaderboardSyncedOnline ? "Online Synced" : "Sync Online");
                 Color syncAccent = _leaderboardSyncInFlight
                     ? ACCENT_WARNING
                     : (_leaderboardSyncedOnline ? ACCENT_SUCCESS : ACCENT_PRIMARY);
@@ -2917,8 +2932,8 @@ namespace FunkyMakerPlayer.Multiplayer
 
             int footerY = DrawFooterBar(sb, font, pixel, screenWidth, screenHeight, uiScale,
                 _leaderboardTab == 1
-                    ? "Q/E or LEFT/RIGHT: Switch Tab  |  UP/DOWN or WHEEL: Scroll  |  ENTER / CLICK: Details  |  F5: Sync Online  |  ESC: Back"
-                    : "Q/E or LEFT/RIGHT: Switch Tab  |  UP/DOWN or WHEEL: Scroll  |  F5: Sync Online  |  ESC: Back");
+                    ? "LEFT/RIGHT: Switch Tab  |  UP/DOWN or WHEEL: Scroll  |  ENTER / CLICK: Details  |  ESC: Back"
+                    : "LEFT/RIGHT: Switch Tab  |  UP/DOWN or WHEEL: Scroll  |  ESC: Back");
 
             int panelW = ClampUi(Px(960, uiScale), 360, screenWidth - Px(60, uiScale));
             int panelY = tabY + tabH + Px(14, uiScale, 8);
@@ -3239,7 +3254,7 @@ namespace FunkyMakerPlayer.Multiplayer
             var pressedKeys = new List<Keys>(kb.GetPressedKeys());
             
             // Add virtual keys from touch controls (menu navigation)
-            foreach (var key in new[] { Keys.Left, Keys.Right, Keys.Up, Keys.Down, Keys.Enter, Keys.Escape, Keys.Space, Keys.Q, Keys.E })
+            foreach (var key in new[] { Keys.Left, Keys.Right, Keys.Up, Keys.Down, Keys.Enter, Keys.Escape, Keys.Space })
             {
                 if (_touchControls.IsKeyDown(key) && !pressedKeys.Contains(key))
                     pressedKeys.Add(key);

@@ -205,16 +205,6 @@ public class HudEditor
             BackPressed = true;
         }
         
-        // S to save
-        if (kb.IsKeyDown(Keys.S) && !_prevKb.IsKeyDown(Keys.S))
-        {
-            SavePressed = true;
-            SaveHudLayout();
-            _feedbackMessage = "Layout saved to hud_settings.json!";
-            _feedbackTimer = FEEDBACK_DURATION;
-            UI.UiSfx.Play(UI.UiSound.Save);
-        }
-        
         // R to reset to defaults
         if (kb.IsKeyDown(Keys.R) && !_prevKb.IsKeyDown(Keys.R))
         {
@@ -254,10 +244,8 @@ public class HudEditor
             UI.UiSfx.Play(UI.UiSound.Toggle);
         }
 
-        // V, Space, or Delete to toggle visibility of selected element
-        bool toggleVisKey = (kb.IsKeyDown(Keys.V) && !_prevKb.IsKeyDown(Keys.V)) ||
-                            (kb.IsKeyDown(Keys.Space) && !_prevKb.IsKeyDown(Keys.Space)) ||
-                            (kb.IsKeyDown(Keys.Delete) && !_prevKb.IsKeyDown(Keys.Delete));
+        // Space toggles visibility of the selected element (right click does it with the mouse)
+        bool toggleVisKey = kb.IsKeyDown(Keys.Space) && !_prevKb.IsKeyDown(Keys.Space);
         if (toggleVisKey && _selectedElement >= 0 && _selectedElement < _elements.Count)
         {
             var elem = _elements[_selectedElement];
@@ -526,8 +514,8 @@ public class HudEditor
         
         // Draw a label
         string label = "Strumline Preview";
-        var labelSize = _font.MeasureString(label);
-        sb.DrawString(_font, label, 
+        var labelSize = _font.MeasureUi(label);
+        sb.DrawUiString(_font, label, 
             new Vector2(centerX - labelSize.X / 2, strumY - 80), 
             Color.White * 0.5f);
     }
@@ -579,7 +567,7 @@ public class HudEditor
         // Label
         float labelScale = 0.8f;
         string displayText = elem.Visible ? elem.Name : $"{elem.Name} [HIDDEN]";
-        var labelSize = _font.MeasureString(displayText) * labelScale;
+        var labelSize = _font.MeasureUi(displayText) * labelScale;
         Vector2 labelPos = new Vector2(
             rect.X + rect.Width / 2 - labelSize.X / 2,
             rect.Y + rect.Height / 2 - labelSize.Y / 2
@@ -587,9 +575,9 @@ public class HudEditor
         
         Color textColor = elem.Visible ? Color.White : new Color(180, 140, 140);
         // Shadow
-        sb.DrawString(_font, displayText, labelPos + new Vector2(1, 1), Color.Black, 0f, Vector2.Zero, labelScale, Microsoft.Xna.Framework.Graphics.SpriteEffects.None, 0f);
+        sb.DrawUiString(_font, displayText, labelPos + new Vector2(1, 1), Color.Black, 0f, Vector2.Zero, labelScale, Microsoft.Xna.Framework.Graphics.SpriteEffects.None, 0f);
         // Text
-        sb.DrawString(_font, displayText, labelPos, textColor, 0f, Vector2.Zero, labelScale, Microsoft.Xna.Framework.Graphics.SpriteEffects.None, 0f);
+        sb.DrawUiString(_font, displayText, labelPos, textColor, 0f, Vector2.Zero, labelScale, Microsoft.Xna.Framework.Graphics.SpriteEffects.None, 0f);
         
         // Position & visibility indicator when selected
         if (isSelected)
@@ -603,15 +591,15 @@ public class HudEditor
             string visTag = elem.Visible ? "VISIBLE" : "HIDDEN";
             string sizeTag = elem.FreeResize ? $"{elem.Size.X}x{elem.Size.Y}" : $"x{elem.Scale:0.00}";
             string posText = $"({elem.Position.X}, {elem.Position.Y}) {sizeTag} [{visTag}]";
-            var posSize = _font.MeasureString(posText);
+            var posSize = _font.MeasureUi(posText);
             Vector2 posTextPos = new Vector2(rect.X, Math.Max(4, rect.Y - posSize.Y - 5));
-            sb.DrawString(_font, posText, posTextPos + new Vector2(1, 1), Color.Black);
-            sb.DrawString(_font, posText, posTextPos, elem.Visible ? Color.Yellow : new Color(255, 120, 100));
+            sb.DrawUiString(_font, posText, posTextPos + new Vector2(1, 1), Color.Black);
+            sb.DrawUiString(_font, posText, posTextPos, elem.Visible ? Color.Yellow : new Color(255, 120, 100));
             
-            string sizeNote = "Corner / [ ] / Wheel: Resize   V / Right-Click: Hide/Show";
+            string sizeNote = "Corner / [ ] / Wheel: Resize   Space / Right-Click: Hide/Show";
             Vector2 sizeTextPos = new Vector2(rect.X, Math.Min(700, rect.Y + rect.Height + 5));
-            sb.DrawString(_font, sizeNote, sizeTextPos + new Vector2(1, 1), Color.Black, 0f, Vector2.Zero, 0.7f, Microsoft.Xna.Framework.Graphics.SpriteEffects.None, 0f);
-            sb.DrawString(_font, sizeNote, sizeTextPos, Color.Cyan, 0f, Vector2.Zero, 0.7f, Microsoft.Xna.Framework.Graphics.SpriteEffects.None, 0f);
+            sb.DrawUiString(_font, sizeNote, sizeTextPos + new Vector2(1, 1), Color.Black, 0f, Vector2.Zero, 0.7f, Microsoft.Xna.Framework.Graphics.SpriteEffects.None, 0f);
+            sb.DrawUiString(_font, sizeNote, sizeTextPos, Color.Cyan, 0f, Vector2.Zero, 0.7f, Microsoft.Xna.Framework.Graphics.SpriteEffects.None, 0f);
         }
     }
     
@@ -622,17 +610,16 @@ public class HudEditor
         {
             "Left-Click & Drag: Move elements",
             "Drag corner handle / [ ] / Wheel: Resize selected",
-            "Right-Click / V / Space: Hide or Show element",
+            "Right-Click / Space: Hide or Show element",
             "A: Hide or Show ALL elements at once",
             "Arrow Keys (+Shift): Fine-tune position",
             "Tab: Cycle through elements",
             "G: Toggle grid   |   H: Toggle instructions",
             "R: Reset positions, sizes & visibility",
-            "S: Save layout",
             "ESC: Save & Exit editor"
         };
 
-        int lineStep = Math.Max(20, (int)Math.Ceiling(_font.MeasureString("Ag").Y) + 3);
+        int lineStep = Math.Max(20, (int)Math.Ceiling(_font.MeasureUi("Ag").Y) + 3);
         int panelW = 500;
         int panelH = 44 + instructions.Length * lineStep + 10;
         int panelX = screenWidth - panelW - 20;
@@ -644,8 +631,8 @@ public class HudEditor
         
         // Title
         string title = "HUD Editor";
-        var titleSize = _font.MeasureString(title);
-        sb.DrawString(_font, title, 
+        var titleSize = _font.MeasureUi(title);
+        sb.DrawUiString(_font, title, 
             new Vector2(panelX + panelW / 2 - titleSize.X / 2, panelY + 10), 
             Color.Cyan);
         
@@ -653,7 +640,7 @@ public class HudEditor
         foreach (var line in instructions)
         {
             Color c = (line.StartsWith("Right-Click") || line.StartsWith("A:")) ? Color.Yellow : Color.White;
-            sb.DrawString(_font, line, new Vector2(panelX + 10, lineY), c);
+            sb.DrawUiString(_font, line, new Vector2(panelX + 10, lineY), c);
             lineY += lineStep;
         }
     }
@@ -666,7 +653,7 @@ public class HudEditor
         float alpha = Math.Min(_feedbackTimer / 0.5f, 1f); // Fade out in last 0.5 seconds
         
         // Message panel at bottom center
-        var messageSize = _font.MeasureString(_feedbackMessage);
+        var messageSize = _font.MeasureUi(_feedbackMessage);
         int panelW = (int)messageSize.X + 40;
         int panelH = (int)messageSize.Y + 20;
         int panelX = screenWidth / 2 - panelW / 2;
@@ -681,8 +668,8 @@ public class HudEditor
         
         // Message text
         Vector2 textPos = new Vector2(panelX + 20, panelY + 10);
-        sb.DrawString(_font, _feedbackMessage, textPos + new Vector2(1, 1), Color.Black * alpha);
-        sb.DrawString(_font, _feedbackMessage, textPos, Color.LimeGreen * alpha);
+        sb.DrawUiString(_font, _feedbackMessage, textPos + new Vector2(1, 1), Color.Black * alpha);
+        sb.DrawUiString(_font, _feedbackMessage, textPos, Color.LimeGreen * alpha);
     }
     
     private void DrawRectangleBorder(SpriteBatch sb, int x, int y, int width, int height, Color color, int thickness)
