@@ -12,6 +12,18 @@
 > This document is intentionally source-of-truth style: prefer it over guessing
 > from memory. Verify command output/paths before copying claims into it.
 
+> **UI rule: do NOT give everything a keybind** (owner's request, 2026-11-27)
+>
+> When creating or changing any interface, do not repeat the old habit of adding a key for
+> every button or action, and even less a *rebindable* one. In 2026-11 almost all of them were
+> removed (see §10.0 "Keybinds"). Before adding a key, think about what it is for: add one only
+> when there is a real convenience benefit (something done constantly, during gameplay, or
+> with no other way to do it), never when it just repeats something a button / click / arrows
+> + Enter already does without trouble. Never print key hints on button labels ("[R] REFRESH").
+> One binding per action, never two. Editors are where shortcuts are most acceptable (standard
+> Ctrl+S / Ctrl+Z style ones, or actions with no button), but even there making them
+> rebindable is doubtful. If in doubt, don't add it (or ask the owner).
+
 ---
 
 ## 1. What this project is
@@ -107,8 +119,8 @@ Notes:
   Upstream has re-added the missing `_inspect_tool` reference before; if a sync
   brings it back, remove it again (see §18.1).
 - Put custom levels in `%AppData%\FunkyMakerPlayer\mods\levels\` (the default), or
-  in `mods\levels\` next to the executable after Settings → AUDIO & VIDEO → Move Mods
-  Folder → Next to game (§13). Freeplay
+  in `mods\levels\` next to the executable (`ModsStorage` "Next to game" location; the Settings row
+  to move it was removed on 2026-11-27 and will move somewhere else; §13). Freeplay
   scans `.fnmm`, `.zip`, and `.rar` recursively (case-insensitive), skips any
   `Backups\` folder, and also lists top-level folders containing `meta.json` or
   `data.json` (unpacked levels).
@@ -195,7 +207,6 @@ Notes:
 │   ├── UI/UiDraw.cs             (fork) shared drawing helpers for direct-to-window menus
 │   ├── UI/OptionsMenu.cs        (fork) reusable "..." options menu with confirmations (§10.0)
 │   ├── UI/ModifiersWindow.cs    (fork) modifiers window (categories), openable from any screen
-│   ├── UI/AttemptsWindow.cs     (fork) all attempts of a level + their replays
 │   ├── UI/PointerInput.cs       (fork) menus' pointer: the mouse, or touches as a mouse on Android (§13)
 │   ├── UI/PickerTouch.cs        (fork) taps + BACK/APPLY + scaling for the 4 Settings style pickers
 │   ├── PlatformPaths.cs         mods/levels/assets paths + Android SAF import
@@ -368,8 +379,8 @@ server is now a Cloudflare Worker and the client talks to it over a plain `Clien
   `mods/**` in the APK (Link `Assets\mods\...`, prefix stripped). See §14.1.
 - `Icon.ico`, `version.txt` → copied next to the executable.
 - Upstream 0.4.9 **deleted** `events\hard.json` / `events\yellow_arrows.json` and their
-  `EmbeddedResource` entries ("no sirven"). `CorneredEventHandler` still asks for
-  `events.hard.json` via `GetManifestResourceStream`, which now returns null.
+  `EmbeddedResource` entries ("no sirven"). The fork removed `CorneredEventHandler`, the
+  last code that asked for them (2026-11-26).
   `.gitignore` keeps un-ignoring `FunkyMakerPlayer/events/**` (harmless) and
   `DefaultMods/**`; it ignores `References/` (local reference material: hud.hx,
   FMM (XML) source images).
@@ -491,7 +502,7 @@ state, input dispatch, and rendering. Key groups:
 
 - Managers: `_settingsManager`, `_cameraManager`, `_touchControls` (Android).
 - Graphics: `_spriteBatch`, `_font`, `_pixel`, `_renderTarget`, `_rtWidth/_rtHeight`.
-- Level: `_level`, `_noteRenderers`, `_events`, `_corneredEvents`, `_objAnimators`.
+- Level: `_level`, `_noteRenderers`, `_events`, `_objAnimators`.
 - Menus: `_freeplay`, `_editorPicker`, `_levelSelector`, `_activeEditor`,
   `_mainSettingsMenu`, `_hudEditor`, `_multiplayerMenu`, `_pauseMenu`,
   `_arrowsMenu`, `_splashMenu`, `_countdownMenu`, `_fontMenu`, `_keyBindOverlay`.
@@ -572,7 +583,7 @@ Order matters because overlays consume input before gameplay.
 9. Loading screen (runs even when `_level` state is transient).
 10. Results screen (multiplayer).
 11. Gameplay: game-over check → countdown → song timing/stopwatch → camera
-    beat zoom → Cornered exclusive events → judgement/combo timers → note
+    beat zoom → judgement/combo timers → note
     renderers → particle splash → events/animators → notes alpha fade →
     health checks → song end.
 12. Song transition update, then `base.Update`.
@@ -668,7 +679,6 @@ In rough order:
 - force middlescroll off in multiplayer (side-by-side layout).
 - create health icons, note renderers (one per strumline), wire note callbacks.
 - create `EventProcessor` (converts event times to seconds if needed).
-- create `CorneredEventHandler` if UUID matches `01kd72pw682p6mrj4wg388zgz5`.
 - load music via `OggLoader.LoadWithPcm` (for seeking).
 - initialize camera/HUD/countdown/etc.
 
@@ -1303,8 +1313,11 @@ Action packs can be fired from note props. `PlayerHealth` supports operations
 `visible`/`value`; `ObjectChartChange` reassigns an object's strumline at
 runtime; camera/tween events drive transforms.
 
-`CorneredEventHandler` is a special exclusive handler enabled only for the
-Cornered level UUID; it handles yellow-arrow/scrambled note behavior.
+No level gets hardcoded behaviour: the fork removed `CorneredEventHandler` (2026-11-26), which
+ran only for the Cornered UUID `01kd72pw682p6mrj4wg388zgz5` and added timed effects copied from
+the FNF mod (background fade, phantom in/out, shakes, flashes, beam/snow) plus a random
+yellow-arrow lane shuffle (`new Random()`, a different chart per play: broke replays/online).
+Cornered now plays exactly as its .fnmm says, like any level.
 
 ---
 
@@ -1314,20 +1327,32 @@ Cornered level UUID; it handles yellow-arrow/scrambled note behavior.
 
 **Use this pattern in every list that has per-row actions besides the main one.** A row's main
 action stays on Enter / click (play, watch...); everything else lives in a **"..." options menu**:
-- The selected / hovered row shows a "..." button (`UiDraw.MoreButton`). Clicking it, **right
-  clicking the row**, or the **Options key** (`HotkeyAction.FreeplayOptions`, default `C`, alt
-  Menu key; the name says "Options Menu (...)" because it is shared) opens `UI/OptionsMenu`
-  next to the row: Up/Down + Enter/Space or mouse, Esc / Backspace / click outside closes.
+- The selected / hovered row shows a "..." button (`UiDraw.MoreButton`). Clicking it or **right
+  clicking the row** opens `UI/OptionsMenu` next to the row: Up/Down + Enter/Space or mouse,
+  Esc / Backspace / click outside closes. (There is no options hotkey any more.)
 - **Destructive actions never run from one key press**: give the item a `Confirm` text and the
-  menu turns into "question / YES, <ACTION> / CANCEL" (CANCEL selected by default). A direct key
-  (Delete) may open the menu straight at that confirmation (`Open(..., confirmFirst: "delete")`).
+  menu turns into "question / YES, <ACTION> / CANCEL" (CANCEL selected by default).
+  (`Open(..., confirmFirst: "delete")` still exists but nothing calls it since the Delete key
+  was removed.) Single destructive buttons elsewhere ask for a second click within 3 s
+  (DELETE ATTEMPT, online RESET TO DEFAULTS).
 - Owner wiring: call `OptionsMenu.Update(...)` before your own input every frame (it returns
   true while it uses the input and hands back the chosen item id), `Draw` last.
-- Used by: Freeplay levels (§10.1), Freeplay attempts window, REPLAYS (§12.4). **When adding a
+- Used by: Freeplay levels (§10.1), REPLAYS (§12.4). **When adding a
   list or a row action anywhere else (online level list, rooms, leaderboard, editors' level
   lists...), add it here instead of a bare hotkey or per-row buttons.**
 - Modal windows built the same way (self-contained class in `UI/`, drawn with `UiDraw`, owner
-  calls `Open` / `Update` / `Draw`): `ModifiersWindow`, `AttemptsWindow`.
+  calls `Open` / `Update` / `Draw`): `ModifiersWindow`.
+
+**Keybinds (fork, 2026-11-27).** See the UI rule at the top of this file. Menus are used with
+the mouse / touch, or Up/Down/Left/Right + Enter/Space + Esc (Backspace = Android back). The
+cleanup removed every key that only repeated a button: Freeplay (R, I/O, N, S, Delete, U,
+Ctrl+F/F3, F, Shift+F, Tab, Shift+R, C/Menu, M, H, Q/E, 7 on a level), online (F1, Q/E, R
+reset, F5/R refresh, room browser F / `/` / H / C, waiting room R S M B C W 1 2 P), results
+(R, W, Delete, A/D), Game Over R, replays (Q/E, Delete, C), Modifiers window (R, Tab, M),
+Y/N/S in confirm dialogs (Enter/Esc instead), gameplay P (pause = Esc; the touch pause button
+sends Esc) and PgUp/PgDn speed. Key letters were removed from button labels and footers too.
+Kept on purpose: Esc everywhere, T = chat in the online waiting room, and the few rebindable
+hotkeys of §10.3 ("Rebindable hotkeys"). Editors: §11 / §10.4.
 
 ### 10.1 Main menu (`FreeplayMenu`)
 
@@ -1344,8 +1369,8 @@ from Settings → GRAPHICS → "HUD Editor", or from the pause menu (desktop).
 Main menu (root):
 - Up/Down navigate (skip disabled items), Enter select.
 - **Esc opens Settings** (`SettingsRequested`), it does not quit.
-- `7` opens the Editor Hub (`EditorPickerRequested`).
-- `U` (or clicking the corner badge) re-opens a dismissed update prompt.
+- `7` (rebindable `OpenChartEditor`) opens the Editor Hub (`EditorPickerRequested`).
+- Clicking the corner badge re-opens a dismissed update prompt.
 
 Freeplay level panel (opened by `FREEPLAY`). **Redesigned in the fork (2026-11-21)**, split
 into partial files (`FreeplayMenu.Browse/LevelPanel/Details/Preview/Icons/Difficulty.cs`):
@@ -1361,10 +1386,10 @@ into partial files (`FreeplayMenu.Browse/LevelPanel/Details/Preview/Icons/Diffic
   import modal's "SI, JUGAR" still sets `LevelChosen` directly. `Game1` calls
   `FreeplayData.MarkPlayed` when it consumes `LevelChosen` (play count, recent order).
 - **Header:** LEVELS, count pill (`n/N SONGS` in cyan when filtered), close X; toolbar row:
-  search box (click / `Ctrl+F` / `F3`; desktop types via `UI/TextEntry`, Android opens the
+  search box (click; desktop types via `UI/TextEntry`, Android opens the
   system text dialog; Enter/Esc stop typing, Up/Down still move, Ctrl+Backspace clears;
-  accent-insensitive substring match), SORT chip (`Tab`: A-Z, STARS, RECENT, MOST PLAYED,
-  NEWEST = file creation/write time), FAVS chip (`Shift+F`, favourites only), RANDOM (`Shift+R`);
+  accent-insensitive substring match), SORT chip (A-Z, STARS, RECENT, MOST PLAYED,
+  NEWEST = file creation/write time), FAVS chip (favourites only), RANDOM;
   then IMPORT / + NEW / REFRESH. `Game1` skips the volume hotkeys while `IsTypingSearch`.
 - **Rows** (curved list: rows move right and fade with distance from the smoothed selection,
   slide in one after another when the panel opens): level icon, favourite diamond, name (the
@@ -1372,33 +1397,38 @@ into partial files (`FreeplayMenu.Browse/LevelPanel/Details/Preview/Icons/Diffic
   and on the selected / hovered row a "..." button. The old per-row EDIT / DEL buttons are gone.
 - **Level options menu** ("...", §10.0): PLAY, ATTEMPTS (n), EDIT CHART, ADD/REMOVE FAVORITE,
   SHOW IN FOLDER (desktop, `PlatformShare.Reveal`), DELETE (its confirmation is the existing
-  delete modal). `F` toggles favourite, `7` edits, `Delete` deletes, `H` attempts, `M` modifiers.
+  delete modal). No hotkeys for these (2026-11-27).
 - **Details** (left side while the panel is open; the main menu cards fade out and their
   bounds are cleared): icon (bumps on the preview's beat), name, BPM / length (÷ song rate) /
   notes / "ENEMY CHART", star pill, best rank + SFC/GFC/FC, note-density graph (current side
   in the star colour, other side faint, white line = preview position, peak NPS), tiles (taps,
   holds, other side's notes, strumlines; dropped first on short windows), **personal best card**
   (best finished 1.00x run of the side: score, accuracy, misses, max combo, "replay" if it has
-  one; attempts / plays / last played; click it or `H` → attempts window) and a **modifiers bar**
+  one; attempts / plays / last played; click it → attempts window) and a **modifiers bar**
   (chips of the active modifiers + "Best scores and replays aren't saved" when one blocks
-  records; click it or `M` → modifiers window).
-- **Attempts window** (`UI/AttemptsWindow`): every attempt of the selected level for the
-  current side, newest first; rank (F for a game over), score, BEST / FAILED AT n% / combo label
-  / rate tags, accuracy, misses, max combo, S/G/B/Sh, date, WATCH (if the replay file still
-  exists, else "NO REPLAY"; checked once when the window opens) and "..." (WATCH REPLAY, DELETE
-  ATTEMPT with confirmation; the replay file is kept). Enter / click / WATCH sets
-  `FreeplayMenu.ReplayRequested`; `Game1` loads it with `ReplayStore.Load` + `StartReplay` (a
-  finished replay returns to Freeplay). Wheel / Up / Down scroll.
-- **Modifiers window** (`UI/ModifiersWindow`, `M`, the modifiers bar; self-contained so other
+  records; click it → modifiers window).
+- **Attempts** (the personal best card, "..." -> ATTEMPTS): the solo results screen
+  (`UI/SoloResultsScreen`, see 12.6) in browse mode (`Run.Browse`), drawn over Freeplay
+  (`FreeplayMenu._attemptsView`, `OpenAttemptsView` / `UpdateAttemptsView` in
+  `FreeplayMenu.Browse.cs`): the personal best expanded in the middle (the best finished run when
+  nothing is ranked), every other attempt of the side as capsules around it. Differences: the
+  backdrop only dims Freeplay, no RETRY, the best compares against the next best and the others
+  against the best, no timing graph (only avg. error / UR are saved), stars at 1.00x and the
+  chart's note count from the Freeplay info cache. WATCH REPLAY sets
+  `FreeplayMenu.ReplayRequested`; `Game1` loads it with `ReplayStore.Load` + `StartReplay`.
+  DELETE ATTEMPT (the button, twice within 3 s) removes it (the replay file is kept) and
+  reopens the screen without the intro, on its neighbour. ESC / ENTER closes. No attempts:
+  a toast instead.
+- **Modifiers window** (`UI/ModifiersWindow`, the modifiers bar; self-contained so other
   screens can open it later): the registry `PlayModifiers.All` grouped by category in a 2x2 grid
   — **Difficulty reduction**: Slower (0.50–0.95x), **Difficulty increase**: Faster
   (1.05–2.00x), **Automation**: Autoplay (= `NoteRenderer.Botplay`, also Settings → Practice,
   saved in settings.json), **Fun**: Enemy Mode (greyed with a reason on levels without an enemy
   chart). Empty categories show "Nothing here yet". Slower / Faster are one song rate
   (`FreeplayData.SongRate`; switching one on replaces the other) and each remembers its rate
-  (`SlowRate` 0.75 / `FastRate` 1.25 by default). Up/Down/Tab select, Enter/Space toggle,
-  Left/Right change the value (or switch off/on), R resets all, Esc / M / CLOSE / click outside
-  close. Left/Right in the level list still nudge the rate by 0.05. `PlayModifiers.Changed`
+  (`SlowRate` 0.75 / `FastRate` 1.25 by default). Up/Down select, Enter/Space toggle,
+  Left/Right change the value (or switch off/on), RESET ALL button, Esc / Backspace / CLOSE /
+  click outside close. Left/Right in the level list still nudge the rate by 0.05. `PlayModifiers.Changed`
   makes the list re-rate the stars. Star ratings, length and NPS follow the side and rate.
   Gameplay side: §8.7.
 - **Star rating:** `ChartDifficulty` is a port of osu!mania's difficulty calculator (Strain
@@ -1423,22 +1453,21 @@ into partial files (`FreeplayMenu.Browse/LevelPanel/Details/Preview/Icons/Diffic
   colour from the name. Blank icons (1x1 / empty sprites some levels use) count as none.
 - **Background** tinted towards the selected level's star colour, with a bottom glow and grid
   that pulse on the preview's beat.
-- `R` / refresh button rescans (toast "Lista de niveles actualizada").
-- `I` or `O` / import button / footer bar / empty-list drop box opens the
+- REFRESH button rescans (toast "Lista de niveles actualizada").
+- IMPORT button / footer bar / empty-list drop box opens the
   import picker (`TriggerFileImport` → `PlatformPaths.PickDesktopFiles`:
   Win32 dialog on Windows, zenity/kdialog on Linux; copies into `mods/levels`).
   Imports clear the search and the favourites filter so the new level is listed.
-- `N` / "new" button → Level Selector with the new-chart modal open.
-- **Fork:** `Delete` or DELETE in the options menu opens the import modal in
-  delete mode (`_modalIsDelete`; "BORRAR NIVEL", default NO, `Y` yes, `S` does not
-  confirm here). `LevelFiles.Delete` sends it to the Recycle Bin (Windows), the Trash
+- "+ NEW" button → Level Selector with the new-chart modal open.
+- **Fork:** DELETE in the options menu opens the import modal in
+  delete mode (`_modalIsDelete`; "BORRAR NIVEL", default NO). `LevelFiles.Delete` sends it to the Recycle Bin (Windows), the Trash
   via `gio trash` (Linux, if available) or deletes it (otherwise / Android); only paths
   inside the levels folder are accepted. `LevelsDeleted` tells `Game1` to refresh the
   Level Selector; its Freeplay data is forgotten (`FreeplayData.Forget`).
 
 Imports (drag-and-drop or picker) call `OnLevelsImported`: refresh, open the
 panel, select the new level, show a toast, and open a "play now?" modal
-(Left/Right toggle, Enter, `Y`/`S` yes, `N`/Esc no).
+(Left/Right toggle, Enter picks, Esc no).
 
 Credits: fade-in screen with clickable links; Esc/Enter/click closes.
 (2026-11-20) Content: developers ankush (@thisisankush; also commits as Thisisfenix / AngelJDevex)
@@ -1456,7 +1485,7 @@ The old `1` (HUD editor launcher) branch was removed — no card sets it.
 
 ### 10.2 Pause menu
 
-ESC/P toggles pause in solo play (in matches only Esc works and the song keeps
+ESC (or the touch pause button) toggles pause in solo play (in matches the song keeps
 running, see §5.3). Items by context:
 - Desktop solo: `Resume`, `Restart Song`, `HUD Editor`, `Settings`,
   `Exit to Menu`.
@@ -1470,99 +1499,92 @@ Timeskip scrubbing sets `_pausedByTimeskip`; on resume it can auto-resume.
 
 ### 10.3 In-game settings (`SettingsManager`)
 
-- (All hotkeys below are rebindable now, see "Rebindable hotkeys"; defaults shown.)
-- Scroll speed hotkeys in a song (fork): **F3** −0.10x, **F4** +0.10x (same
-  range as the setting, 0.25–5.00x), with a "SCROLL SPEED" toast
-  (`DrawScrollToastOverlay`); the older PageUp/PageDown (±0.25x) now shows the
-  toast too. F3/F4 work when a level is loaded, **including while paused** (pause
-  menu open), but not with other menus/settings open. PageUp/PageDown only unpaused.
-- Graphics → **Lane Underlay** (fork, `NoteRenderer.LaneUnderlay`, saved as
-  `LaneUnderlay`, 0–0.75, step 0.05, default 0 = off): full-height black column
-  behind the player strumline's lanes (+8 % margin). Drawn by
-  `Game1.DrawLaneUnderlay` → `NoteRenderer.DrawLaneUnderlay` (player renderer,
-  `HudRole == 0`) at the start of the HUD batch: above the stage, below every
-  HUD element and the notes (also in the HUD editor preview). Follows HUD
-  offset, position and strumline alpha.
-- Gameplay → **Show Key Labels** (fork, `NoteRenderer.ShowKeyLabels`, saved as
-  `ShowKeyLabels`, default OFF): the key names on the player's strums used to be
-  always drawn.
+Reorganized on 2026-11-27 (tabs, search, every name and description rewritten after checking
+what each option really does). Data-driven list (`SettingItem`: `Label`, `Value`, `Kind`,
+`Description`, `OnSelect` / `OnAdjust`, `LockedReason`; built per tab by `BuildEntriesFor`).
+Opened from the main menu (Esc or `SETTINGS`), the pause menu, and the online menu's
+"Settings" pill (`GameplaySettingsRequested`).
 
-Rebuilt in 0.4.7 as a data-driven list (`SettingItem` with `Label`, `Value`,
-`Kind`, `Description`, `OnSelect`/adjust callbacks; `BuildTabEntries`). Opened
-from the main menu (Esc or `SETTINGS`), the pause menu, and the multiplayer
-menu (`GameplaySettingsRequested`).
-
-Tabs (same on all platforms; some rows are desktop-only):
-
-| Tab | Rows |
+| Tab | Rows (*Section*; indented rows depend on the row above) |
 |---|---|
-| `GAMEPLAY` | Downscroll, Middlescroll, Scroll Speed (0.25–5.00×), Ghost Tapping; *Practice*: Botplay, Timeskip (OFF / 5–60 s; `TimeskipSeconds` 0 = off) → Seek Current Song; Advanced Timing [Show/Hide] → Input Buffer, Safe Frames |
-| `NOTES` | Note Style, Note Splash, Countdown Style; *Readability*: Lane Underlay, Show Key Labels; *Strumlines*: Strumlines → Player / Opponent / Extra; *Effects*: Arrow Effects → Effect Type |
-| `HUD` | HUD Editor (desktop), Show HUD → Combo & Judgements, Score & Stats, Health Bar → Health Icons (Move with bar / Pinned to ends), Song Title, Botplay/Speed Indicator, Song Timer → Position, Color, Text, (automatic positions only) Force Top |
-| `AUDIO & VIDEO` | *Audio*: Master Volume → Music Volume, Menu Music Volume, SFX Volume; *Display*: Fullscreen (desktop), VSync, Render Resolution (Native/720p), FPS Cap, FPS Counter, Font Style (shows current font file); *Other*: Debug Info; *Storage* (desktop): Move Mods Folder |
-| `CONTROLS` (fork) | Note Keys (desktop, opens `KeyBindingOverlay`) / Touch Hitbox Colors (Android), hotkeys grouped by `Controls.Info.Group` (Anywhere, In a song, Menus, Online), Reset Controls |
+| `GAMEPLAY` | *Scrolling*: Downscroll, Middlescroll, Scroll Speed (0.25–5.00x); *Input*: Ghost Tapping; *Practice*: Botplay, Timeskip (OFF / 5–60 s) → Jump in This Song (needs Timeskip on and a loaded song) |
+| `APPEARANCE` | *Style*: Note Style, Note Splash, Countdown Style; *Readability*: Lane Underlay, Show Key Labels; *Effects*: Arrow Effects → Effect Type |
+| `HUD` | HUD Editor (desktop), Show HUD → (*Arrows & Notes*: Strumlines → Your Arrows, Opponent's Arrows → Opponent Opacity (Online) = `MultiplayerSettings.GhostTransparency`, Extra Arrows; *On Screen*: Combo & Judgements, Score & Stats, Health Bar → Health Icons, Song Title, Status Line; *Song Timer*: Song Timer → Position, Color, Text, Always on Top (= `TimerForceTop`, only the Top position uses it)); *Debug* (not under Show HUD): FPS Counter, Debug Info |
+| `AUDIO` | *Volume*: Master Volume → Music, Menu Music, Sound Effects; *Sync*: Audio Offset; *Sounds*: Miss Sound |
+| `VIDEO` | *Display*: Fullscreen (desktop), VSync, Render Resolution (Native / 720p), FPS Cap; *Interface*: Menu Font |
+| `osu!` | *Gameplay*: Scroll Speed Changes, Note Skin; *Hitsounds*: Hitsounds → Hitsound Volume; *Background*: Background Dim, Video → Video Quality, Background Behind Video; Storyboard |
+| `CONTROLS` | *Keyboard*: Note Keys (desktop, opens `KeyBindingOverlay`) / *Touch* (Android): Touch Hitbox Colors → Hitbox Opacity, Menu Buttons; hotkeys grouped by `Controls.Info.Group` (Anywhere, During a song); *Reset*: Reset Hotkeys |
 
-Indented rows only appear when their parent is enabled. Italic names are section
-headers: `SettingKind.Header` rows (`Header(title)`), drawn by `DrawSectionHeader`,
-never selectable; `MoveSelection(game, dir)` (Up/Down in `Game1`) and
-`BuildTabEntries` skip them. Tab constants: `GameplayTab` 0, `NotesTab` 1,
-`HudTab` 2, `AudioVideoTab` 3, `ControlsTab` 4.
+Removed on 2026-11-27: Advanced Timing (Input Buffer / Safe Frames: the `NoteRenderer` defaults
+10 ms / 83 ms always apply; values in old settings.json are ignored and no longer saved), Move
+Mods Folder (`ModsStorage` still exists, to be exposed somewhere else), and the timer position
+"Legacy" (it drew exactly like "HUD Editor"; a saved "Legacy" shows as HUD Editor). Tab
+constants: `GameplayTab` 0, `AppearanceTab` 1, `HudTab` 2, `AudioTab` 3, `VideoTab` 4,
+`OsuTab` 5, `ControlsTab` 6. Solo games always show the opponent's notes at full opacity
+(per frame, `GetOpponentStrumlineAlpha`); the opacity row only affects online matches.
 
-Settings cleanup (fork): removed Color Grading (and `Content/ColorGrade.fx`),
-Camera Zoom (and `CameraManager.Increase/DecreaseZoom`), Extended Camera (and the
-MonoGame.Extended `OrthographicCamera` path in `CameraManager`), Camera Follow
-Player (and its `EventProcessor` block), Bilinear Filter (did nothing), Arrow
-Effect Intensity/Chance sliders (fixed at 1.0 / 25 %), and the unused online
-fields (`MatchFoundSound`, `ChatNotifications`, `ReadyAlerts`, `AllowMatchInvites`,
-`ShowOnlineStatus`, `AnonymousMode`, `BandwidthLimitKbps`). `NoteRenderer.Autoplay`
-is now `NoteRenderer.Botplay` (also `DisableBotplay`, `UpdateBotplay`). Master Volume
-now scales every sound, Chart Editor music / hitsounds / metronome included.
+**Dependent rows**: built inside `if (BeginIf(condition, reason, out var saved)) { ...; EndIf(saved); }`
+and added with `Add(entries, item)`. Normally a row whose condition is off is not listed. While
+searching (`_includeLocked`) it is listed anyway as a **locked** row (`LockedReason`, the
+outermost failing condition, e.g. "Locked: turn on Arrow Effects (APPEARANCE tab) to change
+this."): drawn dimmed, Enter / click plays the Error sound, and the description box shows the
+reason first in orange. Rows locked during an online match (`LockedInMatch`: Botplay,
+Timeskip) use the same field. **New dependent rows must use `BeginIf` / `Add`**, not a bare `if`.
 
-Online settings overlay (`MultiplayerMenu`, `% 4` categories): "Show Opponent
-Notes" is the same setting as Opponent Strumline — `MultiplayerSettings.ShowOpponentNotes`
-is a `[JsonIgnore]` pass-through to `!Game1.HideOpponentStrumline`, saved in
-settings.json (`Game1.SaveSettings()`). "Ghost Transparency" is labelled "Opponent
-Notes Opacity" (field still `GhostTransparency`). The F1 pill reads "<key>  Settings".
+**Search**: the box between the title and the back button. Desktop: letters / digits typed
+anywhere go to it (`UpdateSearch`, which owns `UI.TextEntry.Capturing` while the settings are
+open; Space only once something is typed; Backspace / Ctrl+Backspace edit; ESC clears it first
+via `HandleEscape`; the X button clears). Android / touch: tapping it opens the system text
+dialog. Results = every row of every tab whose label, section, tab name or description contains
+all the typed words (accent-insensitive `Fold`), grouped under "TAB - SECTION" headers.
+Left/Right don't switch tabs while searching; clicking a tab leaves the search. `Game1` skips
+the volume hotkeys while `IsSearching`; closing the settings clears the search.
+
+**Layout**: sizes scale with the screen height and are clamped; the SpriteFont fallback uses the
+same pixel sizes (`size / 36`). The description box has a fixed height (three lines at the
+normal size, so the list never moves), wraps, shrinks the font down to 80 % and cuts with "..."
+if needed. Tab names use one size that fits the narrowest tab.
+
+Controls: Up/Down navigate (headers skipped); Enter/Space toggles, runs an action or focuses an
+adjustable row; Left/Right adjust the focused row, otherwise switch tabs; mouse: click tabs,
+rows, `< >` (touch: hold repeats), wheel / drag scrolls; Esc releases focus, then clears the
+search, then goes back.
+
+Settings cleanup (older, fork): removed Color Grading (and `Content/ColorGrade.fx`), Camera
+Zoom, Extended Camera, Camera Follow Player, Bilinear Filter, Arrow Effect Intensity/Chance
+sliders and unused online fields. `NoteRenderer.Autoplay` is now `NoteRenderer.Botplay`.
+Master Volume scales every sound, Chart Editor music / hitsounds / metronome included.
+
+Online settings overlay (`MultiplayerMenu`, 4 categories): "Show Opponent Notes" is the same
+setting as Opponent's Arrows (`MultiplayerSettings.ShowOpponentNotes` is a `[JsonIgnore]`
+pass-through to `!Game1.HideOpponentStrumline`, saved in settings.json). "Opponent Notes
+Opacity" = `GhostTransparency` (also in the main Settings, HUD tab). Category tabs are
+clickable or Left/Right. **RESET TO DEFAULTS** button (right-aligned under the list): the first
+click arms it for 3 s ("CLICK AGAIN TO RESET EVERYTHING"), the second calls
+`MultiplayerSettings.ResetToDefaults()` and saves both files. The old R key is gone.
 
 #### Rebindable hotkeys (fork, `Controls.cs`)
 
-`HotkeyAction` enum + `Controls.All` (label, description, default primary and
-alternate `KeyBinding`). A `KeyBinding` is a key plus required Ctrl/Shift/Alt.
-`Controls.Pressed/Down(action, kb, prev, ignoreKey?)`: a binding matches when its
-key is down and its modifiers are held; extra modifiers are allowed unless a more
-specific binding on the same key also matches (Shift+T beats T, Ctrl+Right beats
-Right). Saved in settings.json as `Hotkeys` (action name → ["Ctrl+Shift+T", ...],
-`None` = empty); missing actions get defaults. `Controls.Hint(action)` feeds
-on-screen hints (freeplay header buttons/footers, main-menu hint, update badge,
-Editor Hub hint, Scroll Speed / Fullscreen descriptions).
+Only actions with no button get a hotkey (see the UI rule at the top). `HotkeyAction` enum +
+`Controls.All` (label, description, **one** default `KeyBinding`, group). A `KeyBinding` is a
+key plus required Ctrl/Shift/Alt. `Controls.Pressed/Down(action, kb, prev, ignoreKey?)`: a
+binding matches when its key is down and its modifiers are held; extra modifiers are allowed
+unless a more specific binding on the same key also matches (Shift+T beats T). Saved in
+settings.json as `Hotkeys` (action name → `["Shift+T"]`, `None` = empty). Old files saved two
+slots: when the second slot is filled the player never rebound it, so the new default is used;
+unknown actions are dropped.
 
 | Action | Default | Used in |
 |---|---|---|
-| Toggle Fullscreen | Alt+Enter / F11 | Game1 (desktop; then keys withheld until released) |
-| Volume Up / Down | = / Num+ , - / Num- | Game1 global |
-| Scroll Speed ∓0.10 | F3 / F4 | Game1, in a song incl. paused |
-| Scroll Speed ∓0.25 | PgDn / PgUp | Game1, playing only |
-| Pause / Resume | P | Game1 (also dismisses error screen) |
-| Timeskip Forward / Backward | T, Ctrl+Right / Shift+T, Ctrl+Left | Game1 (hold repeats; unmodified lane keys ignored) |
-| Retry (Game Over) | R | `GameOverOverlay` |
-| Open Chart Editor | 7 | Game1 in song, `FreeplayMenu` (hub / edit selected), `EditorPicker` |
-| Previous / Next Tab | Q / E | settings, `MultiplayerMenu` tabs/categories, `ReplayBrowser` |
-| Refresh | R / F5 | freeplay, online level list, online leaderboard |
-| New Chart | N | freeplay |
-| Import Level | I / O | freeplay, online level list |
-| Share Level | S | online level list |
-| Delete | Delete | freeplay, online level list, replay browser |
-| Show Update Prompt | U | freeplay main menu |
-| Online: Open Settings | F1 | `MultiplayerMenu` (opens this settings screen) |
-| Online: Reset Settings | R | online settings screen |
+| Toggle Fullscreen (desktop only) | F11 | Game1 (then keys withheld until released) |
+| Volume Up / Down | = / - | Game1 global (not while typing / searching, not in editors) |
+| Slower / Faster Notes | F3 / F4 | Game1, in a song incl. paused (±0.10x, "SCROLL SPEED" toast) |
+| Skip Forward / Backward | T / Shift+T | Game1 (hold repeats; unmodified lane keys ignored; not online; Timeskip not OFF) |
+| Open Chart Editor | 7 | Game1 in a song (or back from a playtest), main menu → Editor Hub, `EditorPicker` closes |
 
-Not rebindable on purpose: menu navigation (arrows, Enter, Space, Esc, Backspace),
-Y/N in confirm dialogs, text entry, the Chart Editor and HUD editor shortcuts.
-
-Rebinding: Enter/click a hotkey row → "Press key..."; the one key pressed (with any
-held Ctrl/Shift/Alt) replaces the action's binding **including the alternate slot**
-(defaults may still show two keys until rebound). Esc cancels, Backspace = no key.
-Modifiers alone are ignored; bare arrows/Enter are refused.
+Rebinding: Enter/click a hotkey row → "Press a key..."; the key pressed (with any held
+Ctrl/Shift/Alt) becomes the binding. Esc cancels, Backspace = no key. Modifiers alone are
+ignored; bare arrows / Enter / Space are refused.
 
 Layout keys (`LayoutKeyboard.cs`, fork): MonoGame DesktopGL 3.8.6 maps SDL key
 **codes** (layout characters) with `KeyboardUtil.ToXna` and returns `Keys.None` for
@@ -1578,20 +1600,20 @@ by the note-key overlay and strum key labels. `DefaultFont.spritefont` now has
 Verified on a Latin American layout: adds ¿=OemPlus, ´=OemOpenBrackets,
 Ñ=OemSemicolon. Android returns `Keyboard.GetState()` unchanged. While capturing (and
 until all keys are released afterwards) Game1 gives the rest of the game an empty
-keyboard (`_keyCaptureHoldoff`); closing settings cancels a capture. Android touch
-buttons P/Q/E are mapped to the Pause / Prev / Next Tab primary keys
-(`MergeTouchWithKeyboard`) so rebinding doesn't break them.
+keyboard (`_keyCaptureHoldoff`); closing settings cancels a capture. The Android touch
+Pause button (virtual P) is turned into Esc by `MergeTouchWithKeyboard`; the old Q/E
+settings tab buttons are never shown any more (tabs are tapped directly).
 
 #### FPS cap and fullscreen (fork)
 
-- **FPS Cap** (GENERAL, saved `FpsCap`): Unlimited, 30, 60, 75, 90, 120, 144, 165,
+- **FPS Cap** (VIDEO, saved `FpsCap`): Unlimited, 30, 60, 75, 90, 120, 144, 165,
   180, 240, 360. The loop stays variable (`IsFixedTimeStep = false`); `Game1.EndDraw`
   → `WaitForFrameSlot()` waits after each present until the next slot (Stopwatch
   schedule; `Thread.Sleep` for all but ~1.5 ms, then spin; schedule restarts if a
   frame runs over a whole period). `ApplyFpsCap()` raises the Windows timer to 1 ms
   (`timeBeginPeriod`). MonoGame's fixed time step was used first and was unreliable
   (coarse sleeps + catch-up updates). Works together with VSync.
-- **Render Resolution** (AUDIO & VIDEO → Display, saved `NativeRenderResolution`,
+- **Render Resolution** (VIDEO → Display, saved `NativeRenderResolution`,
   default `true` = "Native", `false` = "720p"): see §5.4.
 - **Fullscreen** is now a real borderless window (`Game1.SetFullscreen`):
   `IsFullScreen = false`, `Window.IsBorderless = true`, back buffer = display width ×
@@ -1602,10 +1624,7 @@ buttons P/Q/E are mapped to the Pause / Prev / Next Tab primary keys
   focus loss and behaved like exclusive fullscreen. Fullscreen state is still not
   saved (starts windowed). Not yet checked in game.
 
-Controls: `Q`/`E` switch tabs (also Android virtual buttons); Up/Down
-navigate; Enter/Space toggles or runs an action, or focuses an adjustable row;
-**Left/Right adjust the focused row, otherwise switch tabs**; full mouse
-support (click tabs, rows, `<`/`>` arrows, wheel); Esc back.
+(Settings controls: see "Controls:" above in §10.3.)
 
 Settings are persisted by `Settings` (desktop `%AppData%/FunkyMakerPlayer/
 settings.json`; Android app-specific `settings.json`). `Settings.Load(Game1)`
@@ -1613,7 +1632,7 @@ copies values into static bridges:
 
 | Static target | Fields |
 |---|---|
-| `NoteRenderer` | `Botplay` (JSON `Botplay`; legacy `Autoplay` still read), `Downscroll`, `ScrollMultiplier`, `Midlescroll`, `GhostTapping`, `InputBuffer`, `SafeFramesTime`, `PlayerKeys[0..3]` |
+| `NoteRenderer` | `Botplay` (JSON `Botplay`; legacy `Autoplay` still read), `Downscroll`, `ScrollMultiplier`, `Midlescroll`, `GhostTapping`, `PlayerKeys[0..3]` (Input Buffer / Safe Frames are no longer settings) |
 | `NoteRenderer` (new in 0.4.7) | `ShowStrumlines`, `HidePlayerStrumline` |
 | `Game1` | `ShowTimer`, `TimeskipSeconds` (0 = off; `TimeskipEnabled` is now a computed property; legacy JSON `TimeskipEnabled: false` loads as 0), `TimerColorPreset`, `TimerPreset`, `TimerTextMode` (adds "Song Name + Difficulty": star rating via `ChartDifficulty`, cached per level in `GameplayHudOverlay.StarsFor`), `TimerForceTop`, `ShowDebugInfo`, `ShowFpsCounter`, `MasterVolume` (JSON `MasterVolume`; legacy `MusicVolume` still read), `SongVolume` (song music; the song instance uses `SongPlaybackVolume` = master × song), `NoteStyleName`, `NoteSplashStyleName`, `HideExtraStrumlines`, `HideOpponentStrumline`, `ShowCombo`, `IconMode` (0 move with bar, 1 pinned to ends), `SelectedCountdown`, `HideTouchHitboxColors` |
 | `ArrowEffectManager` | `Enabled`, `SelectedEffect` |
@@ -1651,17 +1670,19 @@ the pause menu (desktop) opens the editor directly and returns to pause.
 `HudEditorReturnTarget` records where to go back to. `HudSettings.ForceReload()`
 runs before opening.
 
-- `Esc` saves and goes back, `S` save, `R` reset defaults (positions **and**
-  visibility), `G` grid, `H` instructions.
-- `A` toggles all elements (master HUD toggle); `V`, Space or Delete toggles
-  the selected element's visibility; right-click selects + toggles.
+- `Esc` saves and goes back (the separate `S` save key was removed: Esc already saves),
+  `R` reset defaults (positions **and** visibility), `G` grid, `H` instructions.
+- `A` toggles all elements (master HUD toggle); Space toggles the selected element's
+  visibility (`V` / Delete duplicates removed); right-click selects + toggles.
+- The HUD editor has no buttons, so its keys are its only controls and were kept (only
+  duplicates removed, 2026-11-27). Giving it buttons would let the keys go too.
 - Click-drag elements; arrow keys nudge (Left Shift = 1 px, otherwise 5 px);
   Tab cycles elements.
 - Saves through `HudSettings.Instance.Save()` → `Assets/data/hud_settings.json`
   (Android: app internal storage, next to settings.json; see §15).
 - (fork) Reads the pointer with `PointerInput.GetRawState()`: on Android a finger held down is
   the left button, so elements can be dragged / resized by touch. The keyboard-only actions
-  (S / R / G / H / A / V) still have no touch buttons; ESC = the back gesture saves and leaves.
+  (R / G / H / A / Space) still have no touch buttons; ESC = the back gesture saves and leaves.
 
 ### 10.5 Overlays
 
@@ -1694,7 +1715,7 @@ Menus and editors play short sound effects through `UI/UiSfx.cs`.
   `TitleContainer.OpenStream("Assets/sounds/ui/<name>.wav")` (APK assets).
   Failures are logged once (`[UiSfx]`) and cached.
 - **Volume:** `Game1.MasterVolume` (the "Master Volume" row / `-` `+` hotkeys)
-  × `UiSfx.Volume` (**SFX Volume** row in Settings → AUDIO & VIDEO; `SoundFiles` (countdown/miss sounds) uses it too, persisted as
+  × `UiSfx.Volume` (**Sound Effects** row in Settings → AUDIO; `SoundFiles` (countdown/miss sounds) uses it too, persisted as
   `SfxVolume`, default 0.8) × a per-sound gain in `UiSfx.Defs`.
 - **How sounds are triggered** — mostly by *state diffs*, not by input paths,
   so keyboard, mouse and touch behave the same:
@@ -1747,7 +1768,7 @@ Menus and editors play short sound effects through `UI/UiSfx.cs`.
   fades everything out (0.35 s); Portraits resumes where it was next time.
 - **Volume:** `Game1.MasterVolume` (master) × `OnlineMenuMusic.Volume` ×
   fade. `OnlineMenuMusic.Volume` is the **Menu Music Volume** row in Settings →
-  AUDIO & VIDEO (default 70%, step 5%, persisted as `MenuMusicVolume`). Applied live
+  AUDIO, row "Menu Music" (default 70%, step 5%, persisted as `MenuMusicVolume`). Applied live
   every frame, so slider/hotkey changes are heard immediately.
 
 ---
@@ -1788,30 +1809,25 @@ playback), hitsounds and metronome, toasts, UI scaled with `UiScale`.
 
 | Input | Action |
 |---|---|
-| `1`–`4` | Tool: Select / Place Note / Place Hold / Delete |
-| `Q` / `W` | Focus right strumline (0, BF) / left strumline |
-| `Tab` / Shift+Tab | Cycle which strumline (1..N-1) is on the left block |
 | `D` `F` `J` `K` | Step input: toggle a note on lanes 0–3 at the playhead |
-| `Z` / `X` | Snap divisor down / up (1/4 … 1/32, default 1/16) |
-| `[` / `]` | Shorten / lengthen selected hold |
-| `T` | Cycle the selected note's preset, or the brush preset (Normal → Hurt → Instakill → Heal) |
 | Left / Right | Move selected note across the 8 columns |
-| Delete / Backspace | Delete selected note |
+| Delete | Delete selected note |
 | `M` | Mirror current measure |
-| `B` | Open/close **Scene Characters & Icons** modal (`CHARS (B)` button) |
 | Ctrl+C / Ctrl+V | Copy current measure / paste at playhead |
 | Ctrl+Z / Ctrl+Y | Undo / Redo |
-| `V` | Show/hide stage preview |
-| `C` | Cycle stage-preview camera |
-| `H` / `N` | Toggle hitsounds / metronome |
 | Up / Down (Shift = faster) | Scroll (when not playing) |
 | PageUp / PageDown / Home | Jump 4 beats back / forward / to start |
-| `+` / `-` (also numpad) | Grid zoom 0.50×–2.50× |
-| `O` / `P` | Chart scroll speed −/+ 0.1 |
+| Ctrl+Wheel | Grid zoom |
 | Space | Play/pause |
 | Enter / Shift+Enter | Playtest from playhead / from start |
 | Ctrl+S | Save |
 | Esc | Pause playback and go back |
+
+Everything else is a toolbar button only (2026-11-27; see the UI rule at the top): tools
+(SELECT / NOTE / HOLD / DELETE, shown with a colour swatch instead of the old 1–4 numbers),
+side focus (FOE/SLn, BF), left-track `< >`, snap `< >`, hold `- +`, note preset, PRESET on the
+selected note, SND / MET, CHARS, preview on/off, preview camera, zoom and chart speed `- +`.
+The removed keys were 1–4, Q, W, Tab, Z, X, [, ], T, B, V, C, H, N, +/-, O, P and Backspace.
 
 - **Note presets** (fork; toolbar "NOTE PRESET" 2×2: `NORMAL`, `HURT X`,
   `KILL X`, `HEAL O`, inspector button `PRESET (T)`). Skins are visual, so a
@@ -1843,7 +1859,7 @@ playback), hitsounds and metronome, toasts, UI scaled with `UiScale`.
   back to the editor.
 - From gameplay (solo, level loaded) `7` opens the Chart Editor for the
   current level (`ChartEditorReturnTarget.Gameplay`).
-- **Scene Characters & Icons modal (`ChartEditor.Characters.cs`, `CHARS (B)`):**
+- **Scene Characters & Icons modal (`ChartEditor.Characters.cs`, `CHARS` button):**
   assigns any character from `mods/characters/` onto **Player (`SL0`)**, **Opponent (`SL1`)**,
   or **Extra (`SL2+`, with `+ NEW SL`)**, fine-tunes scene `X` / `Y` / `Scale` / `Flip`,
   optionally updates `scene.Icons`, and can suspend `ChartEditor` to launch `CharacterEditor`
@@ -1858,11 +1874,11 @@ playback), hitsounds and metronome, toasts, UI scaled with `UiScale`.
   3. **`.ZIP` character packs & `.FNMM` levels:** auto-detects Sparrow, Spritemap, or FNMM archives and extracts characters + health icons from existing `.fnmm` levels.
 - **Interactive stage & baking (`CharacterEditor.cs`, `CharacterLibrary.cs`):**
   - **Icon buttons:** the editor's buttons use white Material Design PNG icons (Apache 2.0) from `Assets/images/ui/character_editor/*.png` (40 files; loaded via `TitleContainer`, premultiplied, tinted by the button colour). `CharacterEditor.ResolveIcon` maps button labels to icon names; if an icon file is missing the button falls back to plain text.
-  - Live stage viewport anchored at ground foot pivot `(0, 0)` with **Onion Skin (`G`)** ghosting `IDLE` frame 0 behind active poses, mouse/touch drag alignment, arrow-key/touch nudge buttons, live `D/F/J/K` (`1`–`5`) sing testing, `Flip X` baking, 1-click `Swap Left <-> Right`, `NativeFacing` (`Left` BF vs `Right` Opponent), `Smooth`/`Pixel` filter toggle, and automatic 2-frame FNF health icon strip splitting (`300x150` → `icon/0.png` normal + `icon/1.png` losing).
+  - Live stage viewport anchored at ground foot pivot `(0, 0)` with **Onion Skin (GHOST button)** ghosting `IDLE` frame 0 behind active poses, mouse/touch drag alignment, arrow-key/touch nudge buttons, live `D/F/J/K` sing testing (the 1–5 keys were removed; slots are clicked), `Flip X` baking, 1-click `Swap Left <-> Right`, `NativeFacing` (`Left` BF vs `Right` Opponent), `Smooth`/`Pixel` filter toggle, and automatic 2-frame FNF health icon strip splitting (`300x150` → `icon/0.png` normal + `icon/1.png` losing).
   - **Android touch support (`Game1.Touch.cs`, `CharacterEditor.cs`):** `UpdateTouchPointer` sets `ScreenIsTouchReady = true` for `CharacterEditor` (auto-hiding the on-screen D-pad/A/B buttons); UI buttons and scrollable lists use `PointerInput.GetState()`, while dragging open canvas inside `_stageRect` uses `PointerInput.GetRawState()` so poses can be aligned by touch without interfering with button taps.
   - Saves FunkyMaker-native packages into `mods/characters/<slug>/` (`sprite.json`, `0.png..N.png`, `character.json`, optional `icon/`), also imported on Android SAF via `PlatformPaths.GetCharactersPath()`.
 - **Local Online Custom Character Equip (client-side only):**
-  - Persisted as `MultiplayerSettings.EquippedCharacter` (`""` = Level Default); selectable in **Multiplayer → Settings → User → `My Character (Local)`** and **Waiting Room** (`B` hotkey / `B  CHAR:` button).
+  - Persisted as `MultiplayerSettings.EquippedCharacter` (`""` = Level Default); selectable in **Multiplayer → Settings → User → `My Character (Local)`** and **Waiting Room** (`CHAR:` button).
   - In `Game1.SetupLevel` (`Game1.LevelLoad.cs`), during online FNF matches (when not spectating and `ChartOnlyMode` is off), clones `_level` in memory and applies the equipped character + health icon onto `myLocalCharStrum` (`0` for Role 1 / BF, `1` for Role 2 / Enemy), auto-aligning feet & visual height to the replaced character and auto-mirroring + swapping `Sing Left ↔ Sing Right` when placed on the opposite stage side without any server protocol changes.
 
 ---
@@ -1996,7 +2012,7 @@ goal is $0. Workers and R2 don't charge for bandwidth. Playerbase is tiny (≤ 2
   strumline layout / draw and SetupLevel alphas (classic 2-strumline layout; the CPU still plays the extras).
 - **Force start removed** (button, F key, `RoomClient.ForceStart`, server `/forcestart`; it's plain chat now).
 - **A pick is final**: song select ENTER opens "Pick this song?" (`_pickConfirm`, `DrawPickConfirm` in
-  `.SongSelect.cs`; Y / ENTER / CONFIRM sends, N / ESC / click outside cancels; the picker is `Busy` meanwhile).
+  `.SongSelect.cs`; ENTER / CONFIRM sends, ESC / click outside cancels; the picker is `Busy` meanwhile).
   Server `SelectSong` refuses while `room.Song != null` ("can't be changed"); the slot's CHANGE SONG and
   `OpenSongSelect` with a song picked are gone. The server still clears a pick when the picker leaves /
   spectates or new settings disallow it (then the turn player picks again).
@@ -2085,7 +2101,7 @@ goal is $0. Workers and R2 don't charge for bandwidth. Playerbase is tiny (≤ 2
       - Server adds `PUT /api/transfers/{id}/chunks?offset=N` + `POST /api/transfers/{id}/complete` alongside legacy `PUT /api/transfers/{id}/file`, raises `HttpRequestsPerMinute` `60 → 360`, and advertises `SupportsChunkedUpload = true`, `SupportsFnfChartOnly = true`, `UploadChunkBytes = 4 MB` (`Transfer__UploadChunkMegabytes`) in `HelloResult`.
       - Client (`LevelTransferClient`) uploads in 4 MB chunks (`85 s` per-chunk timeout, up to 4 idempotent retries with backoff, automatic fallback to legacy single-PUT on 404/405 against older servers), uses `SocketsHttpHandler` TCP keep-alives, passes `CancellationToken` into `ProgressStreamContent`, retries interrupted downloads up to 3 times, cancels superseded/abandoned uploads via `RoomClient._uploadCtsByKey`, and sets `LevelDownloader` timeout to `Timeout.InfiniteTimeSpan`. Bypasses Render/Cloudflare ~100 s request timeouts and ~100 MB single-body caps on large levels.
     - **Online FNF "Chart Only (No Sprites)" mode (`MultiplayerSettings.ChartOnlyMode`, `FnmmLoader.cs`, `Game1.LevelLoad.cs`, `RoomClient.cs`, `MultiplayerMenu.cs`, `MultiplayerMenu.WaitingRoom.cs`, `RoomRegistry.cs`, `Protocol.cs`):**
-      - Toggleable in **Multiplayer Settings → Performance (`Chart Only (No Sprites)`)** and directly in the **Waiting Room** (`M` hotkey, left-panel button, and right beside Mirror's `1 PLAYER / 2 ENEMY` vote buttons).
+      - Toggleable in **Multiplayer Settings → Performance (`Chart Only (No Sprites)`)** and directly in the **Waiting Room** (left-panel button, and right beside Mirror's `1 PLAYER / 2 ENEMY` vote buttons).
       - When enabled during online FNF matches (`Game1.LevelLoad.cs`), `FnmmLoader.Load(..., chartOnly: true)` skips loading sprites, stage layers, icons, and visual events — loading only chart + audio for minimal RAM/VRAM usage on low-RAM / 32-bit phones.
       - Over the network (`Protocol.VariantChartOnly = "chartonly"`, announced via `HelloRequest.FnfChartOnly`), holders pack a minimal `.fnmm` ZIP via `FnmmLoader.PackChartOnlyFnmm` containing only `data.json`, `meta.json`, minimal `scene.json` (`landscape`), and `music.ogg` (~3–12 MB instead of 100–250 MB). Receivers cache it in app storage (`chartonly_cache/<hash>.fnmm`, outside `mods/levels/` so Freeplay / `LocalLevelIndex` never scan it) and are never registered as full-level holders (`Member.ChartOnlyHashes`). Toggling the option in a room immediately re-syncs `Hello`, cancels any in-flight download of the old variant, and requests the new variant if needed. Verified with **43/43** passing server tests.
 
@@ -2263,7 +2279,7 @@ States: `MainMenu` → `Connecting` → `RoomBrowser` → `RoomSettings` (create
   server's replay endpoints (`/api/replays`; on the Worker stored in R2 `replays/`, kept 1 day).
 - **Watching:** main menu → REPLAYS (`UI/ReplayBrowser`: ALL / SOLO / ONLINE, Enter / click
   watch; "..." options menu (§10.0) with WATCH, SHOW IN FOLDER (desktop), DELETE (asks first);
-  Delete opens that confirmation directly — the old "DEL twice" is gone), or Freeplay's
+  no Delete / Options / Q-E keys any more: Left/Right change the filter), or Freeplay's
   attempts window (§10.1). `Game1.StartReplay` finds the level by hash (levels folder via
   `LocalLevelIndex`, then the official disk cache via `LevelCache.WriteTempFileForHash`) and loads
   it; `_pendingReplay` becomes `_activeReplay` in `ResetGameplayStateForLevelLoad`, so any normal
@@ -2277,6 +2293,68 @@ States: `MainMenu` → `Connecting` → `RoomBrowser` → `RoomSettings` (create
   one; a mismatch shows "Replay drifted...".
 - **Not done yet:** WATCH button on the leaderboard's Recent Matches, pause / speed / seek
   controls, sharing replay files. Not tested in the running game UI yet.
+
+### 12.5 Picks, votes, Teams osu! and lobby settings (fork, 2026-11-27; protocol still 4)
+
+Server (`worker/src/registry.ts`, tests `worker/test/picks.test.ts`) + client. Backwards compatible:
+old clients never see a vote window (the vote then closes after 30 s and counts as accepted).
+- **Long-song vote**: `SongSelection.Duration` (picker's chart length, `FreeplayMenu` `LengthSec`) and
+  `LevelEntry/RoomLevel/SongInfo.Duration` (`RoomClient.ChartLength`, computed with the star ratings).
+  A pick ≥ `Protocol.LongSongSeconds` (240 s) with other players opens `RoomStatePacket.SongVote`
+  (`SongVoteInfo`: eligible = everyone playing except the picker, yes / no, `EndsAt` = 30 s) instead of
+  picking; nothing is sent meanwhile. `VoteSong(bool)`. Closes when everybody voted or on time out:
+  yes > no (or nobody voted) → `acceptSong` (usual transfer); otherwise rejected. Picker leaving /
+  spectating or new settings cancel it. Client: vote window in the waiting room (`DrawSongVoteWindow`,
+  buttons only, chat still usable), "LOBBY VOTE" slot, the pick confirm says when a song will be voted on.
+- **Dropped picks** (`rejectPick`): voted down, or the level couldn't be sent (`failTransfer` with no
+  other holder, or no uploader at all) while the song is picked → song cleared, hash added to
+  `Room.blocked` for the current turn (`RoomStatePacket.BlockedHashes`, `pickable` false, `SelectSong`
+  refuses it), `SongRejected` event; the turn stays with the picker. The block ends when the turn moves
+  or a round finishes. Client: the picker gets a "Your song was dropped" window with PICK ANOTHER;
+  refused songs stay in the song select greyed out ("REFUSED").
+- **Too big to send**: the server drops levels over `MaxUploadBytes` from the room list; the song select
+  now lists your own ones at the end ("TOO BIG TO SEND", greyed out, `RoomClient.TooHeavy`) and picking
+  one opens a window explaining the limit (`_pickNotice`) instead of hiding them.
+- **Downloaded vs imported**: song select sections are SHARED / YOUR LEVELS (imported by you),
+  DOWNLOADED LEVELS (`LocalLevel.Received`: FNF in `levels/Received/`, osu! sets listed in
+  `received_osu_sets.txt` by `OsuLibrary.MarkReceived`), then other players' levels.
+- **osu! in Teams**: `osuModeAllowed` = Mirror or Teams (server `kindAllowed` / `sanitizeSettings`,
+  client `Protocol.OsuModeAllowed` in room settings). Teams assigns side Player to everybody for osu!
+  (single chart), teams as usual; client `PickRival` returns null for osu! (one strumline).
+- **Teams with a one-sided chart**: `Game1.TeamsChartFor` gives both teams the chart that has notes
+  when the other playable chart (0 / 1) is empty (strumlines 0 / 1 and the side multiplier).
+- **Settings in the lobby**: the waiting room draws the top-right Settings button (the old F1 key
+  was removed). Waiting room keys: only T (chat), Up/Down + Enter (round details / pick song) and
+  Esc; every other action is its button.
+
+### 12.6 Solo results screen, audio offset, miss sound (fork, 2026-11-27)
+
+- **Results** (`UI/SoloResultsScreen.cs`, laid out like osu!lazer's): after a solo song (not
+  playtests) instead of going straight to Freeplay. A row of capsules, one per `FreeplayAttempt` of the
+  level on the same side (failed ones and other rates included), sorted by score: worse to the left,
+  better to the right. The run that just ended opens alone, expanded: place `#n / N`, song + mapper
+  (osu! `Creator`), accuracy wheel (rank bands D..S+ as a thin ring with letter badges, accuracy fill,
+  rank letter in the middle), counting score, star pill (`ChartDifficulty` at the run's rate) +
+  difficulty (osu! `Version`, FNF: Player / Enemy side), ACCURACY / MAX COMBO (x/chart notes) / RATING
+  (SFC/GFC/FC/CLEAR/FAILED), judgement counts, timing distribution (81-bin histogram of this run's
+  hits over ±the outermost window, coloured by judgement; avg error + unstable rate = 10 × std dev).
+  +/- numbers (green = better) compare with the previous best, or for another expanded capsule with
+  the run that just ended. After the intro (~1.9 s, ENTER / click skips) the others slide out from
+  behind it; wheel / drag / swipe scrolls, click or LEFT/RIGHT expands one. ESC/ENTER back; RETRY and
+  WATCH REPLAY are buttons only (the R / W / Delete / A-D keys were removed). Text sizes are in units of a 40 px line (`_k`), whatever
+  the font size.
+- Timing data: `NoteRenderer.HitErrors` (signed song-time error per note hit, at `NoteTime`, so the
+  audio offset applies), converted to real ms / rate. Attempts store `HitErrorMs`, `UnstableRate` and
+  `ChartNotes` (the histogram only exists for the run just played). A watched replay is matched to
+  its attempt by the replay id at the end of the file name.
+- **Offline Freeplay sections**: the FNF / OSU!MANIA tabs are split into YOUR LEVELS / SONGS and
+  DOWNLOADED LEVELS / SONGS (`FreeplayMenu.OfflineGroup`: `levels/Received/`, or
+  `OsuLibrary.IsReceived` for osu! sets), with the same section headers as online.
+- **Audio Offset** (Settings → GAMEPLAY → Offset, `Game1.GlobalOffsetMs`, ±500 ms, 5 ms steps, saved
+  in settings.json): one offset for every song, like FNF. Notes are judged and drawn at
+  `NoteTime = _songTime − offset × rate` (positive = notes later); music, events and characters keep
+  `_songTime`.
+- **Miss Sound** toggle (Settings → AUDIO, `NoteRenderer.MissSounds`, saved).
 
 ## 13. Platform behavior
 
@@ -2300,7 +2378,7 @@ States: `MainMenu` → `Connecting` → `RoomBrowser` → `RoomSettings` (create
   NextToGame only if `<exe dir>\mods` already holds the player's own content
   (`HasPlayerContent`: anything not `IsShippedDefault`), else AppData, and saves the
   choice. `PlatformPaths.GetModsBasePath()` returns `ModsStorage.CurrentPath`.
-  Settings → AUDIO & VIDEO → Storage → **Move Mods Folder** (desktop only; opens a
+  (Removed from Settings on 2026-11-27, to be exposed elsewhere; `ModsStorage.MoveToAsync` remains.) It used to be **Move Mods Folder** (desktop only; opens a
   "Move mods folder?" window with from/to paths and the trade-off of each location,
   Y/Enter or click to move, N/Esc to cancel; it takes input via the key-capture path,
   `IsCapturingKey`; blocked while a level is loaded, `Game1.HasActiveLevel`) runs
@@ -2403,7 +2481,7 @@ States: `MainMenu` → `Connecting` → `RoomBrowser` → `RoomSettings` (create
     the online menu's own instance always sets it. Gameplay (hitboxes + pause button) is unaffected.
   - **D-pad geometry**: a real cross fully on screen (Down used to be below the screen edge and
     Left/Right off-centre); A bigger, B lower-left of A; Q / E moved above B / A (they covered
-    the Settings title and tab bar).
+    the Settings title and tab bar). Since 2026-11-27 Q / E are never shown: tabs are tapped.
   - **Settings**: tabs / rows / `< >` were D-pad only (no touch reached `UpdateMouse`). Now: tap
     a tab, tap a row (toggles / actions; adjustable rows just select), finger-sized `< >` with a
     button background, hold `< >` to repeat (after 0.5 s, every 90 ms), drag scrolls 1:1,
@@ -2722,7 +2800,7 @@ ppy/osu (MIT): `LegacyBeatmapDecoder`, `ConvertHitObjectParser`, `ManiaBeatmapCo
 - **Background**: `Game1.SetupOsuBackground` (end of SetupLevel) makes the texture,
   `DrawOsuBackground` draws it cover-fit at 25 % brightness before the scene, freed with the
   level textures.
-- **Freeplay**: FNF / OSU!MANIA tabs (header, Q / E or click; saved as `FreeplayData.Tab`).
+- **Freeplay**: FNF / OSU!MANIA tabs (header, click; saved as `FreeplayData.Tab`).
   `ScanOsuSets` lists `OsuLibrary.ScanSets()` (headers only, cached per folder time): one row
   per set (`Artist - Title [Diff] +n`), its path = the chosen difficulty's .osu
   (`FreeplayData.OsuDifficulty[set] = file`), so stars / preview / attempts / replays are per
@@ -2873,53 +2951,45 @@ ppy/osu (MIT): `LegacyBeatmapDecoder`, `ConvertHitObjectParser`, `ManiaBeatmapCo
 
 ## 17. Controls reference
 
+Menus have almost no letter keys on purpose (2026-11-27, see the UI rule at the top): use the
+buttons, or arrows + Enter/Space + Esc.
+
 ### Main menu / Freeplay
 
 | Key | Action |
 |---|---|
 | Up/Down | navigate |
 | Enter | select / open level |
-| Esc | open Settings (root) / close panel (level panel) |
-| R | refresh level list (panel) |
-| I or O | import level file (panel) |
-| N | new chart (panel) |
-| Ctrl+F or F3 | search levels (panel; Enter / Esc stop typing) |
-| F / Shift+F | favourite the selected level / favourites only (panel) |
-| Tab | next sort order (panel) |
-| Shift+R | random level (panel) |
-| C or Menu key / right click / "..." | options menu of the row (panel; also attempts window and REPLAYS) |
-| M | modifiers window (panel) |
-| H | attempts window of the selected level (panel) |
-| Left / Right | song rate -/+ 0.05x (panel) |
+| Esc | open Settings (root) / clear the search, then close panel (level panel) |
+| Left / Right | song rate -/+ 0.05x (FNF) / difficulty (osu!) (panel) |
 | PgUp / PgDn / Home / End | page / ends of the list (panel) |
-| U | re-open update prompt (root, when an update is available) |
-| 7 | Editor Hub (root) / Chart Editor for selected level (panel) |
-| Mouse | hover/click cards and rows, wheel scrolls the list |
+| 7 (rebindable) | Editor Hub (root) |
+| Mouse | hover/click cards, rows and buttons (search, sort, favs, random, import, new, refresh, "..." / right click options, modifiers, attempts), wheel scrolls |
 
 ### Gameplay
 
 | Key | Action |
 |---|---|
 | D/F/J/K (default, rebindable) | lanes left/down/up/right |
-| Esc | pause (solo) / non-pausing overlay (multiplayer) |
-| P | pause (solo only) |
-| Ctrl+Left / Ctrl+Right | timeskip backward/forward by `TimeskipSeconds` (Timeskip setting not OFF) |
-| T / Shift+T (hold repeats) | timeskip forward/backward, only if `T` is not a lane key |
-| PageUp / PageDown | visual scroll speed |
-| `-` / `+` (also numpad) | master volume (global hotkey) |
-| 7 | open Chart Editor (solo) / return to editor during playtest |
+| Esc (touch: pause button) | pause (solo) / non-pausing overlay (multiplayer) |
+| T / Shift+T (rebindable, hold repeats) | timeskip forward/backward by `TimeskipSeconds` (not OFF, not online, ignored if it is a lane key) |
+| F3 / F4 (rebindable) | scroll speed -/+ 0.10x (also paused) |
+| `-` / `=` (rebindable) | master volume (global) |
+| F11 (rebindable, desktop) | fullscreen (global) |
+| 7 (rebindable) | open Chart Editor (solo) / return to editor during playtest |
 
 ### Settings
 
-(Android: tap tabs / rows, `< >` change values (hold repeats), drag scrolls, back gesture = Esc.)
+(Android: tap tabs / rows / the search box, `< >` change values (hold repeats), drag scrolls,
+back gesture = Esc.)
 
 | Key | Action |
 |---|---|
-| Q / E | previous/next tab |
 | Up/Down | navigate items |
-| Left/Right | adjust focused value, otherwise switch tab |
-| Enter / Space | toggle / run action / focus an adjustable row |
-| Esc | back |
+| Left/Right | adjust focused value, otherwise switch tab (not while searching) |
+| Enter / Space | toggle / run action / focus an adjustable row (Space types while searching) |
+| letters / digits | type into the search box (desktop); Backspace edits, Ctrl+Backspace clears |
+| Esc | release focus → clear search → back |
 
 ### Chart Editor
 
@@ -2930,14 +3000,13 @@ See §11.
 | Key | Action |
 |---|---|
 | Esc | save and go back |
-| S | save |
 | R | reset defaults (positions + sizes + visibility) |
 | Drag corner handle (selected) | resize element |
 | `[` / `]`, mouse wheel over selected | shrink / grow element |
 | G | toggle grid |
 | H | toggle instructions |
 | A | toggle all elements |
-| V / Space / Delete | toggle selected element |
+| Space | toggle selected element |
 | Right-click | select + toggle element |
 | Mouse drag | move element |
 | Arrows | nudge 5 px (Left Shift = 1 px) |
@@ -3042,8 +3111,7 @@ Status key: **[fixed]** resolved in the current tree; **[open]** still applies
     zenity/kdialog on non-Windows desktops; without either it returns nothing.
 20. **[by design]** **Multiplayer pause.** Esc in a match opens an overlay but the
     song keeps running (both players stay in sync); only `P` is blocked.
-21. **[by design]** **`CorneredEventHandler.LoadHardJsonChart`** is unused dead
-    code; it used to assign `Skin = laneId` (now `0`).
+21. **[removed in fork]** `CorneredEventHandler` (and its dead `LoadHardJsonChart`) is gone, see §7.
 22. **[fixed in fork]** **FMM health scale.** FunkyMaker's max health is 30
     (= 100%). `EventProcessor` used to divide `PlayerHealth` value/minHealth by
     100; it now divides by `NoteSkins.FmmMaxHealth` (30).
