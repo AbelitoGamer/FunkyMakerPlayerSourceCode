@@ -206,9 +206,7 @@ public partial class Game1 : Game
     private string? _playtestTempPath = null;
     private (byte[] Pcm, int SampleRate, int Channels)? _preloadedPlaytestPcm = null;
     
-    #if ANDROID
     private ModsHelpScreen? _modsHelpScreen;  // Help screen for Android mods setup
-    #endif
     private FontRenderer? _fontRenderer = null;  // TrueType font renderer for crisp UI
 
     // ── Main Settings menu / HUD Editor launcher ─────────────────────────────
@@ -979,10 +977,8 @@ public partial class Game1 : Game
         _freeplay = new FreeplayMenu(_pixel, _font, levelsFolder, _folderIcon, _fontRenderer);
         _mainSettingsMenu?.SetFontRenderer(_fontRenderer);
         
-        #if ANDROID
         // Init mods help screen
         _modsHelpScreen = new ModsHelpScreen(_fontRenderer, _pixel);
-        #endif
         
         // Init pause menu
         _pauseMenu = new PauseMenu(_pixel, _font, _fontRenderer);
@@ -1766,7 +1762,6 @@ public partial class Game1 : Game
         // ── Freeplay menu ────────────────────────────────────────────────────
         if (_inFreeplay && _freeplay != null && _loadingScreen == null)
         {
-            #if ANDROID
             // Update mods help screen if visible
             if (_modsHelpScreen != null && _modsHelpScreen.IsVisible)
             {
@@ -1775,7 +1770,9 @@ public partial class Game1 : Game
                 // If user requested to launch folder picker
                 if (_modsHelpScreen.LaunchFolderPicker)
                 {
+#if ANDROID
                     PickAndroidModsFolder();
+#endif
                 }
                 
                 // If user closes help screen, return to freeplay
@@ -1783,14 +1780,15 @@ public partial class Game1 : Game
                 {
                     _freeplay.ResetInputCooldown();
                     // Show touch controls again
+#if ANDROID
                     _touchControls?.SetAllControlsVisible(true);
+#endif
                 }
                 
                 _prevKb = kb;
                 base.Update(gameTime);
                 return;
             }
-            #endif
             
             var winBounds = Window.ClientBounds;
             _freeplay.Update(dt, kb, winBounds.Width, winBounds.Height, winBounds.Width, winBounds.Height);
@@ -3039,7 +3037,6 @@ public partial class Game1 : Game
                 _freeplay.Draw(_spriteBatch, winBounds.Width, winBounds.Height, winBounds.Width, winBounds.Height);
             _spriteBatch.End();
             
-            #if ANDROID
             // Draw mods help screen on top if visible
 #pragma warning disable CS8602 // Null check already done in if condition
             if (_modsHelpScreen != null && _modsHelpScreen.IsVisible)
@@ -3049,7 +3046,6 @@ public partial class Game1 : Game
                 _spriteBatch.End();
             }
 #pragma warning restore CS8602
-            #endif
             
             // If there's an active song transition, render it over the menu then return
 #pragma warning disable CS8602 // Null check already done in if condition
