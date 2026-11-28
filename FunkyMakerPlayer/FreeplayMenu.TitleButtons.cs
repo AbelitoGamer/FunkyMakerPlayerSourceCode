@@ -47,14 +47,8 @@ public partial class FreeplayMenu
     };
 
     /// <summary>Height the row needs below the main options (0 = no row).</summary>
-    private static int TitleButtonsRowHeight(float s)
-    {
-#if ANDROID
-        return UiScale.Px(52, s, 44);
-#else
-        return UiScale.Px(36, s, 30);
-#endif
-    }
+    private static int TitleButtonsRowHeight(float s) =>
+        UI.PointerInput.IsTouch ? UiScale.Px(52, s, 44) : UiScale.Px(36, s, 30);
 
     /// <summary>Hover / click on the row. Returns true when it used the click.</summary>
     private bool UpdateTitleButtons(Point rtMouse, bool mouseClicked)
@@ -101,11 +95,7 @@ public partial class FreeplayMenu
         var ids = new List<TitleButton>(TitleButtonIds());
         int gap = UiScale.Px(10, s, 6);
         int padX = UiScale.Px(16, s, 10);
-#if ANDROID
-        int fontSize = UiScale.FontPx(18, s);
-#else
-        int fontSize = UiScale.FontPx(15, s);
-#endif
+        int fontSize = UI.PointerInput.IsTouch ? UiScale.FontPx(19, s) : UiScale.FontPx(15, s);
         float maxW = leftW - UiScale.Px(32, s);
 
         // Shrink the text until the whole row fits

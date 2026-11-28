@@ -676,6 +676,14 @@ public partial class Game1 : Game
         IsMouseVisible = false;
         
         Console.WriteLine($"[Android] Screen resolution: {displayMode.Width}x{displayMode.Height}");
+        try
+        {
+            // Phone-sized menus (fork): bigger menus on physically small screens (UI/UiScale.Touch)
+            var metrics = Microsoft.Xna.Framework.Game.Activity?.Resources?.DisplayMetrics;
+            if (metrics != null && metrics.Xdpi > 1f && metrics.Ydpi > 1f)
+                UI.UiScale.InitTouchFromScreen(Math.Min(metrics.WidthPixels / metrics.Xdpi, metrics.HeightPixels / metrics.Ydpi));
+        }
+        catch (Exception ex) { Console.WriteLine($"[UiScale] DisplayMetrics failed: {ex.Message}"); }
         
         // Initialize crash logger with Android dialog callback
         CrashLogger.Initialize(crashReport =>

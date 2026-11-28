@@ -1534,8 +1534,10 @@ namespace FunkyMakerPlayer.Multiplayer
         // Responsive Typography & Modern UI Primitives
         // ══════════════════════════════════════════════════════════════════════
 
+        // × the touch boost (fork): bigger menus on phones (UI/UiScale.Touch; 1 on desktop)
         private static float GetUiScale(int sw, int sh) =>
-            Math.Clamp(Math.Min(sw / 1280f, sh / 720f), 0.58f, 1.85f);
+            Math.Clamp(Math.Min(sw / 1280f, sh / 720f) *
+                (FunkyMakerPlayer.UI.UiScale.FromScreen(sw, sh) / FunkyMakerPlayer.UI.UiScale.Proportional(sw, sh)), 0.58f, 2.4f);
 
         private static int Px(float value, float scale, int min = 1) =>
             Math.Max(min, (int)MathF.Round(value * scale));

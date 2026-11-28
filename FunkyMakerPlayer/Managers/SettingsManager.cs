@@ -1505,7 +1505,10 @@ public class SettingsManager
         var fr = fontRenderer;
 
         const float referenceHeight = 720f;
-        float scaleFactor = screenHeight / referenceHeight;
+        // × the touch boost (fork): bigger rows and text on phones (UI/UiScale.Touch), at most 1.2x
+        // so enough rows still fit above the description box
+        float scaleFactor = screenHeight / referenceHeight * Math.Min(1.2f,
+            UI.UiScale.FromScreen(screenWidth, screenHeight) / UI.UiScale.Proportional(screenWidth, screenHeight));
 
         // ── Background ────────────────────────────────────────────────────────
         for (int y = 0; y < screenHeight; y += 4)

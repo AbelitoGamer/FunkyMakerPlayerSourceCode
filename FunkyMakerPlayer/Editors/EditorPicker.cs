@@ -245,6 +245,14 @@ public class EditorPicker : FunkyMakerPlayer.UI.IDirectScreen
 
         float topBound = subY + subSz.Y + UiScale.Px(24, s);
         float bottomBound = sh - UiScale.Px(110, s);
+        // Small / boosted (touch) screens: shrink the cards so they never run under the footer
+        float availH = bottomBound - topBound;
+        if (totalH > availH && _cards.Length > 0)
+        {
+            cardGap = Math.Max(4, (int)(cardGap * 0.6f));
+            cardH = Math.Max(UiScale.Px(44, s), (int)((availH - (_cards.Length - 1) * cardGap) / _cards.Length));
+            totalH = _cards.Length * cardH + (_cards.Length - 1) * cardGap;
+        }
         int startY = (int)Math.Max(topBound, topBound + (bottomBound - topBound - totalH) / 2f);
         int cardX = sw / 2 - cardW / 2;
 
@@ -286,6 +294,9 @@ public class EditorPicker : FunkyMakerPlayer.UI.IDirectScreen
             int textX = badgeRect.Right + badgePad;
             int nameSize = Math.Clamp((int)(cardH * 0.28f), UiScale.FontPx(18, s), UiScale.FontPx(28, s));
             int descSize = Math.Clamp((int)(cardH * 0.17f), UiScale.FontPx(12, s), UiScale.FontPx(17, s));
+            int textMaxW = r.Right - textX - UiScale.Px(40, s);
+            while (nameSize > 10 && MeasureText(card.Name, nameSize).X > textMaxW) nameSize--;
+            while (descSize > 9 && MeasureText(card.Description, descSize).X > textMaxW) descSize--;
             var nameSz = MeasureText(card.Name, nameSize);
             var descSz = MeasureText(card.Description, descSize);
             float blockH = nameSz.Y + textGap + descSz.Y;

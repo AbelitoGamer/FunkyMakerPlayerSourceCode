@@ -1258,15 +1258,29 @@ public partial class FreeplayMenu
             int titleRowY = (int)(hintY - UiScale.Px(14, s) - titleRowH);
             float bottomBoundary = titleRowY - UiScale.Px(16, s);
             float availableCardH = Math.Max(100f, bottomBoundary - topBoundary);
-            int totalMenuH = items.Length * cardHeight + (items.Length - 1) * cardSpacing;
-            if (totalMenuH > availableCardH && items.Length > 0)
+
+            // Touch screens (fork): a 2-column grid of big cards, so they stay finger-sized on a phone
+            // instead of being squeezed into one column (UI/UiScale.Touch)
+            int cols = UI.PointerInput.IsTouch && items.Length > 3 ? 2 : 1;
+            int rows = (items.Length + cols - 1) / cols;
+            int colGap = UiScale.Px(16, s, 8);
+            if (cols == 2)
+            {
+                menuSize = UiScale.FontPx(26, s);
+                cardWidth = Math.Clamp((int)((leftW - UiScale.Px(48, s) - colGap) / 2f), UiScale.Px(160, s), UiScale.Px(360, s));
+                cardHeight = UiScale.Px(64, s, 44);
+                cardSpacing = UiScale.Px(14, s, 8);
+            }
+            int totalMenuH = rows * cardHeight + (rows - 1) * cardSpacing;
+            if (totalMenuH > availableCardH && rows > 0)
             {
                 float ratio = availableCardH / totalMenuH;
                 cardSpacing = Math.Max(4, (int)(cardSpacing * ratio));
-                cardHeight = Math.Max(28, (int)((availableCardH - (items.Length - 1) * cardSpacing) / items.Length));
+                cardHeight = Math.Max(28, (int)((availableCardH - (rows - 1) * cardSpacing) / rows));
                 menuSize = Math.Clamp((int)(cardHeight * 0.56f), 14, menuSize);
-                totalMenuH = items.Length * cardHeight + (items.Length - 1) * cardSpacing;
+                totalMenuH = rows * cardHeight + (rows - 1) * cardSpacing;
             }
+            int gridW = cols * cardWidth + (cols - 1) * colGap;
             int startCardY = (int)Math.Max(topBoundary, topBoundary + (availableCardH - totalMenuH) / 2f);
 
             _mainMenuCardBounds.Clear();
@@ -1282,8 +1296,8 @@ public partial class FreeplayMenu
                 int itemSize = sel ? menuSize + UiScale.Px(2, s, 1) : menuSize;
                 var sz = MeasureText(items[i], itemSize);
                 
-                int cardX = leftW / 2 - cardWidth / 2;
-                int cardY = startCardY + i * (cardHeight + cardSpacing);
+                int cardX = leftW / 2 - gridW / 2 + (i % cols) * (cardWidth + colGap);
+                int cardY = startCardY + (i / cols) * (cardHeight + cardSpacing);
                 _mainMenuCardBounds.Add(new Rectangle(cardX, cardY, cardWidth, cardHeight));
                 
                 // Card background
@@ -1586,49 +1600,60 @@ public partial class FreeplayMenu
                 ("[Enter] or [ESC] to close", null),
             };
             
-            int creditSize = UiScale.FontPx(23, s);
+            // Touch screens (fork): two columns, so the text can be twice as big on a phone; the last
+            // line (how to close) goes under them. Split at "Online menu music..." (the second group).
+            bool twoCols = UI.PointerInput.IsTouch;
+            var closeLine = creditData[^1];
+            if (twoCols) closeLine = ("Tap anywhere to close", null);
+            var body = creditData[..^1];
+            int split = twoCols ? Array.FindIndex(body, c => c.text.StartsWith("Online menu music")) : -1;
+            var columns = split > 0 ? new[] { body[..split], body[split..] } : new[] { body };
+            int maxLines = 0;
+            foreach (var col0 in columns) maxLines = Math.Max(maxLines, col0.Length);
+            maxLines += 2; // gap + close line
+            float colW = sw * (columns.Length == 2 ? 0.46f : 0.94f);
+
+            int creditSize = UiScale.FontPx(columns.Length == 2 ? 26 : 23, s);
             // Shrink to fit short / narrow windows (the list is long).
-            float widest = 0f;
-            foreach (var (t, _) in creditData) widest = Math.Max(widest, MeasureText(t, creditSize).X);
-            while (creditSize > 10 &&
-                   ((MeasureText("A", creditSize).Y + UiScale.Px(6, s)) * creditData.Length > sh * 0.92f || widest > sw * 0.94f))
+            float Widest(int size)
             {
-                creditSize--;
-                widest = 0f;
-                foreach (var (t, _) in creditData) widest = Math.Max(widest, MeasureText(t, creditSize).X);
+                float w = 0f;
+                foreach (var col0 in columns) foreach (var (t, _) in col0) w = Math.Max(w, MeasureText(t, size).X);
+                return w;
             }
+            while (creditSize > 10 &&
+                   ((MeasureText("A", creditSize).Y + UiScale.Px(6, s)) * maxLines > sh * 0.92f || Widest(creditSize) > colW))
+                creditSize--;
             int ch = (int)(MeasureText("A", creditSize).Y) + UiScale.Px(6, s);
-            int totalCH = creditData.Length * ch;
-            int cy = sh / 2 - totalCH / 2;
-            
+            int top = sh / 2 - maxLines * ch / 2;
+
             Point pointerPos = _lastPointerPos;
-            
-            foreach (var (text, url) in creditData)
+
+            void DrawCredit(string text, string? url, float centerX, int cy)
             {
-                if (text.Length == 0) { cy += ch; continue; }
-                
+                if (text.Length == 0) return;
                 var sz = MeasureText(text, creditSize);
-                float textX = sw / 2f - sz.X / 2f;
-                
+                float textX = centerX - sz.X / 2f;
+
                 Color col;
                 bool isTitle = text == "Funky Maker Player";
                 bool isIndented = text.StartsWith("  ");
                 bool isLink = url != null;
-                
+
                 // Create bounds for clickable links (matching screen draw coordinates)
                 Rectangle bounds = new Rectangle((int)textX, cy, (int)sz.X, (int)sz.Y);
                 bool isHovered = isLink && bounds.Contains(pointerPos);
-                
+
                 if (isLink)
                 {
-                    _creditLinks.Add(new ClickableLink 
-                    { 
-                        Bounds = bounds, 
+                    _creditLinks.Add(new ClickableLink
+                    {
+                        Bounds = bounds,
                         Url = url ?? string.Empty,
                         IsHovered = isHovered
                     });
                 }
-                
+
                 // Color logic
                 if (isTitle)
                     col = new Color(255, 215, 0) * credAlpha;  // Gold
@@ -1640,17 +1665,28 @@ public partial class FreeplayMenu
                     col = Color.White * 0.5f * credAlpha;
                 else
                     col = Color.White * 0.85f * credAlpha;
-                
+
                 // Underline for links
                 if (isLink)
                 {
                     int underlineY = cy + (int)sz.Y + 2;
                     DrawRect(sb, (int)textX, underlineY, (int)sz.X, 1, col * 0.6f);
                 }
-                
+
                 DrawText(sb, text, new Vector2(textX, cy), col, creditSize);
-                cy += ch;
             }
+
+            for (int c = 0; c < columns.Length; c++)
+            {
+                float centerX = columns.Length == 2 ? sw * (c == 0 ? 0.27f : 0.73f) : sw / 2f;
+                int cy = top;
+                foreach (var (text, url) in columns[c])
+                {
+                    DrawCredit(text, url, centerX, cy);
+                    cy += ch;
+                }
+            }
+            DrawCredit(closeLine.text, closeLine.url, sw / 2f, top + (maxLines - 1) * ch);
         }
         else
         {
