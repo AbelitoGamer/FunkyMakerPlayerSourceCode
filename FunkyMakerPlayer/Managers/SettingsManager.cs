@@ -202,7 +202,11 @@ public class SettingsManager
     /// once something is typed (before that it still selects). Backspace deletes, Ctrl+Backspace
     /// clears, ESC (see <see cref="HandleEscape"/>) clears.
     /// </summary>
-    public void UpdateSearch(KeyboardState kb, KeyboardState prev, float dt)
+    /// <param name="discardTyping">
+    /// True while a key that was just captured for a binding is still held (Game1's key-capture
+    /// hold-off): its character must not end up in the search.
+    /// </param>
+    public void UpdateSearch(KeyboardState kb, KeyboardState prev, float dt, bool discardTyping = false)
     {
         _caretTime += dt;
         if (_pendingTouchSearch is { } typedOnPhone)
@@ -212,7 +216,7 @@ public class SettingsManager
         }
 
 #if !ANDROID
-        if (_captureAction != null)
+        if (_captureAction != null || discardTyping)
         {
             if (_ownsTextEntry) UI.TextEntry.Clear();  // rebinding a key: nothing goes to the search
             return;

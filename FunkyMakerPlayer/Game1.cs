@@ -1661,6 +1661,7 @@ public partial class Game1 : Game
         // ── Key binding overlay (when opened from Settings in Main Menu or Pause) ──
         if (_keyBindOverlay.IsActive)
         {
+            UI.TextEntry.Clear(); // keys pressed to bind must not reach the settings search afterwards
             _keyBindOverlay.Update(kb, _prevKb);
             AdvanceLiveMultiplayerIfActive(gameTime, dt);
             _prevKb = kb;
@@ -1672,7 +1673,7 @@ public partial class Game1 : Game
         if (_settingsManager?.IsActive == true && _settingsManager != null)
         {
             // Search box: letters / digits typed anywhere filter every tab
-            _settingsManager.UpdateSearch(kb, _prevKb, dt);
+            _settingsManager.UpdateSearch(kb, _prevKb, dt, discardTyping: _keyCaptureHoldoff);
 
             // Up/Down navigation (releases focus cleanly when switching option; skips section headers)
             if (kb.IsKeyDown(Keys.Up) && !_prevKb.IsKeyDown(Keys.Up))

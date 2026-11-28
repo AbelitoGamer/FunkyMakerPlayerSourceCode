@@ -67,9 +67,11 @@ public partial class Game1
                 _keyBindCallbacksWired = true;
                 _keyBindOverlay.OnComplete += () => {
                     if (_settingsManager != null) _settingsManager.IsActive = true;
+                    _keyCaptureHoldoff = true; // the key that closed it must not type into the search
                 };
                 _keyBindOverlay.OnCancel += () => {
                     if (_settingsManager != null) _settingsManager.IsActive = true;
+                    _keyCaptureHoldoff = true; // the key that closed it must not type into the search
                 };
             }
         }
