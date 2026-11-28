@@ -90,6 +90,7 @@ desktop.ini
 .idea/
 
 # Android Signing Keys (NEVER commit these!)
+funkymakergame.keystore
 *.keystore
 *.jks
 keystore.properties
