@@ -28,6 +28,13 @@ public sealed class FreeplayAttempt
     public float Progress { get; set; } = 1f;
     /// <summary>Replay file saved with this run (may have been deleted since), or null.</summary>
     public string? ReplayPath { get; set; }
+    /// <summary>Average timing error in ms (negative = early) and unstable rate, or null (older attempts).</summary>
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    public float? HitErrorMs { get; set; }
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    public float? UnstableRate { get; set; }
+    /// <summary>Notes in the chart (the full combo), or 0 (older attempts).</summary>
+    public int ChartNotes { get; set; }
 
     /// <summary>Counts for the personal best: finished, at 1.00x.</summary>
     [System.Text.Json.Serialization.JsonIgnore]

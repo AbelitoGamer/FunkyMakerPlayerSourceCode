@@ -215,7 +215,7 @@ public partial class FreeplayMenu
         (9.0, new Color(0x00, 0x00, 0x00)),
     };
 
-    private static Color StarColor(double stars)
+    internal static Color StarColor(double stars)
     {
         if (stars <= StarSpectrum[0].Stars) return StarSpectrum[0].Color;
         for (int i = 1; i < StarSpectrum.Length; i++)
@@ -230,7 +230,7 @@ public partial class FreeplayMenu
         return StarSpectrum[^1].Color;
     }
 
-    private static Color StarTextColor(double stars)
+    internal static Color StarTextColor(double stars)
         => stars < 6.5 ? new Color(20, 20, 30) : new Color(255, 217, 102);
 
     /// <summary>Star colour made readable on the dark UI (very hard ratings go near-black in osu!).</summary>
